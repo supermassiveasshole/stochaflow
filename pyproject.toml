@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stochaflow"
+version = "0.1.0"
+description = "A diffusion-model project scaffold for DDPM/DDIM experiments."
+readme = "README.md"
+# Project minimum stays at 3.12 for Intel Mac.
+# Other environments can use newer interpreters such as Python 3.14.
+requires-python = ">=3.12"
+dependencies = [
+    # Current PyPI releases no longer publish macOS x86_64 wheels for Intel Macs.
+    # Keep Intel Macs on the latest known wheel-backed trio for CPython 3.12 x86_64.
+    "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torchvision==0.17.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    # Other platforms can follow the current release line.
+    "torch>=2.11,<3; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchvision>=0.26,<1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torch>=2.2.2",
+    "torchvision>=0.17.2",
+    "tqdm>=4.67.3",
+    "numpy>=2.4.4",
+    "pyyaml>=6.0.3",
+    "matplotlib>=3.10.9",
+    "pillow>=12.2.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]

@@ -1,0 +1,1 @@
+"""DDIM implementation placeholder."""
