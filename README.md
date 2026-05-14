@@ -1,27 +1,47 @@
 # Stochaflow
 
-`Stochaflow` 是一个面向扩散模型实验的 Python 项目骨架，当前阶段只完成目录初始化、配置文件占位和文档整理，便于后续按模块逐步实现 DDPM / DDIM 训练、采样与评估流程。
+Stochaflow is a research-oriented Python project scaffold for **stochastic flows**, with an initial repository layout that is convenient for diffusion-family methods such as DDPM and DDIM, but is not limited to diffusion models.
 
-## 项目目标
+The current repository is intentionally a skeleton:
 
-- 基于 `src` 布局组织代码，便于包管理与测试
-- 按功能拆分 `data / models / diffusion / training / sampling / utils`
-- 预留 `configs`、`scripts`、`tests`、`notebooks`、`outputs`、`assets` 等常用目录
-- 支持后续扩展到 MNIST、CIFAR-10 等数据集上的扩散模型实验
+- the package layout is in place
+- experiment configs and entry scripts are stubbed out
+- implementation files are placeholders
+- the core training, sampling, and evaluation logic is still to be written
 
-## 当前状态
+## Scope
 
-当前仓库是“项目初始化版本”：
+This project is meant to host work on stochastic flow models, including but not limited to:
 
-- 已创建目录结构
-- 已创建配置文件占位
-- 已创建脚本与模块文件占位
-- 已创建测试文件占位
-- 尚未实现具体训练、采样、评估逻辑
+- diffusion probabilistic models
+- deterministic or stochastic samplers
+- score-based generative modeling components
+- flow-style training and sampling utilities
 
-如果你希望后续自己补代码，现在可以直接在对应模块内继续实现。
+In other words, the existing `diffusion/` package reflects the first planned implementation track, not the full conceptual boundary of the repository.
 
-## 目录结构
+## Status
+
+This is an **initial scaffold commit**, not a finished library.
+
+What is already included:
+
+- `src`-layout Python package structure
+- module boundaries for data, models, diffusion, training, sampling, and utilities
+- starter configuration files under `configs/`
+- placeholder scripts under `scripts/`
+- placeholder tests and notebook slots
+- output and asset directories tracked with `.gitkeep`
+
+What is not included yet:
+
+- working model implementations
+- real dataset pipelines
+- training loops
+- checkpointing logic
+- sampling and evaluation pipelines
+
+## Repository Layout
 
 ```text
 stochaflow/
@@ -81,109 +101,41 @@ stochaflow/
     └── .gitkeep
 ```
 
-## 模块说明
+## Package Structure
 
-### `configs/`
+`src/stochaflow/data/`
+: dataset definitions, transforms, dataloaders, and dataset-specific helpers.
 
-存放实验配置文件，占位内容按实验类型区分：
+`src/stochaflow/models/`
+: model backbones and reusable building blocks.
 
-- `ddpm_mnist.yaml`
-- `ddpm_cifar10.yaml`
-- `ddim_cifar10.yaml`
+`src/stochaflow/diffusion/`
+: diffusion-process-specific schedules, objectives, and algorithms.
 
-后续可以把数据集参数、模型参数、训练超参、采样参数都统一放在这里。
+`src/stochaflow/training/`
+: trainer orchestration, losses, optimization helpers, and EMA utilities.
 
-### `scripts/`
+`src/stochaflow/sampling/`
+: sampling routines, sample post-processing, and grid/export helpers.
 
-命令行入口脚本目录：
+`src/stochaflow/utils/`
+: shared infrastructure such as config loading, seeding, checkpoint paths, and logging.
 
-- `train.py`：训练入口
-- `sample.py`：采样入口
-- `eval.py`：评估入口
+## Configuration
 
-当前仅为占位文件，后续可接入参数解析和配置加载。
+The repository currently includes placeholder experiment configs:
 
-### `src/stochaflow/data/`
+- `configs/ddpm_mnist.yaml`
+- `configs/ddpm_cifar10.yaml`
+- `configs/ddim_cifar10.yaml`
 
-负责数据集相关逻辑，例如：
+These are starter files for future experiments. They should be treated as templates rather than final experiment definitions.
 
-- 数据集下载与加载
-- 训练/验证数据预处理
-- dataloader 构建
+## Development Setup
 
-### `src/stochaflow/models/`
+The project uses a `src` layout and `pyproject.toml` packaging metadata.
 
-负责模型结构定义，例如：
-
-- U-Net 主干
-- 残差块、注意力块
-- 时间步嵌入
-
-### `src/stochaflow/diffusion/`
-
-负责扩散过程本身，例如：
-
-- beta schedule
-- DDPM 正向与反向过程
-- DDIM 采样过程
-- 训练目标定义
-
-### `src/stochaflow/training/`
-
-负责训练流程，例如：
-
-- trainer 主循环
-- 损失函数
-- EMA 权重更新
-
-### `src/stochaflow/sampling/`
-
-负责采样与结果可视化，例如：
-
-- 采样调度器
-- 图像网格拼接与保存
-
-### `src/stochaflow/utils/`
-
-负责公共工具，例如：
-
-- 配置读取
-- 随机种子设置
-- checkpoint 管理
-- 日志管理
-
-### `tests/`
-
-预留单元测试目录。建议后续优先补这些测试：
-
-- schedule 输出长度与范围
-- DDPM / DDIM 张量 shape
-- U-Net 前向输出 shape
-
-### `notebooks/`
-
-预留实验验证 notebook，可用于：
-
-- schedule 可视化
-- 单步前向 sanity check
-- 采样结果观察
-
-## 开发建议
-
-推荐按下面顺序推进实现：
-
-1. 先完成 `utils/config.py` 与配置读取
-2. 再完成 `data/datasets.py`
-3. 实现 `models/` 中的 U-Net 与基础模块
-4. 实现 `diffusion/schedules.py` 与 `ddpm.py`
-5. 接入 `training/trainer.py`
-6. 最后补 `sample.py`、`eval.py` 和测试
-
-## 本地开发
-
-当前项目使用 `pyproject.toml` 管理元数据，并采用 `src` 布局。
-
-可选的初始化步骤示例：
+Example local setup:
 
 ```bash
 python -m venv .venv
@@ -191,6 +143,23 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+Notes:
+
+- this repository currently targets Python `>=3.12`
+- Intel macOS uses a constrained PyTorch dependency path for wheel compatibility
+- newer Python versions may be used on other platforms as long as dependency resolution succeeds
+
+## Roadmap
+
+A sensible implementation order for this scaffold is:
+
+1. Define config loading and experiment schema.
+2. Implement dataset loading and preprocessing.
+3. Implement model backbones and embeddings.
+4. Implement schedules and stochastic flow / diffusion core logic.
+5. Add training orchestration and checkpointing.
+6. Add sampling, evaluation, and tests.
+
 ## License
 
-本项目使用仓库中的 `MIT License`。
+This project is released under the [MIT License](LICENSE).

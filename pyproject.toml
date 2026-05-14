@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stochaflow"
 version = "0.1.0"
-description = "A diffusion-model project scaffold for DDPM/DDIM experiments."
+description = "A research project scaffold for stochastic flows and diffusion-family methods."
 readme = "README.md"
 # Project minimum stays at 3.12 for Intel Mac.
 # Other environments can use newer interpreters such as Python 3.14.
