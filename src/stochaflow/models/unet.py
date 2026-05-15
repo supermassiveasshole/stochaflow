@@ -25,6 +25,9 @@ class UNet(nn.Module):
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
+
+        model_out_channels = out_channels
+
         self.time_embedding = TimeEmbedding(
             embedding_dim=time_embedding_dim,
             hidden_dim=base_channels * 4,
@@ -47,20 +50,22 @@ class UNet(nn.Module):
         channels = base_channels
         level_channels = [base_channels * mult for mult in channel_multipliers]
 
-        for level, out_channels in enumerate(level_channels):
+        for level, block_out_channels in enumerate(level_channels):
             blocks = nn.ModuleList()
             for _ in range(num_res_blocks):
                 blocks.append(
                     ResidualBlock(
                         channels,
-                        out_channels,
+                        block_out_channels,
                         time_embedding_dim=time_dim,
                         dropout=dropout,
                     )
                 )
-                channels = out_channels
+                channels = block_out_channels
                 self.skip_channels.append(channels)
+
             self.down_blocks.append(blocks)
+
             if level < len(level_channels) - 1:
                 self.downsamples.append(Downsample(channels))
 
@@ -78,21 +83,25 @@ class UNet(nn.Module):
         )
 
         skip_stack = list(self.skip_channels)
+
         for level in reversed(range(len(level_channels))):
             blocks = nn.ModuleList()
-            out_channels = level_channels[level]
+            block_out_channels = level_channels[level]
+
             for _ in range(num_res_blocks):
                 skip_channels = skip_stack.pop()
                 blocks.append(
                     ResidualBlock(
                         channels + skip_channels,
-                        out_channels,
+                        block_out_channels,
                         time_embedding_dim=time_dim,
                         dropout=dropout,
                     )
                 )
-                channels = out_channels
+                channels = block_out_channels
+
             self.up_blocks.append(blocks)
+
             if level > 0:
                 self.upsamples.append(Upsample(channels))
 
@@ -100,7 +109,7 @@ class UNet(nn.Module):
         self.output_act = nn.SiLU()
         self.output_projection = nn.Conv2d(
             channels,
-            out_channels,
+            model_out_channels,
             kernel_size=3,
             padding=1,
         )
@@ -119,9 +128,11 @@ class UNet(nn.Module):
 
         for level in range(len(self.down_blocks)):
             blocks = cast(nn.ModuleList, self.down_blocks[level])
+
             for block_index in range(len(blocks)):
                 h = blocks[block_index](h, time_embedding)
                 skips.append(h)
+
             if level < len(self.downsamples):
                 h = self.downsamples[level](h)
 
@@ -130,10 +141,12 @@ class UNet(nn.Module):
 
         for level in range(len(self.up_blocks)):
             blocks = cast(nn.ModuleList, self.up_blocks[level])
+
             for block_index in range(len(blocks)):
                 skip = skips.pop()
                 h = torch.cat([h, skip], dim=1)
                 h = blocks[block_index](h, time_embedding)
+
             if level < len(self.upsamples):
                 h = self.upsamples[level](h)
 
