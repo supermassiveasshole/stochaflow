@@ -21,6 +21,9 @@ data:
     drop_last: true
     pin_memory: true
     persistent_workers: true
+  splits:
+    validation_size: 5000
+    test_split: test
 
 model:
   name: unet
@@ -63,13 +66,20 @@ trainer:
   device: auto
   max_grad_norm: 1.0
   show_progress: true
+  early_stopping:
+    enabled: true
+    monitor: valid_loss
+    mode: min
+    patience: 10
+    min_delta: 0.0
 
 logging:
   log_every: 100
   backends:
     - name: local
       params:
-        console: true
+        console: false
+        append: false
   torch_logs: {}
 
 artifacts:

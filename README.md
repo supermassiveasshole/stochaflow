@@ -5,12 +5,12 @@ first concrete implementation track is DDPM-style diffusion, but the repository
 is intentionally structured around broader stochastic flow experiments rather
 than diffusion models alone.
 
-The current codebase includes an end-to-end MNIST DDPM smoke path: dataset
-loading, a UNet denoiser, DDPM forward/reverse logic, an epsilon-prediction
-objective, a generic trainer, checkpointing, local logging, and post-training
-sample dumps.
+The current codebase includes end-to-end DDPM smoke paths for MNIST and
+CIFAR-10: dataset loading, a UNet denoiser, DDPM forward/reverse logic, an
+epsilon-prediction objective, a generic trainer, checkpointing, local logging,
+and post-training sample dumps.
 
-简要说明：Stochaflow 的目标不是只做扩散模型，而是作为随机流模型研究代码库。当前优先实现 DDPM，用 MNIST 作为端到端验证路径。
+简要说明：Stochaflow 的目标不是只做扩散模型，而是作为随机流模型研究代码库。当前优先实现 DDPM，并提供 MNIST 与 CIFAR-10 的端到端验证路径。
 
 ## Current Status
 
@@ -20,6 +20,7 @@ Implemented:
 - DDPM reverse sampling and reverse-trajectory capture
 - linear DDPM scheduler with cached timestep coefficients
 - MNIST dataset wrapper with normalization support
+- CIFAR-10 DDPM training entry point and config
 - compact UNet backbone for image diffusion smoke tests
 - registry/factory-based component construction from YAML config
 - generic trainer with checkpoint integration
@@ -32,7 +33,7 @@ Implemented:
 Still evolving:
 
 - DDIM implementation
-- CIFAR-10 experiment path
+- longer CIFAR-10 runs and richer evaluation metrics
 - richer stochastic-flow abstractions beyond diffusion
 - evaluation metrics and larger experiment scripts
 
@@ -131,6 +132,32 @@ Reverse-process trajectory for the same sample batch:
 
 ![MNIST DDPM reverse trajectory](assets/readme/mnist_ddpm_epoch_0100_trajectory.png)
 
+## CIFAR-10 DDPM Run
+
+The CIFAR-10 DDPM config follows the same train/validation/test and Rich
+terminal reporting conventions as the MNIST script. It reserves `5000` examples
+from the official training split for validation and uses the official test split
+for final evaluation.
+
+```bash
+uv run stochaflow-train-cifar10-ddpm \
+  --config configs/ddpm_cifar10.yaml \
+  --epochs 1 \
+  --limit-batches 10 \
+  --limit-validation-batches 2 \
+  --limit-test-batches 2
+```
+
+Equivalent compatibility wrapper:
+
+```bash
+uv run python scripts/train_cifar10_ddpm.py --epochs 1 --limit-batches 10
+```
+
+The script expects `diffusion.name: ddpm` and will reject `ddim_cifar10.yaml`.
+The DDIM config is kept as a forward-looking experiment config until the DDIM
+process implementation lands.
+
 ## Configuration
 
 Experiment configuration lives in YAML files under `configs/`.
@@ -141,16 +168,31 @@ The main working config is:
 configs/ddpm_mnist.yaml
 ```
 
+Additional CIFAR-10 configs are kept aligned with the same split, logging, and
+early-stopping schema:
+
+```text
+configs/ddpm_cifar10.yaml
+configs/ddim_cifar10.yaml
+```
+
+The CIFAR-10 configs reserve `5000` examples from the official training split
+for validation and use the official `test` split for final evaluation. The DDIM
+config is a forward-looking experiment config; the implementation is still
+listed as evolving below.
+
 Config sections are intentionally component-oriented:
 
 - `experiment`: run name, seed, and output directory
-- `data`: dataset declaration and dataloader policy
+- `data`: dataset declaration, dataloader policy, and train/validation/test
+  split policy
 - `model`: registered model name and constructor params
 - `diffusion`: process type and scheduler config
 - `objective`: training objective
 - `optimizer`: optimizer name and hyperparameters
-- `trainer`: loop/device/gradient settings
-- `logging`: metric logging backends
+- `trainer`: loop/device/gradient settings and early stopping policy
+- `logging`: metric logging backends; local terminal output is disabled in the
+  YAML configs because Rich owns human-facing progress output
 - `artifacts`: checkpoint and sampling cadence
 
 Components are built through registries and factories. New models, datasets,
@@ -219,6 +261,7 @@ stochaflow/
 │   ├── ddpm_cifar10.yaml
 │   └── ddim_cifar10.yaml
 ├── scripts/
+│   ├── train_cifar10_ddpm.py
 │   └── train_mnist_ddpm.py
 ├── src/
 │   └── stochaflow/
