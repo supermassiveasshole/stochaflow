@@ -56,8 +56,21 @@ Notes:
 - Python `>=3.12` is required.
 - Intel macOS uses Python 3.12 with pinned PyTorch/Torchvision wheels for
   compatibility.
+- Windows GPU runs are resolved through the PyTorch CUDA 12.8 wheel index and
+  can use Python 3.14.
 - Other platforms can use newer Python versions if dependency resolution
   succeeds.
+
+Windows GPU setup example:
+
+```powershell
+uv python install 3.14
+uv sync --python 3.14 --extra dev
+uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no cuda')"
+```
+
+For GPU training, `trainer.device: auto` in the config will select CUDA when
+`torch.cuda.is_available()` is true.
 
 ## MNIST DDPM Smoke Run
 

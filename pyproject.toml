@@ -15,11 +15,10 @@ dependencies = [
     # Keep Intel Macs on the latest known wheel-backed trio for CPython 3.12 x86_64.
     "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "torchvision==0.17.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    # Other platforms can follow the current release line.
+    # Other platforms can follow the current release line. Windows CUDA wheels are
+    # routed through tool.uv.sources below.
     "torch>=2.11,<3; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "torchvision>=0.26,<1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "torch>=2.2.2",
-    "torchvision>=0.17.2",
     "tqdm>=4.67.3",
     # Torch 2.2.2 wheels were built against NumPy 1.x on Intel Macs.
     "numpy>=1.26,<2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
@@ -52,6 +51,20 @@ where = ["src"]
 [tool.uv]
 required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64' and python_version == '3.14'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
 ]
 
 [tool.pytest.ini_options]

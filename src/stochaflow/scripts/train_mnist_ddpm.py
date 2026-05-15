@@ -31,7 +31,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--epochs",
         type=int,
-        default=1,
+        default=100,
         help="Number of epochs to run for the smoke test.",
     )
     parser.add_argument(
@@ -82,7 +82,9 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _mnist_sample_shape(config_channels: int, image_size: int, num_samples: int) -> torch.Size:
+def _mnist_sample_shape(
+    config_channels: int, image_size: int, num_samples: int
+) -> torch.Size:
     """Build the full batch-first MNIST sample shape."""
 
     if num_samples <= 0:
@@ -189,7 +191,9 @@ def main() -> None:
     sample_message = ""
     if not args.skip_sampling:
         channels = int(
-            config.data.dataset.params.get("channels", config.model.params["in_channels"])
+            config.data.dataset.params.get(
+                "channels", config.model.params["in_channels"]
+            )
         )
         image_size = int(config.data.dataset.params["image_size"])
         sample_shape = _mnist_sample_shape(channels, image_size, args.num_samples)
