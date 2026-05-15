@@ -1,38 +1,74 @@
 experiment:
   name: ddpm_cifar10
-  output_dir: outputs/ddpm_cifar10
   seed: 42
+  output_dir: outputs/ddpm_cifar10
 
 data:
-  dataset: cifar10
-  root: ./data
-  image_size: 32
-  channels: 3
-  batch_size: 128
-  num_workers: 4
+  dataset:
+    name: cifar10
+    params:
+      root: ./data
+      split: train
+      image_size: 32
+      channels: 3
+      download: true
+      normalize: true
+      random_horizontal_flip: true
+  dataloader:
+    batch_size: 128
+    num_workers: 4
+    shuffle: true
+    drop_last: true
+    pin_memory: true
+    persistent_workers: true
 
 model:
-  base_channels: 128
-  channel_multipliers: [1, 2, 2, 4]
-  num_res_blocks: 2
-  attention_resolutions: [16, 8]
-  dropout: 0.1
-  time_embedding_dim: 256
+  name: unet
+  params:
+    in_channels: 3
+    out_channels: 3
+    base_channels: 128
+    channel_multipliers: [1, 2, 2, 4]
+    num_res_blocks: 2
+    time_embedding_dim: 128
+    dropout: 0.1
 
 diffusion:
-  type: ddpm
-  timesteps: 1000
-  beta_schedule: cosine
-  beta_start: 0.0001
-  beta_end: 0.02
-  objective: pred_noise
+  name: ddpm
+  scheduler:
+    name: linear_ddpm
+    params:
+      num_timesteps: 1000
+      beta_start: 0.0001
+      beta_end: 0.02
 
-training:
-  epochs: 100
-  learning_rate: 0.0002
-  weight_decay: 0.0001
-  grad_clip_norm: 1.0
-  ema_decay: 0.9999
+objective:
+  name: ddpm_epsilon
+  params:
+    reduction: mean
+
+optimizer:
+  name: adam
+  params:
+    lr: 0.0002
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+trainer:
+  num_epochs: 100
+  device: auto
+  max_grad_norm: 1.0
+  show_progress: true
+
+logging:
   log_every: 100
+  backends:
+    - name: local
+      params:
+        console: true
+  torch_logs: {}
+
+artifacts:
   sample_every: 5
-  save_every: 5
+  checkpoint_every: 5

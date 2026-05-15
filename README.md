@@ -1,164 +1,210 @@
 # Stochaflow
 
-Stochaflow is a research-oriented Python project scaffold for **stochastic flows**, with an initial repository layout that is convenient for diffusion-family methods such as DDPM and DDIM, but is not limited to diffusion models.
+Stochaflow is a research-oriented Python project for **stochastic flows**. The
+first concrete implementation track is DDPM-style diffusion, but the repository
+is intentionally structured around broader stochastic flow experiments rather
+than diffusion models alone.
 
-The current repository is intentionally a skeleton:
+The current codebase includes an end-to-end MNIST DDPM smoke path: dataset
+loading, a UNet denoiser, DDPM forward/reverse logic, an epsilon-prediction
+objective, a generic trainer, checkpointing, local logging, and post-training
+sample dumps.
 
-- the package layout is in place
-- experiment configs and entry scripts are stubbed out
-- implementation files are placeholders
-- the core training, sampling, and evaluation logic is still to be written
+简要说明：Stochaflow 的目标不是只做扩散模型，而是作为随机流模型研究代码库。当前优先实现 DDPM，用 MNIST 作为端到端验证路径。
 
-## Scope
+## Current Status
 
-This project is meant to host work on stochastic flow models, including but not limited to:
+Implemented:
 
-- diffusion probabilistic models
-- deterministic or stochastic samplers
-- score-based generative modeling components
-- flow-style training and sampling utilities
+- DDPM epsilon-prediction training forward path
+- DDPM reverse sampling and reverse-trajectory capture
+- linear DDPM scheduler with cached timestep coefficients
+- MNIST dataset wrapper with normalization support
+- compact UNet backbone for image diffusion smoke tests
+- registry/factory-based component construction from YAML config
+- generic trainer with checkpoint integration
+- local experiment logging and optional TensorBoard/W&B backends
+- EMA utility
+- sample grid and reverse-trajectory artifact dumping
+- ruff, pyright, and pytest configuration
 
-In other words, the existing `diffusion/` package reflects the first planned implementation track, not the full conceptual boundary of the repository.
+Still evolving:
 
-## Status
+- DDIM implementation
+- CIFAR-10 experiment path
+- richer stochastic-flow abstractions beyond diffusion
+- evaluation metrics and larger experiment scripts
 
-This is an **initial scaffold commit**, not a finished library.
+## Installation
 
-What is already included:
+This project uses a `src` layout and is designed to work well with `uv`.
 
-- `src`-layout Python package structure
-- module boundaries for data, models, diffusion, training, sampling, and utilities
-- starter configuration files under `configs/`
-- placeholder scripts under `scripts/`
-- placeholder tests and notebook slots
-- output and asset directories tracked with `.gitkeep`
+```bash
+uv sync --extra dev
+```
 
-What is not included yet:
+For an editable pip workflow:
 
-- working model implementations
-- real dataset pipelines
-- training loops
-- checkpointing logic
-- sampling and evaluation pipelines
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Notes:
+
+- Python `>=3.12` is required.
+- Intel macOS uses Python 3.12 with pinned PyTorch/Torchvision wheels for
+  compatibility.
+- Other platforms can use newer Python versions if dependency resolution
+  succeeds.
+
+## MNIST DDPM Smoke Run
+
+Run the task-specific training entry point:
+
+```bash
+uv run stochaflow-train-mnist-ddpm \
+  --config configs/ddpm_mnist.yaml \
+  --epochs 1 \
+  --limit-batches 10
+```
+
+Equivalent compatibility wrapper:
+
+```bash
+uv run python scripts/train_mnist_ddpm.py --epochs 1 --limit-batches 10
+```
+
+Useful options:
+
+```bash
+--resume PATH                 Resume model and optimizer state from checkpoint.
+--num-samples 16              Number of post-training samples to generate.
+--sample-grid-size 4          Number of images per row for the final sample grid.
+--trajectory-interval 200     Reverse-process interval for trajectory snapshots.
+--skip-sampling               Train without dumping post-training samples.
+--no-progress                 Disable tqdm progress bars.
+```
+
+After training, the script writes artifacts under the configured experiment
+output directory, for example `outputs/ddpm_mnist/`:
+
+```text
+outputs/ddpm_mnist/
+├── checkpoints/
+│   └── epoch_0001.pt
+├── metrics.jsonl
+└── samples/
+    ├── epoch_0001.png
+    ├── epoch_0001.pt
+    ├── epoch_0001_trajectory.png
+    └── epoch_0001_trajectory.pt
+```
+
+`epoch_XXXX.png` shows final generated samples. `epoch_XXXX_trajectory.png`
+shows the reverse process from high-noise states to lower-noise generated
+images; rows are timesteps and columns are individual samples.
+
+## Configuration
+
+Experiment configuration lives in YAML files under `configs/`.
+
+The main working config is:
+
+```text
+configs/ddpm_mnist.yaml
+```
+
+Config sections are intentionally component-oriented:
+
+- `experiment`: run name, seed, and output directory
+- `data`: dataset declaration and dataloader policy
+- `model`: registered model name and constructor params
+- `diffusion`: process type and scheduler config
+- `objective`: training objective
+- `optimizer`: optimizer name and hyperparameters
+- `trainer`: loop/device/gradient settings
+- `logging`: metric logging backends
+- `artifacts`: checkpoint and sampling cadence
+
+Components are built through registries and factories. New models, datasets,
+schedulers, objectives, loggers, optimizers, and diffusion processes should be
+registered close to their implementation rather than added through ad hoc
+conditionals in scripts.
+
+## Architecture
+
+`src/stochaflow/data/`
+: dataset wrappers, transforms, and dataloader-facing utilities.
+
+`src/stochaflow/models/`
+: UNet, residual blocks, attention blocks, and timestep embeddings.
+
+`src/stochaflow/diffusion/`
+: diffusion-specific algorithms, schedulers, and objectives. `DDPM` owns DDPM
+training forward logic and reverse sampling logic.
+
+`src/stochaflow/training/`
+: generic optimization loop, train-step adapters, and EMA utilities.
+
+`src/stochaflow/sampling/`
+: artifact utilities for visualizing generated samples and reverse trajectories.
+Algorithmic sampling belongs to model/process classes such as `DDPM`.
+
+`src/stochaflow/utils/`
+: config loading, registries, factories, checkpointing, logging, and seeding.
+
+`src/stochaflow/scripts/`
+: packaged task-specific entry points.
+
+`scripts/`
+: thin compatibility wrappers for direct script execution.
+
+## Development
+
+Run static checks:
+
+```bash
+uv run ruff check .
+uv run pyright
+```
+
+Run tests:
+
+```bash
+uv run pytest
+```
+
+Run targeted tests while iterating:
+
+```bash
+uv run pytest tests/test_ddpm_shapes.py tests/test_sampling_grid.py
+```
 
 ## Repository Layout
 
 ```text
 stochaflow/
-├── README.md
-├── LICENSE
-├── pyproject.toml
-├── .gitignore
 ├── configs/
 │   ├── ddpm_mnist.yaml
 │   ├── ddpm_cifar10.yaml
 │   └── ddim_cifar10.yaml
 ├── scripts/
-│   ├── train.py
-│   ├── sample.py
-│   └── eval.py
+│   └── train_mnist_ddpm.py
 ├── src/
 │   └── stochaflow/
-│       ├── __init__.py
 │       ├── data/
-│       │   ├── __init__.py
-│       │   └── datasets.py
-│       ├── models/
-│       │   ├── __init__.py
-│       │   ├── unet.py
-│       │   ├── blocks.py
-│       │   └── embeddings.py
 │       ├── diffusion/
-│       │   ├── __init__.py
-│       │   ├── schedules.py
-│       │   ├── ddpm.py
-│       │   ├── ddim.py
-│       │   └── objectives.py
-│       ├── training/
-│       │   ├── __init__.py
-│       │   ├── trainer.py
-│       │   ├── losses.py
-│       │   └── ema.py
+│       ├── models/
 │       ├── sampling/
-│       │   ├── __init__.py
-│       │   ├── sampler.py
-│       │   └── grid.py
+│       ├── scripts/
+│       ├── training/
 │       └── utils/
-│           ├── __init__.py
-│           ├── config.py
-│           ├── seed.py
-│           ├── checkpoint.py
-│           └── logging.py
 ├── tests/
-│   ├── test_schedules.py
-│   ├── test_ddpm_shapes.py
-│   └── test_unet_shapes.py
-├── notebooks/
-│   └── ddpm_sanity_check.ipynb
 ├── outputs/
-│   └── .gitkeep
 └── assets/
-    └── .gitkeep
 ```
-
-## Package Structure
-
-`src/stochaflow/data/`
-: dataset definitions, transforms, dataloaders, and dataset-specific helpers.
-
-`src/stochaflow/models/`
-: model backbones and reusable building blocks.
-
-`src/stochaflow/diffusion/`
-: diffusion-process-specific schedules, objectives, and algorithms.
-
-`src/stochaflow/training/`
-: trainer orchestration, losses, optimization helpers, and EMA utilities.
-
-`src/stochaflow/sampling/`
-: sampling routines, sample post-processing, and grid/export helpers.
-
-`src/stochaflow/utils/`
-: shared infrastructure such as config loading, seeding, checkpoint paths, and logging.
-
-## Configuration
-
-The repository currently includes placeholder experiment configs:
-
-- `configs/ddpm_mnist.yaml`
-- `configs/ddpm_cifar10.yaml`
-- `configs/ddim_cifar10.yaml`
-
-These are starter files for future experiments. They should be treated as templates rather than final experiment definitions.
-
-## Development Setup
-
-The project uses a `src` layout and `pyproject.toml` packaging metadata.
-
-Example local setup:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-Notes:
-
-- this repository currently targets Python `>=3.12`
-- Intel macOS uses a constrained PyTorch dependency path for wheel compatibility
-- newer Python versions may be used on other platforms as long as dependency resolution succeeds
-
-## Roadmap
-
-A sensible implementation order for this scaffold is:
-
-1. Define config loading and experiment schema.
-2. Implement dataset loading and preprocessing.
-3. Implement model backbones and embeddings.
-4. Implement schedules and stochastic flow / diffusion core logic.
-5. Add training orchestration and checkpointing.
-6. Add sampling, evaluation, and tests.
 
 ## License
 
