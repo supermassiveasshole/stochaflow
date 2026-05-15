@@ -1,7 +1,5 @@
 """Centralized configuration schema and loading utilities."""
 
-from __future__ import annotations
-
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Union, get_args, get_origin, get_type_hints
@@ -28,6 +26,7 @@ class ExperimentConfig:
     name: str
     seed: int = 42
     output_dir: str = "outputs/default"
+    exp_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -44,11 +43,20 @@ class DataloaderConfig:
 
 
 @dataclass(slots=True)
+class DataSplitConfig:
+    """Dataset split policy for train/validation/test experiments."""
+
+    validation_size: int | float = 10000
+    test_split: str = "test"
+
+
+@dataclass(slots=True)
 class DataConfig:
     """Dataset declaration and dataloader policy."""
 
     dataset: ComponentConfig
     dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
+    splits: DataSplitConfig = field(default_factory=DataSplitConfig)
 
 
 @dataclass(slots=True)
@@ -76,6 +84,17 @@ class OptimizerConfig:
 
 
 @dataclass(slots=True)
+class EarlyStoppingConfig:
+    """Validation-based early stopping policy."""
+
+    enabled: bool = False
+    monitor: str = "valid_loss"
+    mode: str = "min"
+    patience: int = 10
+    min_delta: float = 0.0
+
+
+@dataclass(slots=True)
 class TrainerConfig:
     """Generic trainer loop configuration."""
 
@@ -83,6 +102,7 @@ class TrainerConfig:
     device: str = "cpu"
     max_grad_norm: float | None = None
     show_progress: bool = True
+    early_stopping: EarlyStoppingConfig = field(default_factory=EarlyStoppingConfig)
 
 
 @dataclass(slots=True)
@@ -146,10 +166,27 @@ class StochaflowConfig:
             raise ConfigError(
                 "data.dataloader.prefetch_factor requires num_workers > 0"
             )
+        validation_size = self.data.splits.validation_size
+        if isinstance(validation_size, float):
+            if not 0.0 < validation_size < 1.0:
+                raise ConfigError(
+                    "data.splits.validation_size must be between 0 and 1 when a float"
+                )
+        elif isinstance(validation_size, int):
+            if validation_size <= 0:
+                raise ConfigError("data.splits.validation_size must be positive")
+        else:
+            raise ConfigError("data.splits.validation_size must be an int or float")
         if self.trainer.num_epochs <= 0:
             raise ConfigError("trainer.num_epochs must be positive")
         if self.trainer.max_grad_norm is not None and self.trainer.max_grad_norm <= 0:
             raise ConfigError("trainer.max_grad_norm must be positive when provided")
+        if self.trainer.early_stopping.mode not in {"min", "max"}:
+            raise ConfigError("trainer.early_stopping.mode must be 'min' or 'max'")
+        if self.trainer.early_stopping.patience <= 0:
+            raise ConfigError("trainer.early_stopping.patience must be positive")
+        if self.trainer.early_stopping.min_delta < 0:
+            raise ConfigError("trainer.early_stopping.min_delta must be non-negative")
         if self.logging.log_every <= 0:
             raise ConfigError("logging.log_every must be positive")
         if len(self.logging.backends) == 0:

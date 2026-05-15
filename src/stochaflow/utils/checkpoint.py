@@ -1,7 +1,5 @@
 """Checkpoint save/load helpers."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast

@@ -170,51 +170,6 @@ class DDPM(nn.Module):
 
         return x_0
 
-    def sample_trajectory(
-        self,
-        sample_shape: torch.Size,
-        *,
-        device: torch.device | None = None,
-        capture_every: int = 200,
-    ) -> dict[int, torch.Tensor]:
-        """Generate samples and capture intermediate reverse-process states.
-
-        The returned dictionary is keyed by the 0-based DDPM timestep index.
-        It always includes the initial Gaussian state at ``num_timesteps - 1``
-        and the final generated state at ``0``. Intermediate states are captured
-        every ``capture_every`` reverse steps.
-        """
-
-        if capture_every <= 0:
-            raise ValueError("capture_every must be positive")
-        if device is None:
-            try:
-                device = next(self.model.parameters()).device
-            except StopIteration:
-                device = torch.device("cpu")
-
-        x_t = torch.randn(sample_shape, device=device)
-        trajectory: dict[int, torch.Tensor] = {
-            self.num_timesteps - 1: x_t.detach().cpu()
-        }
-
-        steps_since_capture = 0
-        for t in range(self.num_timesteps - 1, 0, -1):
-            timesteps = torch.full(
-                (x_t.shape[0],),
-                t,
-                dtype=torch.long,
-                device=x_t.device,
-            )
-            x_t = self.reverse_step(x_t, timesteps)
-            current_timestep = t - 1
-            steps_since_capture += 1
-            if steps_since_capture >= capture_every or current_timestep == 0:
-                trajectory[current_timestep] = x_t.detach().cpu()
-                steps_since_capture = 0
-
-        return trajectory
-
     def _sample_timesteps(
         self,
         batch_size: int,

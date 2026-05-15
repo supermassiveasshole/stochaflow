@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from stochaflow.diffusion import DDPM, LinearDDPMScheduler
+from stochaflow.scripts.train_mnist_ddpm import _sample_reverse_trajectory
 
 
 class ToyDenoiser(nn.Module):
@@ -28,12 +29,13 @@ def test_ddpm_forward_returns_predicted_noise() -> None:
     assert output.predicted_noise.shape == x0.shape
 
 
-def test_ddpm_sample_trajectory_captures_initial_intermediate_and_final() -> None:
+def test_script_reverse_trajectory_captures_initial_intermediate_and_final() -> None:
     scheduler = LinearDDPMScheduler(num_timesteps=10)
     ddpm = DDPM(scheduler=scheduler, model=ToyDenoiser())
     sample_shape = torch.Size((2, 1, 8, 8))
 
-    trajectory = ddpm.sample_trajectory(
+    trajectory = _sample_reverse_trajectory(
+        ddpm,
         sample_shape,
         device=torch.device("cpu"),
         capture_every=3,

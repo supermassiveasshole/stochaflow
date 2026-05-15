@@ -1,7 +1,5 @@
 """Component registries and builder utilities."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 import random
 from typing import Any

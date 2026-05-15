@@ -1,7 +1,5 @@
 """Generic schedule base classes and utilities for stochastic flows."""
 
-from __future__ import annotations
-
 import math
 from abc import ABC, abstractmethod
 

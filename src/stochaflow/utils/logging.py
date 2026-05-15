@@ -1,7 +1,5 @@
 """Experiment logging backends and runtime logging helpers."""
 
-from __future__ import annotations
-
 import json
 import importlib
 import logging
@@ -120,11 +118,13 @@ class LocalLogger(ExperimentLogger):
         console: bool = True,
         text_filename: str = "train.log",
         metrics_filename: str = "metrics.jsonl",
+        append: bool = False,
     ) -> None:
         self.run_dir = Path(output_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_path = self.run_dir / metrics_filename
-        self.metrics_handle = self.metrics_path.open("a", encoding="utf-8")
+        file_mode = "a" if append else "w"
+        self.metrics_handle = self.metrics_path.open(file_mode, encoding="utf-8")
 
         logger_name = f"stochaflow.local.{run_name}.{id(self)}"
         self.text_logger = logging.getLogger(logger_name)
@@ -136,7 +136,11 @@ class LocalLogger(ExperimentLogger):
             fmt="%(asctime)s | %(levelname)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        file_handler = logging.FileHandler(self.run_dir / text_filename, encoding="utf-8")
+        file_handler = logging.FileHandler(
+            self.run_dir / text_filename,
+            mode=file_mode,
+            encoding="utf-8",
+        )
         file_handler.setFormatter(formatter)
         self.text_logger.addHandler(file_handler)
 

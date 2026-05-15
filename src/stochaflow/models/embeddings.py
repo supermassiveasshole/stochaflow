@@ -1,7 +1,5 @@
 """Embedding layers for diffusion models."""
 
-from __future__ import annotations
-
 import math
 
 import torch
@@ -45,6 +43,7 @@ class TimeEmbedding(nn.Module):
         super().__init__()
         hidden_dim = hidden_dim or embedding_dim * 4
         self.embedding_dim = embedding_dim
+        self._output_dim = hidden_dim
         self.mlp = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
             nn.SiLU(),
@@ -55,7 +54,7 @@ class TimeEmbedding(nn.Module):
     def output_dim(self) -> int:
         """Return the output dimensionality of the learned time embedding."""
 
-        return self.mlp[-1].out_features
+        return self._output_dim
 
     def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
         """Embed a batch of discrete timesteps."""

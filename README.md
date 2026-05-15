@@ -23,6 +23,7 @@ Implemented:
 - compact UNet backbone for image diffusion smoke tests
 - registry/factory-based component construction from YAML config
 - generic trainer with checkpoint integration
+- Rich terminal progress reporting
 - local experiment logging and optional TensorBoard/W&B backends
 - EMA utility
 - sample grid and reverse-trajectory artifact dumping
@@ -97,17 +98,20 @@ Useful options:
 --sample-grid-size 4          Number of images per row for the final sample grid.
 --trajectory-interval 200     Reverse-process interval for trajectory snapshots.
 --skip-sampling               Train without dumping post-training samples.
---no-progress                 Disable tqdm progress bars.
+--no-progress                 Disable Rich terminal progress bars.
 ```
 
 After training, the script writes artifacts under the configured experiment
-output directory, for example `outputs/ddpm_mnist/`:
+output directory. Each run gets its own timestamped experiment directory, for
+example `outputs/ddpm_mnist/YYYYMMDD_HHMMSS/`:
 
 ```text
-outputs/ddpm_mnist/
+outputs/ddpm_mnist/YYYYMMDD_HHMMSS/
 ├── checkpoints/
+│   ├── best.pt
 │   └── epoch_0001.pt
 ├── metrics.jsonl
+├── train.log
 └── samples/
     ├── epoch_0001.png
     ├── epoch_0001.pt
@@ -118,6 +122,14 @@ outputs/ddpm_mnist/
 `epoch_XXXX.png` shows final generated samples. `epoch_XXXX_trajectory.png`
 shows the reverse process from high-noise states to lower-noise generated
 images; rows are timesteps and columns are individual samples.
+
+Example output from an MNIST DDPM run:
+
+![MNIST DDPM generated samples](assets/readme/mnist_ddpm_epoch_0100.png)
+
+Reverse-process trajectory for the same sample batch:
+
+![MNIST DDPM reverse trajectory](assets/readme/mnist_ddpm_epoch_0100_trajectory.png)
 
 ## Configuration
 
@@ -159,11 +171,14 @@ conditionals in scripts.
 training forward logic and reverse sampling logic.
 
 `src/stochaflow/training/`
-: generic optimization loop, train-step adapters, and EMA utilities.
+: generic optimization loop, train-step adapters, Rich terminal reporting, and
+EMA utilities.
 
 `src/stochaflow/sampling/`
 : artifact utilities for visualizing generated samples and reverse trajectories.
-Algorithmic sampling belongs to model/process classes such as `DDPM`.
+Algorithmic sampling belongs to model/process APIs such as `DDPM.reverse`, with
+task-specific trajectory loops kept in scripts when they are only needed for
+artifact generation.
 
 `src/stochaflow/utils/`
 : config loading, registries, factories, checkpointing, logging, and seeding.

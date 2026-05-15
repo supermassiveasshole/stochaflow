@@ -1,7 +1,5 @@
 """Exponential moving average utilities for model parameters."""
 
-from __future__ import annotations
-
 from collections import OrderedDict
 from typing import TypedDict
 
