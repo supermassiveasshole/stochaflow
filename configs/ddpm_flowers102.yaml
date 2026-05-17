@@ -1,0 +1,120 @@
+experiment:
+  name: ddpm_flowers102
+  seed: 42
+  output_dir: outputs/ddpm_flowers102
+
+data:
+  dataset:
+    name: flowers102
+    params:
+      root: ./data
+      split: train
+      image_size: 64
+      channels: 3
+      download: true
+      normalize: true
+      preprocess_mode: center_crop
+      resize_size: 96
+      random_horizontal_flip: true
+  dataloader:
+    batch_size: 64
+    num_workers: 4
+    shuffle: true
+    drop_last: true
+    pin_memory: true
+    persistent_workers: true
+  splits:
+    mode: all
+    train_splits: [train, val, test]
+    validation_size: null
+    test_split: null
+
+model:
+  name: unet
+  params:
+    in_channels: 3
+    out_channels: 3
+    base_channels: 128
+    channel_multipliers: [1, 2, 4, 4]
+    num_res_blocks: 2
+    time_embedding_dim: 128
+    dropout: 0.1
+    attention_levels: [2, 3]
+    attention_heads: 4
+
+diffusion:
+  name: ddpm
+  params:
+    reverse_method: posterior
+    clip_denoised: true
+  scheduler:
+    name: linear_ddpm
+    params:
+      num_timesteps: 1000
+      beta_start: 1.0e-4
+      beta_end: 2.0e-2
+
+objective:
+  name: ddpm_epsilon
+  params:
+    reduction: mean
+
+optimizer:
+  name: adam
+  params:
+    lr: 0.0001
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+lr_scheduler:
+  name: warmup_cosine
+  interval: step
+  params:
+    warmup_steps: 500
+    total_steps: auto
+    min_lr_ratio: 0.05
+
+ema:
+  enabled: true
+  decay: 0.999
+  update_after_step: 0
+  update_every: 1
+  use_for_sampling: true
+
+diagnostics:
+  - name: ddpm
+    params:
+      interval: 100
+      timestep_buckets: 10
+      sample_every_epochs: 5
+      sample_num: 16
+      sample_seed: 123
+      sample_grid_size: 4
+      reconstruction_every_epochs: 5
+      reconstruction_timesteps: [50, 250, 500, 900]
+      use_ema_for_artifacts: true
+
+trainer:
+  num_epochs: 700
+  device: auto
+  max_grad_norm: 1.0
+  show_progress: true
+  early_stopping:
+    enabled: false
+    monitor: train_loss
+    mode: min
+    patience: 20
+    min_delta: 0.0
+
+logging:
+  log_every: 100
+  backends:
+    - name: local
+      params:
+        console: false
+        append: false
+  torch_logs: {}
+
+artifacts:
+  checkpoint_every: 5

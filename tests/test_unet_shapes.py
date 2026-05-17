@@ -33,3 +33,20 @@ def test_unet_supports_single_channel_inputs() -> None:
     timesteps = torch.randint(0, 1000, (2,))
     y = model(x, timesteps)
     assert y.shape == x.shape
+
+
+def test_unet_attention_levels_preserve_spatial_shape() -> None:
+    model = UNet(
+        in_channels=3,
+        out_channels=3,
+        base_channels=16,
+        channel_multipliers=(1, 2, 2),
+        num_res_blocks=1,
+        time_embedding_dim=32,
+        attention_levels=(1, 2),
+        attention_heads=4,
+    )
+    x = torch.randn(2, 3, 32, 32)
+    timesteps = torch.randint(0, 1000, (2,))
+    y = model(x, timesteps)
+    assert y.shape == x.shape

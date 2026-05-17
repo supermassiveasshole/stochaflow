@@ -16,6 +16,8 @@ DIFFUSION_REGISTRY: dict[str, type[Any]] = {}
 OBJECTIVE_REGISTRY: dict[str, type[Any]] = {}
 LOGGER_REGISTRY: dict[str, type[Any]] = {}
 OPTIMIZER_REGISTRY: dict[str, type[Any]] = {}
+LR_SCHEDULER_REGISTRY: dict[str, Callable[..., Any]] = {}
+DIAGNOSTIC_REGISTRY: dict[str, type[Any]] = {}
 
 
 def _register(
@@ -82,6 +84,12 @@ def register_logger(name: str) -> Callable[[type[T]], type[T]]:
     return _register(LOGGER_REGISTRY, kind="logger", name=name)
 
 
+def register_diagnostic(name: str) -> Callable[[type[T]], type[T]]:
+    """Register a training diagnostic plugin under a stable config name."""
+
+    return _register(DIAGNOSTIC_REGISTRY, kind="diagnostic", name=name)
+
+
 def register_optimizer(name: str, optimizer_cls: type[Any]) -> None:
     """Register an optimizer class under a stable config-facing name."""
 
@@ -93,3 +101,17 @@ def register_optimizer(name: str, optimizer_cls: type[Any]) -> None:
             f"optimizer '{name}' already registered by {existing.__module__}.{existing.__name__}"
         )
     OPTIMIZER_REGISTRY[name] = optimizer_cls
+
+
+def register_lr_scheduler(name: str, scheduler_builder: Callable[..., Any]) -> None:
+    """Register an optimizer LR scheduler builder under a stable config name."""
+
+    if name in LR_SCHEDULER_REGISTRY:
+        existing = LR_SCHEDULER_REGISTRY[name]
+        if existing is scheduler_builder:
+            return
+        raise RegistryError(
+            f"lr scheduler '{name}' already registered by "
+            f"{existing.__module__}.{existing.__name__}"
+        )
+    LR_SCHEDULER_REGISTRY[name] = scheduler_builder

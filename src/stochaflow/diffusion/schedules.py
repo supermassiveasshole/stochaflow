@@ -8,6 +8,19 @@ import torch.nn as nn
 
 from stochaflow.utils.registry import register_scheduler
 
+DDPM_COEFFICIENT_NAMES = (
+    "beta_t",
+    "alpha_t",
+    "alpha_bar_t",
+    "sqrt_alpha_bar_t",
+    "sqrt_one_minus_alpha_bar_t",
+    "sqrt_recip_alpha_t",
+    "beta_over_sqrt_one_minus_alpha_bar_t",
+    "sqrt_posterior_variance_t",
+    "posterior_mean_coef1",
+    "posterior_mean_coef2",
+)
+
 
 def _extract_into_tensor(
     values: torch.Tensor, timesteps: torch.Tensor, broadcast_shape: torch.Size
@@ -148,22 +161,51 @@ class DiffusionScheduler(nn.Module, ABC):
         return self.extract(values, timesteps, broadcast_shape)
 
 
+def _register_ddpm_coefficients(
+    scheduler: DiffusionScheduler,
+    beta_t: torch.Tensor,
+    *,
+    dtype: torch.dtype,
+) -> None:
+    alpha_t = 1.0 - beta_t
+    alpha_bar_t = torch.cumprod(alpha_t, dim=0)
+    alpha_bar_t_minus_one = torch.cat(
+        (torch.tensor([1.0], dtype=dtype), alpha_bar_t[:-1]), dim=0
+    )
+
+    scheduler.register_coefficient("beta_t", beta_t)
+    scheduler.register_coefficient("alpha_t", alpha_t)
+    scheduler.register_coefficient("alpha_bar_t", alpha_bar_t)
+    scheduler.register_coefficient("sqrt_alpha_bar_t", torch.sqrt(alpha_bar_t))
+    scheduler.register_coefficient(
+        "sqrt_one_minus_alpha_bar_t",
+        torch.sqrt(1.0 - alpha_bar_t),
+    )
+    scheduler.register_coefficient("sqrt_recip_alpha_t", 1 / torch.sqrt(alpha_t))
+    scheduler.register_coefficient(
+        "beta_over_sqrt_one_minus_alpha_bar_t", beta_t / torch.sqrt(1 - alpha_bar_t)
+    )
+    scheduler.register_coefficient(
+        "sqrt_posterior_variance_t",
+        torch.sqrt(beta_t * (1 - alpha_bar_t_minus_one) / (1 - alpha_bar_t)),
+    )
+    scheduler.register_coefficient(
+        "posterior_mean_coef1",
+        beta_t * torch.sqrt(alpha_bar_t_minus_one) / (1 - alpha_bar_t),
+    )
+    scheduler.register_coefficient(
+        "posterior_mean_coef2",
+        torch.sqrt(alpha_t) * (1 - alpha_bar_t_minus_one) / (1 - alpha_bar_t),
+    )
+
+
 @register_scheduler("linear_ddpm")
 class LinearDDPMScheduler(DiffusionScheduler):
     """DDPM scheduler with linear beta interpolation."""
 
     @property
     def coefficient_names(self) -> tuple[str, ...]:
-        return (
-            "beta_t",
-            "alpha_t",
-            "alpha_bar_t",
-            "sqrt_alpha_bar_t",
-            "sqrt_one_minus_alpha_bar_t",
-            "sqrt_recip_alpha_t",
-            "beta_over_sqrt_one_minus_alpha_bar_t",
-            "sqrt_posterior_variance_t",
-        )
+        return DDPM_COEFFICIENT_NAMES
 
     def __init__(
         self,
@@ -175,25 +217,30 @@ class LinearDDPMScheduler(DiffusionScheduler):
         super().__init__(num_timesteps)
 
         beta_t = linear_beta_schedule(num_timesteps, beta_start, beta_end, dtype=dtype)
-        alpha_t = 1.0 - beta_t
-        alpha_bar_t = torch.cumprod(alpha_t, dim=0)
-        alpha_bar_t_minus_one = torch.cat(
-            (torch.tensor([1.0], dtype=dtype), alpha_bar_t[:-1]), dim=0
-        )
+        _register_ddpm_coefficients(self, beta_t, dtype=dtype)
 
-        self.register_coefficient("beta_t", beta_t)
-        self.register_coefficient("alpha_t", alpha_t)
-        self.register_coefficient("alpha_bar_t", alpha_bar_t)
-        self.register_coefficient("sqrt_alpha_bar_t", torch.sqrt(alpha_bar_t))
-        self.register_coefficient(
-            "sqrt_one_minus_alpha_bar_t",
-            torch.sqrt(1.0 - alpha_bar_t),
+
+@register_scheduler("cosine_ddpm")
+class CosineDDPMScheduler(DiffusionScheduler):
+    """DDPM scheduler with Nichol-Dhariwal cosine beta interpolation."""
+
+    @property
+    def coefficient_names(self) -> tuple[str, ...]:
+        return DDPM_COEFFICIENT_NAMES
+
+    def __init__(
+        self,
+        num_timesteps: int,
+        s: float = 0.008,
+        max_beta: float = 0.999,
+        dtype: torch.dtype = torch.float32,
+    ) -> None:
+        super().__init__(num_timesteps)
+
+        beta_t = cosine_beta_schedule(
+            num_timesteps,
+            s=s,
+            max_beta=max_beta,
+            dtype=dtype,
         )
-        self.register_coefficient("sqrt_recip_alpha_t", 1 / torch.sqrt(alpha_t))
-        self.register_coefficient(
-            "beta_over_sqrt_one_minus_alpha_bar_t", beta_t / torch.sqrt(1 - alpha_bar_t)
-        )
-        self.register_coefficient(
-            "sqrt_posterior_variance_t",
-            torch.sqrt(beta_t * (1 - alpha_bar_t_minus_one) / (1 - alpha_bar_t)),
-        )
+        _register_ddpm_coefficients(self, beta_t, dtype=dtype)

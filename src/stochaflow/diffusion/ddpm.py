@@ -40,10 +40,21 @@ class DDPM(nn.Module):
     implementation details of the DDPM parameterization.
     """
 
-    def __init__(self, scheduler: DiffusionScheduler, model: nn.Module) -> None:
+    def __init__(
+        self,
+        scheduler: DiffusionScheduler,
+        model: nn.Module,
+        *,
+        reverse_method: str = "posterior",
+        clip_denoised: bool = True,
+    ) -> None:
         super().__init__()
+        if reverse_method not in {"posterior", "epsilon"}:
+            raise ValueError("reverse_method must be 'posterior' or 'epsilon'")
         self.scheduler = scheduler
         self.model = model
+        self.reverse_method = reverse_method
+        self.clip_denoised = clip_denoised
 
     @property
     def num_timesteps(self) -> int:
@@ -119,6 +130,8 @@ class DDPM(nn.Module):
         x_from: torch.Tensor,
         timestep_from: int,
         timestep_to: int = 0,
+        *,
+        clip_denoised: bool | None = None,
     ) -> torch.Tensor:
         """Run the reverse process from one discrete timestep to another.
 
@@ -143,7 +156,11 @@ class DDPM(nn.Module):
                 dtype=torch.long,
                 device=x_t.device,
             )
-            x_t = self.reverse_step(x_t, timesteps)
+            x_t = self.reverse_step(
+                x_t,
+                timesteps,
+                clip_denoised=clip_denoised,
+            )
 
         return x_t
 
@@ -151,6 +168,8 @@ class DDPM(nn.Module):
         self,
         sample_shape: torch.Size,
         device: torch.device | None = None,
+        *,
+        clip_denoised: bool | None = None,
     ) -> torch.Tensor:
         """Generate samples by reversing from Gaussian noise at the final step.
 
@@ -166,7 +185,12 @@ class DDPM(nn.Module):
                 device = torch.device("cpu")
 
         x_t = torch.randn(sample_shape, device=device)
-        x_0 = self.reverse(x_t, self.num_timesteps - 1, 0)
+        x_0 = self.reverse(
+            x_t,
+            self.num_timesteps - 1,
+            0,
+            clip_denoised=clip_denoised,
+        )
 
         return x_0
 
@@ -206,7 +230,13 @@ class DDPM(nn.Module):
 
         return self.model(xt, timesteps)
 
-    def reverse_step(self, xt: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
+    def reverse_step(
+        self,
+        xt: torch.Tensor,
+        timesteps: torch.Tensor,
+        *,
+        clip_denoised: bool | None = None,
+    ) -> torch.Tensor:
         """Run one reverse DDPM step from ``x_t`` to ``x_{t-1}``.
 
         This is the batch-wise single-step reverse transition. ``timesteps`` is
@@ -216,25 +246,69 @@ class DDPM(nn.Module):
         batch and expands it to this batch form.
         """
 
-        mask = (
-            (timesteps > 0)
-            .to(dtype=xt.dtype)
-            .reshape((xt.shape[0],) + (1,) * (xt.ndim - 1))
+        if self.reverse_method == "posterior":
+            return self._reverse_step_posterior(
+                xt,
+                timesteps,
+                clip_denoised=self._resolve_clip_denoised(clip_denoised),
+            )
+        return self._reverse_step_epsilon(xt, timesteps)
+
+    def _estimate_x0_from_epsilon(
+        self,
+        xt: torch.Tensor,
+        timesteps: torch.Tensor,
+        *,
+        predicted_noise: torch.Tensor,
+        clip_denoised: bool,
+    ) -> torch.Tensor:
+        """Estimate ``x_0`` from the epsilon parameterization."""
+
+        sqrt_alpha_bar_t = self.scheduler.coefficients_at(
+            "sqrt_alpha_bar_t", timesteps, xt.size()
+        )
+        sqrt_one_minus_alpha_bar_t = self.scheduler.coefficients_at(
+            "sqrt_one_minus_alpha_bar_t", timesteps, xt.size()
         )
 
-        mu = self._p_mean(xt, timesteps)
-        noise_term = self._p_noise(xt, timesteps)
+        x0 = (xt - sqrt_one_minus_alpha_bar_t * predicted_noise) / sqrt_alpha_bar_t
+        if clip_denoised:
+            x0 = x0.clamp(-1.0, 1.0)
+        return x0
 
-        x_prev = mu + mask * noise_term
+    def _reverse_step_posterior(
+        self,
+        xt: torch.Tensor,
+        timesteps: torch.Tensor,
+        *,
+        clip_denoised: bool,
+    ) -> torch.Tensor:
+        """Reverse one step using clipped ``x_0`` and posterior coefficients."""
 
-        return x_prev
+        predicted_noise = self._predict_noise(xt, timesteps)
+        x0 = self._estimate_x0_from_epsilon(
+            xt,
+            timesteps,
+            predicted_noise=predicted_noise,
+            clip_denoised=clip_denoised,
+        )
+        posterior_mean_coef1 = self.scheduler.coefficients_at(
+            "posterior_mean_coef1", timesteps, xt.size()
+        )
+        posterior_mean_coef2 = self.scheduler.coefficients_at(
+            "posterior_mean_coef2", timesteps, xt.size()
+        )
+        posterior_mean = posterior_mean_coef1 * x0 + posterior_mean_coef2 * xt
+        return posterior_mean + self._nonzero_timestep_mask(xt, timesteps) * (
+            self._posterior_noise(xt, timesteps)
+        )
 
-    def _p_mean(
+    def _reverse_step_epsilon(
         self,
         xt: torch.Tensor,
         timesteps: torch.Tensor,
     ) -> torch.Tensor:
-        """Construct the reverse-process mean for the current timestep batch."""
+        """Reverse one step using the classic epsilon-form DDPM mean."""
 
         sqrt_recip_alpha_t = self.scheduler.coefficients_at(
             "sqrt_recip_alpha_t", timesteps, xt.size()
@@ -242,15 +316,15 @@ class DDPM(nn.Module):
         beta_over_sqrt_one_minus_alpha_bar_t = self.scheduler.coefficients_at(
             "beta_over_sqrt_one_minus_alpha_bar_t", timesteps, xt.size()
         )
-
-        p_mean = sqrt_recip_alpha_t * (
-            xt
-            - beta_over_sqrt_one_minus_alpha_bar_t * self._predict_noise(xt, timesteps)
+        predicted_noise = self._predict_noise(xt, timesteps)
+        epsilon_mean = sqrt_recip_alpha_t * (
+            xt - beta_over_sqrt_one_minus_alpha_bar_t * predicted_noise
+        )
+        return epsilon_mean + self._nonzero_timestep_mask(xt, timesteps) * (
+            self._posterior_noise(xt, timesteps)
         )
 
-        return p_mean
-
-    def _p_noise(
+    def _posterior_noise(
         self,
         xt: torch.Tensor,
         timesteps: torch.Tensor,
@@ -269,3 +343,19 @@ class DDPM(nn.Module):
         )
 
         return sqrt_posterior_variance_t * z
+
+    def _nonzero_timestep_mask(
+        self,
+        xt: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """Build the broadcast mask that disables reverse noise at ``t=0``."""
+
+        return (
+            (timesteps > 0)
+            .to(dtype=xt.dtype)
+            .reshape((xt.shape[0],) + (1,) * (xt.ndim - 1))
+        )
+
+    def _resolve_clip_denoised(self, override: bool | None) -> bool:
+        return self.clip_denoised if override is None else override

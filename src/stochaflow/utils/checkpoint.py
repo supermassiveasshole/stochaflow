@@ -22,6 +22,7 @@ class CheckpointState(TypedDict, total=False):
     global_step: int
     model_state_dict: dict[str, torch.Tensor]
     optimizer_state_dict: dict[str, Any]
+    lr_scheduler_state_dict: dict[str, Any]
     ema_state_dict: EMAStateDict
     config: dict[str, Any]
     metrics: dict[str, float]
@@ -51,7 +52,20 @@ class CheckpointManager:
 
     model: nn.Module
     optimizer: Optimizer | None = None
+    lr_scheduler: Any | None = None
     ema: ExponentialMovingAverage | None = None
+
+    @staticmethod
+    def find_best(root: str | Path) -> Path:
+        """Find the default inference checkpoint under a run or output root."""
+
+        return _find_named_checkpoint(root, "best.pt")
+
+    @staticmethod
+    def find_latest(root: str | Path) -> Path:
+        """Find the default resume checkpoint under a run or output root."""
+
+        return _find_named_checkpoint(root, "latest.pt")
 
     def build_state(
         self,
@@ -69,6 +83,8 @@ class CheckpointManager:
         }
         if self.optimizer is not None:
             state["optimizer_state_dict"] = self.optimizer.state_dict()
+        if self.lr_scheduler is not None:
+            state["lr_scheduler_state_dict"] = self.lr_scheduler.state_dict()
         if self.ema is not None:
             state["ema_state_dict"] = self.ema.state_dict()
         if epoch is not None:
@@ -133,13 +149,27 @@ class CheckpointManager:
         self.model.load_state_dict(model_state_dict)
 
         optimizer_state_dict = state.get("optimizer_state_dict")
-        if self.optimizer is not None and optimizer_state_dict is not None:
+        if self.optimizer is not None:
+            if optimizer_state_dict is None:
+                raise TypeError("checkpoint is missing optimizer_state_dict")
             if not isinstance(optimizer_state_dict, dict):
                 raise TypeError("optimizer_state_dict must be a dictionary when provided")
             self.optimizer.load_state_dict(optimizer_state_dict)
 
+        lr_scheduler_state_dict = state.get("lr_scheduler_state_dict")
+        if self.lr_scheduler is not None:
+            if lr_scheduler_state_dict is None:
+                raise TypeError("checkpoint is missing lr_scheduler_state_dict")
+            if not isinstance(lr_scheduler_state_dict, dict):
+                raise TypeError(
+                    "lr_scheduler_state_dict must be a dictionary when provided"
+                )
+            self.lr_scheduler.load_state_dict(lr_scheduler_state_dict)
+
         ema_state_dict = state.get("ema_state_dict")
-        if self.ema is not None and ema_state_dict is not None:
+        if self.ema is not None:
+            if ema_state_dict is None:
+                raise TypeError("checkpoint is missing ema_state_dict")
             if not isinstance(ema_state_dict, dict):
                 raise TypeError("ema_state_dict must be a dictionary when provided")
             self.ema.load_state_dict(cast(EMAStateDict, ema_state_dict))
@@ -174,21 +204,47 @@ class CheckpointManager:
             metadata=metadata,
         )
 
-    @staticmethod
-    def find_latest(directory: str | Path, pattern: str = "*.pt") -> Path | None:
-        """Return the most recently modified checkpoint file in a directory."""
-
-        checkpoint_dir = Path(directory)
-        matches = sorted(
-            checkpoint_dir.glob(pattern),
-            key=lambda path: path.stat().st_mtime,
-        )
-        if not matches:
-            return None
-        return matches[-1]
-
-
 def _ensure_parent_directory(path: Path) -> None:
     """Create the parent directory for a checkpoint path."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _find_named_checkpoint(root: str | Path, filename: str) -> Path:
+    """Resolve a named checkpoint from a checkpoint dir, run dir, or output root."""
+
+    root_path = Path(root)
+    if root_path.is_file():
+        if root_path.name != filename:
+            raise FileNotFoundError(
+                f"expected checkpoint file named '{filename}', got '{root_path}'"
+            )
+        return root_path
+
+    if not root_path.exists():
+        raise FileNotFoundError(f"checkpoint search root does not exist: {root_path}")
+    if not root_path.is_dir():
+        raise FileNotFoundError(f"checkpoint search root is not a directory: {root_path}")
+
+    candidates = [
+        candidate
+        for candidate in (
+            root_path / filename,
+            root_path / "checkpoints" / filename,
+        )
+        if candidate.is_file()
+    ]
+    candidates.extend(
+        candidate
+        for candidate in root_path.rglob(filename)
+        if candidate.is_file() and candidate.parent.name == "checkpoints"
+    )
+    matches = {
+        candidate.resolve(): candidate
+        for candidate in candidates
+    }
+    if not matches:
+        raise FileNotFoundError(
+            f"could not find '{filename}' under checkpoint search root: {root_path}"
+        )
+    return max(matches.values(), key=lambda path: path.stat().st_mtime)

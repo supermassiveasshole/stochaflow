@@ -25,6 +25,7 @@ dependencies = [
     "numpy>=1.26,<2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "numpy>=2.4.4; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "pyyaml>=6.0.3",
+    "scipy>=1.16.1",
     "matplotlib>=3.10.9",
     "pillow>=12.2.0",
     "tensorboard>=2.16",
@@ -32,7 +33,9 @@ dependencies = [
 ]
 
 [project.scripts]
+stochaflow-sample-ddpm = "stochaflow.scripts.sample_ddpm:main"
 stochaflow-train-cifar10-ddpm = "stochaflow.scripts.train_cifar10_ddpm:main"
+stochaflow-train-flowers102-ddpm = "stochaflow.scripts.train_flowers102_ddpm:main"
 stochaflow-train-mnist-ddpm = "stochaflow.scripts.train_mnist_ddpm:main"
 
 [project.optional-dependencies]

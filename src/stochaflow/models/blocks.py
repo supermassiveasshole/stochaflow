@@ -52,6 +52,34 @@ class ResidualBlock(nn.Module):
         return h + self.skip(x)
 
 
+class AttentionBlock(nn.Module):
+    """Self-attention block over spatial tokens."""
+
+    def __init__(self, channels: int, num_heads: int = 4) -> None:
+        super().__init__()
+        if channels <= 0:
+            raise ValueError("channels must be positive")
+        if num_heads <= 0:
+            raise ValueError("num_heads must be positive")
+        if channels % num_heads != 0:
+            raise ValueError("channels must be divisible by num_heads")
+        self.norm = nn.GroupNorm(_group_norm_groups(channels), channels)
+        self.attention = nn.MultiheadAttention(
+            embed_dim=channels,
+            num_heads=num_heads,
+            batch_first=True,
+        )
+        self.projection = nn.Linear(channels, channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, channels, height, width = x.shape
+        h = self.norm(x).flatten(2).transpose(1, 2)
+        h, _ = self.attention(h, h, h, need_weights=False)
+        h = self.projection(h)
+        h = h.transpose(1, 2).reshape(batch_size, channels, height, width)
+        return x + h
+
+
 class Downsample(nn.Module):
     """Spatial downsampling by a factor of 2."""
 

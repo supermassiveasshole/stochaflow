@@ -3,6 +3,7 @@
 from .ddpm import DDPM, DDPMForwardOutput
 from .objectives import DDPMEpsilonObjective
 from .schedules import (
+    CosineDDPMScheduler,
     DiffusionScheduler,
     LinearDDPMScheduler,
     cosine_beta_schedule,
@@ -13,6 +14,7 @@ __all__ = [
     "DDPM",
     "DDPMForwardOutput",
     "DDPMEpsilonObjective",
+    "CosineDDPMScheduler",
     "DiffusionScheduler",
     "LinearDDPMScheduler",
     "cosine_beta_schedule",

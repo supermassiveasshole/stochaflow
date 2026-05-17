@@ -5,6 +5,7 @@ import inspect
 import torch
 
 from stochaflow.diffusion.schedules import (
+    CosineDDPMScheduler,
     DiffusionScheduler,
     cosine_beta_schedule,
     linear_beta_schedule,
@@ -20,6 +21,15 @@ def test_cosine_beta_schedule_stays_in_valid_range() -> None:
     betas = cosine_beta_schedule(32)
     assert torch.all(betas > 0)
     assert torch.all(betas < 1)
+
+
+def test_cosine_ddpm_scheduler_registers_standard_coefficients() -> None:
+    scheduler = CosineDDPMScheduler(num_timesteps=32)
+    assert scheduler.num_timesteps == 32
+    assert scheduler.has_coefficient("beta_t")
+    assert scheduler.has_coefficient("sqrt_posterior_variance_t")
+    assert scheduler.has_coefficient("posterior_mean_coef1")
+    assert scheduler.has_coefficient("posterior_mean_coef2")
 
 
 class ToyScheduler(DiffusionScheduler):

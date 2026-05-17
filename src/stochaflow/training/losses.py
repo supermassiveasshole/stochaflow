@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from stochaflow.diffusion.ddpm import DDPM
 from stochaflow.diffusion.objectives import DDPMEpsilonObjective
+from stochaflow.training.trainer import TrainStepOutput
 
 
 def ddpm_epsilon_train_step(
@@ -14,7 +15,7 @@ def ddpm_epsilon_train_step(
     criterion: nn.Module,
     batch: Any,
     device: torch.device,
-) -> torch.Tensor:
+) -> TrainStepOutput:
     """Run one DDPM epsilon-prediction training step.
 
     Expected inputs:
@@ -43,4 +44,16 @@ def ddpm_epsilon_train_step(
 
     x0 = x0.to(device)
     ddpm_batch = model(x0)
-    return criterion(ddpm_batch)
+    loss = criterion(ddpm_batch)
+    per_sample_loss = (ddpm_batch.predicted_noise - ddpm_batch.noise).pow(2)
+    per_sample_loss = per_sample_loss.flatten(start_dim=1).mean(dim=1)
+    return TrainStepOutput(
+        loss=loss,
+        diagnostics={
+            "timesteps": ddpm_batch.timesteps.detach(),
+            "per_sample_loss": per_sample_loss.detach(),
+            "predicted_noise": ddpm_batch.predicted_noise.detach(),
+            "target_noise": ddpm_batch.noise.detach(),
+            "clean_samples": x0.detach(),
+        },
+    )

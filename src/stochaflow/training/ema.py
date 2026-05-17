@@ -51,6 +51,7 @@ class ExponentialMovingAverage:
         self.shadow_params: OrderedDict[str, torch.Tensor] = OrderedDict()
         self.shadow_buffers: OrderedDict[str, torch.Tensor] = OrderedDict()
         self._stored_params: OrderedDict[str, torch.Tensor] = OrderedDict()
+        self._stored_buffers: OrderedDict[str, torch.Tensor] = OrderedDict()
         self._register_from_module(module)
 
     def _register_from_module(self, module: nn.Module) -> None:
@@ -131,7 +132,7 @@ class ExponentialMovingAverage:
             module_buffers[name].data.copy_(shadow.data)
 
     def store(self, module: nn.Module) -> None:
-        """Snapshot the current module parameters for temporary EMA evaluation."""
+        """Snapshot current module state for temporary EMA evaluation."""
 
         self._stored_params = OrderedDict(
             (
@@ -141,19 +142,56 @@ class ExponentialMovingAverage:
             for name, parameter in module.named_parameters()
             if parameter.requires_grad
         )
+        self._stored_buffers = OrderedDict(
+            (
+                name,
+                buffer.detach().clone(),
+            )
+            for name, buffer in module.named_buffers()
+            if torch.is_floating_point(buffer)
+        )
 
     def restore(self, module: nn.Module) -> None:
-        """Restore parameters previously captured by ``store``."""
+        """Restore module state previously captured by ``store``."""
 
-        if not self._stored_params:
-            raise RuntimeError("no stored parameters available; call store(module) first")
+        if not self._stored_params and not self._stored_buffers:
+            raise RuntimeError("no stored EMA state available; call store(module) first")
 
         module_parameters = dict(module.named_parameters())
         for name, parameter in self._stored_params.items():
             if name not in module_parameters:
                 raise KeyError(f"module is missing stored parameter '{name}'")
             module_parameters[name].data.copy_(parameter.data)
+
+        module_buffers = dict(module.named_buffers())
+        for name, buffer in self._stored_buffers.items():
+            if name not in module_buffers:
+                raise KeyError(f"module is missing stored buffer '{name}'")
+            module_buffers[name].data.copy_(buffer.data)
+
         self._stored_params = OrderedDict()
+        self._stored_buffers = OrderedDict()
+
+    def to(self, device: torch.device | str) -> None:
+        """Move EMA shadow state to a device."""
+
+        target_device = torch.device(device)
+        self.shadow_params = OrderedDict(
+            (name, tensor.to(target_device))
+            for name, tensor in self.shadow_params.items()
+        )
+        self.shadow_buffers = OrderedDict(
+            (name, tensor.to(target_device))
+            for name, tensor in self.shadow_buffers.items()
+        )
+        self._stored_params = OrderedDict(
+            (name, tensor.to(target_device))
+            for name, tensor in self._stored_params.items()
+        )
+        self._stored_buffers = OrderedDict(
+            (name, tensor.to(target_device))
+            for name, tensor in self._stored_buffers.items()
+        )
 
     def state_dict(self) -> EMAStateDict:
         """Serialize the EMA state for checkpointing."""

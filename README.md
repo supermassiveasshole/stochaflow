@@ -1,45 +1,40 @@
 # Stochaflow
 
-Stochaflow is a research-oriented Python project for **stochastic flows**. The
-first concrete implementation track is DDPM-style diffusion, but the repository
-is intentionally structured around broader stochastic flow experiments rather
-than diffusion models alone.
+Stochaflow is a research-oriented Python project for stochastic flows. The
+current implementation track is DDPM-style diffusion, with end-to-end training
+paths for MNIST, CIFAR-10, and Oxford Flowers 102.
 
-The current codebase includes end-to-end DDPM smoke paths for MNIST and
-CIFAR-10: dataset loading, a UNet denoiser, DDPM forward/reverse logic, an
-epsilon-prediction objective, a generic trainer, checkpointing, local logging,
-and post-training sample dumps.
+The codebase is organized around registries and config-driven factories:
+datasets, data splits, models, diffusion processes, objectives, optimizers,
+learning-rate schedulers, diagnostics, loggers, checkpoints, and runners are
+constructed from YAML configuration.
 
-简要说明：Stochaflow 的目标不是只做扩散模型，而是作为随机流模型研究代码库。当前优先实现 DDPM，并提供 MNIST 与 CIFAR-10 的端到端验证路径。
-
-## Current Status
+## Status
 
 Implemented:
 
-- DDPM epsilon-prediction training forward path
-- DDPM reverse sampling and reverse-trajectory capture
-- linear DDPM scheduler with cached timestep coefficients
-- MNIST dataset wrapper with normalization support
-- CIFAR-10 DDPM training entry point and config
-- compact UNet backbone for image diffusion smoke tests
-- registry/factory-based component construction from YAML config
-- generic trainer with checkpoint integration
-- Rich terminal progress reporting
-- local experiment logging and optional TensorBoard/W&B backends
-- EMA utility
-- sample grid and reverse-trajectory artifact dumping
-- ruff, pyright, and pytest configuration
+- DDPM epsilon-prediction training
+- DDPM reverse sampling and trajectory capture
+- linear and cosine DDPM beta schedules
+- MNIST, CIFAR-10, and Oxford Flowers 102 dataset builders
+- unified `DataBundle` pipeline for train/valid/test/all/kfold splits
+- UNet backbone with optional attention blocks
+- EMA tracking and EMA sampling
+- warmup-cosine and common PyTorch optimizer LR schedulers
+- DDPM diagnostic logging for timestep-bucket losses and sample artifacts
+- Rich terminal reporting, checkpointing, and local/TensorBoard/W&B logging
+- package entry points for training and checkpoint sampling
+- pytest, ruff, and pyright configuration
 
 Still evolving:
 
 - DDIM implementation
-- longer CIFAR-10 runs and richer evaluation metrics
-- richer stochastic-flow abstractions beyond diffusion
-- evaluation metrics and larger experiment scripts
+- faster samplers and evaluation metrics such as FID/KID
+- broader stochastic-flow abstractions beyond diffusion
 
 ## Installation
 
-This project uses a `src` layout and is designed to work well with `uv`.
+This project uses a `src` layout and is designed to work with `uv`.
 
 ```bash
 uv sync --extra dev
@@ -56,27 +51,22 @@ pip install -e ".[dev]"
 Notes:
 
 - Python `>=3.12` is required.
-- Intel macOS uses Python 3.12 with pinned PyTorch/Torchvision wheels for
-  compatibility.
+- Intel macOS uses Python 3.12 with pinned PyTorch/Torchvision wheels.
 - Windows GPU runs are resolved through the PyTorch CUDA 12.8 wheel index and
   can use Python 3.14.
-- Other platforms can use newer Python versions if dependency resolution
-  succeeds.
+- `trainer.device: auto` selects CUDA when `torch.cuda.is_available()` is true.
 
 Windows GPU setup example:
 
 ```powershell
 uv python install 3.14
 uv sync --python 3.14 --extra dev
-uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no cuda')"
+uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 ```
 
-For GPU training, `trainer.device: auto` in the config will select CUDA when
-`torch.cuda.is_available()` is true.
+## Training
 
-## MNIST DDPM Smoke Run
-
-Run the task-specific training entry point:
+MNIST smoke run:
 
 ```bash
 uv run stochaflow-train-mnist-ddpm \
@@ -85,59 +75,7 @@ uv run stochaflow-train-mnist-ddpm \
   --limit-batches 10
 ```
 
-Equivalent compatibility wrapper:
-
-```bash
-uv run python scripts/train_mnist_ddpm.py --epochs 1 --limit-batches 10
-```
-
-Useful options:
-
-```bash
---resume PATH                 Resume model and optimizer state from checkpoint.
---num-samples 16              Number of post-training samples to generate.
---sample-grid-size 4          Number of images per row for the final sample grid.
---trajectory-interval 200     Reverse-process interval for trajectory snapshots.
---skip-sampling               Train without dumping post-training samples.
---no-progress                 Disable Rich terminal progress bars.
-```
-
-After training, the script writes artifacts under the configured experiment
-output directory. Each run gets its own timestamped experiment directory, for
-example `outputs/ddpm_mnist/YYYYMMDD_HHMMSS/`:
-
-```text
-outputs/ddpm_mnist/YYYYMMDD_HHMMSS/
-├── checkpoints/
-│   ├── best.pt
-│   └── epoch_0001.pt
-├── metrics.jsonl
-├── train.log
-└── samples/
-    ├── epoch_0001.png
-    ├── epoch_0001.pt
-    ├── epoch_0001_trajectory.png
-    └── epoch_0001_trajectory.pt
-```
-
-`epoch_XXXX.png` shows final generated samples. `epoch_XXXX_trajectory.png`
-shows the reverse process from high-noise states to lower-noise generated
-images; rows are timesteps and columns are individual samples.
-
-Example output from an MNIST DDPM run:
-
-![MNIST DDPM generated samples](assets/readme/mnist_ddpm_epoch_0100.png)
-
-Reverse-process trajectory for the same sample batch:
-
-![MNIST DDPM reverse trajectory](assets/readme/mnist_ddpm_epoch_0100_trajectory.png)
-
-## CIFAR-10 DDPM Run
-
-The CIFAR-10 DDPM config follows the same train/validation/test and Rich
-terminal reporting conventions as the MNIST script. It reserves `5000` examples
-from the official training split for validation and uses the official test split
-for final evaluation.
+CIFAR-10 smoke run:
 
 ```bash
 uv run stochaflow-train-cifar10-ddpm \
@@ -148,133 +86,181 @@ uv run stochaflow-train-cifar10-ddpm \
   --limit-test-batches 2
 ```
 
-Equivalent compatibility wrapper:
+Oxford Flowers 102 smoke run:
 
 ```bash
-uv run python scripts/train_cifar10_ddpm.py --epochs 1 --limit-batches 10
+uv run stochaflow-train-flowers102-ddpm \
+  --config configs/ddpm_flowers102.yaml \
+  --epochs 1 \
+  --limit-batches 2 \
+  --skip-sampling
 ```
 
-The script expects `diffusion.name: ddpm` and will reject `ddim_cifar10.yaml`.
-The DDIM config is kept as a forward-looking experiment config until the DDIM
-process implementation lands.
+Oxford Flowers 102 baseline run:
+
+```bash
+uv run stochaflow-train-flowers102-ddpm \
+  --config configs/ddpm_flowers102.yaml
+```
+
+If `--epochs` is omitted, the runner uses `trainer.num_epochs` from the YAML
+config. Passing `--epochs` is an explicit run-time override.
+
+Useful training options:
+
+```bash
+--resume [PATH]               Resume training. Without PATH, use latest.pt.
+--num-samples 16              Number of post-training samples to generate.
+--sample-grid-size 4          Number of images per row for the final sample grid.
+--trajectory-interval 200     Reverse-process interval for trajectory snapshots.
+--skip-sampling               Train without dumping post-training samples.
+--no-progress                 Disable Rich terminal progress bars.
+```
+
+Each run writes a timestamped directory under the configured output root:
+
+```text
+outputs/<experiment>/<YYYYMMDD_HHMMSS>/
+  checkpoints/
+    best.pt
+    latest.pt
+    epoch_XXXX.pt
+  metrics.jsonl
+  train.log
+  samples/
+    epoch_XXXX.png
+    epoch_XXXX.pt
+    epoch_XXXX_trajectory.png
+    epoch_XXXX_trajectory.pt
+```
+
+Example MNIST DDPM samples:
+
+![MNIST DDPM generated samples](assets/readme/mnist_ddpm_epoch_0100.png)
+
+MNIST reverse-process trajectory:
+
+![MNIST DDPM reverse trajectory](assets/readme/mnist_ddpm_epoch_0100_trajectory.png)
+
+Example Oxford Flowers 102 DDPM samples:
+
+![Oxford Flowers 102 DDPM generated samples](assets/readme/flowers102_ddpm_epoch_0681.png)
+
+Oxford Flowers 102 reverse-process trajectory:
+
+![Oxford Flowers 102 DDPM reverse trajectory](assets/readme/flowers102_ddpm_epoch_0681_trajectory.png)
+
+## Sampling
+
+Sample from a Stochaflow DDPM checkpoint. If `--checkpoint` is omitted, the
+sampler uses the newest `checkpoints/best.pt` under `outputs/`.
+
+```bash
+uv run stochaflow-sample-ddpm \
+  --num-samples 16 \
+  --sample-grid-size 4
+```
+
+Use `--checkpoint PATH` for a specific checkpoint or pass a run directory to use
+that run's `checkpoints/best.pt`.
+
+The sampler rebuilds the model from the config stored in the checkpoint. EMA
+weights are used automatically when training enabled EMA and the checkpoint
+contains EMA state. Pass `--no-ema` to sample raw weights.
 
 ## Configuration
 
-Experiment configuration lives in YAML files under `configs/`.
-
-The main working config is:
+Experiment configuration lives under `configs/`.
 
 ```text
 configs/ddpm_mnist.yaml
-```
-
-Additional CIFAR-10 configs are kept aligned with the same split, logging, and
-early-stopping schema:
-
-```text
 configs/ddpm_cifar10.yaml
 configs/ddim_cifar10.yaml
+configs/ddpm_flowers102.yaml
 ```
 
-The CIFAR-10 configs reserve `5000` examples from the official training split
-for validation and use the official `test` split for final evaluation. The DDIM
-config is a forward-looking experiment config; the implementation is still
-listed as evolving below.
-
-Config sections are intentionally component-oriented:
+Important sections:
 
 - `experiment`: run name, seed, and output directory
-- `data`: dataset declaration, dataloader policy, and train/validation/test
-  split policy
-- `model`: registered model name and constructor params
-- `diffusion`: process type and scheduler config
+- `data`: dataset declaration, dataloader policy, and split policy
+- `model`: registered model name and constructor parameters
+- `diffusion`: process type, reverse method, and diffusion scheduler
 - `objective`: training objective
 - `optimizer`: optimizer name and hyperparameters
-- `trainer`: loop/device/gradient settings and early stopping policy
-- `logging`: metric logging backends; local terminal output is disabled in the
-  YAML configs because Rich owns human-facing progress output
-- `artifacts`: checkpoint and sampling cadence
+- `lr_scheduler`: optional optimizer learning-rate scheduler
+- `ema`: optional exponential moving average tracking and sampling policy
+- `diagnostics`: optional algorithm-specific training diagnostics
+- `trainer`: loop, device, gradient, and early stopping policy
+- `logging`: metric logging backends
+- `artifacts`: checkpoint cadence
 
-Components are built through registries and factories. New models, datasets,
-schedulers, objectives, loggers, optimizers, and diffusion processes should be
-registered close to their implementation rather than added through ad hoc
-conditionals in scripts.
+Data split modes:
+
+- `random_holdout`: deterministic train/validation split from one source split
+- `official`: named dataset splits directly
+- `all`: concatenate named splits into one training set
+- `none`: build only a training split
+- `kfold`: deterministic cross-validation bundles
+
+The Flowers102 config uses all official `train`, `val`, and `test` images for
+generative training, center-crop preprocessing, EMA sampling, linear DDPM beta
+schedule, clipped posterior DDPM sampling, and a warmup-cosine optimizer LR
+schedule.
 
 ## Architecture
 
 `src/stochaflow/data/`
-: dataset wrappers, transforms, and dataloader-facing utilities.
+: dataset builders, transforms, and the unified data bundle pipeline.
 
 `src/stochaflow/models/`
 : UNet, residual blocks, attention blocks, and timestep embeddings.
 
 `src/stochaflow/diffusion/`
-: diffusion-specific algorithms, schedulers, and objectives. `DDPM` owns DDPM
-training forward logic and reverse sampling logic.
+: diffusion processes, schedules, and objectives.
 
 `src/stochaflow/training/`
-: generic optimization loop, train-step adapters, Rich terminal reporting, and
-EMA utilities.
+: trainer, train-step adapters, diagnostics, reporting, and EMA.
 
 `src/stochaflow/sampling/`
-: artifact utilities for visualizing generated samples and reverse trajectories.
-Algorithmic sampling belongs to model/process APIs such as `DDPM.reverse`, with
-task-specific trajectory loops kept in scripts when they are only needed for
-artifact generation.
+: image-grid and trajectory artifact utilities.
 
 `src/stochaflow/utils/`
 : config loading, registries, factories, checkpointing, logging, and seeding.
 
 `src/stochaflow/scripts/`
-: packaged task-specific entry points.
-
-`scripts/`
-: thin compatibility wrappers for direct script execution.
+: package entry points for training and sampling commands.
 
 ## Development
 
-Run static checks:
-
-```bash
-uv run ruff check .
-uv run pyright
-```
-
-Run tests:
+Run checks:
 
 ```bash
 uv run pytest
+uv run ruff check .
+uv run pyright
 ```
 
 Run targeted tests while iterating:
 
 ```bash
-uv run pytest tests/test_ddpm_shapes.py tests/test_sampling_grid.py
+uv run pytest tests/test_ddpm_shapes.py tests/test_sample_ddpm_script.py
 ```
 
 ## Repository Layout
 
 ```text
 stochaflow/
-├── configs/
-│   ├── ddpm_mnist.yaml
-│   ├── ddpm_cifar10.yaml
-│   └── ddim_cifar10.yaml
-├── scripts/
-│   ├── train_cifar10_ddpm.py
-│   └── train_mnist_ddpm.py
-├── src/
-│   └── stochaflow/
-│       ├── data/
-│       ├── diffusion/
-│       ├── models/
-│       ├── sampling/
-│       ├── scripts/
-│       ├── training/
-│       └── utils/
-├── tests/
-├── outputs/
-└── assets/
+  configs/
+  src/stochaflow/
+    data/
+    diffusion/
+    models/
+    sampling/
+    scripts/
+    training/
+    utils/
+  tests/
+  assets/
 ```
 
 ## License

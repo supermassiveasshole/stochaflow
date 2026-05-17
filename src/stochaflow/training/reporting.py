@@ -49,8 +49,8 @@ class RunSummary:
     device: str
     output_dir: str | Path
     train_size: int
-    valid_size: int
-    test_size: int
+    valid_size: int | None
+    test_size: int | None
     batch_size: int
 
 
@@ -60,7 +60,7 @@ class FinalSummary:
 
     best_epoch: int
     best_valid_loss: float | None
-    test_loss: float
+    test_loss: float | None
     stopped_early: bool
     best_checkpoint: str | Path | None
     output_dir: str | Path
@@ -85,14 +85,12 @@ class RichTrainingReporter:
         table.add_row("exp_id", summary.exp_id or "-")
         table.add_row("Device", summary.device)
         table.add_row("Output", str(summary.output_dir))
-        table.add_row(
-            "Dataset",
-            (
-                f"train={summary.train_size} "
-                f"valid={summary.valid_size} "
-                f"test={summary.test_size}"
-            ),
-        )
+        dataset_parts = [f"train={summary.train_size}"]
+        if summary.valid_size is not None:
+            dataset_parts.append(f"valid={summary.valid_size}")
+        if summary.test_size is not None:
+            dataset_parts.append(f"test={summary.test_size}")
+        table.add_row("Dataset", " ".join(dataset_parts))
         table.add_row("Batch size", str(summary.batch_size))
         self.console.print(Panel(table, title="Stochaflow Training", border_style="cyan"))
 
@@ -197,7 +195,7 @@ class RichTrainingReporter:
         table.add_column(style="cyan", no_wrap=True)
         table.add_column(ratio=1, overflow="fold")
         table.add_row("Best epoch", str(summary.best_epoch))
-        table.add_row("Best valid loss", _format_loss(summary.best_valid_loss))
+        table.add_row("Best loss", _format_loss(summary.best_valid_loss))
         table.add_row("Test loss", _format_loss(summary.test_loss))
         table.add_row("Stopped early", str(summary.stopped_early))
         table.add_row("Best checkpoint", _format_path(summary.best_checkpoint))

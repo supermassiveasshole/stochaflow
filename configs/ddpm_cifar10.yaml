@@ -22,6 +22,8 @@ data:
     pin_memory: true
     persistent_workers: true
   splits:
+    mode: random_holdout
+    train_split: train
     validation_size: 5000
     test_split: test
 
@@ -80,5 +82,4 @@ logging:
   torch_logs: {}
 
 artifacts:
-  sample_every: 5
   checkpoint_every: 5

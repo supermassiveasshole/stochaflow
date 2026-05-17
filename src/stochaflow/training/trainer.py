@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Callable, Iterable, Mapping, Sized
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -9,11 +10,23 @@ import torch
 import torch.nn as nn
 from torch.optim import Optimizer
 
+from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
 
 Batch = Any
-TrainStepFn = Callable[[nn.Module, nn.Module, Batch, torch.device], torch.Tensor]
+
+
+@dataclass(slots=True)
+class TrainStepOutput:
+    """Structured result from an algorithm-specific training step."""
+
+    loss: torch.Tensor
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
+TrainStepResult = torch.Tensor | TrainStepOutput
+TrainStepFn = Callable[[nn.Module, nn.Module, Batch, torch.device], TrainStepResult]
 
 
 def _move_to_device(batch: Batch, device: torch.device) -> Batch:
@@ -84,6 +97,14 @@ def _resolve_total_batches(
     return max_batches
 
 
+def _normalize_train_step_result(result: TrainStepResult) -> TrainStepOutput:
+    if isinstance(result, TrainStepOutput):
+        return result
+    if isinstance(result, torch.Tensor):
+        return TrainStepOutput(loss=result)
+    raise TypeError("train_step_fn must return a Tensor or TrainStepOutput")
+
+
 class Trainer:
     """Generic optimization loop wrapper.
 
@@ -107,6 +128,9 @@ class Trainer:
         device: torch.device | str,
         train_step_fn: TrainStepFn | None = None,
         lr_scheduler: Any | None = None,
+        lr_scheduler_interval: str = "step",
+        ema: ExponentialMovingAverage | None = None,
+        diagnostics: Iterable[Any] | None = None,
         max_grad_norm: float | None = None,
         logger: ExperimentLogger | None = None,
         log_every: int = 100,
@@ -122,6 +146,9 @@ class Trainer:
         self.device = torch.device(device)
         self.train_step_fn = train_step_fn or _default_train_step
         self.lr_scheduler = lr_scheduler
+        self.lr_scheduler_interval = lr_scheduler_interval
+        self.ema = ema
+        self.diagnostics = list(diagnostics or [])
         self.max_grad_norm = max_grad_norm
         self.logger = logger or NullLogger()
         self.log_every = log_every
@@ -135,29 +162,76 @@ class Trainer:
         self.best_epoch: int | None = None
         self.best_metric_value: float | None = None
         self.stopped_early = False
+        self._last_train_step_output: TrainStepOutput | None = None
 
         if self.checkpoint_every is not None and self.checkpoint_every <= 0:
             raise ValueError("checkpoint_every must be positive when provided")
         if self.checkpoint_manager is not None and self.checkpoint_dir is None:
             raise ValueError("checkpoint_dir is required when checkpoint_manager is provided")
+        if self.lr_scheduler_interval not in {"step", "epoch"}:
+            raise ValueError("lr_scheduler_interval must be 'step' or 'epoch'")
 
         self.model.to(self.device)
+        if self.ema is not None:
+            self.ema.to(self.device)
+
+    def _step_lr_scheduler(self, interval: str) -> None:
+        if self.lr_scheduler is None or self.lr_scheduler_interval != interval:
+            return
+        self.lr_scheduler.step()
+
+    def _emit_batch_diagnostics(
+        self,
+        *,
+        batch: Batch,
+        output: TrainStepOutput,
+        loss: float,
+        global_step: int,
+        epoch_index: int | None,
+    ) -> None:
+        for diagnostic in self.diagnostics:
+            hook = getattr(diagnostic, "on_train_batch_end", None)
+            if callable(hook):
+                hook(
+                    trainer=self,
+                    batch=batch,
+                    output=output,
+                    loss=loss,
+                    global_step=global_step,
+                    epoch_index=epoch_index,
+                )
+
+    def _emit_epoch_diagnostics(
+        self,
+        *,
+        epoch_index: int,
+        metrics: dict[str, float],
+    ) -> None:
+        for diagnostic in self.diagnostics:
+            hook = getattr(diagnostic, "on_train_epoch_end", None)
+            if callable(hook):
+                hook(trainer=self, epoch_index=epoch_index, metrics=metrics)
 
     def train_batch(self, batch: Batch) -> float:
         """Run one optimization step and return the scalar loss."""
 
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
-        loss = self.train_step_fn(self.model, self.criterion, batch, self.device)
+        output = _normalize_train_step_result(
+            self.train_step_fn(self.model, self.criterion, batch, self.device)
+        )
+        loss = output.loss
         loss.backward()
 
         if self.max_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
 
         self.optimizer.step()
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
+        if self.ema is not None:
+            self.ema.update(self.model)
+        self._step_lr_scheduler("step")
 
+        self._last_train_step_output = output
         return float(loss.detach().item())
 
     def train_epoch(
@@ -193,9 +267,19 @@ class Trainer:
                 if max_batches is not None and num_batches >= max_batches:
                     break
                 batch_loss = self.train_batch(batch)
+                train_step_output = self._last_train_step_output
+                if train_step_output is None:
+                    raise RuntimeError("train_batch did not produce a TrainStepOutput")
                 total_loss += batch_loss
                 num_batches += 1
                 self.global_step += 1
+                self._emit_batch_diagnostics(
+                    batch=batch,
+                    output=train_step_output,
+                    loss=batch_loss,
+                    global_step=self.global_step,
+                    epoch_index=epoch_index,
+                )
                 running_loss = total_loss / num_batches
                 if self.global_step % self.log_every == 0:
                     metrics = {
@@ -272,13 +356,15 @@ class Trainer:
                 for batch in iterator:
                     if max_batches is not None and num_batches >= max_batches:
                         break
-                    loss = self.train_step_fn(
-                        self.model,
-                        self.criterion,
-                        batch,
-                        self.device,
+                    output = _normalize_train_step_result(
+                        self.train_step_fn(
+                            self.model,
+                            self.criterion,
+                            batch,
+                            self.device,
+                        )
                     )
-                    batch_loss = float(loss.detach().item())
+                    batch_loss = float(output.loss.detach().item())
                     total_loss += batch_loss
                     num_batches += 1
                     running_loss = total_loss / num_batches
@@ -346,13 +432,13 @@ class Trainer:
             raise ValueError("early_stopping_mode must be 'min' or 'max'")
         if early_stopping_min_delta < 0:
             raise ValueError("early_stopping_min_delta must be non-negative")
-        if early_stopping_patience is not None and validation_dataloader is None:
-            raise ValueError("validation_dataloader is required for early stopping")
+        if early_stopping_patience is not None and track_best is False:
+            raise ValueError("early stopping requires best tracking")
         should_track_best = (
             validation_dataloader is not None if track_best is None else track_best
         )
-        if should_track_best and validation_dataloader is None:
-            raise ValueError("validation_dataloader is required for best tracking")
+        if early_stopping_patience is not None:
+            should_track_best = True
 
         history: list[dict[str, float]] = []
         best_value: float | None = None
@@ -372,6 +458,7 @@ class Trainer:
                     max_batches=max_batches_per_epoch,
                     reporter=reporter,
                 )
+                metrics["train_loss"] = metrics["loss"]
                 if validation_dataloader is not None:
                     validation_metrics = self.evaluate_epoch(
                         validation_dataloader,
@@ -389,8 +476,10 @@ class Trainer:
                             "duration_seconds"
                         ],
                     }
+                self._step_lr_scheduler("epoch")
                 history.append(metrics)
                 self._maybe_save_checkpoint(epoch, metrics)
+                self._save_latest_checkpoint(epoch, metrics)
 
                 status = "-"
                 if should_track_best:
@@ -456,6 +545,7 @@ class Trainer:
                             )
                             if reporter is not None:
                                 reporter.on_early_stopping(early_stopping_text)
+                self._emit_epoch_diagnostics(epoch_index=epoch, metrics=metrics)
                 if reporter is not None:
                     reporter.on_epoch_end(
                         epoch=epoch,
@@ -513,6 +603,18 @@ class Trainer:
             epoch=epoch,
             metrics=metrics,
             metadata=self.checkpoint_metadata,
+        )
+
+    def _save_latest_checkpoint(self, epoch: int, metrics: dict[str, float]) -> None:
+        """Save a stable latest checkpoint after every completed epoch."""
+
+        if self.checkpoint_manager is None:
+            return
+        self._save_named_checkpoint(
+            "latest.pt",
+            epoch=epoch,
+            metrics=metrics,
+            metadata={**self.checkpoint_metadata, "checkpoint_kind": "latest"},
         )
 
     def _save_named_checkpoint(

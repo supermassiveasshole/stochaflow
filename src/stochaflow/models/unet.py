@@ -5,7 +5,7 @@ from typing import cast
 import torch
 import torch.nn as nn
 
-from stochaflow.models.blocks import Downsample, ResidualBlock, Upsample
+from stochaflow.models.blocks import AttentionBlock, Downsample, ResidualBlock, Upsample
 from stochaflow.models.embeddings import TimeEmbedding
 from stochaflow.utils.registry import register_model
 
@@ -23,10 +23,13 @@ class UNet(nn.Module):
         num_res_blocks: int = 2,
         time_embedding_dim: int = 128,
         dropout: float = 0.0,
+        attention_levels: tuple[int, ...] | list[int] | None = None,
+        attention_heads: int = 4,
     ) -> None:
         super().__init__()
 
         model_out_channels = out_channels
+        attention_level_set = set(attention_levels or ())
 
         self.time_embedding = TimeEmbedding(
             embedding_dim=time_embedding_dim,
@@ -63,6 +66,8 @@ class UNet(nn.Module):
                 )
                 channels = block_out_channels
                 self.skip_channels.append(channels)
+                if level in attention_level_set:
+                    blocks.append(AttentionBlock(channels, num_heads=attention_heads))
 
             self.down_blocks.append(blocks)
 
@@ -74,6 +79,11 @@ class UNet(nn.Module):
             channels,
             time_embedding_dim=time_dim,
             dropout=dropout,
+        )
+        self.mid_attention = (
+            AttentionBlock(channels, num_heads=attention_heads)
+            if len(level_channels) - 1 in attention_level_set
+            else nn.Identity()
         )
         self.mid_block2 = ResidualBlock(
             channels,
@@ -99,6 +109,8 @@ class UNet(nn.Module):
                     )
                 )
                 channels = block_out_channels
+                if level in attention_level_set:
+                    blocks.append(AttentionBlock(channels, num_heads=attention_heads))
 
             self.up_blocks.append(blocks)
 
@@ -128,24 +140,41 @@ class UNet(nn.Module):
 
         for level in range(len(self.down_blocks)):
             blocks = cast(nn.ModuleList, self.down_blocks[level])
+            block_index = 0
+            while block_index < len(blocks):
+                block = blocks[block_index]
+                if not isinstance(block, ResidualBlock):
+                    h = block(h)
+                    block_index += 1
+                    continue
 
-            for block_index in range(len(blocks)):
-                h = blocks[block_index](h, time_embedding)
+                h = block(h, time_embedding)
+                block_index += 1
+                if block_index < len(blocks) and isinstance(
+                    blocks[block_index],
+                    AttentionBlock,
+                ):
+                    h = blocks[block_index](h)
+                    block_index += 1
                 skips.append(h)
 
             if level < len(self.downsamples):
                 h = self.downsamples[level](h)
 
         h = self.mid_block1(h, time_embedding)
+        h = self.mid_attention(h)
         h = self.mid_block2(h, time_embedding)
 
         for level in range(len(self.up_blocks)):
             blocks = cast(nn.ModuleList, self.up_blocks[level])
 
-            for block_index in range(len(blocks)):
-                skip = skips.pop()
-                h = torch.cat([h, skip], dim=1)
-                h = blocks[block_index](h, time_embedding)
+            for block in blocks:
+                if isinstance(block, ResidualBlock):
+                    skip = skips.pop()
+                    h = torch.cat([h, skip], dim=1)
+                    h = block(h, time_embedding)
+                else:
+                    h = block(h)
 
             if level < len(self.upsamples):
                 h = self.upsamples[level](h)
