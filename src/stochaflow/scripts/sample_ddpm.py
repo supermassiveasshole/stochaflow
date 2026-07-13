@@ -155,9 +155,7 @@ def _build_checkpointed_ddpm(
         raise TypeError("sample_ddpm.py expects the built diffusion to be DDPM")
 
     should_use_ema = (
-        config.ema.enabled
-        and config.ema.use_for_sampling
-        and not disable_ema
+        config.ema.enabled and config.ema.use_for_sampling and not disable_ema
     )
     ema = None
     if should_use_ema:
@@ -198,7 +196,9 @@ def _sample_without_trajectory(
     batch_size: int,
 ) -> torch.Tensor:
     samples = [
-        diffusion.sample(image_sample_shape(config, count), device=device).detach().cpu()
+        diffusion.sample(image_sample_shape(config, count), device=device)
+        .detach()
+        .cpu()
         for count in _batched_sample_counts(args.num_samples, batch_size)
     ]
     return torch.cat(samples, dim=0)
@@ -241,7 +241,9 @@ def _save_samples(
     if args.sample_grid_size <= 0:
         raise ValueError("--sample-grid-size must be positive")
     batch_size = (
-        config.data.dataloader.batch_size if args.batch_size is None else args.batch_size
+        config.data.dataloader.batch_size
+        if args.batch_size is None
+        else args.batch_size
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -324,7 +326,6 @@ def main() -> None:
     print(f"Loaded checkpoint: {checkpoint_path}")
     print(f"Device: {device}")
     print(f"EMA weights: {'yes' if used_ema else 'no'}")
-    print(f"Reverse method: {diffusion.reverse_method}")
     print(f"Clip denoised: {'yes' if diffusion.clip_denoised else 'no'}")
     print(f"Output: {output_dir}")
     for name, path in artifacts.items():

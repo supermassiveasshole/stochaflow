@@ -16,7 +16,11 @@ from stochaflow.utils.registry import register_diagnostic
 def _first_tensor_from_batch(batch: Any) -> torch.Tensor | None:
     if isinstance(batch, torch.Tensor):
         return batch
-    if isinstance(batch, (tuple, list)) and batch and isinstance(batch[0], torch.Tensor):
+    if (
+        isinstance(batch, (tuple, list))
+        and batch
+        and isinstance(batch[0], torch.Tensor)
+    ):
         return batch[0]
     return None
 
@@ -90,7 +94,9 @@ class DDPMDiagnosticLogger:
         self.sample_seed = sample_seed
         self.sample_grid_size = sample_grid_size
         self.reconstruction_every_epochs = reconstruction_every_epochs
-        self.reconstruction_timesteps = [int(value) for value in reconstruction_timesteps]
+        self.reconstruction_timesteps = [
+            int(value) for value in reconstruction_timesteps
+        ]
         self.use_ema_for_artifacts = use_ema_for_artifacts
         self._last_clean_batch: torch.Tensor | None = None
 
@@ -147,11 +153,14 @@ class DDPMDiagnosticLogger:
         num_timesteps: int,
     ) -> dict[str, float]:
         metrics: dict[str, float] = {}
-        width = max(1, (num_timesteps + self.timestep_buckets - 1) // self.timestep_buckets)
-        digits = max(3, len(str(num_timesteps - 1)))
+        width = max(
+            1,
+            (num_timesteps + self.timestep_buckets - 1) // self.timestep_buckets,
+        )
+        digits = max(3, len(str(num_timesteps)))
         for bucket_index in range(self.timestep_buckets):
-            start = bucket_index * width
-            end = min(num_timesteps - 1, start + width - 1)
+            start = 1 + bucket_index * width
+            end = min(num_timesteps, start + width - 1)
             if start > end:
                 break
             mask = (timesteps >= start) & (timesteps <= end)
@@ -213,7 +222,9 @@ class DDPMDiagnosticLogger:
 
     def _infer_image_shape(self) -> tuple[int, int]:
         if self._last_clean_batch is not None and self._last_clean_batch.ndim == 4:
-            return int(self._last_clean_batch.shape[1]), int(self._last_clean_batch.shape[-1])
+            return int(self._last_clean_batch.shape[1]), int(
+                self._last_clean_batch.shape[-1]
+            )
         return 3, 64
 
     def _save_reconstructions(self, trainer: Any, epoch_index: int) -> None:
@@ -237,7 +248,7 @@ class DDPMDiagnosticLogger:
             ):
                 model.eval()
                 for timestep in self.reconstruction_timesteps:
-                    if not 0 <= timestep < model.num_timesteps:
+                    if not 1 <= timestep <= model.num_timesteps:
                         continue
                     timesteps = torch.full(
                         (x0.shape[0],),
@@ -246,7 +257,7 @@ class DDPMDiagnosticLogger:
                         device=device,
                     )
                     xt, _ = model.add_noise(x0, timesteps)
-                    pred_noise = model.model(xt, timesteps)
+                    pred_noise = model._predict_noise(xt, timesteps)
                     x0_hat = model._estimate_x0_from_epsilon(
                         xt,
                         timesteps,

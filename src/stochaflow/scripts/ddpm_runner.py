@@ -160,12 +160,16 @@ def sample_reverse_trajectory(
     device: torch.device,
     capture_every: int,
 ) -> dict[int, torch.Tensor]:
-    """Sample a trajectory by repeatedly calling the public reverse traversal."""
+    """Sample a trajectory by repeatedly calling the public reverse traversal.
+
+    Keys are mathematical state times. The initial terminal-noise sample is
+    stored at ``T`` and the final clean sample is stored at ``0``.
+    """
 
     if capture_every <= 0:
         raise ValueError("--trajectory-interval must be positive")
 
-    current_timestep = diffusion.num_timesteps - 1
+    current_timestep = diffusion.num_timesteps
     x_t = torch.randn(sample_shape, device=device)
     trajectory: dict[int, torch.Tensor] = {
         current_timestep: x_t.detach().cpu(),
@@ -212,10 +216,7 @@ def _dump_sampling_artifacts(
     diffusion.eval()
     training.logger.log_text(
         "ddpm/sampling_config",
-        (
-            f"reverse_method={diffusion.reverse_method}; "
-            f"clip_denoised={diffusion.clip_denoised}"
-        ),
+        f"clip_denoised={diffusion.clip_denoised}",
         step=training.trainer.global_step,
     )
     ema = training.ema

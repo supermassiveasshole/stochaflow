@@ -19,14 +19,16 @@ def ddpm_epsilon_train_step(
     """Run one DDPM epsilon-prediction training step.
 
     Expected inputs:
-    - ``model`` must be a :class:`DDPM`
+    - ``model`` must be a :class:`DDPM` or a compatible subclass such as DDIM
     - ``criterion`` must be a :class:`DDPMEpsilonObjective`
     - ``batch`` must be a tensor of clean samples or a tuple/list whose first
       element is the clean-sample tensor
     """
 
     if not isinstance(model, DDPM):
-        raise TypeError("ddpm_epsilon_train_step expects model to be an instance of DDPM")
+        raise TypeError(
+            "ddpm_epsilon_train_step expects a DDPM-compatible model"
+        )
     if not isinstance(criterion, DDPMEpsilonObjective):
         raise TypeError(
             "ddpm_epsilon_train_step expects criterion to be an instance of DDPMEpsilonObjective"

@@ -407,7 +407,7 @@ def build_ema(config: EMAConfig, model: nn.Module) -> ExponentialMovingAverage |
 def resolve_train_step_fn(diffusion_name: str, objective_name: str):
     """Resolve an algorithm-specific train step function when needed."""
 
-    if diffusion_name == "ddpm" and objective_name == "ddpm_epsilon":
+    if diffusion_name in {"ddpm", "ddim"} and objective_name == "ddpm_epsilon":
         return ddpm_epsilon_train_step
     return None
 

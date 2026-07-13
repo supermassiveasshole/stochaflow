@@ -45,7 +45,6 @@ model:
 diffusion:
   name: ddpm
   params:
-    reverse_method: posterior
     clip_denoised: true
   scheduler:
     name: linear_ddpm

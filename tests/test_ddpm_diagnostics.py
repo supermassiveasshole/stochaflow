@@ -51,7 +51,7 @@ def test_ddpm_diagnostic_logs_bucket_metrics(tmp_path) -> None:
     output = TrainStepOutput(
         loss=torch.tensor(0.0),
         diagnostics={
-            "timesteps": torch.tensor([0, 4, 5, 9]),
+            "timesteps": torch.tensor([1, 5, 6, 10]),
             "per_sample_loss": torch.tensor([1.0, 3.0, 5.0, 7.0]),
             "predicted_noise": torch.zeros(4, 1, 4, 4),
             "target_noise": torch.ones(4, 1, 4, 4),
@@ -69,8 +69,8 @@ def test_ddpm_diagnostic_logs_bucket_metrics(tmp_path) -> None:
 
     assert logger.metrics
     _, metrics = logger.metrics[0]
-    assert metrics["ddpm/loss_t_000_004"] == 2.0
-    assert metrics["ddpm/loss_t_005_009"] == 6.0
+    assert metrics["ddpm/loss_t_001_005"] == 2.0
+    assert metrics["ddpm/loss_t_006_010"] == 6.0
     assert metrics["ddpm/pred_noise_std"] == 0.0
 
 
@@ -84,7 +84,7 @@ def test_ddpm_diagnostic_writes_sample_and_reconstruction_artifacts(tmp_path) ->
         sample_num=2,
         sample_grid_size=2,
         reconstruction_every_epochs=1,
-        reconstruction_timesteps=[0, 1],
+        reconstruction_timesteps=[1, 2],
     )
     model = DDPM(
         scheduler=LinearDDPMScheduler(num_timesteps=4),
@@ -93,7 +93,7 @@ def test_ddpm_diagnostic_writes_sample_and_reconstruction_artifacts(tmp_path) ->
     output = TrainStepOutput(
         loss=torch.tensor(0.0),
         diagnostics={
-            "timesteps": torch.tensor([0, 1]),
+            "timesteps": torch.tensor([1, 2]),
             "per_sample_loss": torch.tensor([1.0, 1.0]),
         },
     )

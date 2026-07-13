@@ -88,7 +88,15 @@ def cosine_beta_schedule(
 
 
 class DiffusionScheduler(nn.Module, ABC):
-    """Abstract base class for discrete-time coefficient schedules."""
+    """Abstract base class for zero-based discrete diffusion coefficients.
+
+    A scheduler with ``num_timesteps == N`` stores the coefficients for ``N``
+    forward transitions. Its table index ``i`` lies in ``[0, N - 1]`` and
+    represents mathematical diffusion time ``t = i + 1``: for example,
+    ``alpha_bar_t[i]`` equals :math:`\bar\alpha_{i + 1}`. The clean endpoint
+    at mathematical time zero is intentionally outside the coefficient tables
+    and has cumulative alpha one.
+    """
 
     def __init__(self, num_timesteps: int) -> None:
         super().__init__()
@@ -97,7 +105,12 @@ class DiffusionScheduler(nn.Module, ABC):
         self.num_timesteps = int(num_timesteps)
 
     def validate_timesteps(self, timesteps: torch.Tensor) -> torch.Tensor:
-        """Validate and normalize a batch of timestep indices."""
+        """Validate zero-based scheduler indices for a batch.
+
+        These are coefficient-table and denoiser-conditioning indices, not the
+        mathematical state times used in the derivations. Index ``i``
+        represents the noisy state at mathematical time ``i + 1``.
+        """
 
         if timesteps.ndim != 1:
             raise ValueError("timesteps must be a 1D tensor")

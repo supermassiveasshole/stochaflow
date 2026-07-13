@@ -1,6 +1,7 @@
 """Diffusion package."""
 
 from .ddpm import DDPM, DDPMForwardOutput
+from .ddim import DDIM
 from .objectives import DDPMEpsilonObjective
 from .schedules import (
     CosineDDPMScheduler,
@@ -13,6 +14,7 @@ from .schedules import (
 __all__ = [
     "DDPM",
     "DDPMForwardOutput",
+    "DDIM",
     "DDPMEpsilonObjective",
     "CosineDDPMScheduler",
     "DiffusionScheduler",

@@ -32,7 +32,6 @@ def test_load_ddpm_flowers102_config() -> None:
     assert config.data.splits.test_split is None
     assert config.data.dataloader.batch_size == 64
     assert config.diffusion.name == "ddpm"
-    assert config.diffusion.params["reverse_method"] == "posterior"
     assert config.diffusion.params["clip_denoised"] is True
     assert config.diffusion.scheduler.name == "linear_ddpm"
     assert config.diffusion.scheduler.params["num_timesteps"] == 1000
@@ -47,6 +46,16 @@ def test_load_ddpm_flowers102_config() -> None:
     assert config.trainer.num_epochs == 700
     assert config.trainer.early_stopping.monitor == "train_loss"
     assert not config.trainer.early_stopping.enabled
+
+
+def test_load_ddim_cifar10_config() -> None:
+    config = load_config(Path("configs/ddim_cifar10.yaml"))
+
+    assert config.diffusion.name == "ddim"
+    assert config.diffusion.scheduler.name == "linear_ddpm"
+    assert config.diffusion.params["num_inference_steps"] == 100
+    assert config.diffusion.params["eta"] == 0.0
+    assert config.objective.name == "ddpm_epsilon"
 
 
 def test_config_to_dict_preserves_top_level_sections() -> None:

@@ -51,7 +51,6 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
     assert isinstance(components.model, UNet)
     assert isinstance(components.scheduler, LinearDDPMScheduler)
     assert isinstance(components.diffusion, DDPM)
-    assert components.diffusion.reverse_method == "posterior"
     assert components.diffusion.clip_denoised
     assert isinstance(components.objective, DDPMEpsilonObjective)
     assert isinstance(components.optimizer, Optimizer)
