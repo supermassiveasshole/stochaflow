@@ -4,16 +4,28 @@ experiment:
   output_dir: outputs/ddpm_cifar10
 
 data:
-  dataset:
-    name: cifar10
-    params:
-      root: ./data
-      split: train
-      image_size: 32
-      channels: 3
-      download: true
-      normalize: true
-      random_horizontal_flip: true
+  modules: []
+  datasets:
+    - id: cifar10
+      factory: cifar10
+      params:
+        root: ./data
+        download: true
+        random_horizontal_flip: true
+      splits:
+        train: train
+        test: test
+  image:
+    channels: 3
+    normalize: true
+  batching:
+    buckets:
+      - name: square_32
+        height: 32
+        width: 32
+    sample_bucket: square_32
+    dynamic_batch_size: true
+    steps_per_epoch: auto
   dataloader:
     batch_size: 128
     num_workers: 4
@@ -23,9 +35,7 @@ data:
     persistent_workers: true
   splits:
     mode: random_holdout
-    train_split: train
     validation_size: 5000
-    test_split: test
 
 model:
   name: unet
@@ -40,8 +50,8 @@ model:
 
 diffusion:
   name: ddpm
-  scheduler:
-    name: linear_ddpm
+  noise_schedule:
+    name: linear_beta
     params:
       num_timesteps: 1000
       beta_start: 0.0001

@@ -10,22 +10,42 @@ from torch.optim.lr_scheduler import LambdaLR, StepLR
 from stochaflow.diffusion import (
     DDPM,
     DDPMEpsilonObjective,
-    LinearDDPMScheduler,
+    LinearBetaSchedule,
 )
 from stochaflow.models import UNet
 from stochaflow.training import Trainer
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
+    ComponentConfig,
     LRSchedulerConfig,
     load_config,
     load_config_dict,
 )
 from stochaflow.utils.factory import (
+    build_diagnostics,
     build_lr_scheduler,
     build_training_components,
 )
-from stochaflow.utils.logging import ExperimentLogger
-from stochaflow.utils.registry import RegistryError
+from stochaflow.utils.logging import ExperimentLogger, NullLogger
+from stochaflow.utils.registry import REGISTRIES, RegistryError
+
+
+class MinimalDiagnostic:
+    """Custom diagnostic that only accepts the generic constructor contract."""
+
+    def __init__(
+        self,
+        *,
+        logger: ExperimentLogger,
+        output_dir: str,
+        marker: str,
+    ) -> None:
+        self.logger = logger
+        self.output_dir = output_dir
+        self.marker = marker
+
+
+REGISTRIES.diagnostics.add("test_minimal", MinimalDiagnostic)
 
 
 def test_build_training_components_from_ddpm_mnist_config() -> None:
@@ -33,7 +53,7 @@ def test_build_training_components_from_ddpm_mnist_config() -> None:
     components = build_training_components(config)
 
     assert isinstance(components.model, UNet)
-    assert isinstance(components.scheduler, LinearDDPMScheduler)
+    assert isinstance(components.noise_schedule, LinearBetaSchedule)
     assert isinstance(components.diffusion, DDPM)
     assert isinstance(components.objective, DDPMEpsilonObjective)
     assert isinstance(components.optimizer, Optimizer)
@@ -49,7 +69,7 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
     components = build_training_components(config, steps_per_epoch=10, num_epochs=200)
 
     assert isinstance(components.model, UNet)
-    assert isinstance(components.scheduler, LinearDDPMScheduler)
+    assert isinstance(components.noise_schedule, LinearBetaSchedule)
     assert isinstance(components.diffusion, DDPM)
     assert components.diffusion.clip_denoised
     assert isinstance(components.objective, DDPMEpsilonObjective)
@@ -60,6 +80,24 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
     assert isinstance(components.logger, ExperimentLogger)
     assert isinstance(components.checkpoint_manager, CheckpointManager)
     assert isinstance(components.trainer, Trainer)
+
+
+def test_custom_diagnostic_does_not_receive_ddpm_runtime_parameters(tmp_path) -> None:
+    logger = NullLogger()
+
+    diagnostics = build_diagnostics(
+        [ComponentConfig(name="test_minimal", params={"marker": "ready"})],
+        logger=logger,
+        output_dir=str(tmp_path),
+        sample_shape=(3, 32, 32),
+    )
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert isinstance(diagnostic, MinimalDiagnostic)
+    assert diagnostic.logger is logger
+    assert diagnostic.output_dir == str(tmp_path)
+    assert diagnostic.marker == "ready"
 
 
 def test_warmup_cosine_lr_scheduler_uses_auto_total_steps() -> None:

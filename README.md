@@ -15,9 +15,10 @@ Implemented:
 
 - DDPM epsilon-prediction training
 - DDPM reverse sampling and trajectory capture
-- linear and cosine DDPM beta schedules
-- MNIST, CIFAR-10, and Oxford Flowers 102 dataset builders
-- unified `DataBundle` pipeline for train/valid/test/all/kfold splits
+- beta-native linear and alpha-bar-native cosine noise schedules
+- class-based MNIST, CIFAR-10, and Oxford Flowers 102 dataset factories
+- multi-source mixtures with optional step weights and global holdout/K-fold splits
+- per-sample resolution buckets with pixel-budget-scaled batch sizes
 - UNet backbone with optional attention blocks
 - EMA tracking and EMA sampling
 - warmup-cosine and common PyTorch optimizer LR schedulers
@@ -103,6 +104,22 @@ uv run stochaflow-train-flowers102-ddpm \
   --config configs/ddpm_flowers102.yaml
 ```
 
+Multi-source MNIST + Flowers102 run:
+
+```bash
+uv run stochaflow-train-ddpm \
+  --config configs/ddpm_mnist_flowers102.yaml \
+  --epochs 1 \
+  --limit-batches 10
+```
+
+Custom factories are registered as classes and imported through
+`data.modules`; see [Custom datasets](docs/custom-datasets.md).
+
+For the complete YAML schema, defaults, validation rules, built-in component
+parameters, multi-source mixing, buckets, K-fold, logging, and CLI overrides,
+see [Configuration reference](docs/configuration.md).
+
 If `--epochs` is omitted, the runner uses `trainer.num_epochs` from the YAML
 config. Passing `--epochs` is an explicit run-time override.
 
@@ -177,6 +194,7 @@ configs/ddpm_mnist.yaml
 configs/ddpm_cifar10.yaml
 configs/ddim_cifar10.yaml
 configs/ddpm_flowers102.yaml
+configs/ddpm_mnist_flowers102.yaml
 ```
 
 Important sections:
@@ -184,7 +202,7 @@ Important sections:
 - `experiment`: run name, seed, and output directory
 - `data`: dataset declaration, dataloader policy, and split policy
 - `model`: registered model name and constructor parameters
-- `diffusion`: process type, reverse method, and diffusion scheduler
+- `diffusion`: process type, forward noise schedule, and sampler parameters
 - `objective`: training objective
 - `optimizer`: optimizer name and hyperparameters
 - `lr_scheduler`: optional optimizer learning-rate scheduler
@@ -216,7 +234,9 @@ schedule.
 : UNet, residual blocks, attention blocks, and timestep embeddings.
 
 `src/stochaflow/diffusion/`
-: diffusion processes, schedules, and objectives.
+: diffusion processes, objectives, and the class-based `noise_schedules/`
+  package. Noise-path abstractions, discrete VP storage, and concrete
+  parameterizations are kept in separate modules.
 
 `src/stochaflow/training/`
 : trainer, train-step adapters, diagnostics, reporting, and EMA.

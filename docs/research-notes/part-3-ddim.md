@@ -50,8 +50,13 @@ $$
 
 公开 schedule 写成 $(\tau_K,\ldots,\tau_1,\tau_0)$，完整采样必须显式从
 $T$ 开始并以 $0$ 结束。对每一对相邻状态 $t\to s$，只在 source state
-$t\ge1$ 调用一次模型，并使用 model timestep $t-1$；scheduler 同样读取内部
+$t\ge1$ 调用一次模型，并使用 model timestep $t-1$；noise schedule 同样读取内部
 index $t-1$。Clean state $0$ 不调用模型，整个公开层不存在 ``-1``。
+
+DDIM 与 DDPM 共享 Gaussian forward-training contract 和同一个 noise schedule
+抽象，但二者是同级 sampler：DDIM 不继承也不分配 DDPM posterior coefficients。
+DDIM reverse 只需要从公共噪声路径读取 source/target states 对应的
+$\bar\alpha_t$ 与 $\bar\alpha_s$，并保存自己特有的 $\eta$ 和 inference schedule。
 
 时间方向统一如下：
 
@@ -1457,7 +1462,7 @@ $$
 \hat x_0^{(t)}
 =
 \frac{
-x_t-sqrt{1-\bar\alpha_t}\,\hat\epsilon_t
+x_t-\sqrt{1-\bar\alpha_t}\,\hat\epsilon_t
 }{
 \sqrt{\bar\alpha_t}
 }.
@@ -2303,8 +2308,8 @@ $$
 实现一个 selected-pair reverse step 时，输入只有：
 
 $$
-x_t,quad t,quad s,quad \eta,quad
-\bar\alpha_t,quad\bar\alpha_s,quad
+x_t,\quad t,\quad s,\quad \eta,\quad
+\bar\alpha_t,\quad\bar\alpha_s,\quad
 \epsilon_\theta.
 $$
 
@@ -2324,7 +2329,7 @@ $$
 \hat x_0^{(t)}
 =
 \frac{
-x_t-sqrt{1-\bar\alpha_t}\,\hat\epsilon_t
+x_t-\sqrt{1-\bar\alpha_t}\,\hat\epsilon_t
 }{
 \sqrt{\bar\alpha_t}
 }.
@@ -2371,7 +2376,7 @@ $$
 d_{t\to s}
 \coloneqq
 \sqrt{
-1-\bar\alpha_s-sigma_{t\to s}^2
+1-\bar\alpha_s-\sigma_{t\to s}^2
 }.
 $$
 

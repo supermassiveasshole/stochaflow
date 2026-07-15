@@ -5,7 +5,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from stochaflow.diffusion.ddpm import DDPM
+from stochaflow.diffusion.gaussian import GaussianDiffusion
 from stochaflow.diffusion.objectives import DDPMEpsilonObjective
 from stochaflow.training.trainer import TrainStepOutput
 
@@ -19,13 +19,13 @@ def ddpm_epsilon_train_step(
     """Run one DDPM epsilon-prediction training step.
 
     Expected inputs:
-    - ``model`` must be a :class:`DDPM` or a compatible subclass such as DDIM
+    - ``model`` must implement the shared discrete Gaussian training contract
     - ``criterion`` must be a :class:`DDPMEpsilonObjective`
     - ``batch`` must be a tensor of clean samples or a tuple/list whose first
       element is the clean-sample tensor
     """
 
-    if not isinstance(model, DDPM):
+    if not isinstance(model, GaussianDiffusion):
         raise TypeError(
             "ddpm_epsilon_train_step expects a DDPM-compatible model"
         )

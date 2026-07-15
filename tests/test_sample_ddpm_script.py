@@ -9,38 +9,54 @@ from stochaflow.scripts import sample_ddpm
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import load_config_dict
-from stochaflow.utils.factory import build_diffusion, build_model, build_scheduler
+from stochaflow.utils.factory import (
+    build_diffusion,
+    build_model,
+    build_noise_schedule,
+)
+
+
+def _image_data_config(*, image_size: int, channels: int) -> dict:
+    return {
+        "modules": [],
+        "datasets": [
+            {
+                "id": "mnist",
+                "factory": "mnist",
+                "params": {"root": "./data", "download": False},
+                "splits": {"train": "train"},
+            }
+        ],
+        "image": {"channels": channels, "normalize": True},
+        "batching": {
+            "buckets": [
+                {
+                    "name": "sample",
+                    "height": image_size,
+                    "width": image_size,
+                }
+            ],
+            "sample_bucket": "sample",
+            "dynamic_batch_size": True,
+            "steps_per_epoch": "auto",
+        },
+        "dataloader": {
+            "batch_size": 4,
+            "num_workers": 0,
+            "shuffle": True,
+            "drop_last": True,
+            "pin_memory": False,
+            "persistent_workers": False,
+        },
+        "splits": {"mode": "none"},
+    }
 
 
 def test_load_sampling_config_reads_checkpoint_config(tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint.pt"
     config = {
         "experiment": {"name": "ddpm_mnist"},
-        "data": {
-            "dataset": {
-                "name": "mnist",
-                "params": {
-                    "root": "./data",
-                    "split": "train",
-                    "image_size": 32,
-                    "channels": 1,
-                    "download": False,
-                    "normalize": True,
-                },
-            },
-            "dataloader": {
-                "batch_size": 4,
-                "num_workers": 0,
-                "shuffle": True,
-                "drop_last": True,
-                "pin_memory": False,
-                "persistent_workers": False,
-            },
-            "splits": {
-                "mode": "none",
-                "train_split": "train",
-            },
-        },
+        "data": _image_data_config(image_size=32, channels=1),
         "model": {
             "name": "unet",
             "params": {
@@ -55,8 +71,8 @@ def test_load_sampling_config_reads_checkpoint_config(tmp_path) -> None:
         },
         "diffusion": {
             "name": "ddpm",
-            "scheduler": {
-                "name": "linear_ddpm",
+            "noise_schedule": {
+                "name": "linear_beta",
                 "params": {"num_timesteps": 10},
             },
         },
@@ -73,7 +89,7 @@ def test_load_sampling_config_reads_checkpoint_config(tmp_path) -> None:
     loaded = sample_ddpm._load_sampling_config(checkpoint_path)
 
     assert loaded.experiment.name == "ddpm_mnist"
-    assert loaded.data.dataset.name == "mnist"
+    assert loaded.data.datasets[0].factory == "mnist"
     assert loaded.diffusion.name == "ddpm"
 
 
@@ -114,28 +130,7 @@ def test_build_checkpointed_ddpm_applies_ema_weights(tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint.pt"
     raw_config = {
         "experiment": {"name": "ddpm_tiny"},
-        "data": {
-            "dataset": {
-                "name": "mnist",
-                "params": {
-                    "root": "./data",
-                    "split": "train",
-                    "image_size": 8,
-                    "channels": 1,
-                    "download": False,
-                    "normalize": True,
-                },
-            },
-            "dataloader": {
-                "batch_size": 4,
-                "num_workers": 0,
-                "shuffle": True,
-                "drop_last": True,
-                "pin_memory": False,
-                "persistent_workers": False,
-            },
-            "splits": {"mode": "none", "train_split": "train"},
-        },
+        "data": _image_data_config(image_size=8, channels=1),
         "model": {
             "name": "unet",
             "params": {
@@ -150,8 +145,8 @@ def test_build_checkpointed_ddpm_applies_ema_weights(tmp_path) -> None:
         },
         "diffusion": {
             "name": "ddpm",
-            "scheduler": {
-                "name": "linear_ddpm",
+            "noise_schedule": {
+                "name": "linear_beta",
                 "params": {"num_timesteps": 10},
             },
         },
@@ -160,11 +155,11 @@ def test_build_checkpointed_ddpm_applies_ema_weights(tmp_path) -> None:
     }
     config = load_config_dict(raw_config)
     model = build_model(config.model)
-    scheduler = build_scheduler(config.diffusion.scheduler)
+    noise_schedule = build_noise_schedule(config.diffusion.noise_schedule)
     diffusion = build_diffusion(
         config.diffusion.name,
         model=model,
-        scheduler=scheduler,
+        noise_schedule=noise_schedule,
         params=config.diffusion.params,
     )
     ema = ExponentialMovingAverage(diffusion)

@@ -8,9 +8,10 @@ import torch
 
 from stochaflow.diffusion import DDPM
 from stochaflow.sampling import save_image_grid
+from stochaflow.training.diagnostic_context import DiagnosticBuildContext
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.utils.logging import ExperimentLogger
-from stochaflow.utils.registry import register_diagnostic
+from stochaflow.utils.registry import REGISTRIES
 
 
 def _first_tensor_from_batch(batch: Any) -> torch.Tensor | None:
@@ -51,15 +52,25 @@ def _with_optional_ema(
     return _EMAContext()
 
 
-@register_diagnostic("ddpm")
+@REGISTRIES.diagnostics.register("ddpm")
 class DDPMDiagnosticLogger:
     """DDPM-specific training diagnostics backed by the experiment logger."""
+
+    @classmethod
+    def context_parameters(
+        cls,
+        context: DiagnosticBuildContext,
+    ) -> dict[str, Any]:
+        """Request the configured sampling shape from the runtime context."""
+
+        return {"sample_shape": context.sample_shape}
 
     def __init__(
         self,
         *,
         logger: ExperimentLogger,
         output_dir: str | Path,
+        sample_shape: Sequence[int],
         interval: int = 100,
         timestep_buckets: int = 10,
         sample_every_epochs: int = 5,
@@ -80,6 +91,10 @@ class DDPMDiagnosticLogger:
             raise ValueError("ddpm diagnostic sample_num must be positive")
         if sample_grid_size <= 0:
             raise ValueError("ddpm diagnostic sample_grid_size must be positive")
+        if len(sample_shape) != 3 or any(int(value) <= 0 for value in sample_shape):
+            raise ValueError(
+                "ddpm diagnostic sample_shape must contain positive C, H, W"
+            )
         if reconstruction_every_epochs <= 0:
             raise ValueError(
                 "ddpm diagnostic reconstruction_every_epochs must be positive"
@@ -93,6 +108,7 @@ class DDPMDiagnosticLogger:
         self.sample_num = sample_num
         self.sample_seed = sample_seed
         self.sample_grid_size = sample_grid_size
+        self.sample_shape = tuple(int(value) for value in sample_shape)
         self.reconstruction_every_epochs = reconstruction_every_epochs
         self.reconstruction_timesteps = [
             int(value) for value in reconstruction_timesteps
@@ -189,8 +205,7 @@ class DDPMDiagnosticLogger:
     def _save_samples(self, trainer: Any, epoch_index: int) -> None:
         model: DDPM = trainer.model
         device = trainer.device
-        channels, image_size = self._infer_image_shape()
-        sample_shape = torch.Size((self.sample_num, channels, image_size, image_size))
+        sample_shape = torch.Size((self.sample_num, *self.sample_shape))
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         with torch.no_grad(), torch.random.fork_rng(devices=_fork_rng_devices(device)):
@@ -219,13 +234,6 @@ class DDPMDiagnosticLogger:
             f"samples={grid_path}; raw_samples={tensor_path}",
             step=trainer.global_step,
         )
-
-    def _infer_image_shape(self) -> tuple[int, int]:
-        if self._last_clean_batch is not None and self._last_clean_batch.ndim == 4:
-            return int(self._last_clean_batch.shape[1]), int(
-                self._last_clean_batch.shape[-1]
-            )
-        return 3, 64
 
     def _save_reconstructions(self, trainer: Any, epoch_index: int) -> None:
         if self._last_clean_batch is None:

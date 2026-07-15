@@ -27,7 +27,6 @@ def main() -> None:
 
     run_ddpm_from_args(
         _build_argument_parser().parse_args(),
-        expected_dataset="flowers102",
         script_name="train_flowers102_ddpm.py",
         sample_shape_fn=image_sample_shape,
     )

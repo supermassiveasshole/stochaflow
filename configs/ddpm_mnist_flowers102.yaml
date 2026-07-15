@@ -1,13 +1,23 @@
 experiment:
-  name: ddim_cifar10
+  name: ddpm_mnist_flowers102
   seed: 42
-  output_dir: outputs/ddim_cifar10
+  output_dir: outputs/ddpm_mnist_flowers102
 
 data:
   modules: []
   datasets:
-    - id: cifar10
-      factory: cifar10
+    - id: digits
+      factory: mnist
+      sampling_weight: 0.4
+      params:
+        root: ./data
+        download: true
+      splits:
+        train: train
+        test: test
+    - id: flowers
+      factory: flowers102
+      sampling_weight: 0.6
       params:
         root: ./data
         download: true
@@ -23,11 +33,14 @@ data:
       - name: square_32
         height: 32
         width: 32
-    sample_bucket: square_32
+      - name: square_64
+        height: 64
+        width: 64
+    sample_bucket: square_64
     dynamic_batch_size: true
     steps_per_epoch: auto
   dataloader:
-    batch_size: 128
+    batch_size: 64
     num_workers: 4
     shuffle: true
     drop_last: true
@@ -35,7 +48,7 @@ data:
     persistent_workers: true
   splits:
     mode: random_holdout
-    validation_size: 5000
+    validation_size: 0.1
 
 model:
   name: unet
@@ -43,22 +56,21 @@ model:
     in_channels: 3
     out_channels: 3
     base_channels: 128
-    channel_multipliers: [1, 2, 2, 4]
+    channel_multipliers: [1, 2, 4]
     num_res_blocks: 2
     time_embedding_dim: 128
     dropout: 0.1
 
 diffusion:
-  name: ddim
+  name: ddpm
+  params:
+    clip_denoised: true
   noise_schedule:
     name: linear_beta
     params:
       num_timesteps: 1000
       beta_start: 0.0001
       beta_end: 0.02
-  params:
-    num_inference_steps: 100
-    eta: 0.0
 
 objective:
   name: ddpm_epsilon
@@ -68,7 +80,7 @@ objective:
 optimizer:
   name: adam
   params:
-    lr: 0.0002
+    lr: 0.0001
     weight_decay: 0.0001
     betas: [0.9, 0.999]
     eps: 1.0e-8

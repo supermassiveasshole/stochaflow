@@ -247,6 +247,11 @@ class Trainer:
 
         if max_batches is not None and max_batches <= 0:
             raise ValueError("max_batches must be positive when provided")
+        if epoch_index is not None:
+            batch_sampler = getattr(dataloader, "batch_sampler", None)
+            set_epoch = getattr(batch_sampler, "set_epoch", None)
+            if callable(set_epoch):
+                set_epoch(epoch_index)
 
         progress_reporter = reporter
         if progress_reporter is not None:

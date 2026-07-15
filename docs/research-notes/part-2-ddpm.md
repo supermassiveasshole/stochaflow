@@ -40,7 +40,8 @@ $$
 使用上面的数学状态时间 $t\in\{0,\ldots,T\}$：$t=0$ 就是 clean state，
 $t=T$ 就是 terminal noisy state，不存在负时间。
 
-Scheduler 为方便张量索引，只存储长度 $T$ 的 coefficient table。其零基索引
+Noise schedule 为方便张量索引，只存储长度 $T$ 的公共 forward coefficient
+table。其零基索引
 $i\in\{0,\ldots,T-1\}$ 与数学状态时间的对应关系是
 
 $$
@@ -51,9 +52,20 @@ $$
 
 因此 table index $0$ 表示第一次加噪后的 $x_1$。Clean endpoint $x_0$ 不占用 coefficient table，累计系数始终是 $\bar\alpha_0=1$。实现的 sampling loop 直接使用
 数学状态序列 $T,T-1,\ldots,0$。每次 transition 的 source state 为 $t\ge1$，
-内部 scheduler index 和 model timestep 都取 $t-1$。因此实际模型条件序列仍是
+内部 noise-schedule table index 和 model timestep 都取 $t-1$。因此实际模型条件序列仍是
 OpenAI 风格的 $T-1,T-2,\ldots,0$，但公开返回的状态始终是 $x_T$ 到 $x_0$，
 无需任何 ``-1`` sentinel。
+
+代码中的 noise schedule 只拥有 $\beta_t$、$\alpha_t$、$\bar\alpha_t$ 及其
+forward marginal 常用形式。DDPM 专用的 posterior variance 和 posterior mean
+coefficients 由 DDPM sampler 从这条公共噪声路径派生并自行保存；linear beta 与
+cosine alpha-bar 则是两种可替换的路径参数化，不再与 DDPM 类名形成笛卡尔积。
+顶层 `NoiseSchedule` contract 不要求 beta，而要求公开时间域验证和 Gaussian
+forward marginal scales $a(t),s(t)$，使
+$x_t=a(t)x_0+s(t)\epsilon$；SNR 由这两个 scales 统一派生。
+`DiscreteVPSchedule` 再负责长度 $T$ 的 VP coefficient tables 和离散状态查询；
+`LinearBetaSchedule`、`CosineAlphaBarSchedule` 分别只负责自己的路径构造策略。
+这些职责位于 `diffusion/noise_schedules/` 的独立模块中，不同时提供自由函数式 API。
 
 ---
 

@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from stochaflow.utils.registry import register_logger
+from stochaflow.utils.registry import REGISTRIES
 
 
 def _normalize_scalar(value: Any) -> int | float | str | bool:
@@ -106,7 +106,7 @@ class CompositeLogger(ExperimentLogger):
             backend.close()
 
 
-@register_logger("local")
+@REGISTRIES.loggers.register("local")
 class LocalLogger(ExperimentLogger):
     """Structured local logger with human-readable text logs and JSONL metrics."""
 
@@ -173,7 +173,7 @@ class LocalLogger(ExperimentLogger):
             self.text_logger.removeHandler(handler)
 
 
-@register_logger("tensorboard")
+@REGISTRIES.loggers.register("tensorboard")
 class TensorBoardLogger(ExperimentLogger):
     """TensorBoard backend for scalar and text summaries."""
 
@@ -210,7 +210,7 @@ class TensorBoardLogger(ExperimentLogger):
         self.writer.close()
 
 
-@register_logger("wandb")
+@REGISTRIES.loggers.register("wandb")
 class WandbLogger(ExperimentLogger):
     """Weights & Biases backend for experiment tracking."""
 

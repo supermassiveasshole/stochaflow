@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from stochaflow.diffusion import DDPM, LinearDDPMScheduler
+from stochaflow.diffusion import DDPM, LinearBetaSchedule
 from stochaflow.scripts.ddpm_runner import sample_reverse_trajectory
 
 
@@ -38,8 +38,8 @@ class LoudNoiseDDPM(DDPM):
 class RecordingReverseDDPM(DDPM):
     """DDPM variant that records public source-state times."""
 
-    def __init__(self, scheduler: LinearDDPMScheduler, model: nn.Module) -> None:
-        super().__init__(scheduler=scheduler, model=model)
+    def __init__(self, noise_schedule: LinearBetaSchedule, model: nn.Module) -> None:
+        super().__init__(noise_schedule=noise_schedule, model=model)
         self.reverse_step_indices: list[int] = []
 
     def reverse_step(
@@ -54,9 +54,9 @@ class RecordingReverseDDPM(DDPM):
 
 
 def test_ddpm_forward_returns_predicted_noise() -> None:
-    scheduler = LinearDDPMScheduler(num_timesteps=10)
+    noise_schedule = LinearBetaSchedule(num_timesteps=10)
     denoiser = RecordingDenoiser()
-    ddpm = DDPM(scheduler=scheduler, model=denoiser)
+    ddpm = DDPM(noise_schedule=noise_schedule, model=denoiser)
     x0 = torch.randn(4, 1, 8, 8)
     timesteps = torch.tensor([1, 2, 3, 4], dtype=torch.long)
 
@@ -73,7 +73,7 @@ def test_ddpm_forward_returns_predicted_noise() -> None:
 
 def test_ddpm_add_noise_exposes_clean_state_time_zero() -> None:
     ddpm = DDPM(
-        scheduler=LinearDDPMScheduler(num_timesteps=10),
+        noise_schedule=LinearBetaSchedule(num_timesteps=10),
         model=ToyDenoiser(),
     )
     x0 = torch.randn(2, 1, 8, 8)
@@ -90,8 +90,12 @@ def test_ddpm_add_noise_exposes_clean_state_time_zero() -> None:
 
 
 def test_ddpm_estimate_x0_clips_denoised_reconstruction() -> None:
-    scheduler = LinearDDPMScheduler(num_timesteps=10)
-    ddpm = DDPM(scheduler=scheduler, model=ToyDenoiser(), clip_denoised=True)
+    noise_schedule = LinearBetaSchedule(num_timesteps=10)
+    ddpm = DDPM(
+        noise_schedule=noise_schedule,
+        model=ToyDenoiser(),
+        clip_denoised=True,
+    )
     xt = torch.full((2, 1, 8, 8), 10.0)
     timesteps = torch.tensor([1, 2], dtype=torch.long)
 
@@ -108,8 +112,8 @@ def test_ddpm_estimate_x0_clips_denoised_reconstruction() -> None:
 
 
 def test_ddpm_reverse_step_at_state_time_one_masks_noise_term() -> None:
-    scheduler = LinearDDPMScheduler(num_timesteps=10)
-    ddpm = LoudNoiseDDPM(scheduler=scheduler, model=ToyDenoiser())
+    noise_schedule = LinearBetaSchedule(num_timesteps=10)
+    ddpm = LoudNoiseDDPM(noise_schedule=noise_schedule, model=ToyDenoiser())
     xt = torch.randn(2, 1, 8, 8)
     timesteps = torch.ones(2, dtype=torch.long)
 
@@ -121,12 +125,11 @@ def test_ddpm_reverse_step_at_state_time_one_masks_noise_term() -> None:
         predicted_noise=predicted_noise,
         clip_denoised=True,
     )
-    scheduler_timesteps = timesteps - 1
-    posterior_mean_coef1 = scheduler.coefficients_at(
-        "posterior_mean_coef1", scheduler_timesteps, xt.size()
+    posterior_mean_coef1 = ddpm._posterior_coefficients_at(
+        ddpm.posterior_mean_coef1, timesteps, xt.size()
     )
-    posterior_mean_coef2 = scheduler.coefficients_at(
-        "posterior_mean_coef2", scheduler_timesteps, xt.size()
+    posterior_mean_coef2 = ddpm._posterior_coefficients_at(
+        ddpm.posterior_mean_coef2, timesteps, xt.size()
     )
     expected = posterior_mean_coef1 * x0 + posterior_mean_coef2 * xt
 
@@ -135,7 +138,7 @@ def test_ddpm_reverse_step_at_state_time_one_masks_noise_term() -> None:
 
 def test_ddpm_reverse_uses_all_transitions_to_reach_clean_time_zero() -> None:
     ddpm = RecordingReverseDDPM(
-        scheduler=LinearDDPMScheduler(num_timesteps=10),
+        noise_schedule=LinearBetaSchedule(num_timesteps=10),
         model=ToyDenoiser(),
     )
 
@@ -147,7 +150,7 @@ def test_ddpm_reverse_uses_all_transitions_to_reach_clean_time_zero() -> None:
 
 def test_ddpm_public_reverse_uses_zero_as_the_clean_endpoint() -> None:
     ddpm = DDPM(
-        scheduler=LinearDDPMScheduler(num_timesteps=10),
+        noise_schedule=LinearBetaSchedule(num_timesteps=10),
         model=ToyDenoiser(),
     )
     x0 = torch.randn(2, 1, 8, 8)
@@ -157,7 +160,7 @@ def test_ddpm_public_reverse_uses_zero_as_the_clean_endpoint() -> None:
 
 def test_ddpm_public_reverse_rejects_negative_state_times() -> None:
     ddpm = DDPM(
-        scheduler=LinearDDPMScheduler(num_timesteps=10),
+        noise_schedule=LinearBetaSchedule(num_timesteps=10),
         model=ToyDenoiser(),
     )
 
@@ -166,8 +169,8 @@ def test_ddpm_public_reverse_rejects_negative_state_times() -> None:
 
 
 def test_ddpm_can_sample() -> None:
-    scheduler = LinearDDPMScheduler(num_timesteps=10)
-    ddpm = DDPM(scheduler=scheduler, model=ToyDenoiser())
+    noise_schedule = LinearBetaSchedule(num_timesteps=10)
+    ddpm = DDPM(noise_schedule=noise_schedule, model=ToyDenoiser())
 
     samples = ddpm.sample(torch.Size((2, 1, 8, 8)), device=torch.device("cpu"))
 
@@ -175,9 +178,9 @@ def test_ddpm_can_sample() -> None:
 
 
 def test_ddpm_reverse_step_clips_x0_before_posterior_mean() -> None:
-    scheduler = LinearDDPMScheduler(num_timesteps=10)
+    noise_schedule = LinearBetaSchedule(num_timesteps=10)
     ddpm = DDPM(
-        scheduler=scheduler,
+        noise_schedule=noise_schedule,
         model=ToyDenoiser(),
         clip_denoised=True,
     )
@@ -191,14 +194,13 @@ def test_ddpm_reverse_step_clips_x0_before_posterior_mean() -> None:
         predicted_noise=torch.zeros_like(xt),
         clip_denoised=True,
     )
-    scheduler_timesteps = timesteps - 1
     expected = (
-        scheduler.coefficients_at(
-            "posterior_mean_coef1", scheduler_timesteps, xt.size()
+        ddpm._posterior_coefficients_at(
+            ddpm.posterior_mean_coef1, timesteps, xt.size()
         )
         * x0_hat
-        + scheduler.coefficients_at(
-            "posterior_mean_coef2", scheduler_timesteps, xt.size()
+        + ddpm._posterior_coefficients_at(
+            ddpm.posterior_mean_coef2, timesteps, xt.size()
         )
         * xt
     )
@@ -206,9 +208,39 @@ def test_ddpm_reverse_step_clips_x0_before_posterior_mean() -> None:
     assert torch.allclose(x_prev, expected)
 
 
+def test_ddpm_loads_legacy_scheduler_owned_buffers() -> None:
+    original = DDPM(
+        noise_schedule=LinearBetaSchedule(num_timesteps=10),
+        model=ToyDenoiser(),
+    )
+    posterior_names = {
+        "sqrt_posterior_variance_t",
+        "posterior_mean_coef1",
+        "posterior_mean_coef2",
+    }
+    legacy_state: dict[str, torch.Tensor] = {}
+    for name, value in original.state_dict().items():
+        if name.startswith("noise_schedule."):
+            legacy_state[f"scheduler.{name.removeprefix('noise_schedule.')}"] = value
+        elif name in posterior_names:
+            legacy_state[f"scheduler.{name}"] = value
+        else:
+            legacy_state[name] = value
+    legacy_state["scheduler.sqrt_recip_alpha_t"] = torch.ones(10)
+
+    restored = DDPM(
+        noise_schedule=LinearBetaSchedule(num_timesteps=10),
+        model=ToyDenoiser(),
+    )
+    restored.load_state_dict(legacy_state)
+
+    assert torch.equal(restored.noise_schedule.beta_t, original.noise_schedule.beta_t)
+    assert torch.equal(restored.posterior_mean_coef1, original.posterior_mean_coef1)
+
+
 def test_script_reverse_trajectory_captures_initial_intermediate_and_final() -> None:
-    scheduler = LinearDDPMScheduler(num_timesteps=10)
-    ddpm = DDPM(scheduler=scheduler, model=ToyDenoiser())
+    noise_schedule = LinearBetaSchedule(num_timesteps=10)
+    ddpm = DDPM(noise_schedule=noise_schedule, model=ToyDenoiser())
     sample_shape = torch.Size((2, 1, 8, 8))
 
     trajectory = sample_reverse_trajectory(

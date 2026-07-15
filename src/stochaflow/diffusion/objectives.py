@@ -4,10 +4,10 @@ import torch
 import torch.nn as nn
 
 from stochaflow.diffusion.gaussian import DiffusionForwardOutput
-from stochaflow.utils.registry import register_objective
+from stochaflow.utils.registry import REGISTRIES
 
 
-@register_objective("ddpm_epsilon")
+@REGISTRIES.objectives.register("ddpm_epsilon")
 class DDPMEpsilonObjective(nn.Module):
     """Epsilon-prediction objective for DDPM training.
 

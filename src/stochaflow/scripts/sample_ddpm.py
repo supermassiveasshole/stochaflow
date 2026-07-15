@@ -12,9 +12,13 @@ from stochaflow.sampling import save_image_grid, save_trajectory_grid
 from stochaflow.scripts.ddpm_runner import image_sample_shape, sample_reverse_trajectory
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import StochaflowConfig, load_config_dict
-from stochaflow.utils.factory import build_diffusion, build_ema, build_model
-from stochaflow.utils.factory import build_scheduler
-from stochaflow.utils.factory import resolve_device
+from stochaflow.utils.factory import (
+    build_diffusion,
+    build_ema,
+    build_model,
+    build_noise_schedule,
+    resolve_device,
+)
 from stochaflow.utils.seed import set_seed
 
 
@@ -144,11 +148,11 @@ def _build_checkpointed_ddpm(
     disable_ema: bool = False,
 ) -> tuple[DDPM, int | None, bool]:
     model = build_model(config.model)
-    scheduler = build_scheduler(config.diffusion.scheduler)
+    noise_schedule = build_noise_schedule(config.diffusion.noise_schedule)
     diffusion = build_diffusion(
         config.diffusion.name,
         model=model,
-        scheduler=scheduler,
+        noise_schedule=noise_schedule,
         params=config.diffusion.params,
     )
     if not isinstance(diffusion, DDPM):

@@ -7,12 +7,12 @@ import torch.nn as nn
 
 from stochaflow.diffusion.gaussian import GaussianDiffusion
 from stochaflow.diffusion.noise_schedules import DiscreteVPSchedule
-from stochaflow.utils.registry import register_diffusion
+from stochaflow.utils.registry import REGISTRIES
 
 SamplingTimesteps = Sequence[int] | torch.Tensor
 
 
-@register_diffusion("ddim")
+@REGISTRIES.diffusions.register("ddim")
 class DDIM(GaussianDiffusion):
     """Denoising Diffusion Implicit Model with an explicit inference schedule.
 

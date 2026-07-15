@@ -4,12 +4,12 @@ import math
 
 import torch
 
-from stochaflow.utils.registry import register_noise_schedule
+from stochaflow.utils.registry import REGISTRIES
 
 from .discrete_vp import DiscreteVPSchedule
 
 
-@register_noise_schedule("cosine_alpha_bar")
+@REGISTRIES.noise_schedules.register("cosine_alpha_bar")
 class CosineAlphaBarSchedule(DiscreteVPSchedule):
     r"""Build a discrete VP path from a cosine cumulative-signal curve.
 

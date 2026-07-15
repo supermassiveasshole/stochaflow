@@ -10,13 +10,13 @@ from stochaflow.diffusion.gaussian import (
     GaussianDiffusion,
 )
 from stochaflow.diffusion.noise_schedules import DiscreteVPSchedule
-from stochaflow.utils.registry import register_diffusion
+from stochaflow.utils.registry import REGISTRIES
 
 # Compatibility alias for callers using the original algorithm-specific name.
 DDPMForwardOutput = DiffusionForwardOutput
 
 
-@register_diffusion("ddpm")
+@REGISTRIES.diffusions.register("ddpm")
 class DDPM(GaussianDiffusion):
     r"""DDPM reverse process over a shared discrete Gaussian noise path.
 

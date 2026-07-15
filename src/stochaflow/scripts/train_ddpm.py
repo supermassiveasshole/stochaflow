@@ -1,34 +1,28 @@
-"""Task-specific training script for CIFAR-10 DDPM."""
+"""Train a registered single- or multi-dataset DDPM experiment."""
 
 import argparse
 from pathlib import Path
 
 from stochaflow.scripts.ddpm_runner import (
     add_ddpm_training_arguments,
-    image_sample_shape,
     run_ddpm_from_args,
 )
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
-    """Create the CLI parser for the CIFAR-10 DDPM training script."""
-
     parser = argparse.ArgumentParser(description=__doc__)
     return add_ddpm_training_arguments(
         parser,
-        default_config=Path("configs/ddpm_cifar10.yaml"),
-        default_num_samples=16,
-        default_sample_grid_size=4,
+        default_config=Path("configs/ddpm_mnist.yaml"),
     )
 
 
 def main() -> None:
-    """Run CIFAR-10 DDPM training against the current implementation."""
+    """Run a config-selected DDPM experiment."""
 
     run_ddpm_from_args(
         _build_argument_parser().parse_args(),
-        script_name="train_cifar10_ddpm.py",
-        sample_shape_fn=image_sample_shape,
+        script_name="train_ddpm.py",
     )
 
 

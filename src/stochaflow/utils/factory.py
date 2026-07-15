@@ -1,12 +1,10 @@
 """Component registries and builder utilities."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from importlib import import_module
 import math
-import random
 from typing import Any
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import Adam, AdamW, Optimizer
@@ -18,38 +16,24 @@ from torch.optim.lr_scheduler import (
     MultiStepLR,
     StepLR,
 )
-from torch.utils.data import DataLoader, Dataset
 
-from stochaflow.diffusion import DiffusionScheduler
+from stochaflow.diffusion import NoiseSchedule
 from stochaflow.training import Trainer
+from stochaflow.training.diagnostic_context import DiagnosticBuildContext
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.training.losses import ddpm_epsilon_train_step
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
-    ExperimentConfig,
     ComponentConfig,
-    DataloaderConfig,
     EMAConfig,
+    ExperimentConfig,
     LRSchedulerConfig,
     LoggingConfig,
     OptimizerConfig,
     StochaflowConfig,
 )
 from stochaflow.utils.logging import CompositeLogger, ExperimentLogger, configure_torch_logging
-from stochaflow.utils.registry import (
-    DATASET_REGISTRY,
-    DIFFUSION_REGISTRY,
-    LOGGER_REGISTRY,
-    DIAGNOSTIC_REGISTRY,
-    LR_SCHEDULER_REGISTRY,
-    MODEL_REGISTRY,
-    OBJECTIVE_REGISTRY,
-    OPTIMIZER_REGISTRY,
-    SCHEDULER_REGISTRY,
-    RegistryError,
-    register_lr_scheduler,
-    register_optimizer,
-)
+from stochaflow.utils.registry import REGISTRIES, Registry, RegistryError
 
 
 BUILTIN_COMPONENT_MODULES = (
@@ -63,18 +47,23 @@ BUILTIN_COMPONENT_MODULES = (
 def load_builtin_components() -> None:
     """Import built-in component modules so their registry decorators run."""
 
-    for module_name in BUILTIN_COMPONENT_MODULES:
-        import_module(module_name)
+    REGISTRIES.load_modules(BUILTIN_COMPONENT_MODULES)
 
 
 load_builtin_components()
-register_optimizer("adam", Adam)
-register_optimizer("adamw", AdamW)
-register_lr_scheduler("cosine", CosineAnnealingLR)
-register_lr_scheduler("step", StepLR)
-register_lr_scheduler("multistep", MultiStepLR)
-register_lr_scheduler("exponential", ExponentialLR)
-register_lr_scheduler("linear", LinearLR)
+REGISTRIES.models.require_base(nn.Module)
+REGISTRIES.noise_schedules.require_base(NoiseSchedule)
+REGISTRIES.diffusions.require_base(nn.Module)
+REGISTRIES.objectives.require_base(nn.Module)
+REGISTRIES.optimizers.require_base(Optimizer)
+REGISTRIES.loggers.require_base(ExperimentLogger)
+REGISTRIES.optimizers.add("adam", Adam)
+REGISTRIES.optimizers.add("adamw", AdamW)
+REGISTRIES.lr_schedulers.add("cosine", CosineAnnealingLR)
+REGISTRIES.lr_schedulers.add("step", StepLR)
+REGISTRIES.lr_schedulers.add("multistep", MultiStepLR)
+REGISTRIES.lr_schedulers.add("exponential", ExponentialLR)
+REGISTRIES.lr_schedulers.add("linear", LinearLR)
 
 
 @dataclass(slots=True)
@@ -82,7 +71,7 @@ class TrainingComponents:
     """Fully built training components for an experiment."""
 
     model: nn.Module
-    scheduler: DiffusionScheduler
+    noise_schedule: NoiseSchedule
     diffusion: nn.Module
     objective: nn.Module
     optimizer: Optimizer
@@ -96,63 +85,45 @@ class TrainingComponents:
 
 
 def _build_from_registry(
-    registry: dict[str, Any],
+    registry: Registry[Any],
     component: ComponentConfig,
     *,
-    kind: str,
     extra_kwargs: dict[str, Any] | None = None,
 ) -> Any:
     extra_kwargs = extra_kwargs or {}
-    if component.name not in registry:
-        available = ", ".join(sorted(registry)) or "<empty>"
-        raise RegistryError(f"unknown {kind} '{component.name}'. Available: {available}")
-
-    cls = registry[component.name]
     kwargs = {**component.params, **extra_kwargs}
-    try:
-        return cls(**kwargs)
-    except TypeError as exc:
-        raise RegistryError(
-            f"failed to initialize {kind} '{component.name}' with params {kwargs}: {exc}"
-        ) from exc
+    return registry.create(component.name, **kwargs)
 
 
 def build_model(component: ComponentConfig) -> nn.Module:
     """Instantiate a model from the model registry."""
 
-    model = _build_from_registry(MODEL_REGISTRY, component, kind="model")
+    model = _build_from_registry(REGISTRIES.models, component)
     if not isinstance(model, nn.Module):
         raise RegistryError(f"registered model '{component.name}' did not produce nn.Module")
     return model
 
 
-def build_dataset(component: ComponentConfig) -> Dataset[Any]:
-    """Instantiate a dataset from the dataset registry."""
+def build_noise_schedule(component: ComponentConfig) -> NoiseSchedule:
+    """Instantiate a forward noise path from the noise-schedule registry."""
 
-    dataset = _build_from_registry(DATASET_REGISTRY, component, kind="dataset")
-    if not isinstance(dataset, Dataset):
+    schedule = _build_from_registry(
+        REGISTRIES.noise_schedules,
+        component,
+    )
+    if not isinstance(schedule, NoiseSchedule):
         raise RegistryError(
-            f"registered dataset '{component.name}' did not produce torch Dataset"
+            f"registered noise schedule '{component.name}' did not produce "
+            "NoiseSchedule"
         )
-    return dataset
-
-
-def build_scheduler(component: ComponentConfig) -> DiffusionScheduler:
-    """Instantiate a scheduler from the scheduler registry."""
-
-    scheduler = _build_from_registry(SCHEDULER_REGISTRY, component, kind="scheduler")
-    if not isinstance(scheduler, DiffusionScheduler):
-        raise RegistryError(
-            f"registered scheduler '{component.name}' did not produce DiffusionScheduler"
-        )
-    return scheduler
+    return schedule
 
 
 def build_diffusion(
     diffusion_name: str,
     *,
     model: nn.Module,
-    scheduler: DiffusionScheduler,
+    noise_schedule: NoiseSchedule,
     params: dict[str, Any] | None = None,
 ) -> nn.Module:
     """Instantiate a diffusion/process object."""
@@ -160,10 +131,9 @@ def build_diffusion(
     params = params or {}
     component = ComponentConfig(name=diffusion_name, params=params)
     diffusion = _build_from_registry(
-        DIFFUSION_REGISTRY,
+        REGISTRIES.diffusions,
         component,
-        kind="diffusion",
-        extra_kwargs={"model": model, "scheduler": scheduler},
+        extra_kwargs={"model": model, "noise_schedule": noise_schedule},
     )
     if not isinstance(diffusion, nn.Module):
         raise RegistryError(
@@ -175,7 +145,10 @@ def build_diffusion(
 def build_objective(component: ComponentConfig) -> nn.Module:
     """Instantiate a training objective from the objective registry."""
 
-    objective = _build_from_registry(OBJECTIVE_REGISTRY, component, kind="objective")
+    objective = _build_from_registry(
+        REGISTRIES.objectives,
+        component,
+    )
     if not isinstance(objective, nn.Module):
         raise RegistryError(
             f"registered objective '{component.name}' did not produce nn.Module"
@@ -195,9 +168,8 @@ def build_logger(
     backends: list[ExperimentLogger] = []
     for backend_config in config.backends:
         backend = _build_from_registry(
-            LOGGER_REGISTRY,
+            REGISTRIES.loggers,
             backend_config,
-            kind="logger",
             extra_kwargs={
                 "output_dir": experiment.output_dir,
                 "run_name": experiment.name,
@@ -223,77 +195,57 @@ def build_diagnostics(
     *,
     logger: ExperimentLogger,
     output_dir: str,
+    sample_shape: tuple[int, int, int],
 ) -> list[Any]:
     """Instantiate training diagnostic plugins from configuration."""
 
+    context = DiagnosticBuildContext(
+        logger=logger,
+        output_dir=output_dir,
+        sample_shape=sample_shape,
+    )
     diagnostics: list[Any] = []
     for diagnostic_config in configs:
-        if diagnostic_config.name not in DIAGNOSTIC_REGISTRY:
-            available = ", ".join(sorted(DIAGNOSTIC_REGISTRY)) or "<empty>"
+        diagnostic_cls = REGISTRIES.diagnostics.resolve(diagnostic_config.name)
+        context_parameters = getattr(
+            diagnostic_cls,
+            "context_parameters",
+            None,
+        )
+        runtime_params: dict[str, Any] = {
+            "logger": logger,
+            "output_dir": output_dir,
+        }
+        if callable(context_parameters):
+            provided = context_parameters(context)
+            if not isinstance(provided, Mapping):
+                raise RegistryError(
+                    f"diagnostic '{diagnostic_config.name}' context_parameters "
+                    "must return a mapping"
+                )
+            runtime_params.update(provided)
+        conflicts = sorted(set(diagnostic_config.params).intersection(runtime_params))
+        if conflicts:
             raise RegistryError(
-                f"unknown diagnostic '{diagnostic_config.name}'. Available: {available}"
+                f"diagnostic '{diagnostic_config.name}' config cannot override "
+                "runtime parameter(s): " + ", ".join(conflicts)
             )
-        diagnostic_cls = DIAGNOSTIC_REGISTRY[diagnostic_config.name]
-        try:
-            diagnostic = diagnostic_cls(
-                logger=logger,
-                output_dir=output_dir,
-                **diagnostic_config.params,
-            )
-        except TypeError as exc:
-            raise RegistryError(
-                f"failed to initialize diagnostic '{diagnostic_config.name}' "
-                f"with params {diagnostic_config.params}: {exc}"
-            ) from exc
+        constructor_params = {
+            **diagnostic_config.params,
+            **runtime_params,
+        }
+        diagnostic = REGISTRIES.diagnostics.create(
+            diagnostic_config.name,
+            **constructor_params,
+        )
         diagnostics.append(diagnostic)
     return diagnostics
-
-
-def _seed_dataloader_worker(worker_id: int) -> None:
-    """Seed Python, NumPy, and Torch RNG state inside a dataloader worker."""
-
-    del worker_id
-    worker_seed = torch.initial_seed() % (2**32)
-    random.seed(worker_seed)
-    np.random.seed(worker_seed)
-
-
-def build_dataloader(
-    dataset: Dataset[Any],
-    config: DataloaderConfig,
-    *,
-    seed: int | None = None,
-) -> DataLoader[Any]:
-    """Instantiate a dataloader with reproducible worker seeding."""
-
-    dataloader_kwargs: dict[str, Any] = {
-        "batch_size": config.batch_size,
-        "shuffle": config.shuffle,
-        "num_workers": config.num_workers,
-        "drop_last": config.drop_last,
-        "pin_memory": config.pin_memory,
-    }
-    if config.num_workers > 0:
-        dataloader_kwargs["persistent_workers"] = config.persistent_workers
-        if config.prefetch_factor is not None:
-            dataloader_kwargs["prefetch_factor"] = config.prefetch_factor
-        dataloader_kwargs["worker_init_fn"] = _seed_dataloader_worker
-    if seed is not None:
-        generator = torch.Generator()
-        generator.manual_seed(seed)
-        dataloader_kwargs["generator"] = generator
-    return DataLoader(dataset, **dataloader_kwargs)
 
 
 def build_optimizer(config: OptimizerConfig, parameters: Any) -> Optimizer:
     """Instantiate an optimizer from configuration."""
 
-    if config.name not in OPTIMIZER_REGISTRY:
-        available = ", ".join(sorted(OPTIMIZER_REGISTRY))
-        raise RegistryError(
-            f"unknown optimizer '{config.name}'. Available: {available}"
-        )
-    optimizer_cls = OPTIMIZER_REGISTRY[config.name]
+    optimizer_cls = REGISTRIES.optimizers.resolve(config.name)
     try:
         return optimizer_cls(parameters, **config.params)
     except TypeError as exc:
@@ -353,7 +305,7 @@ def _build_warmup_cosine_lr_scheduler(
     return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 
-register_lr_scheduler("warmup_cosine", _build_warmup_cosine_lr_scheduler)
+REGISTRIES.lr_schedulers.add("warmup_cosine", _build_warmup_cosine_lr_scheduler)
 
 
 def build_lr_scheduler(
@@ -367,12 +319,6 @@ def build_lr_scheduler(
 
     if config.name is None:
         return None
-    if config.name not in LR_SCHEDULER_REGISTRY:
-        available = ", ".join(sorted(LR_SCHEDULER_REGISTRY)) or "<empty>"
-        raise RegistryError(
-            f"unknown lr scheduler '{config.name}'. Available: {available}"
-        )
-
     params = dict(config.params)
     if config.name == "warmup_cosine":
         params["total_steps"] = _resolve_warmup_cosine_total_steps(
@@ -381,7 +327,7 @@ def build_lr_scheduler(
             num_epochs=num_epochs,
         )
 
-    scheduler_builder = LR_SCHEDULER_REGISTRY[config.name]
+    scheduler_builder = REGISTRIES.lr_schedulers.resolve(config.name)
     try:
         return scheduler_builder(optimizer, **params)
     except TypeError as exc:
@@ -431,11 +377,11 @@ def build_training_components(
     """Build model-side training components without dataset I/O side effects."""
 
     model = build_model(config.model)
-    scheduler = build_scheduler(config.diffusion.scheduler)
+    noise_schedule = build_noise_schedule(config.diffusion.noise_schedule)
     diffusion = build_diffusion(
         config.diffusion.name,
         model=model,
-        scheduler=scheduler,
+        noise_schedule=noise_schedule,
         params=config.diffusion.params,
     )
     objective = build_objective(config.objective)
@@ -463,6 +409,19 @@ def build_training_components(
         config.diagnostics,
         logger=logger,
         output_dir=config.experiment.output_dir,
+        sample_shape=(
+            config.data.image.channels,
+            next(
+                bucket.height
+                for bucket in config.data.batching.buckets
+                if bucket.name == config.data.batching.sample_bucket
+            ),
+            next(
+                bucket.width
+                for bucket in config.data.batching.buckets
+                if bucket.name == config.data.batching.sample_bucket
+            ),
+        ),
     )
     train_step_fn = resolve_train_step_fn(config.diffusion.name, config.objective.name)
     trainer = Trainer(
@@ -487,7 +446,7 @@ def build_training_components(
     )
     return TrainingComponents(
         model=model,
-        scheduler=scheduler,
+        noise_schedule=noise_schedule,
         diffusion=diffusion,
         objective=objective,
         optimizer=optimizer,

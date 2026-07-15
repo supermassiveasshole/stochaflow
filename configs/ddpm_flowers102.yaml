@@ -4,18 +4,29 @@ experiment:
   output_dir: outputs/ddpm_flowers102
 
 data:
-  dataset:
-    name: flowers102
-    params:
-      root: ./data
-      split: train
-      image_size: 64
-      channels: 3
-      download: true
-      normalize: true
-      preprocess_mode: center_crop
-      resize_size: 96
-      random_horizontal_flip: true
+  modules: []
+  datasets:
+    - id: flowers102
+      factory: flowers102
+      params:
+        root: ./data
+        download: true
+        random_horizontal_flip: true
+      splits:
+        train: train
+        validation: val
+        test: test
+  image:
+    channels: 3
+    normalize: true
+  batching:
+    buckets:
+      - name: square_64
+        height: 64
+        width: 64
+    sample_bucket: square_64
+    dynamic_batch_size: true
+    steps_per_epoch: auto
   dataloader:
     batch_size: 64
     num_workers: 4
@@ -24,10 +35,7 @@ data:
     pin_memory: true
     persistent_workers: true
   splits:
-    mode: all
-    train_splits: [train, val, test]
-    validation_size: null
-    test_split: null
+    mode: official
 
 model:
   name: unet
@@ -46,8 +54,8 @@ diffusion:
   name: ddpm
   params:
     clip_denoised: true
-  scheduler:
-    name: linear_ddpm
+  noise_schedule:
+    name: linear_beta
     params:
       num_timesteps: 1000
       beta_start: 1.0e-4

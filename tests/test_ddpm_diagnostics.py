@@ -6,7 +6,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from stochaflow.diffusion import DDPM, LinearDDPMScheduler
+from stochaflow.diffusion import DDPM, LinearBetaSchedule
 from stochaflow.training.diagnostics import DDPMDiagnosticLogger
 from stochaflow.training.trainer import TrainStepOutput
 from stochaflow.utils.logging import ExperimentLogger
@@ -41,11 +41,12 @@ def test_ddpm_diagnostic_logs_bucket_metrics(tmp_path) -> None:
     diagnostic = DDPMDiagnosticLogger(
         logger=logger,
         output_dir=tmp_path,
+        sample_shape=(1, 4, 4),
         interval=1,
         timestep_buckets=2,
     )
     model = DDPM(
-        scheduler=LinearDDPMScheduler(num_timesteps=10),
+        noise_schedule=LinearBetaSchedule(num_timesteps=10),
         model=ZeroDenoiser(),
     )
     output = TrainStepOutput(
@@ -79,6 +80,7 @@ def test_ddpm_diagnostic_writes_sample_and_reconstruction_artifacts(tmp_path) ->
     diagnostic = DDPMDiagnosticLogger(
         logger=logger,
         output_dir=tmp_path,
+        sample_shape=(1, 4, 4),
         interval=1,
         sample_every_epochs=1,
         sample_num=2,
@@ -87,7 +89,7 @@ def test_ddpm_diagnostic_writes_sample_and_reconstruction_artifacts(tmp_path) ->
         reconstruction_timesteps=[1, 2],
     )
     model = DDPM(
-        scheduler=LinearDDPMScheduler(num_timesteps=4),
+        noise_schedule=LinearBetaSchedule(num_timesteps=4),
         model=ZeroDenoiser(),
     )
     output = TrainStepOutput(

@@ -7,10 +7,10 @@ import torch.nn as nn
 
 from stochaflow.models.blocks import AttentionBlock, Downsample, ResidualBlock, Upsample
 from stochaflow.models.embeddings import TimeEmbedding
-from stochaflow.utils.registry import register_model
+from stochaflow.utils.registry import REGISTRIES
 
 
-@register_model("unet")
+@REGISTRIES.models.register("unet")
 class UNet(nn.Module):
     """A compact time-conditioned UNet suitable for DDPM-style denoisers."""
 

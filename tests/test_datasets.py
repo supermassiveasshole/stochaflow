@@ -1,135 +1,56 @@
-"""Tests for dataset preprocessing utilities."""
-
-from typing import cast
+"""Tests for bucket-aware built-in dataset factories."""
 
 from PIL import Image
 import torch
 from torch.utils.data import Dataset
-from torchvision import transforms
 
-from stochaflow.data import datasets as dataset_module
-from stochaflow.data.datasets import (
-    _build_flowers102_transform,
-    _build_image_transform,
-    build_flowers102_dataset,
+from stochaflow.data import (
+    DatasetBuildRequest,
+    DatasetFactoryContext,
+    Flowers102DatasetFactory,
+    ResolutionBucket,
+    ResolutionBucketPolicy,
 )
+from stochaflow.data import datasets as dataset_module
+from stochaflow.data.datasets import BucketImageTransform
+from stochaflow.utils.config import ImageDataConfig, ResolutionBucketConfig
+from stochaflow.utils.registry import REGISTRIES
 
 
-def test_image_transform_normalizes_to_minus_one_to_one() -> None:
-    transform = _build_image_transform(
-        image_size=2,
-        channels=1,
+def test_bucket_image_transform_normalizes_and_converts_channels() -> None:
+    transform = BucketImageTransform(
+        ResolutionBucket("square", 2, 2),
+        role="eval",
+        channels=3,
         normalize=True,
         random_horizontal_flip=False,
-        grayscale_output_channels=1,
     )
 
-    black = Image.new("L", (2, 2), color=0)
-    white = Image.new("L", (2, 2), color=255)
+    black = transform(Image.new("L", (4, 2), color=0))
+    white = transform(Image.new("L", (4, 2), color=255))
 
-    black_tensor = cast(torch.Tensor, transform(black))
-    white_tensor = cast(torch.Tensor, transform(white))
+    assert black.shape == (3, 2, 2)
+    assert white.shape == (3, 2, 2)
+    assert torch.allclose(black, torch.full((3, 2, 2), -1.0))
+    assert torch.allclose(white, torch.full((3, 2, 2), 1.0))
 
-    assert torch.allclose(black_tensor, torch.full((1, 2, 2), -1.0))
-    assert torch.allclose(white_tensor, torch.full((1, 2, 2), 1.0))
 
-
-def test_image_transform_can_leave_tensor_in_zero_to_one_range() -> None:
-    transform = _build_image_transform(
-        image_size=2,
-        channels=1,
+def test_bucket_image_transform_resize_cover_preserves_rectangular_target() -> None:
+    transform = BucketImageTransform(
+        ResolutionBucket("landscape", 32, 64),
+        role="eval",
+        channels=3,
         normalize=False,
         random_horizontal_flip=False,
-        grayscale_output_channels=1,
     )
 
-    white = Image.new("L", (2, 2), color=255)
+    tensor = transform(Image.new("RGB", (80, 100), color=(255, 255, 255)))
 
-    white_tensor = cast(torch.Tensor, transform(white))
-
-    assert torch.allclose(white_tensor, torch.ones((1, 2, 2)))
-
-
-def test_flowers102_transform_outputs_fixed_square_rgb_tensors() -> None:
-    transform = _build_flowers102_transform(
-        split="val",
-        image_size=64,
-        channels=3,
-        normalize=True,
-        random_horizontal_flip=False,
-    )
-
-    white = Image.new("RGB", (96, 128), color=(255, 255, 255))
-    tensor = cast(torch.Tensor, transform(white))
-
-    assert tensor.shape == (3, 64, 64)
-    assert torch.all(tensor >= -1.0)
-    assert torch.all(tensor <= 1.0)
-    assert torch.allclose(tensor, torch.ones((3, 64, 64)))
+    assert tensor.shape == (3, 32, 64)
+    assert torch.allclose(tensor, torch.ones_like(tensor))
 
 
-def test_flowers102_center_crop_train_transform_uses_stable_debug_baseline() -> None:
-    transform = _build_flowers102_transform(
-        split="train",
-        image_size=64,
-        channels=3,
-        normalize=True,
-        random_horizontal_flip=True,
-        preprocess_mode="center_crop",
-        resize_size=96,
-    )
-
-    assert isinstance(transform.transforms[0], transforms.Resize)
-    assert transform.transforms[0].size == 96
-    assert isinstance(transform.transforms[1], transforms.CenterCrop)
-    assert transform.transforms[1].size == (64, 64)
-    assert isinstance(transform.transforms[2], transforms.RandomHorizontalFlip)
-
-
-def test_flowers102_eval_transform_disables_random_flip() -> None:
-    transform = _build_flowers102_transform(
-        split="eval",
-        image_size=64,
-        channels=3,
-        normalize=True,
-        random_horizontal_flip=True,
-        preprocess_mode="center_crop",
-        resize_size=96,
-    )
-
-    assert not any(
-        isinstance(step, transforms.RandomHorizontalFlip)
-        for step in transform.transforms
-    )
-
-
-def test_flowers102_random_crop_and_random_resized_crop_modes_build() -> None:
-    random_crop = _build_flowers102_transform(
-        split="train",
-        image_size=64,
-        channels=3,
-        normalize=True,
-        random_horizontal_flip=False,
-        preprocess_mode="random_crop",
-        resize_size=96,
-    )
-    random_resized_crop = _build_flowers102_transform(
-        split="train",
-        image_size=64,
-        channels=3,
-        normalize=True,
-        random_horizontal_flip=False,
-        preprocess_mode="random_resized_crop",
-    )
-
-    assert any(isinstance(step, transforms.RandomCrop) for step in random_crop.transforms)
-    assert any(
-        isinstance(step, transforms.RandomResizedCrop)
-        for step in random_resized_crop.transforms
-    )
-
-
-def test_flowers102_builder_accepts_official_splits(monkeypatch) -> None:
+def test_flowers_factory_assigns_each_image_to_nearest_bucket(monkeypatch) -> None:
     seen_splits: list[str] = []
 
     class FakeFlowers102(Dataset):
@@ -141,19 +62,52 @@ def test_flowers102_builder_accepts_official_splits(monkeypatch) -> None:
             transform,
             download: bool,
         ) -> None:
-            del root, transform, download
+            del root, download
+            assert transform is None
             seen_splits.append(split)
+            self.images = [
+                Image.new("RGB", (40, 40)),
+                Image.new("RGB", (120, 80)),
+            ]
 
         def __len__(self) -> int:
-            return 1
+            return len(self.images)
 
         def __getitem__(self, index: int):
-            del index
-            return torch.zeros(3, 64, 64), 0
+            return self.images[index], index
 
     monkeypatch.setattr(dataset_module.datasets, "Flowers102", FakeFlowers102)
+    policy = ResolutionBucketPolicy(
+        [
+            ResolutionBucketConfig("square", 32, 32),
+            ResolutionBucketConfig("landscape", 64, 96),
+        ],
+        sample_bucket="landscape",
+        dynamic_batch_size=True,
+    )
+    factory = Flowers102DatasetFactory(
+        DatasetFactoryContext(
+            source_id="flowers",
+            params={"root": "./data", "download": False},
+            image=ImageDataConfig(channels=3, normalize=True),
+            buckets=policy,
+        )
+    )
 
-    for split in ("train", "val", "test"):
-        build_flowers102_dataset(root="./data", split=split, download=False)
+    view = factory.build(
+        DatasetBuildRequest(native_split="validation", role="eval", seed=1)
+    )
 
-    assert seen_splits == ["train", "val", "test"]
+    assert seen_splits == ["val"]
+    assert tuple(view.bucket_ids) == ("square", "landscape")
+    first_image, _ = view[0]
+    second_image, _ = view[1]
+    assert first_image.shape == (3, 32, 32)
+    assert second_image.shape == (3, 64, 96)
+    assert tuple(view.sample_keys) == ("validation:0", "validation:1")
+
+
+def test_builtin_dataset_registry_contains_factory_classes() -> None:
+    assert REGISTRIES.dataset_factories.resolve("flowers102") is (
+        Flowers102DatasetFactory
+    )
