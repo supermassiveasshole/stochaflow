@@ -5,19 +5,20 @@ from collections.abc import Sequence
 import torch
 import torch.nn as nn
 
-from stochaflow.diffusion.ddpm import DDPM
-from stochaflow.diffusion.schedules import DiffusionScheduler
+from stochaflow.diffusion.gaussian import GaussianDiffusion
+from stochaflow.diffusion.noise_schedules import DiscreteVPSchedule
 from stochaflow.utils.registry import register_diffusion
 
 SamplingTimesteps = Sequence[int] | torch.Tensor
 
 
 @register_diffusion("ddim")
-class DDIM(DDPM):
+class DDIM(GaussianDiffusion):
     """Denoising Diffusion Implicit Model with an explicit inference schedule.
 
     DDIM uses the same forward noising process and epsilon-prediction training
-    contract as :class:`DDPM`, so it inherits the training-time forward process.
+    contract as DDPM through their common :class:`GaussianDiffusion` base. It
+    does not inherit or allocate DDPM-specific posterior coefficients.
     Its sampling interface is deliberately state-schedule based. Public
     schedules contain mathematical state times in ``[0, T]`` including both
     endpoints: ``T`` is the terminal noisy state and ``0`` is the clean state.
@@ -28,14 +29,14 @@ class DDIM(DDPM):
     well as arbitrary, non-uniform state-time subsequences without assigning
     special semantics to a public ``stride`` argument.
 
-    The reverse equation is not implemented yet. Calling ``sample()``,
-    ``reverse()``, or ``reverse_step()`` therefore fails explicitly instead of
-    silently falling back to DDPM sampling.
+    :meth:`reverse_step` implements one selected-pair DDIM transition.
+    :meth:`reverse` and :meth:`sample` resolve a complete schedule and apply
+    each selected transition in descending state-time order.
     """
 
     def __init__(
         self,
-        scheduler: DiffusionScheduler,
+        noise_schedule: DiscreteVPSchedule,
         model: nn.Module,
         *,
         num_inference_steps: int | None = None,
@@ -45,7 +46,7 @@ class DDIM(DDPM):
         """Initialize DDIM's training process and default inference settings.
 
         Args:
-            scheduler: Training-time noise schedule whose cumulative alpha
+            noise_schedule: Training-time noise path whose cumulative alpha
                 coefficients are reused for DDIM sampling.
             model: Denoiser that predicts epsilon for a batch of noisy samples.
             num_inference_steps: Default number of reverse transitions and
@@ -53,7 +54,7 @@ class DDIM(DDPM):
                 schedule contains one additional state point. A uniformly
                 spaced descending state-time sequence is derived when a call
                 does not provide explicit ``timesteps``. The value must lie in
-                ``[1, scheduler.num_timesteps]``.
+                ``[1, noise_schedule.num_timesteps]``.
             eta: Default DDIM stochasticity in ``[0, 1]``. ``0`` selects
                 deterministic DDIM and ``1`` uses the DDPM-style posterior
                 variance. This parameter is independent of the selected
@@ -68,10 +69,10 @@ class DDIM(DDPM):
         """
 
         if num_inference_steps is None:
-            num_inference_steps = scheduler.num_timesteps
+            num_inference_steps = noise_schedule.num_timesteps
         self._validate_num_inference_steps(
             num_inference_steps,
-            num_train_timesteps=scheduler.num_timesteps,
+            num_train_timesteps=noise_schedule.num_timesteps,
         )
         if isinstance(eta, bool) or not isinstance(eta, (int, float)):
             raise TypeError("eta must be numeric")
@@ -79,7 +80,7 @@ class DDIM(DDPM):
             raise ValueError("eta must be in [0, 1]")
 
         super().__init__(
-            scheduler=scheduler,
+            noise_schedule=noise_schedule,
             model=model,
             clip_denoised=clip_denoised,
         )
@@ -165,7 +166,7 @@ class DDIM(DDPM):
             raise TypeError("num_inference_steps must be an integer")
         if not 1 <= num_inference_steps <= num_train_timesteps:
             raise ValueError(
-                "num_inference_steps must be in [1, scheduler.num_timesteps]"
+                "num_inference_steps must be in [1, noise_schedule.num_timesteps]"
             )
 
     def _validate_sampling_timesteps(
@@ -210,11 +211,34 @@ class DDIM(DDPM):
         eta: float | None = None,
         clip_denoised: bool | None = None,
     ) -> torch.Tensor:
-        """Apply one DDIM transition between selected mathematical states.
+        r"""Apply one DDIM transition between selected mathematical states.
 
         ``previous_timesteps`` is deliberately required: unlike DDPM, DDIM does
         not intrinsically mean the adjacent state ``t - 1``. This enables a
         batch to transition from a source state to any earlier selected state.
+        For each source-target pair ``t -> s``, this method evaluates
+
+        .. math::
+
+            x_s = \sqrt{\bar{\alpha}_s}\,\hat{x}_0
+                + \sqrt{1 - \bar{\alpha}_s - \sigma_{t \to s}^2}\,
+                  \hat{\epsilon}_{\mathrm{direction}}
+                + \sigma_{t \to s} z,
+            \qquad
+            \sigma_{t \to s}^2 = \eta^2\widetilde{\beta}_{t \to s}.
+
+        If clipping changes :math:`\hat{x}_0`, the residual used in the
+        direction term is recomputed from the clipped value. This preserves
+        the identity
+
+        .. math::
+
+            x_t = \sqrt{\bar{\alpha}_t}\,\hat{x}_0
+                + \sqrt{1 - \bar{\alpha}_t}\,\hat{\epsilon}
+
+        and keeps the adjacent :math:`\eta = 1` update consistent with DDPM's
+        clipped posterior mean. With :math:`\eta = 0`, no transition noise is
+        sampled.
 
         Args:
             xt: Noisy samples at the batch-aligned source state times in
@@ -234,11 +258,54 @@ class DDIM(DDPM):
             The samples after their selected DDIM transition.
 
         Raises:
-            NotImplementedError: Until the DDIM reverse equation is added.
+            TypeError: If state times are non-integral or ``eta`` is not a
+                real numeric value.
+            ValueError: If state times are out of range or unordered, or if
+                ``eta`` lies outside ``[0, 1]``.
         """
 
-        del xt, timesteps, previous_timesteps, eta, clip_denoised
-        raise NotImplementedError("DDIM reverse_step is not implemented yet")
+        timesteps = self._validate_state_timesteps(timesteps, allow_clean=False)
+        previous_timesteps = self._validate_state_timesteps(
+            previous_timesteps, allow_clean=True
+        )
+        if torch.any(previous_timesteps >= timesteps):
+            raise ValueError("previous timesteps must be smaller than timesteps")
+
+        eps = self._predict_noise(xt, timesteps)
+        x0_hat = self._estimate_x0_from_epsilon(
+            xt,
+            timesteps,
+            predicted_noise=eps,
+            clip_denoised=clip_denoised
+            if clip_denoised is not None
+            else self.clip_denoised,
+        )
+        signal_scale_t, noise_scale_t = self.noise_schedule.marginal_scales(
+            timesteps, xt.size()
+        )
+        signal_scale_s, noise_scale_s = self.noise_schedule.marginal_scales(
+            previous_timesteps, xt.size()
+        )
+        beta_tild = (
+            noise_scale_s.square()
+            / noise_scale_t.square()
+            * (1 - signal_scale_t.square() / signal_scale_s.square())
+        )
+        eps_for_direction = (xt - signal_scale_t * x0_hat) / noise_scale_t
+        if eta is None:
+            eta = self.eta
+        if isinstance(eta, bool) or not isinstance(eta, (int, float)):
+            raise TypeError("eta must be numeric")
+        if not 0 <= eta <= 1:
+            raise ValueError("eta must be in [0, 1]")
+        noise = torch.randn_like(xt) if eta > 0.0 else 0.0
+        xs = (
+            signal_scale_s * x0_hat
+            + torch.sqrt((noise_scale_s.square() - (eta**2) * beta_tild).clamp_min(0.0))
+            * eps_for_direction
+            + eta * beta_tild.clamp_min(0.0).sqrt() * noise
+        )
+        return xs
 
     def reverse(
         self,
@@ -271,13 +338,26 @@ class DDIM(DDPM):
 
         Returns:
             The predicted clean-sample batch after all DDIM transitions.
-
-        Raises:
-            NotImplementedError: Until the DDIM reverse equation is added.
         """
 
-        del x_from, num_inference_steps, timesteps, eta, clip_denoised
-        raise NotImplementedError("DDIM reverse sampling is not implemented yet")
+        timesteps = self.sampling_timesteps(
+            num_inference_steps=num_inference_steps,
+            timesteps=timesteps,
+            device=x_from.device,
+        )
+
+        xt = x_from
+        for timestep, previous_timestep in zip(timesteps[:-1], timesteps[1:]):
+            timestep = timestep.broadcast_to((xt.size(0),))
+            previous_timestep = previous_timestep.broadcast_to((xt.size(0),))
+            xt = self.reverse_step(
+                xt,
+                timestep,
+                previous_timesteps=previous_timestep,
+                eta=eta,
+                clip_denoised=clip_denoised,
+            )
+        return xt
 
     def sample(
         self,
@@ -312,17 +392,18 @@ class DDIM(DDPM):
 
         Returns:
             A batch of generated clean samples.
-
-        Raises:
-            NotImplementedError: Until the DDIM reverse equation is added.
         """
 
-        del (
-            sample_shape,
-            device,
-            num_inference_steps,
-            timesteps,
-            eta,
-            clip_denoised,
+        if device is None:
+            try:
+                device = next(self.model.parameters()).device
+            except StopIteration:
+                device = torch.device("cpu")
+        x_from = torch.randn(sample_shape, device=device)
+        return self.reverse(
+            x_from,
+            num_inference_steps=num_inference_steps,
+            timesteps=timesteps,
+            eta=eta,
+            clip_denoised=clip_denoised,
         )
-        raise NotImplementedError("DDIM sampling is not implemented yet")

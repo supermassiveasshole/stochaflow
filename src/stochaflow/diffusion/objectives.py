@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 
-from stochaflow.diffusion.ddpm import DDPMForwardOutput
+from stochaflow.diffusion.gaussian import DiffusionForwardOutput
 from stochaflow.utils.registry import register_objective
 
 
@@ -28,7 +28,7 @@ class DDPMEpsilonObjective(nn.Module):
 
     def forward(
         self,
-        batch: DDPMForwardOutput,
+        batch: DiffusionForwardOutput,
     ) -> torch.Tensor:
         """Compute epsilon-prediction MSE loss for a DDPM batch."""
 
