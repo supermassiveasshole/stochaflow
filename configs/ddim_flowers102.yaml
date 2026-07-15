@@ -1,7 +1,7 @@
 experiment:
-  name: ddpm_flowers102
+  name: ddim_flowers102
   seed: 42
-  output_dir: outputs/ddpm_flowers102
+  output_dir: outputs/ddim_flowers102
 
 data:
   modules: []
@@ -29,11 +29,11 @@ data:
     steps_per_epoch: auto
   dataloader:
     batch_size: 64
-    num_workers: 4
+    num_workers: 2
     shuffle: true
     drop_last: true
     pin_memory: true
-    persistent_workers: true
+    persistent_workers: false
   splits:
     mode: official
 
@@ -51,8 +51,10 @@ model:
     attention_heads: 4
 
 diffusion:
-  name: ddpm
+  name: ddim
   params:
+    num_inference_steps: 100
+    eta: 0.0
     clip_denoised: true
   noise_schedule:
     name: linear_beta

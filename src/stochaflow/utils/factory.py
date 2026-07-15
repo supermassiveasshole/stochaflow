@@ -395,6 +395,7 @@ def build_training_components(
     ema = build_ema(config.ema, diffusion)
     checkpoint_manager = CheckpointManager(
         model=diffusion,
+        denoiser=model,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
         ema=ema,

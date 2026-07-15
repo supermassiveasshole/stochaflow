@@ -1,18 +1,18 @@
-"""Shared command-line runner helpers for DDPM image experiments."""
+"""Shared command-line runner helpers for config-driven experiments."""
 
 import argparse
-from collections.abc import Callable, Sized
+from collections.abc import Sized
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
+import gc
 from pathlib import Path
 from typing import Any
 
 import torch
 
 from stochaflow.data.pipeline import DataBundle, DataPipeline
-from stochaflow.diffusion import DDPM
-from stochaflow.sampling import save_image_grid, save_trajectory_grid
+from stochaflow.sampling.runtime import run_sampling
 from stochaflow.training.reporting import (
     FinalSummary,
     RichTrainingReporter,
@@ -23,8 +23,6 @@ from stochaflow.utils.config import StochaflowConfig, load_config
 from stochaflow.utils.factory import TrainingComponents, build_training_components
 from stochaflow.utils.seed import set_seed
 
-SampleShapeFn = Callable[[StochaflowConfig, int], torch.Size]
-
 
 def _positive_optional(value: int | None, *, option: str) -> int | None:
     if value is not None and value <= 0:
@@ -33,42 +31,8 @@ def _positive_optional(value: int | None, *, option: str) -> int | None:
 
 
 @dataclass(frozen=True, slots=True)
-class SamplingOptions:
-    """Validated post-training sample artifact options."""
-
-    enabled: bool
-    num_samples: int
-    grid_nrow: int
-    trajectory_interval: int
-
-    @classmethod
-    def from_namespace(cls, args: argparse.Namespace) -> "SamplingOptions":
-        num_samples = _positive_optional(
-            args.num_samples,
-            option="--num-samples",
-        )
-        grid_nrow = _positive_optional(
-            args.sample_grid_size,
-            option="--sample-grid-size",
-        )
-        trajectory_interval = _positive_optional(
-            args.trajectory_interval,
-            option="--trajectory-interval",
-        )
-        assert num_samples is not None
-        assert grid_nrow is not None
-        assert trajectory_interval is not None
-        return cls(
-            enabled=not args.skip_sampling,
-            num_samples=num_samples,
-            grid_nrow=grid_nrow,
-            trajectory_interval=trajectory_interval,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class DDPMRunOptions:
-    """Validated, framework-independent options for one DDPM invocation."""
+class ExperimentRunOptions:
+    """Validated runtime options for one config-driven invocation."""
 
     num_epochs: int
     max_train_batches: int | None
@@ -77,7 +41,8 @@ class DDPMRunOptions:
     deterministic: bool
     show_progress: bool
     resume_checkpoint: Path | None
-    sampling: SamplingOptions
+    device: str | None
+    sample_after_training: bool
 
     @classmethod
     def from_namespace(
@@ -85,7 +50,8 @@ class DDPMRunOptions:
         args: argparse.Namespace,
         *,
         configured_num_epochs: int,
-    ) -> "DDPMRunOptions":
+        configured_show_progress: bool,
+    ) -> "ExperimentRunOptions":
         num_epochs = configured_num_epochs if args.epochs is None else args.epochs
         if num_epochs <= 0:
             raise ValueError("--epochs must be positive when provided")
@@ -104,9 +70,10 @@ class DDPMRunOptions:
                 option="--limit-test-batches",
             ),
             deterministic=args.deterministic,
-            show_progress=not args.no_progress,
+            show_progress=configured_show_progress and not args.no_progress,
             resume_checkpoint=args.resume,
-            sampling=SamplingOptions.from_namespace(args),
+            device=args.device,
+            sample_after_training=not args.skip_final_sample,
         )
 
 
@@ -119,20 +86,26 @@ class TrainingResult:
     best_checkpoint: Path | None
 
 
-def add_ddpm_training_arguments(
-    parser: argparse.ArgumentParser,
-    *,
-    default_config: Path,
-    default_num_samples: int = 16,
-    default_sample_grid_size: int = 4,
-) -> argparse.ArgumentParser:
-    """Add the common DDPM experiment CLI options to a parser."""
+def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add common config-driven experiment options to a parser."""
 
     parser.add_argument(
         "--config",
         type=Path,
-        default=default_config,
-        help="Path to the DDPM config file.",
+        required=True,
+        help="Path to the experiment config file.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Override trainer.device for this run.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Override experiment.output_dir for this run.",
     )
     parser.add_argument(
         "--epochs",
@@ -180,49 +153,11 @@ def add_ddpm_training_arguments(
         ),
     )
     parser.add_argument(
-        "--num-samples",
-        type=int,
-        default=default_num_samples,
-        help="Number of samples to generate after training.",
-    )
-    parser.add_argument(
-        "--sample-grid-size",
-        type=int,
-        default=default_sample_grid_size,
-        help="Number of images per row in the post-training sample grid.",
-    )
-    parser.add_argument(
-        "--trajectory-interval",
-        type=int,
-        default=200,
-        help="Reverse-process interval for trajectory snapshots.",
-    )
-    parser.add_argument(
-        "--skip-sampling",
+        "--skip-final-sample",
         action="store_true",
-        help="Skip post-training reverse sampling and artifact dumping.",
+        help="Skip the best-checkpoint acceptance sample after training.",
     )
     return parser
-
-
-def image_sample_shape(config: StochaflowConfig, num_samples: int) -> torch.Size:
-    """Build a batch-first image sample shape from data/model config."""
-
-    if num_samples <= 0:
-        raise ValueError("--num-samples must be positive")
-    bucket = next(
-        bucket
-        for bucket in config.data.batching.buckets
-        if bucket.name == config.data.batching.sample_bucket
-    )
-    return torch.Size(
-        (
-            num_samples,
-            config.data.image.channels,
-            bucket.height,
-            bucket.width,
-        )
-    )
 
 
 def _make_timestamped_output_dir(base_output_dir: str) -> tuple[str, Path]:
@@ -253,105 +188,6 @@ def _local_log_paths(config: StochaflowConfig) -> tuple[Path, Path]:
             )
             break
     return output_dir / metrics_filename, output_dir / text_filename
-
-
-def sample_reverse_trajectory(
-    diffusion: DDPM,
-    sample_shape: torch.Size,
-    *,
-    device: torch.device,
-    capture_every: int,
-) -> dict[int, torch.Tensor]:
-    """Sample a trajectory by repeatedly calling the public reverse traversal.
-
-    Keys are mathematical state times. The initial terminal-noise sample is
-    stored at ``T`` and the final clean sample is stored at ``0``.
-    """
-
-    if capture_every <= 0:
-        raise ValueError("--trajectory-interval must be positive")
-
-    current_timestep = diffusion.num_timesteps
-    x_t = torch.randn(sample_shape, device=device)
-    trajectory: dict[int, torch.Tensor] = {
-        current_timestep: x_t.detach().cpu(),
-    }
-
-    while current_timestep > 0:
-        target_timestep = max(0, current_timestep - capture_every)
-        x_t = diffusion.reverse(x_t, current_timestep, target_timestep)
-        current_timestep = target_timestep
-        trajectory[current_timestep] = x_t.detach().cpu()
-
-    return trajectory
-
-
-def _dump_sampling_artifacts(
-    training: TrainingComponents,
-    *,
-    sample_shape: torch.Size,
-    output_dir: Path,
-    epoch: int,
-    grid_nrow: int,
-    trajectory_interval: int,
-    script_name: str,
-) -> dict[str, Path]:
-    """Generate DDPM samples and reverse-trajectory artifacts."""
-
-    if grid_nrow <= 0:
-        raise ValueError("--sample-grid-size must be positive")
-    if trajectory_interval <= 0:
-        raise ValueError("--trajectory-interval must be positive")
-
-    sample_dir = output_dir / "samples"
-    sample_dir.mkdir(parents=True, exist_ok=True)
-    tensor_path = sample_dir / f"epoch_{epoch:04d}.pt"
-    grid_path = sample_dir / f"epoch_{epoch:04d}.png"
-    trajectory_tensor_path = sample_dir / f"epoch_{epoch:04d}_trajectory.pt"
-    trajectory_grid_path = sample_dir / f"epoch_{epoch:04d}_trajectory.png"
-
-    if not isinstance(training.diffusion, DDPM):
-        raise TypeError(f"{script_name} expects the built diffusion to be DDPM")
-
-    diffusion = training.diffusion
-    device = training.trainer.device
-    diffusion.eval()
-    training.logger.log_text(
-        "ddpm/sampling_config",
-        f"clip_denoised={diffusion.clip_denoised}",
-        step=training.trainer.global_step,
-    )
-    ema = training.ema
-    ema_was_applied = False
-    if ema is not None and training.use_ema_for_sampling:
-        ema.store(diffusion)
-        ema.copy_to(diffusion)
-        ema_was_applied = True
-    try:
-        with torch.no_grad():
-            trajectory = sample_reverse_trajectory(
-                diffusion,
-                sample_shape,
-                device=device,
-                capture_every=trajectory_interval,
-            )
-    finally:
-        if ema_was_applied:
-            assert ema is not None
-            ema.restore(diffusion)
-    samples = trajectory[0]
-
-    torch.save(samples.detach().cpu(), tensor_path)
-    torch.save(trajectory, trajectory_tensor_path)
-    save_image_grid(samples, grid_path, nrow=grid_nrow, denormalize=True)
-    save_trajectory_grid(trajectory, trajectory_grid_path, denormalize=True)
-
-    return {
-        "samples": grid_path,
-        "raw_samples": tensor_path,
-        "trajectory": trajectory_grid_path,
-        "raw_trajectory": trajectory_tensor_path,
-    }
 
 
 def _dataset_size(split: Any | None) -> int | None:
@@ -490,7 +326,7 @@ def _fit_and_select_best(
     training: TrainingComponents,
     config: StochaflowConfig,
     bundle: DataBundle,
-    options: DDPMRunOptions,
+    options: ExperimentRunOptions,
     *,
     start_epoch: int,
     reporter: RichTrainingReporter,
@@ -539,7 +375,7 @@ def _fit_and_select_best(
 def _evaluate_test_split(
     training: TrainingComponents,
     bundle: DataBundle,
-    options: DDPMRunOptions,
+    options: ExperimentRunOptions,
     *,
     reporter: RichTrainingReporter,
 ) -> float | None:
@@ -558,12 +394,12 @@ def _evaluate_test_split(
 def _run_single_bundle(
     config: StochaflowConfig,
     bundle: DataBundle,
-    options: DDPMRunOptions,
-    *,
-    sample_shape_fn: SampleShapeFn,
-    script_name: str,
+    options: ExperimentRunOptions,
 ) -> None:
     config.trainer.num_epochs = options.num_epochs
+    config.trainer.show_progress = options.show_progress
+    if options.device is not None:
+        config.trainer.device = options.device
     training = build_training_components(
         config,
         steps_per_epoch=_effective_steps_per_epoch(
@@ -573,6 +409,8 @@ def _run_single_bundle(
         num_epochs=options.num_epochs,
     )
     reporter = RichTrainingReporter()
+    logger = training.logger
+    logger_closed = False
     try:
         reporter.on_run_start(
             RunSummary(
@@ -605,18 +443,27 @@ def _run_single_bundle(
             options,
             reporter=reporter,
         )
+        stopped_early = training.trainer.stopped_early
 
         artifact_paths: dict[str, Path] | None = None
-        if options.sampling.enabled:
-            artifact_paths = _dump_sampling_artifacts(
-                training,
-                sample_shape=sample_shape_fn(config, options.sampling.num_samples),
-                output_dir=Path(config.experiment.output_dir),
-                epoch=result.best_epoch,
-                grid_nrow=options.sampling.grid_nrow,
-                trajectory_interval=options.sampling.trajectory_interval,
-                script_name=script_name,
+        if options.sample_after_training:
+            if result.best_checkpoint is None:
+                raise RuntimeError(
+                    "post-training sampling requires a selected best checkpoint"
+                )
+            sampling_device = str(training.trainer.device)
+            logger.close()
+            logger_closed = True
+            del training
+            gc.collect()
+            if sampling_device.startswith("cuda"):
+                torch.cuda.empty_cache()
+            sampling_result = run_sampling(
+                checkpoint=result.best_checkpoint,
+                output_dir=Path(config.experiment.output_dir) / "samples" / "final",
+                device_name=sampling_device,
             )
+            artifact_paths = sampling_result.artifacts
 
         metrics_path, log_path = _local_log_paths(config)
         reporter.on_run_end(
@@ -624,7 +471,7 @@ def _run_single_bundle(
                 best_epoch=result.best_epoch,
                 best_valid_loss=result.best_loss,
                 test_loss=test_loss,
-                stopped_early=training.trainer.stopped_early,
+                stopped_early=stopped_early,
                 best_checkpoint=result.best_checkpoint,
                 output_dir=config.experiment.output_dir,
                 metrics_path=metrics_path,
@@ -633,26 +480,21 @@ def _run_single_bundle(
             )
         )
     finally:
-        training.logger.close()
+        if not logger_closed:
+            logger.close()
 
 
-def run_ddpm_from_args(
-    args: argparse.Namespace,
-    *,
-    script_name: str,
-    sample_shape_fn: SampleShapeFn = image_sample_shape,
-) -> None:
-    """Run one registered single- or multi-dataset DDPM experiment."""
+def run_experiment_from_args(args: argparse.Namespace) -> None:
+    """Run one registered single- or multi-dataset experiment."""
 
     config = load_config(args.config)
-    if config.diffusion.name != "ddpm":
-        raise ValueError(
-            f"{script_name} expects a DDPM config, got '{config.diffusion.name}'"
-        )
+    if args.output_dir is not None:
+        config.experiment.output_dir = str(args.output_dir)
 
-    options = DDPMRunOptions.from_namespace(
+    options = ExperimentRunOptions.from_namespace(
         args,
         configured_num_epochs=config.trainer.num_epochs,
+        configured_show_progress=config.trainer.show_progress,
     )
     _validate_resume_scope(config, options.resume_checkpoint)
     set_seed(config.experiment.seed, deterministic=options.deterministic)
@@ -693,6 +535,4 @@ def run_ddpm_from_args(
             run_config,
             bundle,
             run_options,
-            sample_shape_fn=sample_shape_fn,
-            script_name=script_name,
         )

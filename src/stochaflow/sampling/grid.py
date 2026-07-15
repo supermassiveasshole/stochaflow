@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import torch
+from PIL import Image
 from torchvision.utils import make_grid, save_image
 
 
@@ -85,4 +86,58 @@ def save_trajectory_grid(
     grid = make_grid(image_batch, nrow=first_shape[0])
     save_image(grid, output_path)
 
+    return output_path
+
+
+def save_trajectory_gif(
+    trajectory: Mapping[int, torch.Tensor],
+    path: str | Path,
+    *,
+    nrow: int = 8,
+    fps: int = 8,
+    denormalize: bool = True,
+) -> Path:
+    """Save ordered reverse-process snapshots as one looping grid GIF."""
+
+    if not trajectory:
+        raise ValueError("trajectory must contain at least one timestep snapshot")
+    if nrow <= 0:
+        raise ValueError("nrow must be positive")
+    if fps <= 0:
+        raise ValueError("fps must be positive")
+
+    frames: list[Image.Image] = []
+    for timestep in sorted(trajectory, reverse=True):
+        snapshot = trajectory[timestep]
+        if snapshot.ndim != 4:
+            raise ValueError(
+                "save_trajectory_gif expects snapshots shaped as "
+                "(batch, channels, height, width)"
+            )
+        image_batch = snapshot.detach().cpu()
+        if denormalize:
+            image_batch = denormalize_samples(image_batch)
+        grid = make_grid(image_batch, nrow=nrow).clamp(0.0, 1.0)
+        array = (
+            grid.mul(255)
+            .round()
+            .to(dtype=torch.uint8)
+            .permute(1, 2, 0)
+            .contiguous()
+            .numpy()
+        )
+        if array.shape[2] == 1:
+            array = array[:, :, 0]
+        frames.append(Image.fromarray(array))
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    duration_ms = max(1, round(1000 / fps))
+    frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration_ms,
+        loop=0,
+    )
     return output_path

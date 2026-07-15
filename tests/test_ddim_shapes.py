@@ -378,3 +378,20 @@ def test_ddim_sample_uses_k_transitions_and_returns_clean_shape() -> None:
 
     assert samples.shape == (2, 1, 8, 8)
     assert [int(timestep[0]) for timestep in denoiser.all_timesteps] == [9, 7, 4, 1]
+
+
+def test_ddim_trajectory_uses_inference_transition_interval() -> None:
+    ddim = DDIM(
+        noise_schedule=LinearBetaSchedule(num_timesteps=10),
+        model=ToyDenoiser(),
+        num_inference_steps=4,
+    )
+
+    trace = ddim.sample_trajectory(
+        torch.Size((2, 1, 8, 8)),
+        device=torch.device("cpu"),
+        step_interval=2,
+    )
+
+    assert [frame.state_time for frame in trace.frames] == [10, 5, 0]
+    assert trace.samples.shape == (2, 1, 8, 8)

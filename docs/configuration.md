@@ -1,20 +1,19 @@
 # 配置使用与字段参考
 
 Stochaflow 使用 YAML 描述一次实验。配置负责声明数据源、全局划分、
-resolution bucket、模型、扩散过程、优化器、训练策略、日志与产物。
-通用 DDPM 训练入口为：
+resolution bucket、模型、扩散过程、采样器、优化器、训练策略、日志与产物。
+统一训练入口为：
 
 ```bash
-uv run stochaflow-train-ddpm --config configs/ddpm_mnist.yaml
+uv run stochaflow train --config configs/ddpm_mnist.yaml
 ```
 
-数据集专用命令只是带默认配置路径的薄别名；传入 `--config` 后使用相同的
-runner：
+训练 runner 根据 `diffusion.name` 构建已注册的过程，因此同一入口可运行 DDPM、
+DDIM 及后续兼容实现：
 
 ```bash
-uv run stochaflow-train-mnist-ddpm --config configs/ddpm_mnist.yaml
-uv run stochaflow-train-cifar10-ddpm --config configs/ddpm_cifar10.yaml
-uv run stochaflow-train-flowers102-ddpm --config configs/ddpm_flowers102.yaml
+uv run stochaflow train --config configs/ddpm_mnist.yaml
+uv run stochaflow train --config configs/ddim_cifar10.yaml
 ```
 
 现成配置包括：
@@ -25,9 +24,8 @@ uv run stochaflow-train-flowers102-ddpm --config configs/ddpm_flowers102.yaml
   warmup cosine 与 DDPM diagnostics；
 - [`ddpm_mnist_flowers102.yaml`](../configs/ddpm_mnist_flowers102.yaml)：多数据源、
   显式 step 权重和多分辨率 bucket；
-- [`ddim_cifar10.yaml`](../configs/ddim_cifar10.yaml)：DDIM 组件配置示例。当前
-  `stochaflow-train-ddpm` 只接受 `diffusion.name: ddpm`；DDIM 可通过库 API
-  构建和训练，但没有独立的训练 CLI。
+- [`ddim_cifar10.yaml`](../configs/ddim_cifar10.yaml)：DDIM 训练与采样配置示例；
+- [`ddim_flowers102.yaml`](../configs/ddim_flowers102.yaml)：Flowers102 DDIM 配置。
 
 ## Schema 规则
 
@@ -42,6 +40,8 @@ uv run stochaflow-train-flowers102-ddpm --config configs/ddpm_flowers102.yaml
   使用 `data.datasets`、`data.image` 和 `data.batching`。
 - 旧 `diffusion.scheduler` 仍可被读取并迁移到 `noise_schedule`，但新配置应只写
   `diffusion.noise_schedule`。
+- `sampling` 完全可选；即使 YAML 未声明，resolved config 与新 checkpoint 仍会记录
+  展开后的默认 sampling 配置，便于复现。
 
 ## 顶层字段
 
@@ -55,6 +55,7 @@ uv run stochaflow-train-flowers102-ddpm --config configs/ddpm_flowers102.yaml
 | `optimizer` | mapping | 见下文 | 优化器。整段省略时使用项目的 Adam 默认配置。 |
 | `lr_scheduler` | mapping | disabled | 优化器学习率 schedule。 |
 | `ema` | mapping | disabled | 模型指数移动平均。 |
+| `sampling` | mapping | 见下文 | 可选 sampler、采样批量与 debug 轨迹。整段可省略。 |
 | `diagnostics` | list[component] | `[]` | 训练期 diagnostic 插件。 |
 | `trainer` | mapping | 见下文 | epoch、设备、梯度裁剪与 early stopping。 |
 | `logging` | mapping | local logger | 指标、文本日志与 Torch 内部日志。 |
@@ -80,7 +81,10 @@ uv run stochaflow-train-flowers102-ddpm --config configs/ddpm_flowers102.yaml
   metrics.jsonl
   train.log
   diagnostics/          # 启用 diagnostic 时
-  samples/              # 未传 --skip-sampling 时
+  samples/final/        # 未传 --skip-final-sample 时，使用 best.pt 生成
+    samples.pt
+    samples.png
+    resolved_sampling.yaml
 ```
 
 ## `data`
@@ -446,6 +450,76 @@ PyTorch 版本和设备影响。项目不会修改这些值。
 
 `enabled: false` 时其余 EMA 参数仍会被 schema 校验，但不会创建 EMA 对象。
 
+## `sampling`
+
+整段可省略。`sampler: null` 时继承顶层 `diffusion.name` 和
+`diffusion.params`，始终复用训练 noise schedule。省略整段等价于：
+
+```yaml
+sampling:
+  sampler: null
+  num_samples: 16
+  batch_size: null
+  seed: null
+  grid_nrow: 4
+  debug:
+    trajectory:
+      enabled: false
+      params: {}
+      gif_fps: 8
+```
+
+| 字段 | 类型 | 默认值 | 含义与约束 |
+| --- | --- | --- | --- |
+| `sampler` | component 或 null | `null` | 独立反向 sampler；可与训练 diffusion 不同。其 `params` 只传给 sampler 构造器，不能覆盖 model 或 noise schedule。 |
+| `num_samples` | int | `16` | 一次采样的总样本数，必须为正。 |
+| `batch_size` | int 或 null | `null` | 每次反向过程的 batch；null 继承 `data.dataloader.batch_size`。总样本会按该值分批并在 CPU 合并。 |
+| `seed` | int 或 null | `null` | 采样种子；null 继承 `experiment.seed`。 |
+| `grid_nrow` | int | `4` | 最终样本网格每行数量，必须为正。 |
+| `debug.trajectory.enabled` | bool | `false` | 是否执行 sampler-specific 轨迹 debug。 |
+| `debug.trajectory.params` | mapping | `{}` | 直接传给 sampler 的 `sample_trajectory`。内置 DDPM 接受 `state_interval`，内置 DDIM 接受 `step_interval`。两者都必须为正。 |
+| `debug.trajectory.gif_fps` | int | `8` | 循环 GIF 帧率，必须为正。 |
+
+示例：DDPM 训练、DDIM 采样并保存每 10 个 DDIM inference step 的轨迹：
+
+```yaml
+sampling:
+  sampler:
+    name: ddim
+    params:
+      num_inference_steps: 100
+      eta: 0.0
+  num_samples: 64
+  batch_size: 16
+  seed: 123
+  grid_nrow: 8
+  debug:
+    trajectory:
+      enabled: true
+      params:
+        step_interval: 10
+      gif_fps: 8
+```
+
+使用 DDPM sampler 时，轨迹参数改为数学状态时间间隔：
+
+```yaml
+sampling:
+  sampler: null
+  debug:
+    trajectory:
+      enabled: true
+      params:
+        state_interval: 100
+      gif_fps: 8
+```
+
+采样固定使用训练 checkpoint 中的 model 和 noise schedule。权重选择由 checkpoint
+内嵌配置的 `ema.enabled` 与 `ema.use_for_sampling` 共同决定：两者均为 true 时加载
+`ema_denoiser_state_dict`，否则加载 `denoiser_state_dict`。开启轨迹后，除常规
+`samples.pt` 和 `samples.png` 外还会生成 `trajectory.pt`、`trajectory.png` 和
+`trajectory.gif`。
+
 ## `diagnostics[]`
 
 每项都是 component：
@@ -479,7 +553,7 @@ PyTorch 版本和设备影响。项目不会修改这些值。
 | `num_epochs` | int | `1` | 目标总 epoch 数，必须为正；`--epochs` 可覆盖。resume 时它仍表示最终目标 epoch，而不是追加数量。 |
 | `device` | string | `cpu` | `auto`、`cpu` 或 Torch 接受的设备字符串，如 `cuda`、`cuda:0`。`auto` 优先 CUDA，否则 CPU。 |
 | `max_grad_norm` | float 或 null | `null` | 非 null 时启用全模型 gradient norm clipping，必须为正。 |
-| `show_progress` | bool | `true` | 保留的 schema 字段。当前 runner 和 `build_training_components` 未读取它；训练 CLI 由 `--no-progress` 控制显示。 |
+| `show_progress` | bool | `true` | 是否显示 Rich 训练进度；`--no-progress` 可在 CLI 上强制关闭。 |
 | `early_stopping` | mapping | 见下文 | Early stopping 与 best checkpoint 的监控设置。 |
 
 ### `trainer.early_stopping`
@@ -538,8 +612,10 @@ uv sync --extra wandb
 | --- | --- | --- | --- |
 | `checkpoint_every` | int | `1` | 每多少个 epoch 保存一个 `epoch_XXXX.pt`，必须为正。`latest.pt` 每个已完成 epoch 都会更新，`best.pt` 在监控指标改善时更新。 |
 
-Checkpoint 包含 model、optimizer、可选 LR scheduler、可选 EMA、epoch、global step、
-resolved config、metrics 与 metadata。只保存新 data schema。
+Checkpoint 包含完整 diffusion model、optimizer、可选 LR scheduler、可选 EMA、epoch、
+global step、resolved config、metrics 与 metadata。格式版本 2 另外保存
+`denoiser_state_dict`，并在启用 EMA 时保存 `ema_denoiser_state_dict`；独立采样只加载
+portable denoiser，因此 DDPM 训练权重可以交给 DDIM sampler。只保存新 data schema。
 
 ## K-fold 配置示例
 
@@ -582,52 +658,96 @@ data:
 | `--deterministic` | 请求 Torch 使用可用的确定性行为。 |
 | `--no-progress` | 关闭 Rich 进度显示。 |
 | `--resume [PATH]` | 无 PATH 时查找输出根目录下最新 `latest.pt`；也可传 checkpoint 或 run 目录。 |
-| `--num-samples N` | 训练后生成样本数。 |
-| `--sample-grid-size N` | 训练后样本网格每行数量。 |
-| `--trajectory-interval N` | 反向 trajectory 快照的状态时间间隔。 |
-| `--skip-sampling` | 只训练/验证/测试与保存 checkpoint，不执行训练后采样。 |
+| `--device DEVICE` | 覆盖 `trainer.device`。 |
+| `--output-dir PATH` | 覆盖 `experiment.output_dir`。 |
+| `--skip-final-sample` | 不执行最佳 checkpoint 的训练验收采样。 |
 
 推荐先执行短 smoke run：
 
 ```bash
-uv run stochaflow-train-ddpm \
+uv run stochaflow train \
   --config configs/ddpm_mnist.yaml \
   --epochs 1 \
   --limit-batches 2 \
   --limit-validation-batches 1 \
   --limit-test-batches 1 \
-  --skip-sampling \
+  --skip-final-sample \
   --no-progress
 ```
 
 ## 独立 checkpoint 采样
 
-`stochaflow-sample-ddpm` 从 checkpoint 内保存的新 schema 配置重建模型、噪声 schedule、
-图像 shape 与可选 EMA，不接受额外 YAML：
+`stochaflow sample` 支持 checkpoint-only、config-only 或两者同时提供。只给
+checkpoint 时使用其中保存的配置：
 
 ```bash
-uv run stochaflow-sample-ddpm \
-  --checkpoint outputs/<run>/checkpoints/best.pt \
-  --num-samples 64 \
-  --batch-size 16
+uv run stochaflow sample \
+  --checkpoint outputs/<run>/checkpoints/best.pt
 ```
 
-其 CLI 字段包括：
+只给 config 时，在 `experiment.output_dir` 下递归查找修改时间最新的 `best.pt`，并使用
+该文件的权重：
+
+```bash
+uv run stochaflow sample --config configs/ddpm_mnist.yaml
+```
+
+两者同时给出时，checkpoint 提供训练结构、noise schedule、seed、EMA 选择和权重，
+外部 config 只提供 `sampling` 段。加载前会比较 `model`、完整训练 `diffusion` 和
+`data.image.channels`；任一不兼容都会报错。外部 config 的 data bucket、trainer、
+experiment 或 EMA 字段不会覆盖 checkpoint 内嵌值。外部 config 省略 `sampling` 时，
+使用本节列出的 sampling 默认值。
+
+无需额外 YAML 即可切换 sampler：
+
+```bash
+uv run stochaflow sample \
+  --checkpoint outputs/<run>/checkpoints/best.pt \
+  --sampler ddim \
+  --sampler-param num_inference_steps=100 \
+  --sampler-param eta=0.0
+```
+
+CLI 合并顺序为 checkpoint 内嵌配置、外部 config 的 sampling 段、`--sampler`、
+`--sampler-param`。切换 sampler 名称时不会继承原 sampler params；同名时则保留并
+覆盖。没有显式 sampler 时，名称和参数继承训练 `diffusion`。
+
+`--sampler-param` 在第一个 `=` 处分割。key 必须是合法参数名；value 使用 YAML
+scalar/list 解析，因此整数、浮点数、布尔值、null 和列表都保留其类型。重复 key
+最后一次生效，mapping 值不接受。例如：
+
+```bash
+uv run stochaflow sample \
+  --checkpoint outputs/<run>/checkpoints/best.pt \
+  --sampler ddim \
+  --sampler-param num_inference_steps=100 \
+  --sampler-param eta=0.0 \
+  --sampler-param clip_denoised=false
+```
+
+若自定义 sampler 接受列表或含等号的字符串参数，应给完整的 `KEY=VALUE` 加引号，
+例如 `--sampler-param "timesteps=[999, 499, 0]"` 或
+`--sampler-param "label=a=b"`。这些名称只是解析语法示例，不是内置 DDPM/DDIM 参数。
+
+每次运行都会保存 `resolved_sampling.yaml`，其中记录 checkpoint、格式版本、最终
+sampler 与 params、展开后的 sampling 配置、seed、device、raw/EMA 权重选择和产物
+路径。独立采样默认写入 `<checkpoint-run>/samples/<timestamp>/`；显式
+`--output-dir` 时直接写入指定目录。
+
+采样 CLI 字段：
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
-| `--checkpoint PATH` | null | checkpoint 文件；省略时在 `--search-dir` 下查找最新 `best.pt`。也可传 run 目录。 |
-| `--search-dir PATH` | `outputs` | 自动查找 checkpoint 的根目录。 |
+| `--checkpoint PATH` | null | checkpoint 文件或目录；目录下递归查找最新 `best.pt`。与 config 至少提供一个。 |
+| `--config PATH` | null | 外部实验配置；单独提供时在 `experiment.output_dir` 下查找最新 `best.pt`。 |
+| `--sampler NAME` | 配置值 | 覆盖注册 sampler 名称。 |
+| `--sampler-param KEY=VALUE` | 无 | 可重复的 sampler 构造参数覆盖；value 按 YAML scalar/list 解析，同名 key 最后一次生效。 |
 | `--output-dir PATH` | checkpoint 旁的时间戳目录 | 生成产物目录。 |
-| `--device DEVICE` | `auto` | 采样设备。 |
-| `--seed N` | checkpoint 中的 experiment seed | 采样随机种子。 |
-| `--num-samples N` | `64` | 总样本数。 |
-| `--batch-size N` | checkpoint 中的 `data.dataloader.batch_size` | 每次反向过程的样本数。 |
-| `--sample-grid-size N` | `8` | 网格每行图片数。 |
-| `--trajectory-interval N` | `200` | trajectory 快照间隔。 |
-| `--no-trajectory` | false | 只保存最终样本。 |
-| `--prefix TEXT` | `sample` | 输出文件名前缀。 |
-| `--no-ema` | false | 即使 checkpoint 含 EMA 也使用原始模型权重。 |
+| `--device DEVICE` | checkpoint 配置中的 trainer device | 覆盖采样设备。 |
+
+新 checkpoint 同时保存完整训练状态、portable denoiser 和可选 EMA denoiser。
+旧 checkpoint 缺少格式版本或 portable 字段时不能通过新采样入口加载，也不会自动
+转换。
 
 ## 常见配置错误
 
@@ -642,5 +762,9 @@ uv run stochaflow-sample-ddpm \
   一个验证样本；
 - K-fold 的 `num_folds` 大于合并训练集大小；
 - `warmup_cosine.total_steps <= warmup_steps`；
+- `sample` 同时缺少 `--config` 和 `--checkpoint`；
+- 外部 config 与 checkpoint 的 model、训练 diffusion/noise schedule 或图像通道不兼容；
+- sampler 切换后仍传入只属于旧 sampler 的参数，或 trajectory 参数与 sampler 不匹配；
+- 请求 EMA 采样，但 checkpoint 没有 `ema_denoiser_state_dict`；
 - 自定义 Factory 的 train/eval view 使用了不同的 `sample_keys` 或错误的 bucket id；
 - Dataset 输出不是图像 Tensor，也不是首元素为图像 Tensor 的非空 tuple/list。

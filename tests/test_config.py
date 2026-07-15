@@ -26,6 +26,8 @@ def test_load_ddpm_mnist_config() -> None:
     assert len(config.logging.backends) >= 1
     assert config.diffusion.noise_schedule.params["num_timesteps"] == 1000
     assert config.lr_scheduler.name is None
+    assert config.sampling.sampler is None
+    assert config.sampling.num_samples == 16
 
 
 def test_config_loads_custom_dataset_modules() -> None:
@@ -104,6 +106,7 @@ def test_config_to_dict_preserves_top_level_sections() -> None:
     assert "experiment" in data
     assert "model" in data
     assert "ema" in data
+    assert "sampling" in data
     assert "lr_scheduler" in data
     assert "diagnostics" in data
     assert "trainer" in data
@@ -187,4 +190,35 @@ def test_ema_config_rejects_invalid_decay() -> None:
     raw["ema"] = {"enabled": True, "decay": 1.0}
 
     with pytest.raises(ConfigError, match="ema.decay"):
+        load_config_dict(raw)
+
+
+def test_sampling_section_is_optional() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw.pop("sampling")
+
+    config = load_config_dict(raw)
+
+    assert config.sampling.sampler is None
+    assert config.sampling.num_samples == 16
+    assert not config.sampling.debug.trajectory.enabled
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("num_samples",), 0),
+        (("batch_size",), -1),
+        (("grid_nrow",), 0),
+        (("debug", "trajectory", "gif_fps"), 0),
+    ],
+)
+def test_sampling_config_rejects_non_positive_values(path, value) -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    target = raw["sampling"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(ConfigError, match="sampling"):
         load_config_dict(raw)

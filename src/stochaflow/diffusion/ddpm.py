@@ -10,6 +10,7 @@ from stochaflow.diffusion.gaussian import (
     GaussianDiffusion,
 )
 from stochaflow.diffusion.noise_schedules import DiscreteVPSchedule
+from stochaflow.sampling.sampler import SamplingTrace, TrajectoryFrame
 from stochaflow.utils.registry import REGISTRIES
 
 # Compatibility alias for callers using the original algorithm-specific name.
@@ -157,6 +158,33 @@ class DDPM(GaussianDiffusion):
             0,
             clip_denoised=clip_denoised,
         )
+
+    def sample_trajectory(
+        self,
+        sample_shape: torch.Size,
+        device: torch.device | None = None,
+        *,
+        state_interval: int = 100,
+    ) -> SamplingTrace:
+        """Generate a debug trace at fixed mathematical-state intervals."""
+
+        if state_interval <= 0:
+            raise ValueError("DDPM trajectory state_interval must be positive")
+        if device is None:
+            try:
+                device = next(self.model.parameters()).device
+            except StopIteration:
+                device = torch.device("cpu")
+
+        state_time = self.num_timesteps
+        current = torch.randn(sample_shape, device=device)
+        frames = [TrajectoryFrame(state_time, current.detach().cpu())]
+        while state_time > 0:
+            target_time = max(0, state_time - state_interval)
+            current = self.reverse(current, state_time, target_time)
+            state_time = target_time
+            frames.append(TrajectoryFrame(state_time, current.detach().cpu()))
+        return SamplingTrace(samples=current, frames=frames)
 
     def reverse_step(
         self,

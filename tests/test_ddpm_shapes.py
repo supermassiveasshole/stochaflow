@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 
 from stochaflow.diffusion import DDPM, LinearBetaSchedule
-from stochaflow.scripts.ddpm_runner import sample_reverse_trajectory
 
 
 class ToyDenoiser(nn.Module):
@@ -238,19 +237,18 @@ def test_ddpm_loads_legacy_scheduler_owned_buffers() -> None:
     assert torch.equal(restored.posterior_mean_coef1, original.posterior_mean_coef1)
 
 
-def test_script_reverse_trajectory_captures_initial_intermediate_and_final() -> None:
+def test_ddpm_trajectory_captures_initial_intermediate_and_final() -> None:
     noise_schedule = LinearBetaSchedule(num_timesteps=10)
     ddpm = DDPM(noise_schedule=noise_schedule, model=ToyDenoiser())
     sample_shape = torch.Size((2, 1, 8, 8))
 
-    trajectory = sample_reverse_trajectory(
-        ddpm,
+    trace = ddpm.sample_trajectory(
         sample_shape,
         device=torch.device("cpu"),
-        capture_every=3,
+        state_interval=3,
     )
 
-    assert set(trajectory) == {10, 7, 4, 1, 0}
-    for snapshot in trajectory.values():
-        assert snapshot.shape == sample_shape
-        assert snapshot.device == torch.device("cpu")
+    assert [frame.state_time for frame in trace.frames] == [10, 7, 4, 1, 0]
+    for frame in trace.frames:
+        assert frame.samples.shape == sample_shape
+        assert frame.samples.device == torch.device("cpu")

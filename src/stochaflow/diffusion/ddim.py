@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from stochaflow.diffusion.gaussian import GaussianDiffusion
 from stochaflow.diffusion.noise_schedules import DiscreteVPSchedule
+from stochaflow.sampling.sampler import SamplingTrace, TrajectoryFrame
 from stochaflow.utils.registry import REGISTRIES
 
 SamplingTimesteps = Sequence[int] | torch.Tensor
@@ -407,3 +408,39 @@ class DDIM(GaussianDiffusion):
             eta=eta,
             clip_denoised=clip_denoised,
         )
+
+    def sample_trajectory(
+        self,
+        sample_shape: torch.Size,
+        device: torch.device | None = None,
+        *,
+        step_interval: int = 1,
+    ) -> SamplingTrace:
+        """Generate a debug trace along the configured inference schedule."""
+
+        if step_interval <= 0:
+            raise ValueError("DDIM trajectory step_interval must be positive")
+        if device is None:
+            try:
+                device = next(self.model.parameters()).device
+            except StopIteration:
+                device = torch.device("cpu")
+
+        schedule = self.sampling_timesteps(device=device)
+        current = torch.randn(sample_shape, device=device)
+        frames = [TrajectoryFrame(int(schedule[0]), current.detach().cpu())]
+        transitions = zip(schedule[:-1], schedule[1:])
+        for transition_index, (state_time, target_time) in enumerate(
+            transitions,
+            start=1,
+        ):
+            current = self.reverse_step(
+                current,
+                state_time.broadcast_to((current.size(0),)),
+                previous_timesteps=target_time.broadcast_to((current.size(0),)),
+            )
+            if transition_index % step_interval == 0 or int(target_time) == 0:
+                frames.append(
+                    TrajectoryFrame(int(target_time), current.detach().cpu())
+                )
+        return SamplingTrace(samples=current, frames=frames)

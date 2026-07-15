@@ -122,6 +122,34 @@ class DiffusionConfig:
 
 
 @dataclass(slots=True)
+class TrajectoryDebugConfig:
+    """Optional sampler-specific reverse-trajectory diagnostics."""
+
+    enabled: bool = False
+    params: dict[str, Any] = field(default_factory=dict)
+    gif_fps: int = 8
+
+
+@dataclass(slots=True)
+class SamplingDebugConfig:
+    """Debug-only sampling artifact controls."""
+
+    trajectory: TrajectoryDebugConfig = field(default_factory=TrajectoryDebugConfig)
+
+
+@dataclass(slots=True)
+class SamplingConfig:
+    """Standalone and post-training sampling configuration."""
+
+    sampler: ComponentConfig | None = None
+    num_samples: int = 16
+    batch_size: int | None = None
+    seed: int | None = None
+    grid_nrow: int = 4
+    debug: SamplingDebugConfig = field(default_factory=SamplingDebugConfig)
+
+
+@dataclass(slots=True)
 class OptimizerConfig:
     """Optimizer declaration and hyperparameters."""
 
@@ -208,6 +236,7 @@ class StochaflowConfig:
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     lr_scheduler: LRSchedulerConfig = field(default_factory=LRSchedulerConfig)
     ema: EMAConfig = field(default_factory=EMAConfig)
+    sampling: SamplingConfig = field(default_factory=SamplingConfig)
     diagnostics: list[ComponentConfig] = field(default_factory=list)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -383,6 +412,16 @@ class StochaflowConfig:
             raise ConfigError("ema.update_after_step must be non-negative")
         if self.ema.update_every <= 0:
             raise ConfigError("ema.update_every must be positive")
+        if self.sampling.sampler is not None and not self.sampling.sampler.name:
+            raise ConfigError("sampling.sampler.name must be a non-empty string")
+        if self.sampling.num_samples <= 0:
+            raise ConfigError("sampling.num_samples must be positive")
+        if self.sampling.batch_size is not None and self.sampling.batch_size <= 0:
+            raise ConfigError("sampling.batch_size must be positive when provided")
+        if self.sampling.grid_nrow <= 0:
+            raise ConfigError("sampling.grid_nrow must be positive")
+        if self.sampling.debug.trajectory.gif_fps <= 0:
+            raise ConfigError("sampling.debug.trajectory.gif_fps must be positive")
         if self.lr_scheduler.name is not None:
             if not isinstance(self.lr_scheduler.name, str) or not self.lr_scheduler.name:
                 raise ConfigError("lr_scheduler.name must be a non-empty string or null")

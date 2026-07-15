@@ -1,8 +1,8 @@
 # Stochaflow
 
 Stochaflow is a research-oriented Python project for stochastic flows. The
-current implementation track is DDPM-style diffusion, with end-to-end training
-paths for MNIST, CIFAR-10, and Oxford Flowers 102.
+current implementation includes config-driven DDPM and DDIM training and
+sampling paths for MNIST, CIFAR-10, and Oxford Flowers 102.
 
 The codebase is organized around registries and config-driven factories:
 datasets, data splits, models, diffusion processes, objectives, optimizers,
@@ -13,8 +13,8 @@ constructed from YAML configuration.
 
 Implemented:
 
-- DDPM epsilon-prediction training
-- DDPM reverse sampling and trajectory capture
+- DDPM/DDIM epsilon-prediction training
+- DDPM and DDIM reverse sampling with sampler-specific debug trajectories
 - beta-native linear and alpha-bar-native cosine noise schedules
 - class-based MNIST, CIFAR-10, and Oxford Flowers 102 dataset factories
 - multi-source mixtures with optional step weights and global holdout/K-fold splits
@@ -24,12 +24,11 @@ Implemented:
 - warmup-cosine and common PyTorch optimizer LR schedulers
 - DDPM diagnostic logging for timestep-bucket losses and sample artifacts
 - Rich terminal reporting, checkpointing, and local/TensorBoard/W&B logging
-- package entry points for training and checkpoint sampling
+- one `stochaflow` CLI with `train` and `sample` subcommands
 - pytest, ruff, and pyright configuration
 
 Still evolving:
 
-- DDIM implementation
 - faster samplers and evaluation metrics such as FID/KID
 - broader stochastic-flow abstractions beyond diffusion
 
@@ -70,7 +69,7 @@ uv run python -c "import torch; print(torch.__version__, torch.version.cuda, tor
 MNIST smoke run:
 
 ```bash
-uv run stochaflow-train-mnist-ddpm \
+uv run stochaflow train \
   --config configs/ddpm_mnist.yaml \
   --epochs 1 \
   --limit-batches 10
@@ -79,7 +78,7 @@ uv run stochaflow-train-mnist-ddpm \
 CIFAR-10 smoke run:
 
 ```bash
-uv run stochaflow-train-cifar10-ddpm \
+uv run stochaflow train \
   --config configs/ddpm_cifar10.yaml \
   --epochs 1 \
   --limit-batches 10 \
@@ -90,24 +89,24 @@ uv run stochaflow-train-cifar10-ddpm \
 Oxford Flowers 102 smoke run:
 
 ```bash
-uv run stochaflow-train-flowers102-ddpm \
+uv run stochaflow train \
   --config configs/ddpm_flowers102.yaml \
   --epochs 1 \
   --limit-batches 2 \
-  --skip-sampling
+  --skip-final-sample
 ```
 
 Oxford Flowers 102 baseline run:
 
 ```bash
-uv run stochaflow-train-flowers102-ddpm \
+uv run stochaflow train \
   --config configs/ddpm_flowers102.yaml
 ```
 
 Multi-source MNIST + Flowers102 run:
 
 ```bash
-uv run stochaflow-train-ddpm \
+uv run stochaflow train \
   --config configs/ddpm_mnist_flowers102.yaml \
   --epochs 1 \
   --limit-batches 10
@@ -127,10 +126,9 @@ Useful training options:
 
 ```bash
 --resume [PATH]               Resume training. Without PATH, use latest.pt.
---num-samples 16              Number of post-training samples to generate.
---sample-grid-size 4          Number of images per row for the final sample grid.
---trajectory-interval 200     Reverse-process interval for trajectory snapshots.
---skip-sampling               Train without dumping post-training samples.
+--device DEVICE               Override trainer.device for this run.
+--output-dir PATH             Override experiment.output_dir for this run.
+--skip-final-sample           Skip best-checkpoint acceptance sampling.
 --no-progress                 Disable Rich terminal progress bars.
 ```
 
@@ -145,10 +143,10 @@ outputs/<experiment>/<YYYYMMDD_HHMMSS>/
   metrics.jsonl
   train.log
   samples/
-    epoch_XXXX.png
-    epoch_XXXX.pt
-    epoch_XXXX_trajectory.png
-    epoch_XXXX_trajectory.pt
+    final/
+      samples.png
+      samples.pt
+      resolved_sampling.yaml
 ```
 
 Example MNIST DDPM samples:
@@ -169,21 +167,37 @@ Oxford Flowers 102 reverse-process trajectory:
 
 ## Sampling
 
-Sample from a Stochaflow DDPM checkpoint. If `--checkpoint` is omitted, the
-sampler uses the newest `checkpoints/best.pt` under `outputs/`.
+Sample directly from a portable Stochaflow checkpoint. The checkpoint contains
+the model and experiment config, so an extra YAML file is optional:
 
 ```bash
-uv run stochaflow-sample-ddpm \
-  --num-samples 16 \
-  --sample-grid-size 4
+uv run stochaflow sample \
+  --checkpoint outputs/<run>/checkpoints/best.pt
 ```
 
-Use `--checkpoint PATH` for a specific checkpoint or pass a run directory to use
-that run's `checkpoints/best.pt`.
+Switch a DDPM-trained denoiser to DDIM sampling without writing another config:
 
-The sampler rebuilds the model from the config stored in the checkpoint. EMA
-weights are used automatically when training enabled EMA and the checkpoint
-contains EMA state. Pass `--no-ema` to sample raw weights.
+```bash
+uv run stochaflow sample \
+  --checkpoint outputs/<run>/checkpoints/best.pt \
+  --sampler ddim \
+  --sampler-param num_inference_steps=100 \
+  --sampler-param eta=0.0
+```
+
+`--sampler-param KEY=VALUE` is repeatable and parses YAML scalar/list values.
+When `--sampler` changes the configured sampler name, its previous constructor
+parameters are discarded before the CLI parameters are applied.
+
+You can alternatively pass only `--config`; Stochaflow then finds the newest
+`best.pt` under `experiment.output_dir`. With both inputs, the checkpoint
+provides weights while the external config supplies the sampling section after
+model, training diffusion, noise schedule, and channel compatibility checks.
+
+EMA denoiser weights are used when `ema.enabled` and `ema.use_for_sampling` are
+both true. Every sampling run writes raw samples, a PNG grid, and
+`resolved_sampling.yaml`. Enabling `sampling.debug.trajectory` additionally
+writes a raw trajectory, static grid, and looping GIF.
 
 ## Configuration
 
@@ -194,6 +208,7 @@ configs/ddpm_mnist.yaml
 configs/ddpm_cifar10.yaml
 configs/ddim_cifar10.yaml
 configs/ddpm_flowers102.yaml
+configs/ddim_flowers102.yaml
 configs/ddpm_mnist_flowers102.yaml
 ```
 
@@ -207,6 +222,7 @@ Important sections:
 - `optimizer`: optimizer name and hyperparameters
 - `lr_scheduler`: optional optimizer learning-rate scheduler
 - `ema`: optional exponential moving average tracking and sampling policy
+- `sampling`: optional sampler selection, sample batching, and debug artifacts
 - `diagnostics`: optional algorithm-specific training diagnostics
 - `trainer`: loop, device, gradient, and early stopping policy
 - `logging`: metric logging backends
@@ -242,7 +258,7 @@ schedule.
 : trainer, train-step adapters, diagnostics, reporting, and EMA.
 
 `src/stochaflow/sampling/`
-: image-grid and trajectory artifact utilities.
+: checkpoint sampling runtime plus image-grid, trajectory, and GIF artifacts.
 
 `src/stochaflow/utils/`
 : config loading, registries, factories, checkpointing, logging, and seeding.
@@ -263,7 +279,7 @@ uv run pyright
 Run targeted tests while iterating:
 
 ```bash
-uv run pytest tests/test_ddpm_shapes.py tests/test_sample_ddpm_script.py
+uv run pytest tests/test_ddpm_shapes.py tests/test_sampling_runtime.py
 ```
 
 ## Repository Layout

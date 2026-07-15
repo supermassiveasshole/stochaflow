@@ -15,12 +15,18 @@ else:
     ExponentialMovingAverage = Any
 
 
+CHECKPOINT_FORMAT_VERSION = 2
+
+
 class CheckpointState(TypedDict, total=False):
     """Serialized checkpoint payload."""
 
+    format_version: int
     epoch: int
     global_step: int
     model_state_dict: dict[str, torch.Tensor]
+    denoiser_state_dict: dict[str, torch.Tensor]
+    ema_denoiser_state_dict: dict[str, torch.Tensor]
     optimizer_state_dict: dict[str, Any]
     lr_scheduler_state_dict: dict[str, Any]
     ema_state_dict: EMAStateDict
@@ -51,6 +57,7 @@ class CheckpointManager:
     """
 
     model: nn.Module
+    denoiser: nn.Module | None = None
     optimizer: Optimizer | None = None
     lr_scheduler: Any | None = None
     ema: ExponentialMovingAverage | None = None
@@ -79,8 +86,20 @@ class CheckpointManager:
         """Assemble a serializable checkpoint payload from managed objects."""
 
         state: CheckpointState = {
-            "model_state_dict": self.model.state_dict(),
+            "format_version": CHECKPOINT_FORMAT_VERSION,
+            "model_state_dict": _clone_module_state(self.model),
         }
+        if self.denoiser is not None:
+            state["denoiser_state_dict"] = _clone_module_state(self.denoiser)
+            if self.ema is not None:
+                self.ema.store(self.model)
+                try:
+                    self.ema.copy_to(self.model)
+                    state["ema_denoiser_state_dict"] = _clone_module_state(
+                        self.denoiser
+                    )
+                finally:
+                    self.ema.restore(self.model)
         if self.optimizer is not None:
             state["optimizer_state_dict"] = self.optimizer.state_dict()
         if self.lr_scheduler is not None:
@@ -132,17 +151,7 @@ class CheckpointManager:
         """Load checkpoint state into the managed runtime objects."""
 
         checkpoint_path = Path(path)
-        raw_state = torch.load(
-            checkpoint_path,
-            map_location=map_location,
-            weights_only=False,
-        )
-        if not isinstance(raw_state, dict):
-            raise TypeError(
-                f"checkpoint at '{checkpoint_path}' must contain a dictionary payload"
-            )
-
-        state = raw_state
+        state = self.load_payload(checkpoint_path, map_location=map_location)
         model_state_dict = state.get("model_state_dict")
         if not isinstance(model_state_dict, dict):
             raise TypeError("checkpoint is missing a valid model_state_dict")
@@ -204,10 +213,39 @@ class CheckpointManager:
             metadata=metadata,
         )
 
+    @staticmethod
+    def load_payload(
+        path: str | Path,
+        *,
+        map_location: str | torch.device | None = None,
+    ) -> CheckpointState:
+        """Read and validate the top-level checkpoint payload."""
+
+        checkpoint_path = Path(path)
+        raw_state = torch.load(
+            checkpoint_path,
+            map_location=map_location,
+            weights_only=False,
+        )
+        if not isinstance(raw_state, dict):
+            raise TypeError(
+                f"checkpoint at '{checkpoint_path}' must contain a dictionary payload"
+            )
+        return cast(CheckpointState, raw_state)
+
 def _ensure_parent_directory(path: Path) -> None:
     """Create the parent directory for a checkpoint path."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _clone_module_state(module: nn.Module) -> dict[str, torch.Tensor]:
+    """Clone a module state so temporary EMA swaps cannot mutate a snapshot."""
+
+    return {
+        name: tensor.detach().clone()
+        for name, tensor in module.state_dict().items()
+    }
 
 
 def _find_named_checkpoint(root: str | Path, filename: str) -> Path:
