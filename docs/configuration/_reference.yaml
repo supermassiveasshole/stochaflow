@@ -1,0 +1,366 @@
+schema_version: 1
+
+fields:
+  experiment: {description: 实验标识、随机性和输出位置。}
+  experiment.name: {description: 人类可读的实验名称，用于日志 run name。}
+  experiment.seed: {description: 数据划分、采样器、训练与采样的基础随机种子。}
+  experiment.output_dir: {description: 运行目录根路径；训练会在其下创建时间戳子目录。, cli: "train --output-dir"}
+  experiment.exp_id: {description: 运行实例标识；通常由 runner 在创建时间戳目录后写入。}
+
+  data: {description: 数据源、图像契约、分桶、加载器和全局划分配置。}
+  data.datasets: {description: 按声明顺序参与全局合并的数据源列表。, constraints: 至少包含一个元素；id 必须唯一。}
+  "data.datasets[].id": {description: 当前数据源在混合数据集中的稳定标识。, constraints: 非空且在列表内唯一。}
+  "data.datasets[].factory": {description: dataset_factories Registry 中的 Factory 名称。, interactions: 扩展 Factory 所在模块必须写入 data.modules。}
+  "data.datasets[].params": {description: 原样传给 DatasetFactoryContext.params 的 Factory 专属参数。}
+  "data.datasets[].splits": {description: 实验逻辑分区到该数据源原生 split 名的映射。}
+  "data.datasets[].splits.train": {description: 逻辑训练分区使用的原生 split 名称。, constraints: 非空。}
+  "data.datasets[].splits.validation": {description: official 模式的逻辑验证分区；null 表示该源不提供验证分区。}
+  "data.datasets[].splits.test": {description: 最终测试分区；null 表示不构建测试集。, constraints: 所有数据源必须全部声明或全部省略。}
+  "data.datasets[].sampling_weight": {description: 加权训练时该源占训练 step 的期望比例。, constraints: 所有源全部省略，或全部填写正数；无需归一化。}
+  data.image: {description: 所有 Factory 输出必须满足的全局图像 Tensor 契约。}
+  data.image.channels: {description: 图像和模型输入输出的通道数。, constraints: 正整数；内置 Factory 支持 1 或 3。}
+  data.image.normalize: {description: true 时内置 Factory 将零到一的图像映射到负一到一。}
+  data.batching: {description: 分辨率 bucket、像素预算 batch size 与 epoch 长度策略。}
+  data.batching.buckets: {description: 允许的数据空间尺寸列表，声明顺序也是最终 tie-break 顺序。, constraints: 至少一个；名称唯一且高宽为正。}
+  "data.batching.buckets[].name": {description: bucket 的稳定名称，供样本元数据和 sample_bucket 引用。}
+  "data.batching.buckets[].height": {description: bucket 输出 Tensor 的高度。}
+  "data.batching.buckets[].width": {description: bucket 输出 Tensor 的宽度。}
+  data.batching.sample_bucket: {description: 采样、trajectory、diagnostic 形状及基础 batch size 的基准 bucket。, constraints: 必须引用已声明 bucket。}
+  data.batching.dynamic_batch_size: {description: 是否按基准 bucket 的像素预算缩放每个 bucket 的 batch size。}
+  data.batching.steps_per_epoch: {description: 每个训练 epoch 的严格 step 数；auto 表示自然完整遍历所需 batch 数。, constraints: auto 或正整数。}
+  data.modules: {description: 配置加载后幂等导入的 Python 扩展模块列表；模块导入应执行 Registry 装饰器。, constraints: 每项是非空 import path。}
+  data.dataloader: {description: PyTorch DataLoader 与训练 sampler 的通用参数。}
+  data.dataloader.batch_size: {description: sample_bucket 对应的基础 batch size；动态模式下其他 bucket 按像素比缩放。, constraints: 正整数。}
+  data.dataloader.num_workers: {description: 每个 DataLoader 的 worker 进程数。, constraints: 非负整数。}
+  data.dataloader.shuffle: {description: 训练 sampler 是否在每个 epoch 打乱 bucket 内样本；评估始终不打乱。}
+  data.dataloader.drop_last: {description: 自然训练遍历是否丢弃 bucket 内最后一个不完整 batch；评估始终保留。}
+  data.dataloader.pin_memory: {description: 是否为 DataLoader 启用 pinned host memory。}
+  data.dataloader.persistent_workers: {description: 是否在 epoch 间保留 worker。, constraints: true 要求 num_workers 大于 0。}
+  data.dataloader.prefetch_factor: {description: 每个 worker 预取的 batch 数；null 使用 PyTorch 默认值。, constraints: 非 null 时为正数且 num_workers 大于 0。}
+  data.splits: {description: 所有数据源按配置顺序合并后执行的全局 SplitStrategy 配置。}
+  data.splits.mode: {description: split_strategies Registry 名称；内置值为 none、official、random_holdout、kfold。, constraints: 非空 Registry 名称。}
+  data.splits.validation_size: {description: random_holdout 的全局验证集大小；整数表示样本数，浮点数表示比例。, constraints: 整数为正；浮点数位于 0 与 1 之间。}
+  data.splits.num_folds: {description: kfold 的 fold 数量。, constraints: kfold 时至少为 2，且运行时不能超过总样本数。}
+  data.splits.fold_index: {description: 只运行指定的零起始 fold；null 表示依次构建全部 fold。, constraints: 大于等于零且小于 num_folds。}
+
+  model: {description: 由 models Registry 构建的去噪模型。}
+  model.name: {description: models Registry 名称。}
+  model.params: {description: 模型构造参数；内置参数见 Registry 组件索引。}
+  diffusion: {description: 训练扩散过程及其前向噪声路径。}
+  diffusion.name: {description: diffusions Registry 名称；也决定默认训练后采样器。}
+  diffusion.noise_schedule: {description: 前向噪声 schedule 的 Registry 声明。}
+  diffusion.noise_schedule.name: {description: noise_schedules Registry 名称。}
+  diffusion.noise_schedule.params: {description: 噪声 schedule 构造参数。}
+  diffusion.params: {description: 扩散过程构造参数；model 与 noise_schedule 由运行时注入。}
+  objective: {description: 训练目标函数的 Registry 声明。}
+  objective.name: {description: objectives Registry 名称。}
+  objective.params: {description: 目标函数构造参数。}
+  optimizer: {description: 优化器 Registry 声明。}
+  optimizer.name: {description: optimizers Registry 名称。}
+  optimizer.params: {description: 透传给优化器的参数；模型 parameters 由运行时注入。}
+  lr_scheduler: {description: 可选学习率调度器及更新周期。}
+  lr_scheduler.name: {description: lr_schedulers Registry 名称；null 禁用调度器。}
+  lr_scheduler.interval: {description: 在每个 optimizer step 后或每个 epoch 后推进调度器。, constraints: 启用时为 step 或 epoch。}
+  lr_scheduler.params: {description: 调度器构造参数；optimizer 由运行时注入。}
+  ema: {description: 模型参数的指数移动平均策略。}
+  ema.enabled: {description: 是否创建并更新 EMA 权重。}
+  ema.decay: {description: 历史 EMA 权重的保留系数。, constraints: 大于等于零且小于一。}
+  ema.update_after_step: {description: 在全局 step 达到该值后才开始更新 EMA。, constraints: 非负整数。}
+  ema.update_every: {description: 每隔多少个 optimizer step 更新一次 EMA。, constraints: 正整数。}
+  ema.use_for_sampling: {description: 采样和诊断 artifact 是否优先使用 EMA 权重。}
+  sampling: {description: 独立采样和训练结束验收采样的默认设置。}
+  sampling.sampler: {description: 可选采样器覆盖；null 时使用 diffusion.name 与 diffusion.params。}
+  sampling.sampler.name: {description: 作为采样器使用的 diffusions Registry 名称。, cli: "sample --sampler"}
+  sampling.sampler.params: {description: 采样器构造参数；CLI --sampler-param 在其后覆盖。, cli: "sample --sampler-param"}
+  sampling.num_samples: {description: 一次采样生成的总样本数。, constraints: 正整数。}
+  sampling.batch_size: {description: 采样时每批样本数；null 使用 data.dataloader.batch_size。}
+  sampling.seed: {description: 采样专用随机种子；null 使用 experiment.seed。}
+  sampling.grid_nrow: {description: PNG 网格每行的样本数。, constraints: 正整数。}
+  sampling.debug: {description: 仅用于调试的采样 artifact 设置。}
+  sampling.debug.trajectory: {description: 反向过程 trajectory 的输出设置。}
+  sampling.debug.trajectory.enabled: {description: 是否保存原始 trajectory、静态网格和 GIF。}
+  sampling.debug.trajectory.params: {description: 透传给采样器 trajectory 方法的参数。}
+  sampling.debug.trajectory.gif_fps: {description: trajectory GIF 的帧率。, constraints: 正整数。}
+  diagnostics: {description: 训练期间按声明顺序实例化的 diagnostics Registry 组件列表。}
+  "diagnostics[].name": {description: diagnostics Registry 名称。}
+  "diagnostics[].params": {description: diagnostic 构造参数；logger、output_dir 与 sample_shape 由运行时注入。}
+  trainer: {description: 训练循环、设备、梯度和早停配置。}
+  trainer.num_epochs: {description: 每个独立 run 的最大训练 epoch 数。, constraints: 正整数。, cli: "train --epochs"}
+  trainer.device: {description: Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。, cli: "train --device"}
+  trainer.max_grad_norm: {description: 梯度范数裁剪阈值；null 禁用裁剪。, constraints: 非 null 时为正数。}
+  trainer.show_progress: {description: 是否显示 Rich 进度条。, cli: "train --no-progress"}
+  trainer.early_stopping: {description: 基于 epoch 指标的提前停止策略。}
+  trainer.early_stopping.enabled: {description: 是否启用提前停止。}
+  trainer.early_stopping.monitor: {description: 需要监控的 epoch 指标名，例如 valid_loss 或 train_loss。}
+  trainer.early_stopping.mode: {description: min 表示越小越好，max 表示越大越好。, constraints: min 或 max。}
+  trainer.early_stopping.patience: {description: 指标无足够改善时容忍的 epoch 数。, constraints: 正整数。}
+  trainer.early_stopping.min_delta: {description: 被视为改善所需的最小绝对差值。, constraints: 非负数。}
+  logging: {description: 指标记录频率、后端与 torch 内部日志配置。}
+  logging.log_every: {description: 每隔多少个训练 step 写一次 step 指标。, constraints: 正整数。}
+  logging.backends: {description: 按声明顺序组合的 logger Registry 组件。, constraints: 至少一个。}
+  "logging.backends[].name": {description: loggers Registry 名称。}
+  "logging.backends[].params": {description: logger 构造参数；output_dir 与 run_name 由运行时注入。}
+  logging.torch_logs: {description: 传给 torch._logging.set_logs 的关键字；依赖当前 PyTorch 版本。}
+  artifacts: {description: 训练 artifact 的保存频率。}
+  artifacts.checkpoint_every: {description: 每隔多少个 epoch 保存编号 checkpoint；best 与 latest 仍按各自规则更新。, constraints: 正整数。}
+
+registries:
+  models:
+    description: 构建可训练的去噪网络。
+    base: torch.nn.Module
+    config_path: model.name / model.params
+    entries:
+      unet:
+        description: 带时间嵌入、残差块和可选注意力的图像 UNet。
+        parameters:
+          in_channels: {description: 输入图像通道数；必须等于 data.image.channels。}
+          out_channels: {description: 输出噪声预测通道数；必须等于 data.image.channels。}
+          base_channels: {description: 第一层特征通道数。}
+          channel_multipliers: {description: 每个分辨率层相对 base_channels 的通道倍数；长度决定下采样深度。}
+          num_res_blocks: {description: 每个分辨率层的残差块数量。}
+          time_embedding_dim: {description: 正弦时间嵌入和 MLP 的基础维度。}
+          dropout: {description: 残差块 dropout 概率。}
+          attention_levels: {description: 启用空间注意力的零起始分辨率层索引；null 禁用。}
+          attention_heads: {description: 每个注意力块的 head 数。}
+
+  dataset_factories:
+    description: 将一个原生 split 构建为带稳定 sample_keys 和逐样本 bucket_ids 的 DatasetView。
+    base: stochaflow.data.DatasetFactory
+    config_path: data.datasets[].factory / data.datasets[].params
+    entries:
+      cifar10:
+        description: Torchvision CIFAR-10 Factory；原生 train/test，固定原始尺寸 32×32。
+        inspect: config_parameters
+        runtime_parameters: [context]
+        parameters:
+          root: {description: 数据根目录；默认 ./data。}
+          download: {description: 缺少数据时是否允许 torchvision 下载；默认 true。}
+          random_horizontal_flip: {description: train role 是否随机水平翻转；默认 true。}
+      flowers102:
+        description: Torchvision Oxford Flowers 102 Factory；原生 train/val/test，并按单图尺寸选择 bucket。
+        inspect: config_parameters
+        runtime_parameters: [context]
+        parameters:
+          root: {description: 数据根目录；默认 ./data。}
+          download: {description: 缺少数据时是否允许 torchvision 下载；默认 true。}
+          random_horizontal_flip: {description: train role 是否随机水平翻转；默认 true。}
+      mnist:
+        description: Torchvision MNIST Factory；原生 train/test，固定原始尺寸 28×28。
+        inspect: config_parameters
+        runtime_parameters: [context]
+        parameters:
+          root: {description: 数据根目录；默认 ./data。}
+          download: {description: 缺少数据时是否允许 torchvision 下载；默认 true。}
+
+  split_strategies:
+    description: 在所有 source 合并后产生一个或多个 DataPartitions。
+    base: stochaflow.data.SplitStrategy
+    config_path: data.splits.mode 与 data.splits 其余字段
+    entries:
+      kfold: {description: 对合并后的逻辑 train 做确定性平衡 K-fold；split() 接收运行时 SplitContext。, parameters: {}}
+      none: {description: 使用完整逻辑 train，不创建验证集；仍可构建测试集。, parameters: {}}
+      official: {description: 直接使用每个 source 的 train/validation/test 原生映射。, parameters: {}}
+      random_holdout: {description: 在合并后的逻辑 train 上生成一次确定性全局 holdout。, parameters: {}}
+
+  noise_schedules:
+    description: 定义前向噪声路径以及离散 VP 系数。
+    base: stochaflow.diffusion.NoiseSchedule
+    config_path: diffusion.noise_schedule.name / diffusion.noise_schedule.params
+    entries:
+      cosine_alpha_bar:
+        description: 通过余弦 alpha_bar 曲线离散化得到 beta 序列。
+        parameters:
+          num_timesteps: {description: 离散扩散步数；必填正整数。}
+          s: {description: 余弦曲线起点偏移；默认 0.008。}
+          max_beta: {description: 单步 beta 上限；默认 0.999。}
+          dtype: {description: 系数 Tensor dtype；仅建议在 Python 配置中使用，YAML 保持默认。}
+      linear_beta:
+        description: 在 beta_start 与 beta_end 之间线性插值。
+        parameters:
+          num_timesteps: {description: 离散扩散步数；必填正整数。}
+          beta_start: {description: 第一步 beta；默认 0.0001。}
+          beta_end: {description: 最后一步 beta；默认 0.02。}
+          dtype: {description: 系数 Tensor dtype；仅建议在 Python 配置中使用，YAML 保持默认。}
+
+  diffusions:
+    description: 构建训练/采样扩散过程；同一 Registry 也供 sampling.sampler 选择。
+    base: torch.nn.Module
+    config_path: diffusion.name / diffusion.params 或 sampling.sampler
+    entries:
+      ddim:
+        description: 支持步数压缩和 eta 随机性的 DDIM 反向过程。
+        runtime_parameters: [model, noise_schedule]
+        parameters:
+          num_inference_steps: {description: 推理反向步数；null 使用完整 schedule。}
+          eta: {description: 随机性系数；0 为确定性 DDIM。}
+          clip_denoised: {description: 是否将预测的 x0 裁剪到负一到一。}
+      ddpm:
+        description: 标准随机 DDPM 反向过程。
+        runtime_parameters: [model, noise_schedule]
+        parameters:
+          clip_denoised: {description: 是否将预测的 x0 裁剪到负一到一。}
+
+  objectives:
+    description: 将模型输出和前向噪声目标转换为标量训练损失。
+    base: torch.nn.Module
+    config_path: objective.name / objective.params
+    entries:
+      ddpm_epsilon:
+        description: 训练模型预测前向过程注入的 epsilon 噪声。
+        parameters:
+          reduction: {description: MSE 聚合方式；支持 mean、sum 或 none。}
+
+  optimizers:
+    description: 构建 PyTorch 优化器；模型 parameters 由运行时注入。
+    base: torch.optim.Optimizer
+    config_path: optimizer.name / optimizer.params
+    entries:
+      adam:
+        description: PyTorch Adam 优化器。
+        version_dependent: true
+        runtime_parameters: [params]
+        parameters:
+          lr: {description: 学习率。}
+          betas: {description: 一阶和二阶矩估计的衰减系数。}
+          eps: {description: 数值稳定项。}
+          weight_decay: {description: L2 权重衰减。}
+          amsgrad: {description: 是否使用 AMSGrad 变体。}
+          foreach: {description: 是否使用 foreach 实现；null 由 PyTorch 决定。}
+          maximize: {description: 是否最大化目标。}
+          capturable: {description: 是否允许 CUDA graph capture。}
+          differentiable: {description: optimizer step 是否参与 autograd。}
+          fused: {description: 是否使用 fused 实现；null 由 PyTorch 决定。}
+          decoupled_weight_decay: {description: 是否使用解耦权重衰减；依赖 PyTorch 版本。}
+      adamw:
+        description: 使用解耦权重衰减的 PyTorch AdamW。
+        version_dependent: true
+        runtime_parameters: [params]
+        parameters:
+          lr: {description: 学习率。}
+          betas: {description: 一阶和二阶矩估计的衰减系数。}
+          eps: {description: 数值稳定项。}
+          weight_decay: {description: 解耦权重衰减系数。}
+          amsgrad: {description: 是否使用 AMSGrad 变体。}
+          foreach: {description: 是否使用 foreach 实现；null 由 PyTorch 决定。}
+          maximize: {description: 是否最大化目标。}
+          capturable: {description: 是否允许 CUDA graph capture。}
+          differentiable: {description: optimizer step 是否参与 autograd。}
+          fused: {description: 是否使用 fused 实现；null 由 PyTorch 决定。}
+
+  lr_schedulers:
+    description: 构建学习率调度器；optimizer 由运行时注入。
+    base: torch.optim.lr_scheduler.LRScheduler 或注册 builder
+    config_path: lr_scheduler.name / lr_scheduler.params
+    entries:
+      cosine:
+        description: PyTorch CosineAnnealingLR。
+        version_dependent: true
+        runtime_parameters: [optimizer]
+        parameters:
+          T_max: {description: 余弦周期的最大迭代数；auto 根据 interval 使用有效训练 epoch 数或总 step 数。}
+          eta_min: {description: 最低学习率。}
+          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
+      exponential:
+        description: PyTorch ExponentialLR。
+        version_dependent: true
+        runtime_parameters: [optimizer]
+        parameters:
+          gamma: {description: 每次推进时乘到学习率上的系数。}
+          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
+      linear:
+        description: PyTorch LinearLR。
+        version_dependent: true
+        runtime_parameters: [optimizer]
+        parameters:
+          start_factor: {description: 初始学习率乘数。}
+          end_factor: {description: 结束学习率乘数。}
+          total_iters: {description: 线性变化的推进次数。}
+          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
+      multistep:
+        description: PyTorch MultiStepLR。
+        version_dependent: true
+        runtime_parameters: [optimizer]
+        parameters:
+          milestones: {description: 应用 gamma 的递增 step/epoch 索引。}
+          gamma: {description: milestone 到达时的学习率乘数。}
+          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
+      step:
+        description: PyTorch StepLR。
+        version_dependent: true
+        runtime_parameters: [optimizer]
+        parameters:
+          step_size: {description: 每隔多少次推进应用 gamma。}
+          gamma: {description: 学习率乘数。}
+          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
+      warmup_cosine:
+        description: 项目内置的线性 warmup 加余弦衰减 builder。
+        runtime_parameters: [optimizer]
+        parameters:
+          warmup_steps: {description: 线性 warmup 的正 step 数。}
+          total_steps: {description: 总 step 数；配置允许正整数或 auto。}
+          min_lr_ratio: {description: 最终学习率相对基础学习率的比例，范围为零到一。}
+
+  loggers:
+    description: 记录配置、指标、文本和图像 artifact。
+    base: stochaflow.utils.logging.ExperimentLogger
+    config_path: logging.backends[].name / logging.backends[].params
+    entries:
+      local:
+        description: 写入终端、train.log 和 metrics.jsonl 的本地 logger。
+        runtime_parameters: [output_dir, run_name]
+        parameters:
+          console: {description: 是否同时输出到终端。}
+          text_filename: {description: 文本日志文件名。}
+          metrics_filename: {description: JSONL 指标文件名。}
+          append: {description: 是否追加到已有文件；resume 时 runner 可覆盖。}
+      tensorboard:
+        description: 将指标和图像写入 TensorBoard event 文件。
+        runtime_parameters: [output_dir, run_name]
+        parameters:
+          subdir: {description: 运行目录内的 TensorBoard 子目录。}
+      wandb:
+        description: 将运行同步到 Weights & Biases；需要安装 wandb extra。
+        runtime_parameters: [output_dir, run_name]
+        parameters:
+          project: {description: W&B project 名称。}
+          entity: {description: W&B entity；null 使用当前默认。}
+          mode: {description: W&B 模式，例如 online、offline 或 disabled。}
+          tags: {description: run tag 列表。}
+
+  diagnostics:
+    description: 训练期间按周期记录扩散特有统计和样本 artifact。
+    base: 可调用的 diagnostic 对象
+    config_path: diagnostics[].name / diagnostics[].params
+    entries:
+      ddpm:
+        description: 记录 timestep loss、SNR、采样和重建诊断。
+        runtime_parameters: [logger, output_dir, sample_shape]
+        parameters:
+          interval: {description: 每隔多少训练 step 记录 step 诊断。}
+          timestep_buckets: {description: timestep 指标分桶数量。}
+          sample_every_epochs: {description: 每隔多少 epoch 生成诊断样本。}
+          sample_num: {description: 每次诊断生成的样本数。}
+          sample_seed: {description: 诊断采样随机种子。}
+          sample_grid_size: {description: 诊断样本网格每行数量。}
+          reconstruction_every_epochs: {description: 每隔多少 epoch 生成重建对比。}
+          reconstruction_timesteps: {description: 执行重建诊断的 timestep 序列。}
+          use_ema_for_artifacts: {description: artifact 是否优先使用 EMA 模型。}
+
+cli:
+  "train.--config": {description: 实验 YAML 路径。}
+  "train.--device": {description: 本次运行覆盖 trainer.device。}
+  "train.--output-dir": {description: 本次运行覆盖 experiment.output_dir。}
+  "train.--epochs": {description: 本次运行覆盖 trainer.num_epochs。}
+  "train.--limit-batches": {description: 每个 epoch 最多执行的训练 batch 数，用于 smoke/debug。}
+  "train.--limit-validation-batches": {description: 每个 epoch 最多执行的验证 batch 数。}
+  "train.--limit-test-batches": {description: 最终测试最多执行的 batch 数。}
+  "train.--deterministic": {description: 在 Torch 支持的范围内启用确定性算法。}
+  "train.--no-progress": {description: 禁用 Rich 进度条。}
+  "train.--resume": {description: 无值时恢复配置输出根下的 latest.pt；也可显式给 checkpoint 路径。}
+  "train.--skip-final-sample": {description: 跳过训练完成后的最佳 checkpoint 验收采样。}
+  "sample.--config": {description: 可选外部配置；其 sampling 设置覆盖 checkpoint 中的采样设置。}
+  "sample.--checkpoint": {description: checkpoint 文件或运行目录；仅给 config 时自动查找最新 best.pt。}
+  "sample.--sampler": {description: 覆盖采样器 Registry 名称。}
+  "sample.--sampler-param": {description: KEY=VALUE 形式的可重复采样器参数覆盖，值按 YAML 解析。}
+  "sample.--device": {description: 覆盖采样设备。}
+  "sample.--output-dir": {description: 覆盖生成 artifact 的目录。}

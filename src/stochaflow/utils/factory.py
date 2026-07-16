@@ -278,6 +278,36 @@ def _resolve_warmup_cosine_total_steps(
     return total_steps
 
 
+def _resolve_cosine_t_max(
+    params: dict[str, Any],
+    *,
+    interval: str,
+    steps_per_epoch: int | None,
+    num_epochs: int | None,
+) -> int:
+    t_max = params.get("T_max")
+    if t_max == "auto":
+        if num_epochs is None or num_epochs <= 0:
+            raise RegistryError(
+                "lr_scheduler cosine with T_max='auto' requires positive num_epochs"
+            )
+        if interval == "epoch":
+            return num_epochs
+        if interval == "step":
+            if steps_per_epoch is None or steps_per_epoch <= 0:
+                raise RegistryError(
+                    "lr_scheduler cosine with T_max='auto' and interval='step' "
+                    "requires positive steps_per_epoch"
+                )
+            return steps_per_epoch * num_epochs
+        raise RegistryError("lr_scheduler interval must be 'step' or 'epoch'")
+    if isinstance(t_max, bool) or not isinstance(t_max, int) or t_max <= 0:
+        raise RegistryError(
+            "lr_scheduler cosine requires a positive integer T_max or 'auto'"
+        )
+    return t_max
+
+
 def _build_warmup_cosine_lr_scheduler(
     optimizer: Optimizer,
     *,
@@ -320,7 +350,14 @@ def build_lr_scheduler(
     if config.name is None:
         return None
     params = dict(config.params)
-    if config.name == "warmup_cosine":
+    if config.name == "cosine":
+        params["T_max"] = _resolve_cosine_t_max(
+            params,
+            interval=config.interval,
+            steps_per_epoch=steps_per_epoch,
+            num_epochs=num_epochs,
+        )
+    elif config.name == "warmup_cosine":
         params["total_steps"] = _resolve_warmup_cosine_total_steps(
             params,
             steps_per_epoch=steps_per_epoch,
@@ -364,6 +401,8 @@ def resolve_device(device_name: str) -> torch.device:
     if device_name == "auto":
         if torch.cuda.is_available():
             return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
         return torch.device("cpu")
     return torch.device(device_name)
 

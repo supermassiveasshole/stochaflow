@@ -338,12 +338,8 @@ class StochaflowConfig:
                 "data.dataloader.prefetch_factor requires num_workers > 0"
             )
         split_mode = self.data.splits.mode
-        valid_split_modes = {"random_holdout", "official", "none", "kfold"}
-        if split_mode not in valid_split_modes:
-            raise ConfigError(
-                "data.splits.mode must be one of: "
-                + ", ".join(sorted(valid_split_modes))
-            )
+        if not isinstance(split_mode, str) or not split_mode:
+            raise ConfigError("data.splits.mode must be a non-empty registry name")
         validation_size = self.data.splits.validation_size
         if validation_size is not None:
             if isinstance(validation_size, float):
@@ -604,6 +600,19 @@ def _reject_legacy_data_config(raw: dict[str, Any]) -> None:
         )
 
 
+def _load_configured_modules(config: StochaflowConfig) -> None:
+    """Import explicitly configured registry extensions before validation.
+
+    The import is intentionally local so the schema module does not create an
+    import cycle with component modules that import configuration dataclasses.
+    ``RegistryCatalog.load_modules`` owns idempotency across config loads.
+    """
+
+    from stochaflow.utils.registry import REGISTRIES
+
+    REGISTRIES.load_modules(config.data.modules)
+
+
 def load_config(path: str | Path) -> StochaflowConfig:
     """Load and validate a YAML config file."""
 
@@ -617,6 +626,7 @@ def load_config(path: str | Path) -> StochaflowConfig:
     _reject_legacy_data_config(raw)
     raw = _migrate_legacy_noise_schedule_config(raw)
     config = _coerce_dataclass(StochaflowConfig, raw, "config")
+    _load_configured_modules(config)
     config.validate()
     return config
 
@@ -627,5 +637,6 @@ def load_config_dict(raw: dict[str, Any]) -> StochaflowConfig:
     _reject_legacy_data_config(raw)
     raw = _migrate_legacy_noise_schedule_config(raw)
     config = _coerce_dataclass(StochaflowConfig, raw, "config")
+    _load_configured_modules(config)
     config.validate()
     return config

@@ -13,6 +13,7 @@ from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import ComponentConfig, load_config_dict
 from stochaflow.utils.factory import build_diffusion, build_model, build_noise_schedule
+from stochaflow.utils.registry import REGISTRIES
 
 
 def _image_data_config(*, image_size: int = 8, channels: int = 1) -> dict:
@@ -141,6 +142,50 @@ def test_checkpoint_only_sampler_override_discards_old_params(tmp_path) -> None:
 
     assert resolved.sampler.name == "ddim"
     assert resolved.sampler.params == {"num_inference_steps": 1, "eta": 0.0}
+
+
+def test_checkpoint_only_sampling_loads_custom_modules(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "checkpoint_sampling_extension.py"
+    module_path.write_text(
+        """
+from stochaflow.data import DataPartitions, SplitStrategy
+from stochaflow.utils.registry import REGISTRIES
+
+
+@REGISTRIES.split_strategies.register("checkpoint_sampling_split")
+class CheckpointSamplingSplit(SplitStrategy):
+    def split(self, context):
+        train = self._required(
+            context.datasets.build("train", role="train"),
+            logical_split="train",
+        )
+        return [DataPartitions(train=train)]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    checkpoint = tmp_path / "best.pt"
+    _save_checkpoint(checkpoint)
+    payload = CheckpointManager.load_payload(checkpoint)
+    checkpoint_config = payload.get("config")
+    assert isinstance(checkpoint_config, dict)
+    checkpoint_config["data"]["modules"] = ["checkpoint_sampling_extension"]
+    checkpoint_config["data"]["splits"] = {"mode": "checkpoint_sampling_split"}
+    torch.save(payload, checkpoint)
+
+    resolved = runtime.resolve_sampling_inputs(
+        config_path=None,
+        checkpoint=checkpoint,
+    )
+
+    assert resolved.config.data.splits.mode == "checkpoint_sampling_split"
+    assert (
+        REGISTRIES.split_strategies.resolve("checkpoint_sampling_split").__name__
+        == "CheckpointSamplingSplit"
+    )
 
 
 def test_config_only_finds_best_checkpoint(tmp_path) -> None:

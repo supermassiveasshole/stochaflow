@@ -12,6 +12,7 @@ from torch.optim import Adam
 from torch.utils.data import Dataset
 
 from stochaflow.data import (
+    DataPartitions,
     DataPipeline,
     DatasetBuildRequest,
     DatasetFactory,
@@ -19,6 +20,8 @@ from stochaflow.data import (
     DatasetView,
     MixtureBatchSampler,
     ResolutionBucketPolicy,
+    SplitContext,
+    SplitStrategy,
 )
 from stochaflow.diffusion import DDPM, DDPMEpsilonObjective, LinearBetaSchedule
 from stochaflow.training import Trainer
@@ -34,6 +37,18 @@ from stochaflow.utils.config import (
     ResolutionBucketConfig,
 )
 from stochaflow.utils.registry import REGISTRIES
+
+
+@REGISTRIES.split_strategies.register("test_train_only")
+class RegisteredTrainOnlySplitStrategy(SplitStrategy):
+    """Test extension proving custom split strategies use the public contract."""
+
+    def split(self, context: SplitContext) -> list[DataPartitions]:
+        train = self._required(
+            context.datasets.build("train", role="train"),
+            logical_split="train",
+        )
+        return [DataPartitions(train=train)]
 
 
 def _length(value: object) -> int:
@@ -205,6 +220,17 @@ def test_train_only_mode_keeps_optional_test_union() -> None:
     assert bundle.valid is None
     assert bundle.test is not None
     assert _length(bundle.test.dataset) == 2
+
+
+def test_custom_split_strategy_resolves_by_configured_registry_name() -> None:
+    bundle = DataPipeline(
+        _data_config(DataSplitConfig(mode="test_train_only")),
+        seed=12,
+    ).build()[0]
+
+    assert _length(bundle.train.dataset) == 10
+    assert bundle.valid is None
+    assert bundle.test is None
 
 
 def test_kfold_validation_indices_cover_global_union_once() -> None:

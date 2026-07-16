@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import yaml
 
 from stochaflow.data.pipeline import DataBundle, DataPipeline
 from stochaflow.sampling.runtime import run_sampling
@@ -296,6 +297,22 @@ def _configure_run_output(
         config.experiment.output_dir = str(base_output_dir)
 
 
+def _write_resolved_config(config: StochaflowConfig) -> Path:
+    """Persist the effective run configuration after all CLI overrides."""
+
+    output_path = Path(config.experiment.output_dir) / "resolved_config.yaml"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        yaml.safe_dump(
+            config.to_dict(),
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return output_path
+
+
 def _restore_training_state(
     training: TrainingComponents,
     checkpoint: Path | None,
@@ -400,6 +417,7 @@ def _run_single_bundle(
     config.trainer.show_progress = options.show_progress
     if options.device is not None:
         config.trainer.device = options.device
+    _write_resolved_config(config)
     training = build_training_components(
         config,
         steps_per_epoch=_effective_steps_per_epoch(

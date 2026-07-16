@@ -148,6 +148,7 @@ class BucketedVisionDataset(Dataset[Any]):
 class TorchvisionDatasetFactory(DatasetFactory):
     """Base class for map-style torchvision datasets with bucket metadata."""
 
+    config_parameters: frozenset[str] = frozenset()
     random_horizontal_flip = False
 
     @abstractmethod
@@ -196,9 +197,9 @@ class TorchvisionDatasetFactory(DatasetFactory):
             bucket_ids=bucket_ids,
         )
 
-    def _params(self, allowed: set[str]) -> dict[str, Any]:
+    def _params(self) -> dict[str, Any]:
         params = dict(self.context.params)
-        unknown = sorted(set(params) - allowed)
+        unknown = sorted(set(params) - self.config_parameters)
         if unknown:
             raise TypeError(
                 f"dataset factory '{type(self).__name__}' received unknown "
@@ -220,11 +221,13 @@ def _resolve_train_flag(split: str) -> bool:
 class MNISTDatasetFactory(TorchvisionDatasetFactory):
     """Build bucket-aware MNIST views."""
 
+    config_parameters = frozenset({"root", "download"})
+
     def _fixed_image_size(self) -> tuple[int, int]:
         return 28, 28
 
     def _build_raw_dataset(self, request: DatasetBuildRequest) -> Dataset[Any]:
-        params = self._params({"root", "download"})
+        params = self._params()
         return datasets.MNIST(
             root=str(params.get("root", "./data")),
             train=_resolve_train_flag(request.native_split),
@@ -237,13 +240,16 @@ class MNISTDatasetFactory(TorchvisionDatasetFactory):
 class CIFAR10DatasetFactory(TorchvisionDatasetFactory):
     """Build bucket-aware CIFAR-10 views."""
 
+    config_parameters = frozenset(
+        {"root", "download", "random_horizontal_flip"}
+    )
     random_horizontal_flip = True
 
     def _fixed_image_size(self) -> tuple[int, int]:
         return 32, 32
 
     def _build_raw_dataset(self, request: DatasetBuildRequest) -> Dataset[Any]:
-        params = self._params({"root", "download", "random_horizontal_flip"})
+        params = self._params()
         self.random_horizontal_flip = bool(
             params.get("random_horizontal_flip", True)
         )
@@ -268,10 +274,13 @@ def _resolve_flowers102_split(split: str) -> str:
 class Flowers102DatasetFactory(TorchvisionDatasetFactory):
     """Build per-image bucketed Oxford Flowers 102 views."""
 
+    config_parameters = frozenset(
+        {"root", "download", "random_horizontal_flip"}
+    )
     random_horizontal_flip = True
 
     def _build_raw_dataset(self, request: DatasetBuildRequest) -> Dataset[Any]:
-        params = self._params({"root", "download", "random_horizontal_flip"})
+        params = self._params()
         self.random_horizontal_flip = bool(
             params.get("random_horizontal_flip", True)
         )

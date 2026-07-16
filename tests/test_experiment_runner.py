@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
+import yaml
 
 from stochaflow.data.pipeline import DataBundle, SplitData
 from stochaflow.sampling.runtime import image_sample_shape
@@ -184,6 +185,9 @@ def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
     assert config.trainer.num_epochs == 3
     assert trainer.fit_kwargs["num_epochs"] == 3
     assert build_kwargs["num_epochs"] == 3
+    resolved = yaml.safe_load((tmp_path / "resolved_config.yaml").read_text())
+    assert resolved["trainer"]["num_epochs"] == 3
+    assert resolved["trainer"]["show_progress"] is False
 
 
 def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):

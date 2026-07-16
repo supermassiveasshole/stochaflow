@@ -1,12 +1,14 @@
 {
   "include": [
     "src",
-    "tests"
+    "tests",
+    "tools",
+    "docs/conf.py"
   ],
   "exclude": [
+    "**/node_modules",
     "**/__pycache__",
-    "**/.pytest_cache",
-    "**/.ruff_cache",
+    "**/.*",
     "**/.venv",
     "**/site-packages",
     "outputs",
@@ -26,6 +28,18 @@
     },
     {
       "root": "tests",
+      "extraPaths": [
+        "src"
+      ]
+    },
+    {
+      "root": "tools",
+      "extraPaths": [
+        "src"
+      ]
+    },
+    {
+      "root": "docs",
       "extraPaths": [
         "src"
       ]

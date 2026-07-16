@@ -27,11 +27,11 @@ data:
     steps_per_epoch: auto
   dataloader:
     batch_size: 128
-    num_workers: 4
+    num_workers: 0
     shuffle: true
     drop_last: true
-    pin_memory: true
-    persistent_workers: true
+    pin_memory: false
+    persistent_workers: false
   splits:
     mode: random_holdout
     validation_size: 10000
@@ -69,20 +69,39 @@ optimizer:
     betas: [0.9, 0.999]
     eps: 1.0e-8
 
+lr_scheduler:
+  name: cosine
+  interval: epoch
+  params:
+    T_max: auto
+    eta_min: 0.00002
+
+ema:
+  enabled: true
+  decay: 0.9995
+  update_after_step: 100
+  update_every: 1
+  use_for_sampling: true
+
 sampling:
-  sampler: null
-  num_samples: 16
-  batch_size: null
+  sampler:
+    name: ddim
+    params:
+      num_inference_steps: 100
+      eta: 0.0
+  num_samples: 64
+  batch_size: 64
   seed: null
-  grid_nrow: 4
+  grid_nrow: 8
   debug:
     trajectory:
-      enabled: false
-      params: {}
+      enabled: true
+      params:
+        step_interval: 5
       gif_fps: 8
 
 trainer:
-  num_epochs: 20
+  num_epochs: 30
   device: auto
   max_grad_norm: 1.0
   show_progress: true
@@ -90,8 +109,8 @@ trainer:
     enabled: true
     monitor: valid_loss
     mode: min
-    patience: 5
-    min_delta: 0.0
+    patience: 7
+    min_delta: 0.00001
 
 logging:
   log_every: 100
@@ -103,4 +122,4 @@ logging:
   torch_logs: {}
 
 artifacts:
-  checkpoint_every: 1
+  checkpoint_every: 5

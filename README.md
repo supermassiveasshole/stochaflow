@@ -54,7 +54,8 @@ Notes:
 - Intel macOS uses Python 3.12 with pinned PyTorch/Torchvision wheels.
 - Windows GPU runs are resolved through the PyTorch CUDA 12.8 wheel index and
   can use Python 3.14.
-- `trainer.device: auto` selects CUDA when `torch.cuda.is_available()` is true.
+- `trainer.device: auto` selects CUDA first, then Apple MPS when available,
+  and otherwise falls back to CPU.
 
 Windows GPU setup example:
 
@@ -113,11 +114,11 @@ uv run stochaflow train \
 ```
 
 Custom factories are registered as classes and imported through
-`data.modules`; see [Custom datasets](docs/custom-datasets.md).
+`data.modules`; see [Extensions and registries](docs/configuration/extensions.md).
 
 For the complete YAML schema, defaults, validation rules, built-in component
 parameters, multi-source mixing, buckets, K-fold, logging, and CLI overrides,
-see [Configuration reference](docs/configuration.md).
+see [Configuration handbook](docs/configuration/index.md).
 
 If `--epochs` is omitted, the runner uses `trainer.num_epochs` from the YAML
 config. Passing `--epochs` is an explicit run-time override.
@@ -232,14 +233,13 @@ Data split modes:
 
 - `random_holdout`: deterministic train/validation split from one source split
 - `official`: named dataset splits directly
-- `all`: concatenate named splits into one training set
 - `none`: build only a training split
 - `kfold`: deterministic cross-validation bundles
 
-The Flowers102 config uses all official `train`, `val`, and `test` images for
-generative training, center-crop preprocessing, EMA sampling, linear DDPM beta
-schedule, clipped posterior DDPM sampling, and a warmup-cosine optimizer LR
-schedule.
+The Flowers102 config trains on the official `train` split, validates on `val`,
+and reserves `test` for final evaluation. It uses train-time random crops,
+evaluation center crops, EMA sampling, a linear DDPM beta schedule, clipped
+posterior DDPM sampling, and a warmup-cosine optimizer LR schedule.
 
 ## Architecture
 

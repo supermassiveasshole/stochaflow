@@ -10,6 +10,7 @@ from stochaflow.utils.config import (
     load_config,
     load_config_dict,
 )
+from stochaflow.utils.registry import REGISTRIES
 
 
 def test_load_ddpm_mnist_config() -> None:
@@ -25,20 +26,81 @@ def test_load_ddpm_mnist_config() -> None:
     assert config.diffusion.name == "ddpm"
     assert len(config.logging.backends) >= 1
     assert config.diffusion.noise_schedule.params["num_timesteps"] == 1000
-    assert config.lr_scheduler.name is None
-    assert config.sampling.sampler is None
-    assert config.sampling.num_samples == 16
+    assert config.data.dataloader.num_workers == 0
+    assert not config.data.dataloader.pin_memory
+    assert not config.data.dataloader.persistent_workers
+    assert config.lr_scheduler.name == "cosine"
+    assert config.lr_scheduler.interval == "epoch"
+    assert config.lr_scheduler.params == {
+        "T_max": "auto",
+        "eta_min": 0.00002,
+    }
+    assert config.sampling.sampler is not None
+    assert config.sampling.sampler.name == "ddim"
+    assert config.sampling.sampler.params == {
+        "num_inference_steps": 100,
+        "eta": 0.0,
+    }
+    assert config.ema.enabled
+    assert config.ema.decay == 0.9995
+    assert config.ema.update_after_step == 100
+    assert config.ema.use_for_sampling
+    assert config.sampling.num_samples == 64
+    assert config.sampling.batch_size == 64
+    assert config.sampling.grid_nrow == 8
+    assert config.sampling.debug.trajectory.enabled
+    assert config.sampling.debug.trajectory.params == {"step_interval": 5}
+    assert config.trainer.num_epochs == 30
+    assert config.trainer.early_stopping.patience == 7
+    assert config.trainer.early_stopping.min_delta == 0.00001
+    assert config.artifacts.checkpoint_every == 5
 
 
-def test_config_loads_custom_dataset_modules() -> None:
+def test_config_loads_custom_modules_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "config_extension.py"
+    module_path.write_text(
+        """
+from stochaflow.data import DataPartitions, SplitStrategy
+from stochaflow.utils.registry import REGISTRIES
+
+
+@REGISTRIES.split_strategies.register("config_extension_split")
+class ConfigExtensionSplit(SplitStrategy):
+    def split(self, context):
+        train = self._required(
+            context.datasets.build("train", role="train"),
+            logical_split="train",
+        )
+        return [DataPartitions(train=train)]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["data"]["modules"] = ["my_project.datasets"]
-    raw["data"]["datasets"][0]["factory"] = "manifest"
+    raw["data"]["modules"] = ["config_extension"]
+    raw["data"]["splits"] = {"mode": "config_extension_split"}
 
     config = load_config_dict(raw)
+    repeated = load_config_dict(raw)
 
-    assert config.data.modules == ["my_project.datasets"]
-    assert config.data.datasets[0].factory == "manifest"
+    assert config.data.modules == ["config_extension"]
+    assert config.data.splits.mode == "config_extension_split"
+    assert repeated.data.splits.mode == "config_extension_split"
+    assert (
+        REGISTRIES.split_strategies.resolve("config_extension_split").__name__
+        == "ConfigExtensionSplit"
+    )
+
+
+def test_config_rejects_empty_split_registry_name() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["data"]["splits"] = {"mode": ""}
+
+    with pytest.raises(ConfigError, match="non-empty registry name"):
+        load_config_dict(raw)
 
 
 def test_load_ddpm_flowers102_config() -> None:

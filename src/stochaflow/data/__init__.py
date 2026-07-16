@@ -22,9 +22,12 @@ from .datasets import (
 from .pipeline import DataBundle, DataLoaderFactory, DataPipeline, SplitData
 from .samplers import BucketBatchSampler, MixtureBatchSampler
 from .splits import (
+    DataPartitions,
+    DatasetMaterializer,
     KFoldSplitStrategy,
     OfficialSplitStrategy,
     RandomHoldoutSplitStrategy,
+    SplitContext,
     SplitStrategy,
     TrainOnlySplitStrategy,
 )
@@ -37,10 +40,12 @@ __all__ = [
     "DataBundle",
     "DataLoaderFactory",
     "DataPipeline",
+    "DataPartitions",
     "DatasetBuildRequest",
     "DatasetFactory",
     "DatasetFactoryContext",
     "DatasetMixture",
+    "DatasetMaterializer",
     "DatasetRole",
     "DatasetSelection",
     "DatasetView",
@@ -54,6 +59,7 @@ __all__ = [
     "ResolutionBucket",
     "ResolutionBucketPolicy",
     "SplitData",
+    "SplitContext",
     "SplitStrategy",
     "TrainOnlySplitStrategy",
 ]

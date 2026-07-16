@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 from torch.optim import Optimizer, SGD
-from torch.optim.lr_scheduler import LambdaLR, StepLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR, StepLR
 
 from stochaflow.diffusion import (
     DDPM,
@@ -25,6 +25,7 @@ from stochaflow.utils.factory import (
     build_diagnostics,
     build_lr_scheduler,
     build_training_components,
+    resolve_device,
 )
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
 from stochaflow.utils.registry import REGISTRIES, RegistryError
@@ -48,6 +49,31 @@ class MinimalDiagnostic:
 REGISTRIES.diagnostics.add("test_minimal", MinimalDiagnostic)
 
 
+def test_resolve_device_auto_prefers_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+
+    assert resolve_device("auto") == torch.device("cuda")
+
+
+def test_resolve_device_auto_uses_mps_when_cuda_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+
+    assert resolve_device("auto") == torch.device("mps")
+
+
+def test_resolve_device_auto_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+
+    assert resolve_device("auto") == torch.device("cpu")
+
+
 def test_build_training_components_from_ddpm_mnist_config() -> None:
     config = load_config(Path("configs/ddpm_mnist.yaml"))
     components = build_training_components(config)
@@ -57,8 +83,10 @@ def test_build_training_components_from_ddpm_mnist_config() -> None:
     assert isinstance(components.diffusion, DDPM)
     assert isinstance(components.objective, DDPMEpsilonObjective)
     assert isinstance(components.optimizer, Optimizer)
-    assert components.ema is None
-    assert components.lr_scheduler is None
+    assert components.ema is not None
+    assert isinstance(components.lr_scheduler, CosineAnnealingLR)
+    assert components.lr_scheduler.T_max == config.trainer.num_epochs
+    assert components.trainer.lr_scheduler_interval == "epoch"
     assert isinstance(components.logger, ExperimentLogger)
     assert isinstance(components.checkpoint_manager, CheckpointManager)
     assert isinstance(components.trainer, Trainer)
@@ -129,6 +157,24 @@ def test_warmup_cosine_lr_scheduler_uses_auto_total_steps() -> None:
     assert lrs[1] == pytest.approx(1.0)
     assert lrs[2] < 1.0
     assert lrs[-1] == pytest.approx(0.1)
+
+
+def test_cosine_lr_scheduler_uses_effective_epoch_override() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = SGD([parameter], lr=1.0)
+    scheduler = build_lr_scheduler(
+        LRSchedulerConfig(
+            name="cosine",
+            interval="epoch",
+            params={"T_max": "auto", "eta_min": 0.1},
+        ),
+        optimizer,
+        steps_per_epoch=3,
+        num_epochs=60,
+    )
+
+    assert isinstance(scheduler, CosineAnnealingLR)
+    assert scheduler.T_max == 60
 
 
 def test_torch_builtin_lr_scheduler_can_be_built() -> None:
