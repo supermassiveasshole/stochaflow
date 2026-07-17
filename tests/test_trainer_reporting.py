@@ -5,7 +5,14 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from stochaflow.training import Trainer, TrainStepOutput
+from stochaflow.training import (
+    FitStartEvent,
+    Trainer,
+    TrainBatchEndEvent,
+    TrainEpochEndEvent,
+    TrainStepOutput,
+    TrainingDiagnostic,
+)
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.utils.checkpoint import CheckpointManager
 
@@ -78,19 +85,23 @@ class CountingScheduler:
         self.count = state["count"]
 
 
-class RecordingDiagnostic:
+class RecordingDiagnostic(TrainingDiagnostic):
     def __init__(self) -> None:
+        self.fit_started = False
         self.batch_steps: list[int] = []
         self.epoch_indices: list[int] = []
 
-    def on_train_batch_end(self, **kwargs) -> None:
-        output = kwargs["output"]
-        assert isinstance(output, TrainStepOutput)
-        assert "custom" in output.diagnostics
-        self.batch_steps.append(kwargs["global_step"])
+    def on_fit_start(self, event: FitStartEvent) -> None:
+        assert event.validation_dataloader is None
+        self.fit_started = True
 
-    def on_train_epoch_end(self, **kwargs) -> None:
-        self.epoch_indices.append(kwargs["epoch_index"])
+    def on_train_batch_end(self, event: TrainBatchEndEvent) -> None:
+        assert isinstance(event.output, TrainStepOutput)
+        assert "custom" in event.output.diagnostics
+        self.batch_steps.append(event.global_step)
+
+    def on_train_epoch_end(self, event: TrainEpochEndEvent) -> None:
+        self.epoch_indices.append(event.epoch_index)
 
 
 def _make_loader() -> DataLoader:
@@ -251,6 +262,7 @@ def test_structured_train_step_runs_diagnostics_hooks(tmp_path) -> None:
 
     trainer.fit(_make_loader(), num_epochs=1, show_progress=False, track_best=False)
 
+    assert diagnostic.fit_started
     assert diagnostic.batch_steps == [1, 2]
     assert diagnostic.epoch_indices == [1]
     assert (tmp_path / "checkpoints" / "latest.pt").exists()

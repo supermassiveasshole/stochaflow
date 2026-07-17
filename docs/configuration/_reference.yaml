@@ -328,23 +328,22 @@ registries:
           tags: {description: run tag 列表。}
 
   diagnostics:
-    description: 训练期间按周期记录扩散特有统计和样本 artifact。
-    base: 可调用的 diagnostic 对象
+    description: 训练期间按周期记录 denoiser 指标并比较多个 sampler 的质量与 artifact。
+    base: stochaflow.training.diagnostics.TrainingDiagnostic
     config_path: diagnostics[].name / diagnostics[].params
     entries:
-      ddpm:
-        description: 记录 timestep loss、SNR、采样和重建诊断。
+      diffusion_quality:
+        description: 通过可插拔 provider 记录 denoiser 指标，并在固定噪声下比较多个 sampler profile。
         runtime_parameters: [logger, output_dir, sample_shape]
         parameters:
-          interval: {description: 每隔多少训练 step 记录 step 诊断。}
-          timestep_buckets: {description: timestep 指标分桶数量。}
-          sample_every_epochs: {description: 每隔多少 epoch 生成诊断样本。}
-          sample_num: {description: 每次诊断生成的样本数。}
-          sample_seed: {description: 诊断采样随机种子。}
-          sample_grid_size: {description: 诊断样本网格每行数量。}
-          reconstruction_every_epochs: {description: 每隔多少 epoch 生成重建对比。}
-          reconstruction_timesteps: {description: 执行重建诊断的 timestep 序列。}
-          use_ema_for_artifacts: {description: artifact 是否优先使用 EMA 模型。}
+          samplers: {description: sampler profile 列表；每项声明唯一 id、Registry name、构造 params 和可选 trajectory。}
+          modules: {description: 按声明顺序导入并注册第三方 diagnostic provider 的 Python module。}
+          cadence: {description: step metric 与 epoch artifact 的执行周期。}
+          sampling: {description: 多 profile 共用的样本数、batch size 和基础 seed。}
+          providers: {description: step metric、sampler metric、denoiser artifact 与 sampler artifact provider 列表。}
+          reference: {description: 可选参考指标 provider、周期、真实/生成样本数和 batch size。}
+          use_ema: {description: diagnostic 推理是否优先使用 EMA 权重。}
+          failure_policy: {description: 运行期错误采用 raise 或 warn；配置错误始终失败。}
 
 cli:
   "train.--config": {description: 实验 YAML 路径。}

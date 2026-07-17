@@ -151,9 +151,22 @@ class DDPM(GaussianDiffusion):
             except StopIteration:
                 device = torch.device("cpu")
 
-        x_t = torch.randn(sample_shape, device=device)
+        initial_noise = torch.randn(sample_shape, device=device)
+        return self.sample_from_noise(
+            initial_noise,
+            clip_denoised=clip_denoised,
+        )
+
+    def sample_from_noise(
+        self,
+        initial_noise: torch.Tensor,
+        *,
+        clip_denoised: bool | None = None,
+    ) -> torch.Tensor:
+        """Generate samples from a caller-provided terminal noise batch."""
+
         return self.reverse(
-            x_t,
+            initial_noise,
             self.num_timesteps,
             0,
             clip_denoised=clip_denoised,
@@ -176,8 +189,24 @@ class DDPM(GaussianDiffusion):
             except StopIteration:
                 device = torch.device("cpu")
 
+        initial_noise = torch.randn(sample_shape, device=device)
+        return self.sample_trajectory_from_noise(
+            initial_noise,
+            state_interval=state_interval,
+        )
+
+    def sample_trajectory_from_noise(
+        self,
+        initial_noise: torch.Tensor,
+        *,
+        state_interval: int = 100,
+    ) -> SamplingTrace:
+        """Trace sampling from a caller-provided terminal noise batch."""
+
+        if state_interval <= 0:
+            raise ValueError("DDPM trajectory state_interval must be positive")
         state_time = self.num_timesteps
-        current = torch.randn(sample_shape, device=device)
+        current = initial_noise
         frames = [TrajectoryFrame(state_time, current.detach().cpu())]
         while state_time > 0:
             target_time = max(0, state_time - state_interval)

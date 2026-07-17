@@ -1,7 +1,8 @@
 # 扩展与 Registry
 
-所有可配置组件都由统一的 `REGISTRIES: RegistryCatalog` 管理。配置不会扫描包、
-entry point 或文件系统；`data.modules` 是唯一扩展模块入口。
+顶层可配置组件由 `REGISTRIES: RegistryCatalog` 管理，diffusion quality 内部的细粒度
+扩展由 `DIAGNOSTIC_PROVIDERS` 管理。配置不会扫描包、entry point 或文件系统；
+`data.modules` 加载通用组件，`diagnostics[].params.modules` 加载 diagnostic provider。
 
 ## RegistryCatalog 一览
 
@@ -16,7 +17,7 @@ entry point 或文件系统；`data.modules` 是唯一扩展模块入口。
 | `optimizers` | `torch.optim.Optimizer` 类 | `optimizer.name` |
 | `lr_schedulers` | scheduler 类或 builder | `lr_scheduler.name` |
 | `loggers` | `ExperimentLogger` 类 | `logging.backends[].name` |
-| `diagnostics` | diagnostic 类 | `diagnostics[].name` |
+| `diagnostics` | `TrainingDiagnostic` 类 | `diagnostics[].name` |
 
 所有内置名称、构造参数和运行时注入参数都在[生成式组件索引](reference.md#registry-组件索引)
 中列出。
@@ -184,6 +185,56 @@ data:
 schema 接受任意非空 Registry 名称；未知名称会在 `DataPipeline` 构建策略时报告可用
 名称。内置名称仍执行各自的专属配置校验。
 
+## 自定义 diagnostic provider
+
+`diffusion_quality` 的 orchestrator 只调度 provider。五类 provider 分别继承
+`StepMetricProvider`、`SamplerMetricProvider`、`DenoiserArtifactProvider`、
+`SamplerArtifactProvider` 或 `ReferenceMetricProvider`，并注册到
+`DIAGNOSTIC_PROVIDERS` 的同名分类。
+
+```python
+# my_project/diagnostics.py
+from stochaflow.training.diagnostics import (
+    DIAGNOSTIC_PROVIDERS,
+    StepMetricProvider,
+)
+
+
+@DIAGNOSTIC_PROVIDERS.step_metrics.register("prediction_energy")
+class PredictionEnergy(StepMetricProvider):
+    def __init__(self, *, scale: float = 1.0):
+        self.scale = scale
+
+    def collect(self, context):
+        predicted = context.diagnostics["predicted_noise"]
+        return {
+            "diagnostics/denoiser/prediction_energy": float(
+                predicted.float().square().mean() * self.scale
+            )
+        }
+```
+
+YAML 同时负责导入和选择 provider：
+
+```yaml
+diagnostics:
+  - name: diffusion_quality
+    params:
+      modules: [my_project.diagnostics]
+      # cadence、sampling、samplers 省略
+      providers:
+        step_metrics:
+          - name: prediction_energy
+            params: {scale: 0.5}
+        sampler_metrics: []
+        denoiser_artifacts: []
+        sampler_artifacts: []
+```
+
+未声明的 provider 分类使用内置组合，显式空列表禁用该分类。新增 provider 不需要修改
+`DiffusionQualityDiagnostic`。provider 返回的 metric tag 和通过 artifact store 预留的
+路径必须唯一；冲突会按 `failure_policy` 处理。
+
 ## 其他组件的构造约定
 
 组件的 `params` 通常作为关键字参数传给注册类。以下参数由 runner 注入，不允许在
@@ -196,8 +247,14 @@ YAML 中覆盖：
 - diagnostic：`logger`、`output_dir`、按需提供的 `sample_shape`；
 - DatasetFactory：`DatasetFactoryContext`。
 
-diagnostic 可通过类方法 `context_parameters(context)` 声明额外的运行时参数。
+diagnostic 必须继承 `TrainingDiagnostic`，并可通过类方法
+`context_parameters(context)` 声明额外的运行时参数。
 若配置 `params` 与运行时参数重名，构建会失败，避免用户值被静默覆盖。
+
+供 `diffusion_quality` 使用的 sampler 除 Registry 构造约定外，还必须实现
+`sample_from_noise(initial_noise)`。若 profile 开启 trajectory，还必须实现
+`sample_trajectory_from_noise(initial_noise, **params)` 并返回 `SamplingTrace`。
+这一契约让多个 sampler 能接收同一份终端噪声进行可复现比较。
 
 PyTorch optimizer/scheduler 的透传参数随安装版本变化；本手册只承诺
 [字段参考](reference.md)中列出的常用参数，最终可用签名以当前 PyTorch 官方 API
@@ -208,6 +265,7 @@ PyTorch optimizer/scheduler 的透传参数随安装版本变化；本手册只�
 1. 类继承对应基类，装饰器使用正确 Registry。
 2. 注册名稳定、非空，且不覆盖内置名称。
 3. 模块 import 不执行下载、训练或其他重副作用。
-4. 模块路径加入 `data.modules`，训练与 sample 使用同一环境。
+4. 通用组件模块加入 `data.modules`；diagnostic provider 模块加入对应 diagnostic 的
+   `params.modules`。
 5. Factory 的 sample key、bucket metadata 与 Tensor 契约有单元测试。
 6. Strategy 对空 split、错位 view、越界参数和多 source 顺序有单元测试。

@@ -7,6 +7,9 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from PIL import Image
+
 from stochaflow.utils.registry import REGISTRIES
 
 
@@ -65,6 +68,18 @@ class ExperimentLogger(ABC):
 
         del tag, text, step
 
+    def log_image(
+        self,
+        tag: str,
+        path: str | Path,
+        *,
+        step: int,
+        caption: str | None = None,
+    ) -> None:
+        """Record an image artifact when the backend supports it."""
+
+        del tag, path, step, caption
+
     @abstractmethod
     def close(self) -> None:
         """Flush and close backend resources."""
@@ -78,6 +93,16 @@ class NullLogger(ExperimentLogger):
 
     def log_metrics(self, metrics: dict[str, Any], *, step: int) -> None:
         del metrics, step
+
+    def log_image(
+        self,
+        tag: str,
+        path: str | Path,
+        *,
+        step: int,
+        caption: str | None = None,
+    ) -> None:
+        del tag, path, step, caption
 
     def close(self) -> None:
         return None
@@ -100,6 +125,17 @@ class CompositeLogger(ExperimentLogger):
     def log_text(self, tag: str, text: str, *, step: int | None = None) -> None:
         for backend in self.backends:
             backend.log_text(tag, text, step=step)
+
+    def log_image(
+        self,
+        tag: str,
+        path: str | Path,
+        *,
+        step: int,
+        caption: str | None = None,
+    ) -> None:
+        for backend in self.backends:
+            backend.log_image(tag, path, step=step, caption=caption)
 
     def close(self) -> None:
         for backend in self.backends:
@@ -166,6 +202,19 @@ class LocalLogger(ExperimentLogger):
             prefix = f"{prefix} step={step}"
         self.text_logger.info("%s | %s", prefix, text)
 
+    def log_image(
+        self,
+        tag: str,
+        path: str | Path,
+        *,
+        step: int,
+        caption: str | None = None,
+    ) -> None:
+        rendered = str(Path(path))
+        if caption:
+            rendered = f"{rendered}; caption={caption}"
+        self.log_text(tag, rendered, step=step)
+
     def close(self) -> None:
         self.metrics_handle.close()
         for handler in list(self.text_logger.handlers):
@@ -204,6 +253,20 @@ class TensorBoardLogger(ExperimentLogger):
     def log_text(self, tag: str, text: str, *, step: int | None = None) -> None:
         global_step = 0 if step is None else step
         self.writer.add_text(tag, text, global_step)
+
+    def log_image(
+        self,
+        tag: str,
+        path: str | Path,
+        *,
+        step: int,
+        caption: str | None = None,
+    ) -> None:
+        with Image.open(path) as image:
+            array = np.asarray(image.convert("RGB"))
+        self.writer.add_image(tag, array, step, dataformats="HWC")
+        if caption:
+            self.writer.add_text(f"{tag}/caption", caption, step)
 
     def close(self) -> None:
         self.writer.flush()
@@ -258,6 +321,17 @@ class WandbLogger(ExperimentLogger):
             self._wandb.log(payload)
         else:
             self._wandb.log(payload, step=step)
+
+    def log_image(
+        self,
+        tag: str,
+        path: str | Path,
+        *,
+        step: int,
+        caption: str | None = None,
+    ) -> None:
+        image = self._wandb.Image(str(Path(path)), caption=caption)
+        self._wandb.log({tag: image}, step=step)
 
     def close(self) -> None:
         if self.run is not None:

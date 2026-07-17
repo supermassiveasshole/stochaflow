@@ -22,14 +22,14 @@ Implemented:
 - UNet backbone with optional attention blocks
 - EMA tracking and EMA sampling
 - warmup-cosine and common PyTorch optimizer LR schedulers
-- DDPM diagnostic logging for timestep-bucket losses and sample artifacts
+- multi-sampler diffusion diagnostics with denoiser metrics and visual artifacts
 - Rich terminal reporting, checkpointing, and local/TensorBoard/W&B logging
 - one `stochaflow` CLI with `train` and `sample` subcommands
 - pytest, ruff, and pyright configuration
 
 Still evolving:
 
-- faster samplers and evaluation metrics such as FID/KID
+- faster samplers and broader learned/perceptual evaluation metrics
 - broader stochastic-flow abstractions beyond diffusion
 
 ## Installation
@@ -38,6 +38,12 @@ This project uses a `src` layout and is designed to work with `uv`.
 
 ```bash
 uv sync --extra dev
+```
+
+KID/FID diagnostics are optional because they add an Inception feature model:
+
+```bash
+uv sync --extra dev --extra quality
 ```
 
 For an editable pip workflow:
@@ -148,6 +154,12 @@ outputs/<experiment>/<YYYYMMDD_HHMMSS>/
       samples.png
       samples.pt
       resolved_sampling.yaml
+  diagnostics/
+    diffusion_quality/
+      epoch_XXXX/
+        manifest.yaml
+        denoiser/
+        <sampler-profile>/
 ```
 
 Example MNIST DDPM samples:
@@ -165,6 +177,26 @@ Example Oxford Flowers 102 DDPM samples:
 Oxford Flowers 102 reverse-process trajectory:
 
 ![Oxford Flowers 102 DDPM reverse trajectory](assets/readme/flowers102_ddpm_epoch_0681_trajectory.png)
+
+## Training diagnostics
+
+The `diffusion_quality` diagnostic can compare multiple sampler profiles against
+the same denoiser during training. Profiles receive identical fixed terminal
+noise, use EMA weights when configured, and report under independent metric
+namespaces. Step hooks record timestep-bucket loss, noise statistics, cosine
+similarity, and fixed-timestep reconstruction MSE/PSNR. Epoch hooks write sample,
+reconstruction, and trajectory panels and record sample statistics and latency.
+
+The implementation is a provider pipeline under `training/diagnostics/`.
+Step metrics, sampler metrics, denoiser artifacts, sampler artifacts, and
+reference metrics have separate registries. External modules can register a new
+provider and enable it from `diagnostics[].params.modules` without modifying the
+`diffusion_quality` orchestrator; explicit empty provider lists disable a phase.
+
+Images are saved locally and forwarded to every configured TensorBoard or W&B
+logger. Optional KID/FID evaluation uses a fixed validation reference cache and
+is enabled with the `quality` installation extra. See the Flowers102 configs for
+a complete DDPM/DDIM comparison declaration.
 
 ## Sampling
 
@@ -224,7 +256,7 @@ Important sections:
 - `lr_scheduler`: optional optimizer learning-rate scheduler
 - `ema`: optional exponential moving average tracking and sampling policy
 - `sampling`: optional sampler selection, sample batching, and debug artifacts
-- `diagnostics`: optional algorithm-specific training diagnostics
+- `diagnostics`: optional denoiser and multi-sampler training diagnostics
 - `trainer`: loop, device, gradient, and early stopping policy
 - `logging`: metric logging backends
 - `artifacts`: checkpoint cadence

@@ -39,6 +39,10 @@ stochaflow = "stochaflow.scripts.cli:main"
 wandb = [
     "wandb>=0.17",
 ]
+quality = [
+    "torchmetrics>=1.9,<2",
+    "torch-fidelity>=0.3,<1",
+]
 dev = [
     "pyright>=1.1.400",
     "pytest>=8.3",

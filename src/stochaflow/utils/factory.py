@@ -18,8 +18,7 @@ from torch.optim.lr_scheduler import (
 )
 
 from stochaflow.diffusion import NoiseSchedule
-from stochaflow.training import Trainer
-from stochaflow.training.diagnostic_context import DiagnosticBuildContext
+from stochaflow.training import DiagnosticBuildContext, Trainer, TrainingDiagnostic
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.training.losses import ddpm_epsilon_train_step
 from stochaflow.utils.checkpoint import CheckpointManager
@@ -57,6 +56,7 @@ REGISTRIES.diffusions.require_base(nn.Module)
 REGISTRIES.objectives.require_base(nn.Module)
 REGISTRIES.optimizers.require_base(Optimizer)
 REGISTRIES.loggers.require_base(ExperimentLogger)
+REGISTRIES.diagnostics.require_base(TrainingDiagnostic)
 REGISTRIES.optimizers.add("adam", Adam)
 REGISTRIES.optimizers.add("adamw", AdamW)
 REGISTRIES.lr_schedulers.add("cosine", CosineAnnealingLR)
@@ -79,7 +79,7 @@ class TrainingComponents:
     ema: ExponentialMovingAverage | None
     use_ema_for_sampling: bool
     logger: ExperimentLogger
-    diagnostics: list[Any]
+    diagnostics: list[TrainingDiagnostic]
     checkpoint_manager: CheckpointManager
     trainer: Trainer
 
@@ -196,7 +196,7 @@ def build_diagnostics(
     logger: ExperimentLogger,
     output_dir: str,
     sample_shape: tuple[int, int, int],
-) -> list[Any]:
+) -> list[TrainingDiagnostic]:
     """Instantiate training diagnostic plugins from configuration."""
 
     context = DiagnosticBuildContext(
@@ -204,7 +204,7 @@ def build_diagnostics(
         output_dir=output_dir,
         sample_shape=sample_shape,
     )
-    diagnostics: list[Any] = []
+    diagnostics: list[TrainingDiagnostic] = []
     for diagnostic_config in configs:
         diagnostic_cls = REGISTRIES.diagnostics.resolve(diagnostic_config.name)
         context_parameters = getattr(
@@ -238,6 +238,11 @@ def build_diagnostics(
             diagnostic_config.name,
             **constructor_params,
         )
+        if not isinstance(diagnostic, TrainingDiagnostic):
+            raise RegistryError(
+                f"registered diagnostic '{diagnostic_config.name}' did not produce "
+                "TrainingDiagnostic"
+            )
         diagnostics.append(diagnostic)
     return diagnostics
 

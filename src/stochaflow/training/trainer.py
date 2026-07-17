@@ -10,6 +10,12 @@ import torch
 import torch.nn as nn
 from torch.optim import Optimizer
 
+from stochaflow.training.diagnostics.contracts import (
+    FitStartEvent,
+    TrainBatchEndEvent,
+    TrainEpochEndEvent,
+    TrainingDiagnostic,
+)
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
@@ -130,7 +136,7 @@ class Trainer:
         lr_scheduler: Any | None = None,
         lr_scheduler_interval: str = "step",
         ema: ExponentialMovingAverage | None = None,
-        diagnostics: Iterable[Any] | None = None,
+        diagnostics: Iterable[TrainingDiagnostic] | None = None,
         max_grad_norm: float | None = None,
         logger: ExperimentLogger | None = None,
         log_every: int = 100,
@@ -189,17 +195,30 @@ class Trainer:
         global_step: int,
         epoch_index: int | None,
     ) -> None:
+        event = TrainBatchEndEvent(
+            trainer=self,
+            batch=batch,
+            output=output,
+            loss=loss,
+            global_step=global_step,
+            epoch_index=epoch_index,
+        )
         for diagnostic in self.diagnostics:
-            hook = getattr(diagnostic, "on_train_batch_end", None)
-            if callable(hook):
-                hook(
-                    trainer=self,
-                    batch=batch,
-                    output=output,
-                    loss=loss,
-                    global_step=global_step,
-                    epoch_index=epoch_index,
-                )
+            diagnostic.on_train_batch_end(event)
+
+    def _emit_fit_start_diagnostics(
+        self,
+        *,
+        train_dataloader: Iterable[Batch],
+        validation_dataloader: Iterable[Batch] | None,
+    ) -> None:
+        event = FitStartEvent(
+            trainer=self,
+            train_dataloader=train_dataloader,
+            validation_dataloader=validation_dataloader,
+        )
+        for diagnostic in self.diagnostics:
+            diagnostic.on_fit_start(event)
 
     def _emit_epoch_diagnostics(
         self,
@@ -207,10 +226,13 @@ class Trainer:
         epoch_index: int,
         metrics: dict[str, float],
     ) -> None:
+        event = TrainEpochEndEvent(
+            trainer=self,
+            epoch_index=epoch_index,
+            metrics=metrics,
+        )
         for diagnostic in self.diagnostics:
-            hook = getattr(diagnostic, "on_train_epoch_end", None)
-            if callable(hook):
-                hook(trainer=self, epoch_index=epoch_index, metrics=metrics)
+            diagnostic.on_train_epoch_end(event)
 
     def train_batch(self, batch: Batch) -> float:
         """Run one optimization step and return the scalar loss."""
@@ -453,6 +475,10 @@ class Trainer:
         self.best_metric_value = None
         self.stopped_early = False
         try:
+            self._emit_fit_start_diagnostics(
+                train_dataloader=dataloader,
+                validation_dataloader=validation_dataloader,
+            )
             for epoch in range(start_epoch, num_epochs + 1):
                 if reporter is not None:
                     reporter.on_epoch_start(epoch, num_epochs)

@@ -124,7 +124,12 @@ def test_load_ddpm_flowers102_config() -> None:
     assert config.ema.enabled
     assert config.ema.use_for_sampling
     assert len(config.diagnostics) == 1
-    assert config.diagnostics[0].name == "ddpm"
+    assert config.diagnostics[0].name == "diffusion_quality"
+    sampler_profiles = config.diagnostics[0].params["samplers"]
+    assert [profile["id"] for profile in sampler_profiles] == [
+        "ddpm_full",
+        "ddim_50",
+    ]
     assert config.trainer.num_epochs == 700
     assert config.trainer.early_stopping.monitor == "train_loss"
     assert not config.trainer.early_stopping.enabled

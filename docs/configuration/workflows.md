@@ -52,6 +52,12 @@ outputs/<experiment>/<YYYYMMDD_HHMMSS>/
   metrics.jsonl
   train.log
   resolved_config.yaml
+  diagnostics/
+    diffusion_quality/
+      epoch_NNNN/
+        manifest.yaml
+        denoiser/
+        <sampler-profile>/
   samples/
     final/
       samples.png
@@ -110,6 +116,91 @@ data:
 划分先按 YAML source 顺序合并，再使用 `experiment.seed` 生成全局索引。每个 fold
 独立构建 DataBundle、模型、optimizer、日志与 checkpoint；不要跨 fold 共享训练状态。
 
+## 训练期多 sampler diagnostic
+
+`diffusion_quality` 在相同 EMA 权重、初始噪声和固定 seed 下并排运行多个 sampler。
+轻量 denoiser 指标、sampler 指标、图片和参考质量算法都是独立 provider；配置可以
+替换或禁用任一类别，而无需修改 diagnostic orchestrator。每个 sampler profile 必须
+提供稳定且唯一的 `id`，`name` 对应 diffusions Registry。
+
+```yaml
+diagnostics:
+  - name: diffusion_quality
+    params:
+      modules: []
+      cadence:
+        step_every: 100
+        artifact_every_epochs: 5
+      sampling:
+        sample_num: 16
+        batch_size: 16
+        seed: 123
+      use_ema: true
+      failure_policy: raise
+      samplers:
+        - id: ddpm_full
+          name: ddpm
+          params: {}
+          trajectory:
+            enabled: true
+            params: {state_interval: 100}
+            gif_fps: 8
+        - id: ddim_50
+          name: ddim
+          params: {num_inference_steps: 50, eta: 0.0}
+          trajectory:
+            enabled: true
+            params: {step_interval: 5}
+            gif_fps: 8
+      providers:
+        step_metrics:
+          - name: timestep_bucket_loss
+            params: {buckets: 10}
+          - name: noise_alignment
+            params: {}
+          - name: x0_reconstruction
+            params: {timesteps: [50, 250, 500, 900]}
+        sampler_metrics:
+          - name: sample_statistics
+            params: {}
+          - name: sampling_performance
+            params: {}
+        denoiser_artifacts:
+          - name: reconstruction_panel
+            params:
+              timesteps: [50, 250, 500, 900]
+              max_samples: 16
+        sampler_artifacts:
+          - name: sample_grid
+            params: {nrow: 4}
+          - name: trajectory
+            params: {}
+      reference:
+        enabled: false
+        every_epochs: 20
+        num_real: 2048
+        num_fake: 2048
+        batch_size: 64
+        metrics:
+          - name: kid
+            params: {subsets: 100, subset_size: 1000}
+          - name: fid
+            params: {}
+```
+
+`modules` 会在解析 provider 名称前按顺序导入第三方模块。某个 `providers` 分类省略时
+使用内置组合，显式写成 `[]` 时禁用该分类。provider 名称、构造参数、重复项和输出
+冲突都会严格校验。
+
+Local logger 记录 artifact 路径，TensorBoard 和 W&B 同时显示 PNG。启用 KID/FID
+前需要 `uv sync --extra quality`，并且本次训练必须有 validation DataLoader。参考指标
+只用于监控，不参与 best checkpoint 或 early stopping。
+
+`failure_policy: raise` 会让采样或 provider 异常终止训练；`warn` 按 provider/profile
+隔离失败、继续执行其余组件，并把错误同时写入 `diagnostics/system/error_count`、日志
+和 epoch manifest。未知 sampler/provider、重复名称、缺少 trajectory 接口等配置错误
+始终在训练开始前失败。
+
 ## checkpoint 采样
 
 checkpoint 内含模型和训练配置，所以可以只给 checkpoint：
@@ -144,7 +235,7 @@ uv run stochaflow sample --config configs/ddpm_mnist.yaml
 
 ## 采样形状与 EMA
 
-独立采样、训练后验收、trajectory 和 DDPM diagnostic 都使用
+独立采样、训练后验收、trajectory 和 diffusion quality diagnostic 都使用
 `data.image.channels × sample_bucket.height × sample_bucket.width`，不依赖最后一个训练
 batch。`ema.enabled` 与 `ema.use_for_sampling` 同时为 true 且 checkpoint 含 EMA 时，
 采样优先使用 EMA 权重。

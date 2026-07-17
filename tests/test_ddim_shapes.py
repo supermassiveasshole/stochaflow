@@ -380,6 +380,23 @@ def test_ddim_sample_uses_k_transitions_and_returns_clean_shape() -> None:
     assert [int(timestep[0]) for timestep in denoiser.all_timesteps] == [9, 7, 4, 1]
 
 
+def test_ddim_samples_and_traces_from_caller_provided_noise() -> None:
+    ddim = DDIM(
+        noise_schedule=LinearBetaSchedule(num_timesteps=10),
+        model=ToyDenoiser(),
+        num_inference_steps=4,
+    )
+    initial_noise = torch.randn(2, 1, 8, 8)
+
+    samples = ddim.sample_from_noise(initial_noise)
+    expected = ddim.reverse(initial_noise)
+    trace = ddim.sample_trajectory_from_noise(initial_noise, step_interval=2)
+
+    assert torch.equal(samples, expected)
+    assert torch.equal(trace.frames[0].samples, initial_noise)
+    assert [frame.state_time for frame in trace.frames] == [10, 5, 0]
+
+
 def test_ddim_trajectory_uses_inference_transition_interval() -> None:
     ddim = DDIM(
         noise_schedule=LinearBetaSchedule(num_timesteps=10),

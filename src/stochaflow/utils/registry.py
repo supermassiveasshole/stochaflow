@@ -7,6 +7,7 @@ from importlib import import_module
 from typing import Any, Generic, TypeVar, cast
 
 T = TypeVar("T")
+U = TypeVar("U")
 
 
 class RegistryError(ValueError):
@@ -91,11 +92,12 @@ class Registry(Mapping[str, T], Generic[T]):
         self._components[name] = component
         return component
 
-    def register(self, name: str) -> Callable[[T], T]:
-        """Return a decorator that registers a class or callable by name."""
+    def register(self, name: str) -> Callable[[U], U]:
+        """Return a decorator that preserves the concrete component type."""
 
-        def decorator(component: T) -> T:
-            return self.add(name, component)
+        def decorator(component: U) -> U:
+            self.add(name, cast(T, component))
+            return component
 
         return decorator
 

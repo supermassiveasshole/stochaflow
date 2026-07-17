@@ -176,6 +176,24 @@ def test_ddpm_can_sample() -> None:
     assert samples.shape == (2, 1, 8, 8)
 
 
+def test_ddpm_samples_and_traces_from_caller_provided_noise() -> None:
+    ddpm = DDPM(
+        noise_schedule=LinearBetaSchedule(num_timesteps=4),
+        model=ToyDenoiser(),
+    )
+    initial_noise = torch.randn(2, 1, 8, 8)
+
+    torch.manual_seed(123)
+    samples = ddpm.sample_from_noise(initial_noise)
+    torch.manual_seed(123)
+    expected = ddpm.reverse(initial_noise, timestep_from=4)
+    trace = ddpm.sample_trajectory_from_noise(initial_noise, state_interval=2)
+
+    assert torch.equal(samples, expected)
+    assert torch.equal(trace.frames[0].samples, initial_noise)
+    assert [frame.state_time for frame in trace.frames] == [4, 2, 0]
+
+
 def test_ddpm_reverse_step_clips_x0_before_posterior_mean() -> None:
     noise_schedule = LinearBetaSchedule(num_timesteps=10)
     ddpm = DDPM(

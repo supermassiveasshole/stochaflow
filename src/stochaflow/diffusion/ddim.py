@@ -400,9 +400,28 @@ class DDIM(GaussianDiffusion):
                 device = next(self.model.parameters()).device
             except StopIteration:
                 device = torch.device("cpu")
-        x_from = torch.randn(sample_shape, device=device)
+        initial_noise = torch.randn(sample_shape, device=device)
+        return self.sample_from_noise(
+            initial_noise,
+            num_inference_steps=num_inference_steps,
+            timesteps=timesteps,
+            eta=eta,
+            clip_denoised=clip_denoised,
+        )
+
+    def sample_from_noise(
+        self,
+        initial_noise: torch.Tensor,
+        *,
+        num_inference_steps: int | None = None,
+        timesteps: SamplingTimesteps | None = None,
+        eta: float | None = None,
+        clip_denoised: bool | None = None,
+    ) -> torch.Tensor:
+        """Generate samples from a caller-provided terminal noise batch."""
+
         return self.reverse(
-            x_from,
+            initial_noise,
             num_inference_steps=num_inference_steps,
             timesteps=timesteps,
             eta=eta,
@@ -426,8 +445,24 @@ class DDIM(GaussianDiffusion):
             except StopIteration:
                 device = torch.device("cpu")
 
-        schedule = self.sampling_timesteps(device=device)
-        current = torch.randn(sample_shape, device=device)
+        initial_noise = torch.randn(sample_shape, device=device)
+        return self.sample_trajectory_from_noise(
+            initial_noise,
+            step_interval=step_interval,
+        )
+
+    def sample_trajectory_from_noise(
+        self,
+        initial_noise: torch.Tensor,
+        *,
+        step_interval: int = 1,
+    ) -> SamplingTrace:
+        """Trace sampling from a caller-provided terminal noise batch."""
+
+        if step_interval <= 0:
+            raise ValueError("DDIM trajectory step_interval must be positive")
+        schedule = self.sampling_timesteps(device=initial_noise.device)
+        current = initial_noise
         frames = [TrajectoryFrame(int(schedule[0]), current.detach().cpu())]
         transitions = zip(schedule[:-1], schedule[1:])
         for transition_index, (state_time, target_time) in enumerate(

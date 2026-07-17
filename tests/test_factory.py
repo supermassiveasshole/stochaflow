@@ -13,7 +13,7 @@ from stochaflow.diffusion import (
     LinearBetaSchedule,
 )
 from stochaflow.models import UNet
-from stochaflow.training import Trainer
+from stochaflow.training import Trainer, TrainingDiagnostic
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
     ComponentConfig,
@@ -31,7 +31,7 @@ from stochaflow.utils.logging import ExperimentLogger, NullLogger
 from stochaflow.utils.registry import REGISTRIES, RegistryError
 
 
-class MinimalDiagnostic:
+class MinimalDiagnostic(TrainingDiagnostic):
     """Custom diagnostic that only accepts the generic constructor contract."""
 
     def __init__(
@@ -110,7 +110,7 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
     assert isinstance(components.trainer, Trainer)
 
 
-def test_custom_diagnostic_does_not_receive_ddpm_runtime_parameters(tmp_path) -> None:
+def test_custom_diagnostic_receives_only_generic_runtime_parameters(tmp_path) -> None:
     logger = NullLogger()
 
     diagnostics = build_diagnostics(

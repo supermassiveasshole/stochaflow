@@ -144,8 +144,8 @@ sample bucket
   对应的像素预算基准。
 
 Registry
-: 名称到组件类/构造器的显式映射。配置只写名称和参数，`data.modules` 负责导入
-  自定义注册代码。
+: 名称到组件类/构造器的显式映射。配置只写名称和参数；`data.modules` 导入通用
+  组件，diagnostic 的 `params.modules` 导入可插拔 provider。
 
 ## 内置示例
 

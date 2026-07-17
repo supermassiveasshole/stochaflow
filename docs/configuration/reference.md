@@ -1338,29 +1338,28 @@ PyTorch StepLR。
 (config-registry-name-diagnostics)=
 ### `diagnostics`
 
-训练期间按周期记录扩散特有统计和样本 artifact。
+训练期间按周期记录 denoiser 指标并比较多个 sampler 的质量与 artifact。
 
-- 基类/契约：`可调用的 diagnostic 对象`
+- 基类/契约：`stochaflow.training.diagnostics.TrainingDiagnostic`
 - 配置位置：`diagnostics[].name / diagnostics[].params`
 
-(config-component-diagnostics-ddpm)=
-#### `ddpm`
+(config-component-diagnostics-diffusion-quality)=
+#### `diffusion_quality`
 
-记录 timestep loss、SNR、采样和重建诊断。
+通过可插拔 provider 记录 denoiser 指标，并在固定噪声下比较多个 sampler profile。
 
 运行时注入（不得在 YAML 中覆盖）：`logger`, `output_dir`, `sample_shape`。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `interval` | 每隔多少训练 step 记录 step 诊断。 |
-| `timestep_buckets` | timestep 指标分桶数量。 |
-| `sample_every_epochs` | 每隔多少 epoch 生成诊断样本。 |
-| `sample_num` | 每次诊断生成的样本数。 |
-| `sample_seed` | 诊断采样随机种子。 |
-| `sample_grid_size` | 诊断样本网格每行数量。 |
-| `reconstruction_every_epochs` | 每隔多少 epoch 生成重建对比。 |
-| `reconstruction_timesteps` | 执行重建诊断的 timestep 序列。 |
-| `use_ema_for_artifacts` | artifact 是否优先使用 EMA 模型。 |
+| `samplers` | sampler profile 列表；每项声明唯一 id、Registry name、构造 params 和可选 trajectory。 |
+| `modules` | 按声明顺序导入并注册第三方 diagnostic provider 的 Python module。 |
+| `cadence` | step metric 与 epoch artifact 的执行周期。 |
+| `sampling` | 多 profile 共用的样本数、batch size 和基础 seed。 |
+| `providers` | step metric、sampler metric、denoiser artifact 与 sampler artifact provider 列表。 |
+| `reference` | 可选参考指标 provider、周期、真实/生成样本数和 batch size。 |
+| `use_ema` | diagnostic 推理是否优先使用 EMA 权重。 |
+| `failure_policy` | 运行期错误采用 raise 或 warn；配置错误始终失败。 |
 
 ## CLI 参数索引
 

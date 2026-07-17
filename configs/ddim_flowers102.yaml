@@ -104,17 +104,69 @@ sampling:
       gif_fps: 8
 
 diagnostics:
-  - name: ddpm
+  - name: diffusion_quality
     params:
-      interval: 100
-      timestep_buckets: 10
-      sample_every_epochs: 5
-      sample_num: 16
-      sample_seed: 123
-      sample_grid_size: 4
-      reconstruction_every_epochs: 5
-      reconstruction_timesteps: [50, 250, 500, 900]
-      use_ema_for_artifacts: true
+      modules: []
+      cadence:
+        step_every: 100
+        artifact_every_epochs: 5
+      sampling:
+        sample_num: 16
+        batch_size: 16
+        seed: 123
+      use_ema: true
+      failure_policy: raise
+      samplers:
+        - id: ddpm_full
+          name: ddpm
+          params: {}
+          trajectory:
+            enabled: true
+            params: {state_interval: 100}
+            gif_fps: 8
+        - id: ddim_50
+          name: ddim
+          params:
+            num_inference_steps: 50
+            eta: 0.0
+          trajectory:
+            enabled: true
+            params: {step_interval: 5}
+            gif_fps: 8
+      providers:
+        step_metrics:
+          - name: timestep_bucket_loss
+            params: {buckets: 10}
+          - name: noise_alignment
+            params: {}
+          - name: x0_reconstruction
+            params: {timesteps: [50, 250, 500, 900]}
+        sampler_metrics:
+          - name: sample_statistics
+            params: {}
+          - name: sampling_performance
+            params: {}
+        denoiser_artifacts:
+          - name: reconstruction_panel
+            params:
+              timesteps: [50, 250, 500, 900]
+              max_samples: 16
+        sampler_artifacts:
+          - name: sample_grid
+            params: {nrow: 4}
+          - name: trajectory
+            params: {}
+      reference:
+        enabled: false
+        every_epochs: 20
+        num_real: 2048
+        num_fake: 2048
+        batch_size: 64
+        metrics:
+          - name: kid
+            params: {subsets: 100, subset_size: 1000}
+          - name: fid
+            params: {}
 
 trainer:
   num_epochs: 700
@@ -135,6 +187,8 @@ logging:
       params:
         console: false
         append: false
+    - name: tensorboard
+      params: {}
   torch_logs: {}
 
 artifacts:
