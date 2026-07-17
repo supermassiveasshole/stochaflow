@@ -24,8 +24,8 @@ dotted path。schema 不忽略未知字段。
 
 ### `failed to import registry module '...'`
 
-确认 `data.modules` 使用完整 Python import path，当前环境已安装扩展包，而且模块的
-依赖也能导入。不要把文件路径（如 `my_project/datasets.py`）写进配置，应写
+确认 `extensions.modules` 使用完整 Python import path，当前环境已安装扩展包，而且
+模块的依赖也能导入。不要把文件路径（如 `my_project/datasets.py`）写进配置，应写
 `my_project.datasets`。
 
 ### `unknown ... 'name'. Available: ...`
@@ -33,7 +33,7 @@ dotted path。schema 不忽略未知字段。
 名称不在对应 Registry。检查：
 
 1. 装饰器是否注册到了正确 Registry；
-2. 定义装饰器的模块是否列入 `data.modules`；
+2. 定义装饰器的模块是否列入 `extensions.modules`；
 3. 名称大小写是否完全一致；
 4. 扩展模块是否在训练与 checkpoint sampling 的 Python 环境中都可导入。
 

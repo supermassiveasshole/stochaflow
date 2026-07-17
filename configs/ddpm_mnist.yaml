@@ -3,8 +3,10 @@ experiment:
   seed: 42
   output_dir: outputs/ddpm_mnist
 
-data:
+extensions:
   modules: []
+
+data:
   datasets:
     - id: mnist
       factory: mnist

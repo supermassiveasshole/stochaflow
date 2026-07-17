@@ -3,8 +3,10 @@ experiment:
   seed: 42
   output_dir: outputs/ddpm_mnist_flowers102
 
-data:
+extensions:
   modules: []
+
+data:
   datasets:
     - id: digits
       factory: mnist

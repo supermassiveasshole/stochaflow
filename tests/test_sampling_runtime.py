@@ -18,7 +18,6 @@ from stochaflow.utils.registry import REGISTRIES
 
 def _image_data_config(*, image_size: int = 8, channels: int = 1) -> dict:
     return {
-        "modules": [],
         "datasets": [
             {
                 "id": "mnist",
@@ -51,6 +50,7 @@ def _image_data_config(*, image_size: int = 8, channels: int = 1) -> dict:
 def _raw_config(*, ema: bool = False, trajectory: bool = False) -> dict:
     return {
         "experiment": {"name": "tiny", "seed": 7},
+        "extensions": {"modules": []},
         "data": _image_data_config(),
         "model": {
             "name": "unet",
@@ -172,7 +172,9 @@ class CheckpointSamplingSplit(SplitStrategy):
     payload = CheckpointManager.load_payload(checkpoint)
     checkpoint_config = payload.get("config")
     assert isinstance(checkpoint_config, dict)
-    checkpoint_config["data"]["modules"] = ["checkpoint_sampling_extension"]
+    checkpoint_config["extensions"]["modules"] = [
+        "checkpoint_sampling_extension"
+    ]
     checkpoint_config["data"]["splits"] = {"mode": "checkpoint_sampling_split"}
     torch.save(payload, checkpoint)
 
@@ -182,10 +184,25 @@ class CheckpointSamplingSplit(SplitStrategy):
     )
 
     assert resolved.config.data.splits.mode == "checkpoint_sampling_split"
+    assert resolved.config.extensions.modules == [
+        "checkpoint_sampling_extension"
+    ]
     assert (
         REGISTRIES.split_strategies.resolve("checkpoint_sampling_split").__name__
         == "CheckpointSamplingSplit"
     )
+
+
+def test_checkpoint_config_persists_global_extensions(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "best.pt"
+    _save_checkpoint(checkpoint)
+
+    payload = CheckpointManager.load_payload(checkpoint)
+    checkpoint_config = payload.get("config")
+
+    assert isinstance(checkpoint_config, dict)
+    assert checkpoint_config["extensions"] == {"modules": []}
+    assert "modules" not in checkpoint_config["data"]
 
 
 def test_config_only_finds_best_checkpoint(tmp_path) -> None:

@@ -7,10 +7,13 @@ fields:
   experiment.output_dir: {description: 运行目录根路径；训练会在其下创建时间戳子目录。, cli: "train --output-dir"}
   experiment.exp_id: {description: 运行实例标识；通常由 runner 在创建时间戳目录后写入。}
 
+  extensions: {description: 在配置校验、训练组件构建和 checkpoint 采样前加载的通用 Registry 扩展。}
+  extensions.modules: {description: 按声明顺序幂等导入的 Python 扩展模块；模块导入应执行 Registry 装饰器。, constraints: 每项是非空 import path。}
+
   data: {description: 数据源、图像契约、分桶、加载器和全局划分配置。}
   data.datasets: {description: 按声明顺序参与全局合并的数据源列表。, constraints: 至少包含一个元素；id 必须唯一。}
   "data.datasets[].id": {description: 当前数据源在混合数据集中的稳定标识。, constraints: 非空且在列表内唯一。}
-  "data.datasets[].factory": {description: dataset_factories Registry 中的 Factory 名称。, interactions: 扩展 Factory 所在模块必须写入 data.modules。}
+  "data.datasets[].factory": {description: dataset_factories Registry 中的 Factory 名称。, interactions: 扩展 Factory 所在模块必须写入 extensions.modules。}
   "data.datasets[].params": {description: 原样传给 DatasetFactoryContext.params 的 Factory 专属参数。}
   "data.datasets[].splits": {description: 实验逻辑分区到该数据源原生 split 名的映射。}
   "data.datasets[].splits.train": {description: 逻辑训练分区使用的原生 split 名称。, constraints: 非空。}
@@ -28,7 +31,6 @@ fields:
   data.batching.sample_bucket: {description: 采样、trajectory、diagnostic 形状及基础 batch size 的基准 bucket。, constraints: 必须引用已声明 bucket。}
   data.batching.dynamic_batch_size: {description: 是否按基准 bucket 的像素预算缩放每个 bucket 的 batch size。}
   data.batching.steps_per_epoch: {description: 每个训练 epoch 的严格 step 数；auto 表示自然完整遍历所需 batch 数。, constraints: auto 或正整数。}
-  data.modules: {description: 配置加载后幂等导入的 Python 扩展模块列表；模块导入应执行 Registry 装饰器。, constraints: 每项是非空 import path。}
   data.dataloader: {description: PyTorch DataLoader 与训练 sampler 的通用参数。}
   data.dataloader.batch_size: {description: sample_bucket 对应的基础 batch size；动态模式下其他 bucket 按像素比缩放。, constraints: 正整数。}
   data.dataloader.num_workers: {description: 每个 DataLoader 的 worker 进程数。, constraints: 非负整数。}

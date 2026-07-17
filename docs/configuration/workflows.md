@@ -231,7 +231,7 @@ uv run stochaflow sample --config configs/ddpm_mnist.yaml
 
 同时给出两者时：checkpoint 提供权重与基础训练结构；外部配置提供 sampling 段，
 但模型、训练 diffusion、noise schedule 和通道数必须兼容；最后应用 sample CLI
-覆盖。配置和 checkpoint 中的 `data.modules` 都会在解析自定义组件前加载。
+覆盖。配置和 checkpoint 中的 `extensions.modules` 都会在解析自定义组件前加载。
 
 ## 采样形状与 EMA
 

@@ -386,7 +386,7 @@ def test_sampler_set_epoch_is_reproducible_and_changes_order() -> None:
     assert first != second
 
 
-def test_data_modules_auto_import_and_inject_factory_context(
+def test_registered_factory_receives_context_without_data_module_loading(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -417,6 +417,7 @@ class AutoTestFactory(DatasetFactory):
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
+    REGISTRIES.load_modules(["auto_dataset_plugin"])
     config = _data_config(
         DataSplitConfig(mode="none"),
         sources=[
@@ -427,7 +428,6 @@ class AutoTestFactory(DatasetFactory):
             )
         ],
     )
-    config.modules = ["auto_dataset_plugin"]
 
     bundle = DataPipeline(config, seed=31).build()[0]
 

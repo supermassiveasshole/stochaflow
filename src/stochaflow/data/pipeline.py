@@ -170,7 +170,6 @@ class DataPipeline:
         )
 
     def _factories(self) -> tuple[ConfiguredDatasetFactory, ...]:
-        self.registries.load_modules(self.config.modules)
         sources: list[ConfiguredDatasetFactory] = []
         for source_config in self.config.datasets:
             context = DatasetFactoryContext(

@@ -88,7 +88,7 @@ dataset_factories Registry 中的 Factory 名称。
 
 - 类型：`str`
 - 必填：是
-- 关联：扩展 Factory 所在模块必须写入 data.modules。
+- 关联：扩展 Factory 所在模块必须写入 extensions.modules。
 
 (config-field-path-data-datasets-item-params)=
 ### `data.datasets[].params`
@@ -242,16 +242,6 @@ bucket 输出 Tensor 的宽度。
 - 必填：否
 - 默认值：`auto`
 - 约束：auto 或正整数。
-
-(config-field-path-data-modules)=
-### `data.modules`
-
-配置加载后幂等导入的 Python 扩展模块列表；模块导入应执行 Registry 装饰器。
-
-- 类型：`list[str]`
-- 必填：否
-- 默认值：`[]`
-- 约束：每项是非空 import path。
 
 (config-field-path-data-dataloader)=
 ### `data.dataloader`
@@ -483,6 +473,27 @@ objectives Registry 名称。
 - 类型：`mapping[str, any]`
 - 必填：否
 - 默认值：`{}`
+
+## `extensions`
+
+(config-field-path-extensions)=
+### `extensions`
+
+在配置校验、训练组件构建和 checkpoint 采样前加载的通用 Registry 扩展。
+
+- 类型：`mapping`
+- 必填：否
+- 默认值：`{modules: []}`
+
+(config-field-path-extensions-modules)=
+### `extensions.modules`
+
+按声明顺序幂等导入的 Python 扩展模块；模块导入应执行 Registry 装饰器。
+
+- 类型：`list[str]`
+- 必填：否
+- 默认值：`[]`
+- 约束：每项是非空 import path。
 
 ## `optimizer`
 

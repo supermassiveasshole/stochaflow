@@ -21,6 +21,13 @@ class ComponentConfig:
 
 
 @dataclass(slots=True)
+class ExtensionsConfig:
+    """Import paths for user-defined Registry components."""
+
+    modules: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ExperimentConfig:
     """Metadata for an experiment run."""
 
@@ -107,7 +114,6 @@ class DataConfig:
     datasets: list[DatasetConfig]
     image: ImageDataConfig
     batching: DataBatchingConfig
-    modules: list[str] = field(default_factory=list)
     dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
     splits: DataSplitConfig = field(default_factory=DataSplitConfig)
 
@@ -233,6 +239,7 @@ class StochaflowConfig:
     model: ComponentConfig
     diffusion: DiffusionConfig
     objective: ComponentConfig
+    extensions: ExtensionsConfig = field(default_factory=ExtensionsConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     lr_scheduler: LRSchedulerConfig = field(default_factory=LRSchedulerConfig)
     ema: EMAConfig = field(default_factory=EMAConfig)
@@ -247,10 +254,10 @@ class StochaflowConfig:
 
         if not self.data.datasets:
             raise ConfigError("data.datasets must declare at least one dataset")
-        for index, module in enumerate(self.data.modules):
-            if not isinstance(module, str) or not module:
+        for index, module in enumerate(self.extensions.modules):
+            if not isinstance(module, str) or not module.strip():
                 raise ConfigError(
-                    f"data.modules[{index}] must be a non-empty string"
+                    f"extensions.modules[{index}] must be a non-empty string"
                 )
         source_ids: set[str] = set()
         weights: list[float | None] = []
@@ -600,6 +607,15 @@ def _reject_legacy_data_config(raw: dict[str, Any]) -> None:
         )
 
 
+def _validate_module_declarations(value: Any, *, path: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ConfigError(f"{path} must be a list")
+    for index, module in enumerate(value):
+        if not isinstance(module, str) or not module.strip():
+            raise ConfigError(f"{path}[{index}] must be a non-empty string")
+    return value
+
+
 def _load_configured_modules(config: StochaflowConfig) -> None:
     """Import explicitly configured registry extensions before validation.
 
@@ -610,7 +626,11 @@ def _load_configured_modules(config: StochaflowConfig) -> None:
 
     from stochaflow.utils.registry import REGISTRIES
 
-    REGISTRIES.load_modules(config.data.modules)
+    _validate_module_declarations(
+        config.extensions.modules,
+        path="config.extensions.modules",
+    )
+    REGISTRIES.load_modules(config.extensions.modules)
 
 
 def load_config(path: str | Path) -> StochaflowConfig:

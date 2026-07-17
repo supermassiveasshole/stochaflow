@@ -95,15 +95,16 @@ objective:
   params: {}
 ```
 
-配置加载顺序是：YAML 结构化为 dataclass → 导入 `data.modules` → 执行跨字段校验
-→ runner 应用 CLI 覆盖 → 构建数据和训练组件。自定义模块因此既可用于训练，也可在
-只读取 checkpoint 的采样流程中注册组件。
+配置加载顺序是：迁移旧 schema → YAML 结构化为 dataclass → 导入
+`extensions.modules` → 执行跨字段校验 → runner 应用 CLI 覆盖 → 构建数据和训练
+组件。自定义模块因此既可用于训练，也可在只读取 checkpoint 的采样流程中注册组件。
 
 ## 配置层次
 
 | 顶层段 | 作用 |
 | --- | --- |
 | `experiment` | 名称、seed、输出根目录和 run id |
+| `extensions` | 训练、采样和 checkpoint 重建前导入的 Registry 扩展模块 |
 | `data` | 数据源、图像契约、bucket、DataLoader 和划分 |
 | `model` | 去噪模型 Registry 声明 |
 | `diffusion` | 训练扩散过程和前向噪声 schedule |
@@ -144,8 +145,8 @@ sample bucket
   对应的像素预算基准。
 
 Registry
-: 名称到组件类/构造器的显式映射。配置只写名称和参数；`data.modules` 导入通用
-  组件，diagnostic 的 `params.modules` 导入可插拔 provider。
+: 名称到组件类/构造器的显式映射。配置只写名称和参数；`extensions.modules`
+  导入通用组件，diagnostic 的 `params.modules` 导入可插拔 provider。
 
 ## 内置示例
 

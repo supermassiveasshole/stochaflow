@@ -120,7 +120,7 @@ uv run stochaflow train \
 ```
 
 Custom factories are registered as classes and imported through
-`data.modules`; see [Extensions and registries](docs/configuration/extensions.md).
+`extensions.modules`; see [Extensions and registries](docs/configuration/extensions.md).
 
 For the complete YAML schema, defaults, validation rules, built-in component
 parameters, multi-source mixing, buckets, K-fold, logging, and CLI overrides,

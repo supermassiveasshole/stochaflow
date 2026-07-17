@@ -1,5 +1,6 @@
 """Tests for centralized config loading."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from stochaflow.utils.config import (
     load_config,
     load_config_dict,
 )
-from stochaflow.utils.registry import REGISTRIES
+from stochaflow.utils.registry import REGISTRIES, RegistryError
 
 
 def test_load_ddpm_mnist_config() -> None:
@@ -63,8 +64,40 @@ def test_config_loads_custom_modules_before_validation(
     module_path = tmp_path / "config_extension.py"
     module_path.write_text(
         """
-from stochaflow.data import DataPartitions, SplitStrategy
-from stochaflow.utils.registry import REGISTRIES
+import torch.nn as nn
+
+from stochaflow.extensions import (
+    DataPartitions,
+    DatasetFactory,
+    DatasetView,
+    REGISTRIES,
+    SplitStrategy,
+)
+
+
+@REGISTRIES.models.register("config_extension_model")
+class ConfigExtensionModel(nn.Module):
+    def forward(self, inputs):
+        return inputs
+
+
+@REGISTRIES.dataset_factories.register("config_extension_dataset")
+class ConfigExtensionDataset(DatasetFactory):
+    def build(self, request):
+        return DatasetView(
+            source_id=self.context.source_id,
+            dataset=[],
+            sample_keys=(),
+            bucket_ids=(),
+        )
+
+
+@REGISTRIES.diffusions.register("config_extension_diffusion")
+class ConfigExtensionDiffusion(nn.Module):
+    def __init__(self, model, noise_schedule):
+        super().__init__()
+        self.model = model
+        self.noise_schedule = noise_schedule
 
 
 @REGISTRIES.split_strategies.register("config_extension_split")
@@ -80,19 +113,56 @@ class ConfigExtensionSplit(SplitStrategy):
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["data"]["modules"] = ["config_extension"]
+    raw["extensions"]["modules"] = ["config_extension"]
     raw["data"]["splits"] = {"mode": "config_extension_split"}
 
     config = load_config_dict(raw)
     repeated = load_config_dict(raw)
 
-    assert config.data.modules == ["config_extension"]
+    assert config.extensions.modules == ["config_extension"]
     assert config.data.splits.mode == "config_extension_split"
     assert repeated.data.splits.mode == "config_extension_split"
+    assert REGISTRIES.models.resolve("config_extension_model").__name__ == (
+        "ConfigExtensionModel"
+    )
+    assert REGISTRIES.dataset_factories.resolve(
+        "config_extension_dataset"
+    ).__name__ == "ConfigExtensionDataset"
+    assert REGISTRIES.diffusions.resolve(
+        "config_extension_diffusion"
+    ).__name__ == "ConfigExtensionDiffusion"
     assert (
         REGISTRIES.split_strategies.resolve("config_extension_split").__name__
         == "ConfigExtensionSplit"
     )
+
+
+def test_config_rejects_removed_data_modules_without_mutating_input() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["data"]["modules"] = ["math"]
+    original = deepcopy(raw)
+
+    with pytest.raises(ConfigError, match=r"config\.data\.modules"):
+        load_config_dict(raw)
+
+    assert raw == original
+
+
+@pytest.mark.parametrize("module", ["", "   ", 7, None])
+def test_config_rejects_invalid_extension_module_declarations(module) -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["extensions"]["modules"] = [module]
+
+    with pytest.raises(ConfigError, match=r"extensions\.modules\[0\]"):
+        load_config_dict(raw)
+
+
+def test_config_reports_missing_extension_module() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["extensions"]["modules"] = ["stochaflow_missing_extension_for_test"]
+
+    with pytest.raises(RegistryError, match="failed to import registry module"):
+        load_config_dict(raw)
 
 
 def test_config_rejects_empty_split_registry_name() -> None:
@@ -171,6 +241,7 @@ def test_config_to_dict_preserves_top_level_sections() -> None:
     config = load_config(Path("configs/ddpm_cifar10.yaml"))
     data = config.to_dict()
     assert "experiment" in data
+    assert data["extensions"] == {"modules": []}
     assert "model" in data
     assert "ema" in data
     assert "sampling" in data

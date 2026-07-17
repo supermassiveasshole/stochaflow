@@ -2,7 +2,8 @@
 
 顶层可配置组件由 `REGISTRIES: RegistryCatalog` 管理，diffusion quality 内部的细粒度
 扩展由 `DIAGNOSTIC_PROVIDERS` 管理。配置不会扫描包、entry point 或文件系统；
-`data.modules` 加载通用组件，`diagnostics[].params.modules` 加载 diagnostic provider。
+`extensions.modules` 加载通用组件，`diagnostics[].params.modules` 加载 diagnostic
+provider。
 
 ## RegistryCatalog 一览
 
@@ -28,7 +29,7 @@
 
 ```python
 # my_project/components.py
-from stochaflow.utils.registry import REGISTRIES
+from stochaflow.extensions import REGISTRIES
 
 
 @REGISTRIES.models.register("tiny_model")
@@ -39,9 +40,11 @@ class TinyModel(...):
 再在 YAML 中显式导入并引用：
 
 ```yaml
-data:
+extensions:
   modules:
     - my_project.components
+
+data:
   # datasets/image/batching 省略
 
 model:
@@ -50,9 +53,9 @@ model:
 ```
 
 `load_config()` 和 `load_config_dict()` 在 schema 构造后、跨字段校验前调用
-`REGISTRIES.load_modules(data.modules)`。导入是幂等的，因此同一进程重复加载配置或
-checkpoint 不会重复执行注册。模块必须可由当前 Python 环境导入；推荐把项目以
-editable package 安装，而不是依赖工作目录修改 `sys.path`。
+`REGISTRIES.load_modules(extensions.modules)`。导入是幂等的，因此同一进程重复加载
+配置或 checkpoint 不会重复执行注册。模块必须可由当前 Python 环境导入；推荐把
+项目以 editable package 安装，而不是依赖工作目录修改 `sys.path`。
 
 注册名必须非空且在对应 Registry 中唯一。重复名称、错误基类、未知名称都会抛出
 `RegistryError`；未知名称错误会列出该 Registry 当前所有可用项。
@@ -65,8 +68,12 @@ resize/crop/normalize 的 Tensor。
 ```python
 from torch.utils.data import Dataset
 
-from stochaflow.data import DatasetBuildRequest, DatasetFactory, DatasetView
-from stochaflow.utils.registry import REGISTRIES
+from stochaflow.extensions import (
+    DatasetBuildRequest,
+    DatasetFactory,
+    DatasetView,
+    REGISTRIES,
+)
 
 
 class ManifestDataset(Dataset):
@@ -110,8 +117,10 @@ class ManifestImagesFactory(DatasetFactory):
 使用配置：
 
 ```yaml
-data:
+extensions:
   modules: [my_project.datasets]
+
+data:
   datasets:
     - id: portraits
       factory: manifest_images
@@ -133,13 +142,13 @@ data:
 或多个分区：
 
 ```python
-from stochaflow.data import (
+from stochaflow.extensions import (
     DataPartitions,
     DatasetSelection,
+    REGISTRIES,
     SplitContext,
     SplitStrategy,
 )
-from stochaflow.utils.registry import REGISTRIES
 
 
 @REGISTRIES.split_strategies.register("train_tail_validation")
@@ -175,8 +184,10 @@ class TrainTailValidation(SplitStrategy):
 YAML 只写 Registry 名称：
 
 ```yaml
-data:
+extensions:
   modules: [my_project.splits]
+
+data:
   splits:
     mode: train_tail_validation
     validation_size: 1000
@@ -265,7 +276,7 @@ PyTorch optimizer/scheduler 的透传参数随安装版本变化；本手册只�
 1. 类继承对应基类，装饰器使用正确 Registry。
 2. 注册名稳定、非空，且不覆盖内置名称。
 3. 模块 import 不执行下载、训练或其他重副作用。
-4. 通用组件模块加入 `data.modules`；diagnostic provider 模块加入对应 diagnostic 的
-   `params.modules`。
+4. 通用组件模块加入 `extensions.modules`；diagnostic provider 模块加入对应
+   diagnostic 的 `params.modules`。
 5. Factory 的 sample key、bucket metadata 与 Tensor 契约有单元测试。
 6. Strategy 对空 split、错位 view、越界参数和多 source 顺序有单元测试。

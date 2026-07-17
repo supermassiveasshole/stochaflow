@@ -3,8 +3,10 @@ experiment:
   seed: 42
   output_dir: outputs/ddpm_cifar10
 
-data:
+extensions:
   modules: []
+
+data:
   datasets:
     - id: cifar10
       factory: cifar10

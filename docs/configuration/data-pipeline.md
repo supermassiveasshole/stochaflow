@@ -8,7 +8,7 @@ Factory 类，划分只注册 Strategy 类。
 
 ```mermaid
 flowchart LR
-    A["导入 data.modules"] --> B["实例化 DatasetFactory"]
+    A["导入 extensions.modules"] --> B["实例化 DatasetFactory"]
     B --> C["按 logical split 与 role 构建 DatasetView"]
     C --> D["按配置顺序合并 DatasetMixture"]
     D --> E["SplitStrategy 生成 DataPartitions"]
