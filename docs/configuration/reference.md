@@ -58,315 +58,27 @@
 (config-field-path-data)=
 ### `data`
 
-数据源、图像契约、分桶、加载器和全局划分配置。
+由 data_pipelines Registry 构建的模态无关数据管线。
 
 - 类型：`mapping`
 - 必填：是
 
-(config-field-path-data-datasets)=
-### `data.datasets`
+(config-field-path-data-name)=
+### `data.name`
 
-按声明顺序参与全局合并的数据源列表。
-
-- 类型：`list[mapping]`
-- 必填：是
-- 约束：至少包含一个元素；id 必须唯一。
-
-(config-field-path-data-datasets-item-id)=
-### `data.datasets[].id`
-
-当前数据源在混合数据集中的稳定标识。
+data_pipelines Registry 名称。
 
 - 类型：`str`
 - 必填：是
-- 约束：非空且在列表内唯一。
 
-(config-field-path-data-datasets-item-factory)=
-### `data.datasets[].factory`
+(config-field-path-data-params)=
+### `data.params`
 
-dataset_factories Registry 中的 Factory 名称。
-
-- 类型：`str`
-- 必填：是
-- 关联：扩展 Factory 所在模块必须写入 extensions.modules。
-
-(config-field-path-data-datasets-item-params)=
-### `data.datasets[].params`
-
-原样传给 DatasetFactoryContext.params 的 Factory 专属参数。
+数据管线完整拥有的参数；核心不解释 dataset、split、sampler、collate 或 batch 语义。
 
 - 类型：`mapping[str, any]`
 - 必填：否
 - 默认值：`{}`
-
-(config-field-path-data-datasets-item-splits)=
-### `data.datasets[].splits`
-
-实验逻辑分区到该数据源原生 split 名的映射。
-
-- 类型：`mapping`
-- 必填：否
-- 默认值：`{test: null, train: train, validation: null}`
-
-(config-field-path-data-datasets-item-splits-train)=
-### `data.datasets[].splits.train`
-
-逻辑训练分区使用的原生 split 名称。
-
-- 类型：`str`
-- 必填：否
-- 默认值：`train`
-- 约束：非空。
-
-(config-field-path-data-datasets-item-splits-validation)=
-### `data.datasets[].splits.validation`
-
-official 模式的逻辑验证分区；null 表示该源不提供验证分区。
-
-- 类型：`str | null`
-- 必填：否
-- 默认值：`null`
-
-(config-field-path-data-datasets-item-splits-test)=
-### `data.datasets[].splits.test`
-
-最终测试分区；null 表示不构建测试集。
-
-- 类型：`str | null`
-- 必填：否
-- 默认值：`null`
-- 约束：所有数据源必须全部声明或全部省略。
-
-(config-field-path-data-datasets-item-sampling-weight)=
-### `data.datasets[].sampling_weight`
-
-加权训练时该源占训练 step 的期望比例。
-
-- 类型：`float | null`
-- 必填：否
-- 默认值：`null`
-- 约束：所有源全部省略，或全部填写正数；无需归一化。
-
-(config-field-path-data-image)=
-### `data.image`
-
-所有 Factory 输出必须满足的全局图像 Tensor 契约。
-
-- 类型：`mapping`
-- 必填：是
-
-(config-field-path-data-image-channels)=
-### `data.image.channels`
-
-图像和模型输入输出的通道数。
-
-- 类型：`int`
-- 必填：否
-- 默认值：`3`
-- 约束：正整数；内置 Factory 支持 1 或 3。
-
-(config-field-path-data-image-normalize)=
-### `data.image.normalize`
-
-true 时内置 Factory 将零到一的图像映射到负一到一。
-
-- 类型：`bool`
-- 必填：否
-- 默认值：`true`
-
-(config-field-path-data-batching)=
-### `data.batching`
-
-分辨率 bucket、像素预算 batch size 与 epoch 长度策略。
-
-- 类型：`mapping`
-- 必填：是
-
-(config-field-path-data-batching-buckets)=
-### `data.batching.buckets`
-
-允许的数据空间尺寸列表，声明顺序也是最终 tie-break 顺序。
-
-- 类型：`list[mapping]`
-- 必填：是
-- 约束：至少一个；名称唯一且高宽为正。
-
-(config-field-path-data-batching-buckets-item-name)=
-### `data.batching.buckets[].name`
-
-bucket 的稳定名称，供样本元数据和 sample_bucket 引用。
-
-- 类型：`str`
-- 必填：是
-
-(config-field-path-data-batching-buckets-item-height)=
-### `data.batching.buckets[].height`
-
-bucket 输出 Tensor 的高度。
-
-- 类型：`int`
-- 必填：是
-
-(config-field-path-data-batching-buckets-item-width)=
-### `data.batching.buckets[].width`
-
-bucket 输出 Tensor 的宽度。
-
-- 类型：`int`
-- 必填：是
-
-(config-field-path-data-batching-sample-bucket)=
-### `data.batching.sample_bucket`
-
-采样、trajectory、diagnostic 形状及基础 batch size 的基准 bucket。
-
-- 类型：`str`
-- 必填：是
-- 约束：必须引用已声明 bucket。
-
-(config-field-path-data-batching-dynamic-batch-size)=
-### `data.batching.dynamic_batch_size`
-
-是否按基准 bucket 的像素预算缩放每个 bucket 的 batch size。
-
-- 类型：`bool`
-- 必填：否
-- 默认值：`true`
-
-(config-field-path-data-batching-steps-per-epoch)=
-### `data.batching.steps_per_epoch`
-
-每个训练 epoch 的严格 step 数；auto 表示自然完整遍历所需 batch 数。
-
-- 类型：`int | str`
-- 必填：否
-- 默认值：`auto`
-- 约束：auto 或正整数。
-
-(config-field-path-data-dataloader)=
-### `data.dataloader`
-
-PyTorch DataLoader 与训练 sampler 的通用参数。
-
-- 类型：`mapping`
-- 必填：否
-- 默认值：`{batch_size: 128, drop_last: true, num_workers: 4, persistent_workers: true, pin_memory: true, prefetch_factor: null, shuffle: true}`
-
-(config-field-path-data-dataloader-batch-size)=
-### `data.dataloader.batch_size`
-
-sample_bucket 对应的基础 batch size；动态模式下其他 bucket 按像素比缩放。
-
-- 类型：`int`
-- 必填：否
-- 默认值：`128`
-- 约束：正整数。
-
-(config-field-path-data-dataloader-num-workers)=
-### `data.dataloader.num_workers`
-
-每个 DataLoader 的 worker 进程数。
-
-- 类型：`int`
-- 必填：否
-- 默认值：`4`
-- 约束：非负整数。
-
-(config-field-path-data-dataloader-shuffle)=
-### `data.dataloader.shuffle`
-
-训练 sampler 是否在每个 epoch 打乱 bucket 内样本；评估始终不打乱。
-
-- 类型：`bool`
-- 必填：否
-- 默认值：`true`
-
-(config-field-path-data-dataloader-drop-last)=
-### `data.dataloader.drop_last`
-
-自然训练遍历是否丢弃 bucket 内最后一个不完整 batch；评估始终保留。
-
-- 类型：`bool`
-- 必填：否
-- 默认值：`true`
-
-(config-field-path-data-dataloader-pin-memory)=
-### `data.dataloader.pin_memory`
-
-是否为 DataLoader 启用 pinned host memory。
-
-- 类型：`bool`
-- 必填：否
-- 默认值：`true`
-
-(config-field-path-data-dataloader-persistent-workers)=
-### `data.dataloader.persistent_workers`
-
-是否在 epoch 间保留 worker。
-
-- 类型：`bool`
-- 必填：否
-- 默认值：`true`
-- 约束：true 要求 num_workers 大于 0。
-
-(config-field-path-data-dataloader-prefetch-factor)=
-### `data.dataloader.prefetch_factor`
-
-每个 worker 预取的 batch 数；null 使用 PyTorch 默认值。
-
-- 类型：`int | null`
-- 必填：否
-- 默认值：`null`
-- 约束：非 null 时为正数且 num_workers 大于 0。
-
-(config-field-path-data-splits)=
-### `data.splits`
-
-所有数据源按配置顺序合并后执行的全局 SplitStrategy 配置。
-
-- 类型：`mapping`
-- 必填：否
-- 默认值：`{fold_index: null, mode: none, num_folds: null, validation_size: null}`
-
-(config-field-path-data-splits-mode)=
-### `data.splits.mode`
-
-split_strategies Registry 名称；内置值为 none、official、random_holdout、kfold。
-
-- 类型：`str`
-- 必填：否
-- 默认值：`none`
-- 约束：非空 Registry 名称。
-
-(config-field-path-data-splits-validation-size)=
-### `data.splits.validation_size`
-
-random_holdout 的全局验证集大小；整数表示样本数，浮点数表示比例。
-
-- 类型：`int | float | null`
-- 必填：否
-- 默认值：`null`
-- 约束：整数为正；浮点数位于 0 与 1 之间。
-
-(config-field-path-data-splits-num-folds)=
-### `data.splits.num_folds`
-
-kfold 的 fold 数量。
-
-- 类型：`int | null`
-- 必填：否
-- 默认值：`null`
-- 约束：kfold 时至少为 2，且运行时不能超过总样本数。
-
-(config-field-path-data-splits-fold-index)=
-### `data.splits.fold_index`
-
-只运行指定的零起始 fold；null 表示依次构建全部 fold。
-
-- 类型：`int | null`
-- 必填：否
-- 默认值：`null`
-- 约束：大于等于零且小于 num_folds。
 
 ## `model`
 
@@ -631,7 +343,7 @@ lr_schedulers Registry 名称；null 禁用调度器。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{batch_size: null, debug: {trajectory: {enabled: false, gif_fps: 8, params: {}}}, grid_nrow: 4, num_samples: 16, sampler: null, seed: null}`
+- 默认值：`{batch_size: 16, debug: {trajectory: {enabled: false, params: {}}}, num_samples: 16, sampler: null, seed: null, shape: null, writers: [{name: tensor, params: {}}]}`
 
 (config-field-path-sampling-sampler)=
 ### `sampling.sampler`
@@ -661,6 +373,16 @@ lr_schedulers Registry 名称；null 禁用调度器。
 - 默认值：`{}`
 - CLI 覆盖：`sample --sampler-param`
 
+(config-field-path-sampling-shape)=
+### `sampling.shape`
+
+单个生成 state 的形状，不含 batch 维；null 允许不需要固定 shape 的自定义运行时。
+
+- 类型：`list[int] | null`
+- 必填：否
+- 默认值：`null`
+- 约束：非 null 时为非空正整数列表。
+
 (config-field-path-sampling-num-samples)=
 ### `sampling.num_samples`
 
@@ -674,11 +396,12 @@ lr_schedulers Registry 名称；null 禁用调度器。
 (config-field-path-sampling-batch-size)=
 ### `sampling.batch_size`
 
-采样时每批样本数；null 使用 data.dataloader.batch_size。
+采样时每批样本数，与 data pipeline 独立。
 
-- 类型：`int | null`
+- 类型：`int`
 - 必填：否
-- 默认值：`null`
+- 默认值：`16`
+- 约束：正整数。
 
 (config-field-path-sampling-seed)=
 ### `sampling.seed`
@@ -689,15 +412,32 @@ lr_schedulers Registry 名称；null 禁用调度器。
 - 必填：否
 - 默认值：`null`
 
-(config-field-path-sampling-grid-nrow)=
-### `sampling.grid_nrow`
+(config-field-path-sampling-writers)=
+### `sampling.writers`
 
-PNG 网格每行的样本数。
+按声明顺序运行的 sampling_artifact_writers 组件。
 
-- 类型：`int`
+- 类型：`list[mapping]`
 - 必填：否
-- 默认值：`4`
-- 约束：正整数。
+- 默认值：`[{name: tensor, params: {}}]`
+- 约束：至少一个。
+
+(config-field-path-sampling-writers-item-name)=
+### `sampling.writers[].name`
+
+sampling_artifact_writers Registry 名称。
+
+- 类型：`str`
+- 必填：是
+
+(config-field-path-sampling-writers-item-params)=
+### `sampling.writers[].params`
+
+writer 构造参数；图像网格与 GIF 参数属于 image writer。
+
+- 类型：`mapping[str, any]`
+- 必填：否
+- 默认值：`{}`
 
 (config-field-path-sampling-debug)=
 ### `sampling.debug`
@@ -706,7 +446,7 @@ PNG 网格每行的样本数。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{trajectory: {enabled: false, gif_fps: 8, params: {}}}`
+- 默认值：`{trajectory: {enabled: false, params: {}}}`
 
 (config-field-path-sampling-debug-trajectory)=
 ### `sampling.debug.trajectory`
@@ -715,7 +455,7 @@ PNG 网格每行的样本数。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{enabled: false, gif_fps: 8, params: {}}`
+- 默认值：`{enabled: false, params: {}}`
 
 (config-field-path-sampling-debug-trajectory-enabled)=
 ### `sampling.debug.trajectory.enabled`
@@ -734,16 +474,6 @@ PNG 网格每行的样本数。
 - 类型：`mapping[str, any]`
 - 必填：否
 - 默认值：`{}`
-
-(config-field-path-sampling-debug-trajectory-gif-fps)=
-### `sampling.debug.trajectory.gif_fps`
-
-trajectory GIF 的帧率。
-
-- 类型：`int`
-- 必填：否
-- 默认值：`8`
-- 约束：正整数。
 
 ## `diagnostics`
 
@@ -977,8 +707,8 @@ logger 构造参数；output_dir 与 run_name 由运行时注入。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `in_channels` | 输入图像通道数；必须等于 data.image.channels。 |
-| `out_channels` | 输出噪声预测通道数；必须等于 data.image.channels。 |
+| `in_channels` | 输入 state 的通道数；由所用模型和训练策略共同约定。 |
+| `out_channels` | 输出预测的通道数；由所用模型和训练策略共同约定。 |
 | `base_channels` | 第一层特征通道数。 |
 | `channel_multipliers` | 每个分辨率层相对 base_channels 的通道倍数；长度决定下采样深度。 |
 | `num_res_blocks` | 每个分辨率层的残差块数量。 |
@@ -990,10 +720,10 @@ logger 构造参数；output_dir 与 run_name 由运行时注入。
 (config-registry-name-dataset-factories)=
 ### `dataset_factories`
 
-将一个原生 split 构建为带稳定 sample_keys 和逐样本 bucket_ids 的 DatasetView。
+将一个原生 split 构建为带稳定 sample_keys 和可选 batch_metadata 的 DatasetView。
 
 - 基类/契约：`stochaflow.data.DatasetFactory`
-- 配置位置：`data.datasets[].factory / data.datasets[].params`
+- 配置位置：`内置 data pipeline 的 dataset.factory / dataset.params`
 
 (config-component-dataset_factories-cifar10)=
 #### `cifar10`
@@ -1033,41 +763,57 @@ Torchvision MNIST Factory；原生 train/test，固定原始尺寸 28×28。
 | `root` | 数据根目录；默认 ./data。 |
 | `download` | 缺少数据时是否允许 torchvision 下载；默认 true。 |
 
-(config-registry-name-split-strategies)=
-### `split_strategies`
+(config-registry-name-data-pipelines)=
+### `data_pipelines`
 
-在所有 source 合并后产生一个或多个 DataPartitions。
+完整拥有数据构建、划分、混合、采样、collate 与 epoch 语义。
 
-- 基类/契约：`stochaflow.data.SplitStrategy`
-- 配置位置：`data.splits.mode 与 data.splits 其余字段`
+- 基类/契约：`stochaflow.data.DataPipeline`
+- 配置位置：`data.name / data.params`
 
-(config-component-split_strategies-kfold)=
-#### `kfold`
+(config-component-data_pipelines-map)=
+#### `map`
 
-对合并后的逻辑 train 做确定性平衡 K-fold；split() 接收运行时 SplitContext。
+单一 map-style DatasetFactory、固定 batch、默认 PyTorch collation 与常见 split。
 
-无组件级配置参数。
-
-(config-component-split_strategies-none)=
-#### `none`
-
-使用完整逻辑 train，不创建验证集；仍可构建测试集。
+运行时注入（不得在 YAML 中覆盖）：`context`。
 
 无组件级配置参数。
 
-(config-component-split_strategies-official)=
-#### `official`
+(config-component-data_pipelines-multi-resolution-image)=
+#### `multi_resolution_image`
 
-直接使用每个 source 的 train/validation/test 原生映射。
+多源加权混合、分辨率 bucket 与动态像素预算 batch 的图像管线。
+
+运行时注入（不得在 YAML 中覆盖）：`context`。
+
+无组件级配置参数。
+
+(config-registry-name-sampling-artifact-writers)=
+### `sampling_artifact_writers`
+
+将生成 batch 写成模态相关 artifact，并返回已存在的文件路径。
+
+- 基类/契约：`stochaflow.sampling.SamplingArtifactWriter`
+- 配置位置：`sampling.writers[].name / sampling.writers[].params`
+
+(config-component-sampling_artifact_writers-tensor)=
+#### `tensor`
+
+保存 samples.pt 和可选 trajectory.pt。
 
 无组件级配置参数。
 
-(config-component-split_strategies-random-holdout)=
-#### `random_holdout`
+(config-component-sampling_artifact_writers-image)=
+#### `image`
 
-在合并后的逻辑 train 上生成一次确定性全局 holdout。
+校验 NCHW 图像并保存 PNG、trajectory grid 和 GIF。
 
-无组件级配置参数。
+| 参数 | 含义与约束 |
+| --- | --- |
+| `grid_nrow` | 图像网格每行样本数。 |
+| `gif_fps` | trajectory GIF 帧率。 |
+| `denormalize` | 写图前是否将负一到一映射为零到一。 |
 
 (config-registry-name-noise-schedules)=
 ### `noise_schedules`

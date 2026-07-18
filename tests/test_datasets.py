@@ -13,7 +13,7 @@ from stochaflow.data import (
 )
 from stochaflow.data import datasets as dataset_module
 from stochaflow.data.datasets import BucketImageTransform
-from stochaflow.utils.config import ImageDataConfig, ResolutionBucketConfig
+from stochaflow.utils.config import ResolutionBucketConfig
 from stochaflow.utils.registry import REGISTRIES
 
 
@@ -50,7 +50,7 @@ def test_bucket_image_transform_resize_cover_preserves_rectangular_target() -> N
     assert torch.allclose(tensor, torch.ones_like(tensor))
 
 
-def test_flowers_factory_assigns_each_image_to_nearest_bucket(monkeypatch) -> None:
+def test_flowers_factory_returns_raw_images_and_size_metadata(monkeypatch) -> None:
     seen_splits: list[str] = []
 
     class FakeFlowers102(Dataset):
@@ -82,15 +82,13 @@ def test_flowers_factory_assigns_each_image_to_nearest_bucket(monkeypatch) -> No
             ResolutionBucketConfig("square", 32, 32),
             ResolutionBucketConfig("landscape", 64, 96),
         ],
-        sample_bucket="landscape",
+        base_bucket="landscape",
         dynamic_batch_size=True,
     )
     factory = Flowers102DatasetFactory(
         DatasetFactoryContext(
             source_id="flowers",
             params={"root": "./data", "download": False},
-            image=ImageDataConfig(channels=3, normalize=True),
-            buckets=policy,
         )
     )
 
@@ -99,11 +97,15 @@ def test_flowers_factory_assigns_each_image_to_nearest_bucket(monkeypatch) -> No
     )
 
     assert seen_splits == ["val"]
-    assert tuple(view.bucket_ids) == ("square", "landscape")
+    assert view.batch_metadata is not None
+    assert [
+        policy.select(item.width, item.height).name
+        for item in view.batch_metadata
+    ] == ["square", "landscape"]
     first_image, _ = view[0]
     second_image, _ = view[1]
-    assert first_image.shape == (3, 32, 32)
-    assert second_image.shape == (3, 64, 96)
+    assert first_image.size == (40, 40)
+    assert second_image.size == (120, 80)
     assert tuple(view.sample_keys) == ("validation:0", "validation:1")
 
 

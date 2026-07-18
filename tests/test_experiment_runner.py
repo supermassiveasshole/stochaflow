@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import yaml
 
 from stochaflow.data.pipeline import DataBundle, SplitData
-from stochaflow.sampling.runtime import image_sample_shape
+from stochaflow.sampling.runtime import sample_shape
 from stochaflow.scripts import experiment_runner
 from stochaflow.utils.config import load_config
 
@@ -90,10 +90,10 @@ def _training_components(trainer: RecordingTrainer, logger: RecordingLogger):
     )
 
 
-def test_image_sample_shape_uses_configured_sample_bucket() -> None:
+def test_sample_shape_uses_sampling_config_independent_of_data() -> None:
     config = load_config(Path("configs/ddpm_mnist_flowers102.yaml"))
 
-    shape = image_sample_shape(config, 5)
+    shape = sample_shape(config, 5)
 
     assert shape == torch.Size((5, 3, 64, 64))
 
@@ -320,16 +320,13 @@ def test_runner_builds_registered_data_pipeline(monkeypatch, tmp_path, config_pa
     args.config = Path("unused.yaml")
     observed = {}
 
-    class StubPipeline:
-        def __init__(self, data_config, *, seed):
-            observed["pipeline_config"] = data_config
-            observed["seed"] = seed
-
-        def build(self):
-            return [DataBundle(train=_split("train"))]
+    def stub_pipeline(data_config, *, seed):
+        observed["pipeline_config"] = data_config
+        observed["seed"] = seed
+        return [DataBundle(train=_split("train"))]
 
     monkeypatch.setattr(experiment_runner, "load_config", lambda path: config)
-    monkeypatch.setattr(experiment_runner, "DataPipeline", StubPipeline)
+    monkeypatch.setattr(experiment_runner, "build_data_pipeline", stub_pipeline)
     monkeypatch.setattr(
         experiment_runner,
         "_run_single_bundle",
@@ -413,20 +410,20 @@ def test_configure_run_output_scopes_an_individual_fold(tmp_path):
 
 
 def test_resume_scope_rejects_one_checkpoint_for_all_folds(tmp_path):
-    config = load_config(Path("configs/ddpm_mnist.yaml"))
-    config.data.splits.mode = "kfold"
-    config.data.splits.num_folds = 3
-    config.data.splits.fold_index = None
+    bundles = [
+        DataBundle(train=_split("train"), fold_index=index, num_folds=3)
+        for index in range(3)
+    ]
 
     with pytest.raises(ValueError, match="fold-specific checkpoints"):
-        experiment_runner._validate_resume_scope(config, tmp_path / "latest.pt")
+        experiment_runner._validate_resume_scope(bundles, tmp_path / "latest.pt")
 
 
 def test_resume_scope_accepts_a_fold_checkpoint_directory(tmp_path):
-    config = load_config(Path("configs/ddpm_mnist.yaml"))
-    config.data.splits.mode = "kfold"
-    config.data.splits.num_folds = 3
-    config.data.splits.fold_index = None
+    bundles = [
+        DataBundle(train=_split("train"), fold_index=index, num_folds=3)
+        for index in range(3)
+    ]
     tmp_path.mkdir(exist_ok=True)
 
-    experiment_runner._validate_resume_scope(config, tmp_path)
+    experiment_runner._validate_resume_scope(bundles, tmp_path)

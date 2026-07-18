@@ -230,18 +230,19 @@ uv run stochaflow sample --config configs/ddpm_mnist.yaml
 ```
 
 同时给出两者时：checkpoint 提供权重与基础训练结构；外部配置提供 sampling 段，
-但模型、训练 diffusion、noise schedule 和通道数必须兼容；最后应用 sample CLI
+但模型、训练 diffusion 和 noise schedule 必须兼容；最后应用 sample CLI
 覆盖。配置和 checkpoint 中的 `extensions.modules` 都会在解析自定义组件前加载。
 
 ## 采样形状与 EMA
 
-独立采样、训练后验收、trajectory 和 diffusion quality diagnostic 都使用
-`data.image.channels × sample_bucket.height × sample_bucket.width`，不依赖最后一个训练
-batch。`ema.enabled` 与 `ema.use_for_sampling` 同时为 true 且 checkpoint 含 EMA 时，
+独立采样、训练后验收、trajectory 和 diffusion quality diagnostic 使用
+`sampling.shape`，它不含 batch 维且与 data pipeline 独立。`ema.enabled` 与
+`ema.use_for_sampling` 同时为 true 且 checkpoint 含 EMA 时，
 采样优先使用 EMA 权重。
 
-每次采样写出 `samples.pt`、PNG 网格和 `resolved_sampling.yaml`；开启
-`sampling.debug.trajectory.enabled` 后还会写 trajectory Tensor、静态网格与 GIF。
+每次采样都写 `resolved_sampling.yaml`。`sampling.writers` 决定其他输出：`tensor`
+写 PT，`image` 写 PNG/GIF；开启 trajectory 后，两者会写各自支持的 trajectory
+artifact。
 
 ## 本地文档
 

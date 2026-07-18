@@ -1,17 +1,21 @@
 """Stable public contracts for third-party Stochaflow extensions."""
 
 from stochaflow.data import (
-    DataPartitions,
+    DataBundle,
+    DataPipeline,
+    DataPipelineContext,
     DatasetBuildRequest,
     DatasetFactory,
     DatasetFactoryContext,
-    DatasetMaterializer,
-    DatasetSelection,
     DatasetView,
-    SplitContext,
-    SplitStrategy,
+    SplitData,
 )
 from stochaflow.diffusion import NoiseSchedule
+from stochaflow.sampling import (
+    SamplingArtifactContext,
+    SamplingArtifactWriter,
+    SamplingBatch,
+)
 from stochaflow.training import (
     DiagnosticBuildContext,
     FitStartEvent,
@@ -25,12 +29,12 @@ from stochaflow.utils.registry import REGISTRIES, Registry, RegistryError
 
 __all__ = [
     "ComponentConfig",
-    "DataPartitions",
+    "DataBundle",
+    "DataPipeline",
+    "DataPipelineContext",
     "DatasetBuildRequest",
     "DatasetFactory",
     "DatasetFactoryContext",
-    "DatasetMaterializer",
-    "DatasetSelection",
     "DatasetView",
     "DiagnosticBuildContext",
     "ExperimentLogger",
@@ -39,8 +43,10 @@ __all__ = [
     "REGISTRIES",
     "Registry",
     "RegistryError",
-    "SplitContext",
-    "SplitStrategy",
+    "SamplingArtifactContext",
+    "SamplingArtifactWriter",
+    "SamplingBatch",
+    "SplitData",
     "TrainBatchEndEvent",
     "TrainEpochEndEvent",
     "TrainingDiagnostic",

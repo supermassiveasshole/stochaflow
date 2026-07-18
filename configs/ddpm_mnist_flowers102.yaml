@@ -7,7 +7,9 @@ extensions:
   modules: []
 
 data:
-  datasets:
+  name: multi_resolution_image
+  params:
+    datasets:
     - id: digits
       factory: mnist
       sampling_weight: 0.4
@@ -27,30 +29,30 @@ data:
       splits:
         train: train
         test: test
-  image:
-    channels: 3
-    normalize: true
-  batching:
-    buckets:
+    image:
+      channels: 3
+      normalize: true
+    batching:
+      buckets:
       - name: square_32
         height: 32
         width: 32
       - name: square_64
         height: 64
         width: 64
-    sample_bucket: square_64
-    dynamic_batch_size: true
-    steps_per_epoch: auto
-  dataloader:
-    batch_size: 64
-    num_workers: 4
-    shuffle: true
-    drop_last: true
-    pin_memory: true
-    persistent_workers: true
-  splits:
-    mode: random_holdout
-    validation_size: 0.1
+      base_bucket: square_64
+      dynamic_batch_size: true
+    dataloader:
+      batch_size: 64
+      num_workers: 4
+      shuffle: true
+      drop_last: true
+      pin_memory: true
+      persistent_workers: true
+      steps_per_epoch: auto
+    splits:
+      mode: random_holdout
+      validation_size: 0.1
 
 model:
   name: unet
@@ -89,15 +91,19 @@ optimizer:
 
 sampling:
   sampler: null
+  shape: [3, 64, 64]
   num_samples: 16
-  batch_size: null
+  batch_size: 16
   seed: null
-  grid_nrow: 4
+  writers:
+    - name: tensor
+      params: {}
+    - name: image
+      params: {grid_nrow: 4, gif_fps: 8, denormalize: true}
   debug:
     trajectory:
       enabled: false
       params: {}
-      gif_fps: 8
 
 trainer:
   num_epochs: 100

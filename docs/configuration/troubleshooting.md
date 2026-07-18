@@ -3,17 +3,12 @@
 本页按常见错误文字组织。先保留完整异常链；Registry 的最后一行通常是表象，前面的
 导入或构造错误更能说明根因。
 
-## Schema 与旧配置
+## Schema
 
 ### `unknown config field(s)`
 
 YAML 含拼写错误、层级错误或已删除字段。到[字段参考](reference.md)搜索完整
 dotted path。schema 不忽略未知字段。
-
-### `legacy data config field(s) are no longer supported`
-
-旧的 `data.dataset`/`data.source` 已破坏式移除。迁移为 `data.datasets` 列表，并补充
-`data.image`、`data.batching`。不支持自动 checkpoint schema 转换。
 
 ### `must not be null` / `missing required positional argument`
 
@@ -44,8 +39,9 @@ dotted path。schema 不忽略未知字段。
 
 ### `registrations must inherit ...`
 
-注册类继承了错误基类。Dataset 使用 `DatasetFactory`，划分使用 `SplitStrategy`，
-模型/扩散/目标继承 `torch.nn.Module`，logger 继承 `ExperimentLogger`。
+注册类继承了错误基类。完整数据管线继承 `DataPipeline`，Dataset 读取层继承
+`DatasetFactory`，采样输出继承 `SamplingArtifactWriter`；模型/扩散/目标继承
+`torch.nn.Module`，logger 继承 `ExperimentLogger`。
 
 ### `config cannot override runtime parameter(s)`
 
@@ -62,8 +58,8 @@ dotted path。schema 不忽略未知字段。
 
 ### `sample_keys must be unique` / `metadata length must match`
 
-Factory 返回的 `sample_keys` 或 `bucket_ids` 与 Dataset 不对齐。构建 view 后分别验证
-三者长度；同一 source view 内 key 必须唯一。
+Factory 返回的 `sample_keys` 或可选 `batch_metadata` 与 Dataset 不对齐。构建 view
+后验证长度；同一 source view 内 key 必须唯一。
 
 ### `logical split ... must be declared by every configured source or omitted`
 
@@ -81,22 +77,17 @@ holdout 样本数为 0 或占满合并后的 train。浮点比例必须位于 0 
 
 ## bucket、batch 与 worker
 
-### `resolution bucket ... dimensions must be divisible by ...`
-
-当前 UNet 有 `len(channel_multipliers) - 1` 次下采样。把 bucket 高宽调整为
-`2 ** (层数 - 1)` 的倍数，或减少模型层数。
-
 ### 一个 batch 出现不同形状
 
-自定义 Dataset 必须按照每个样本的 `bucket_ids[index]` 输出精确尺寸。collate 不会
-偷偷 resize 或 padding。检查 `DatasetView.bucket_ids` 与 `__getitem__` 使用的是同一
-bucket policy。
+`map` 使用默认 collation，不会自动 resize 或 padding；自定义 Dataset 必须返回可
+collate 的同形状样本。`multi_resolution_image` 根据 `batch_metadata` 选择 bucket 并
+负责 resize/crop，检查 metadata 的 `width`、`height` 是否与原始图像一致。
 
 ### batch size 与配置值不同
 
-`data.dataloader.batch_size` 只对应 `sample_bucket`。启用
+图像管线的 `data.params.dataloader.batch_size` 只对应 `base_bucket`。启用
 `dynamic_batch_size` 后，其他 bucket 按像素预算缩放；公式见
-[数据管线](data-pipeline.md#bucket-选择与动态-batch)。
+[数据管线](data-pipeline.md#multi-resolution-image-管线)。
 
 ### `persistent_workers requires num_workers > 0`
 
@@ -110,11 +101,11 @@ pickle、文件句柄是否按 worker 打开、路径是否有效。确认后逐
 
 ## 训练、checkpoint 与采样
 
-### model channels 与 `data.image.channels` 不匹配
+### 训练时出现 state shape / channel 错误
 
-内置 UNet 要求 `model.params.in_channels` 和 `out_channels` 都等于
-`data.image.channels`。混合灰度和彩色 source 时，选择统一通道数；内置 Factory
-会将 MNIST 转为 RGB 或将 RGB 转灰度。
+核心不再把模型 shape 与数据管线做图像专属交叉校验。确认所选 DataPipeline 的
+batch、TrainingStrategy/当前 tensor train step、模型输入输出契约彼此一致。图像管线
+的通道配置位于 `data.params.image.channels`。
 
 ### resume 找不到 `latest.pt`
 
@@ -124,7 +115,7 @@ pickle、文件句柄是否按 worker 打开、路径是否有效。确认后逐
 ### checkpoint 配置与外部采样配置不兼容
 
 同时传 `--config` 与 `--checkpoint` 时，外部配置只能覆盖 sampling 语义，不能改变
-权重依赖的模型结构、训练 diffusion、noise schedule 或通道数。使用训练 checkpoint
+权重依赖的模型结构、训练 diffusion 或 noise schedule。使用训练 checkpoint
 对应配置，或只通过 `--sampler`/`--sampler-param` 改变反向采样算法。
 
 ### 预期 EMA 采样但显示 `EMA weights: no`
@@ -135,7 +126,22 @@ pickle、文件句柄是否按 worker 打开、路径是否有效。确认后逐
 ### trajectory 不生成
 
 设置 `sampling.debug.trajectory.enabled: true`，并确认所选 diffusion 实现 trajectory
-接口。输出位于本次采样 artifact 目录，不在 checkpoint 目录。
+接口。还需声明能保存 trajectory 的 writer，例如 `tensor` 或 `image`。
+
+### `sampling.shape is required`
+
+当前 DDPM/DDIM tensor sampler 需要固定 shape。把单样本形状（不含 batch 维）写入
+`sampling.shape`。该值与 data pipeline 独立，外部 sampling 配置可以覆盖它。
+
+### image writer 报 NCHW 或通道错误
+
+只有 `image` writer 要求 rank 4 batch 且通道数为 1 或 3。物理场、序列或其他
+Tensor 只声明 `tensor` writer，或注册领域 writer。
+
+### `checkpoint format version ... is unsupported`
+
+Stage 2 checkpoint 格式为 v3。训练恢复和 checkpoint-only sampling 不读取旧格式；
+请用当前代码重新训练或重新生成 checkpoint。
 
 ## 文档生成与 CI
 

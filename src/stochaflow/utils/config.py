@@ -48,6 +48,7 @@ class DataloaderConfig:
     pin_memory: bool = True
     persistent_workers: bool = True
     prefetch_factor: int | None = None
+    steps_per_epoch: int | str = "auto"
 
 
 @dataclass(slots=True)
@@ -102,14 +103,22 @@ class DataBatchingConfig:
     """Resolution bucketing and epoch-length policy."""
 
     buckets: list[ResolutionBucketConfig]
-    sample_bucket: str
+    base_bucket: str
     dynamic_batch_size: bool = True
-    steps_per_epoch: int | str = "auto"
 
 
 @dataclass(slots=True)
-class DataConfig:
-    """Registered dataset mixture and dataloader policy."""
+class MapDataPipelineConfig:
+    """Parameters accepted by the built-in map-style data pipeline."""
+
+    dataset: DatasetConfig
+    dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
+    splits: DataSplitConfig = field(default_factory=DataSplitConfig)
+
+
+@dataclass(slots=True)
+class MultiResolutionImageDataPipelineConfig:
+    """Parameters accepted by the built-in multi-resolution image pipeline."""
 
     datasets: list[DatasetConfig]
     image: ImageDataConfig
@@ -133,7 +142,6 @@ class TrajectoryDebugConfig:
 
     enabled: bool = False
     params: dict[str, Any] = field(default_factory=dict)
-    gif_fps: int = 8
 
 
 @dataclass(slots=True)
@@ -148,10 +156,13 @@ class SamplingConfig:
     """Standalone and post-training sampling configuration."""
 
     sampler: ComponentConfig | None = None
+    shape: list[int] | None = None
     num_samples: int = 16
-    batch_size: int | None = None
+    batch_size: int = 16
     seed: int | None = None
-    grid_nrow: int = 4
+    writers: list[ComponentConfig] = field(
+        default_factory=lambda: [ComponentConfig(name="tensor")]
+    )
     debug: SamplingDebugConfig = field(default_factory=SamplingDebugConfig)
 
 
@@ -235,7 +246,7 @@ class StochaflowConfig:
     """Top-level project configuration."""
 
     experiment: ExperimentConfig
-    data: DataConfig
+    data: ComponentConfig
     model: ComponentConfig
     diffusion: DiffusionConfig
     objective: ComponentConfig
@@ -252,161 +263,15 @@ class StochaflowConfig:
     def validate(self) -> None:
         """Validate cross-field invariants."""
 
-        if not self.data.datasets:
-            raise ConfigError("data.datasets must declare at least one dataset")
+        if not isinstance(self.data.name, str) or not self.data.name.strip():
+            raise ConfigError("data.name must be a non-empty registry name")
+        if not isinstance(self.data.params, dict):
+            raise ConfigError("data.params must be a mapping")
         for index, module in enumerate(self.extensions.modules):
             if not isinstance(module, str) or not module.strip():
                 raise ConfigError(
                     f"extensions.modules[{index}] must be a non-empty string"
                 )
-        source_ids: set[str] = set()
-        weights: list[float | None] = []
-        for index, dataset in enumerate(self.data.datasets):
-            path = f"data.datasets[{index}]"
-            if not isinstance(dataset.id, str) or not dataset.id:
-                raise ConfigError(f"{path}.id must be a non-empty string")
-            if dataset.id in source_ids:
-                raise ConfigError(f"duplicate data source id '{dataset.id}'")
-            source_ids.add(dataset.id)
-            if not isinstance(dataset.factory, str) or not dataset.factory:
-                raise ConfigError(f"{path}.factory must be a non-empty string")
-            if not dataset.splits.train:
-                raise ConfigError(f"{path}.splits.train must be non-empty")
-            for split_name in (dataset.splits.validation, dataset.splits.test):
-                if split_name is not None and not split_name:
-                    raise ConfigError(f"{path} split names must be non-empty or null")
-            weight = dataset.sampling_weight
-            if weight is not None:
-                if not isinstance(weight, (int, float)) or float(weight) <= 0:
-                    raise ConfigError(f"{path}.sampling_weight must be positive")
-                weight = float(weight)
-            weights.append(weight)
-        if any(weight is None for weight in weights) and any(
-            weight is not None for weight in weights
-        ):
-            raise ConfigError(
-                "data.datasets sampling_weight must be specified for every source "
-                "or omitted for every source"
-            )
-        has_test = [dataset.splits.test is not None for dataset in self.data.datasets]
-        if any(has_test) and not all(has_test):
-            raise ConfigError(
-                "every dataset must declare a test split or every dataset must "
-                "omit it"
-            )
-        if self.data.image.channels <= 0:
-            raise ConfigError("data.image.channels must be positive")
-        if not self.data.batching.buckets:
-            raise ConfigError("data.batching.buckets must not be empty")
-        bucket_names: set[str] = set()
-        for index, bucket in enumerate(self.data.batching.buckets):
-            path = f"data.batching.buckets[{index}]"
-            if not isinstance(bucket.name, str) or not bucket.name:
-                raise ConfigError(f"{path}.name must be a non-empty string")
-            if bucket.name in bucket_names:
-                raise ConfigError(f"duplicate resolution bucket '{bucket.name}'")
-            bucket_names.add(bucket.name)
-            if bucket.height <= 0 or bucket.width <= 0:
-                raise ConfigError(f"{path} height and width must be positive")
-        if self.data.batching.sample_bucket not in bucket_names:
-            raise ConfigError(
-                "data.batching.sample_bucket must name a configured bucket"
-            )
-        steps_per_epoch = self.data.batching.steps_per_epoch
-        if steps_per_epoch != "auto" and (
-            not isinstance(steps_per_epoch, int) or steps_per_epoch <= 0
-        ):
-            raise ConfigError(
-                "data.batching.steps_per_epoch must be a positive integer or 'auto'"
-            )
-        if self.data.dataloader.batch_size <= 0:
-            raise ConfigError("data.dataloader.batch_size must be positive")
-        if self.data.dataloader.num_workers < 0:
-            raise ConfigError("data.dataloader.num_workers must be non-negative")
-        if (
-            self.data.dataloader.persistent_workers
-            and self.data.dataloader.num_workers == 0
-        ):
-            raise ConfigError(
-                "data.dataloader.persistent_workers requires num_workers > 0"
-            )
-        if (
-            self.data.dataloader.prefetch_factor is not None
-            and self.data.dataloader.prefetch_factor <= 0
-        ):
-            raise ConfigError(
-                "data.dataloader.prefetch_factor must be positive when provided"
-            )
-        if (
-            self.data.dataloader.prefetch_factor is not None
-            and self.data.dataloader.num_workers == 0
-        ):
-            raise ConfigError(
-                "data.dataloader.prefetch_factor requires num_workers > 0"
-            )
-        split_mode = self.data.splits.mode
-        if not isinstance(split_mode, str) or not split_mode:
-            raise ConfigError("data.splits.mode must be a non-empty registry name")
-        validation_size = self.data.splits.validation_size
-        if validation_size is not None:
-            if isinstance(validation_size, float):
-                if not 0.0 < validation_size < 1.0:
-                    raise ConfigError(
-                        "data.splits.validation_size must be between 0 and 1 "
-                        "when a float"
-                    )
-            elif isinstance(validation_size, int):
-                if validation_size <= 0:
-                    raise ConfigError("data.splits.validation_size must be positive")
-            else:
-                raise ConfigError(
-                    "data.splits.validation_size must be an int, float, or null"
-                )
-        if split_mode == "random_holdout" and validation_size is None:
-            raise ConfigError(
-                "data.splits.validation_size is required for random_holdout"
-            )
-        if split_mode == "kfold":
-            if self.data.splits.num_folds is None or self.data.splits.num_folds < 2:
-                raise ConfigError("data.splits.num_folds must be at least 2 for kfold")
-            fold_index = self.data.splits.fold_index
-            if fold_index is not None and not 0 <= fold_index < self.data.splits.num_folds:
-                raise ConfigError(
-                    "data.splits.fold_index must be in [0, num_folds) when provided"
-                )
-        if split_mode == "official":
-            has_validation = [
-                dataset.splits.validation is not None
-                for dataset in self.data.datasets
-            ]
-            if any(has_validation) and not all(has_validation):
-                raise ConfigError(
-                    "official mode requires every dataset to declare a validation "
-                    "split or every dataset to omit it"
-                )
-        if self.model.name == "unet":
-            in_channels = self.model.params.get("in_channels")
-            out_channels = self.model.params.get("out_channels")
-            if in_channels != self.data.image.channels:
-                raise ConfigError(
-                    "model.params.in_channels must match data.image.channels"
-                )
-            if out_channels != self.data.image.channels:
-                raise ConfigError(
-                    "model.params.out_channels must match data.image.channels"
-                )
-            multipliers = self.model.params.get("channel_multipliers", [1])
-            if not isinstance(multipliers, (list, tuple)) or not multipliers:
-                raise ConfigError(
-                    "model.params.channel_multipliers must be a non-empty sequence"
-                )
-            divisor = 2 ** (len(multipliers) - 1)
-            for bucket in self.data.batching.buckets:
-                if bucket.height % divisor != 0 or bucket.width % divisor != 0:
-                    raise ConfigError(
-                        f"resolution bucket '{bucket.name}' dimensions must be "
-                        f"divisible by {divisor} for the configured UNet"
-                    )
         if self.trainer.num_epochs <= 0:
             raise ConfigError("trainer.num_epochs must be positive")
         if not 0.0 <= self.ema.decay < 1.0:
@@ -419,12 +284,27 @@ class StochaflowConfig:
             raise ConfigError("sampling.sampler.name must be a non-empty string")
         if self.sampling.num_samples <= 0:
             raise ConfigError("sampling.num_samples must be positive")
-        if self.sampling.batch_size is not None and self.sampling.batch_size <= 0:
-            raise ConfigError("sampling.batch_size must be positive when provided")
-        if self.sampling.grid_nrow <= 0:
-            raise ConfigError("sampling.grid_nrow must be positive")
-        if self.sampling.debug.trajectory.gif_fps <= 0:
-            raise ConfigError("sampling.debug.trajectory.gif_fps must be positive")
+        if self.sampling.batch_size <= 0:
+            raise ConfigError("sampling.batch_size must be positive")
+        if self.sampling.shape is not None:
+            if not self.sampling.shape:
+                raise ConfigError("sampling.shape must not be empty when provided")
+            for index, dimension in enumerate(self.sampling.shape):
+                if not isinstance(dimension, int) or isinstance(dimension, bool):
+                    raise ConfigError(f"sampling.shape[{index}] must be an integer")
+                if dimension <= 0:
+                    raise ConfigError(f"sampling.shape[{index}] must be positive")
+        if not self.sampling.writers:
+            raise ConfigError("sampling.writers must declare at least one writer")
+        for index, writer in enumerate(self.sampling.writers):
+            if not isinstance(writer.name, str) or not writer.name.strip():
+                raise ConfigError(
+                    f"sampling.writers[{index}].name must be a non-empty string"
+                )
+            if not isinstance(writer.params, dict):
+                raise ConfigError(
+                    f"sampling.writers[{index}].params must be a mapping"
+                )
         if self.lr_scheduler.name is not None:
             if not isinstance(self.lr_scheduler.name, str) or not self.lr_scheduler.name:
                 raise ConfigError("lr_scheduler.name must be a non-empty string or null")
@@ -534,6 +414,10 @@ def _coerce_value(annotation: Any, value: Any, path: str) -> Any:
             _coerce_value(element_type, item, f"{path}[{index}]")
             for index, item in enumerate(value)
         ]
+    if origin is dict:
+        if not isinstance(value, dict):
+            raise ConfigError(f"{path} must be a mapping")
+        return deepcopy(value)
     if _is_dataclass_type(annotation):
         return _coerce_dataclass(annotation, value, path)
     return value
@@ -559,6 +443,14 @@ def _coerce_dataclass(cls: type[Any], raw: Any, path: str) -> Any:
                 f"{path}.{name}",
             )
     return cls(**kwargs)
+
+
+def coerce_config_section(cls: type[Any], raw: Any, path: str) -> Any:
+    """Build one typed configuration section from an untrusted mapping."""
+
+    if not _is_dataclass_type(cls):
+        raise TypeError("configuration section type must be a dataclass")
+    return _coerce_dataclass(cls, deepcopy(raw), path)
 
 
 def _migrate_legacy_noise_schedule_config(raw: dict[str, Any]) -> dict[str, Any]:
@@ -590,21 +482,6 @@ def _migrate_legacy_noise_schedule_config(raw: dict[str, Any]) -> dict[str, Any]
             schedule["name"] = legacy_names[name]
     diffusion["noise_schedule"] = schedule
     return migrated
-
-
-def _reject_legacy_data_config(raw: dict[str, Any]) -> None:
-    """Fail clearly for the removed single-dataset data schema."""
-
-    data = raw.get("data")
-    if not isinstance(data, dict):
-        return
-    legacy_fields = sorted({"dataset", "source"}.intersection(data))
-    if legacy_fields:
-        rendered = ", ".join(f"data.{field}" for field in legacy_fields)
-        raise ConfigError(
-            f"legacy data config field(s) are no longer supported: {rendered}; "
-            "declare data.datasets, data.image, and data.batching instead"
-        )
 
 
 def _validate_module_declarations(value: Any, *, path: str) -> list[str]:
@@ -643,7 +520,6 @@ def load_config(path: str | Path) -> StochaflowConfig:
     if not isinstance(raw, dict):
         raise ConfigError(f"{config_path} must contain a top-level mapping")
 
-    _reject_legacy_data_config(raw)
     raw = _migrate_legacy_noise_schedule_config(raw)
     config = _coerce_dataclass(StochaflowConfig, raw, "config")
     _load_configured_modules(config)
@@ -654,7 +530,6 @@ def load_config(path: str | Path) -> StochaflowConfig:
 def load_config_dict(raw: dict[str, Any]) -> StochaflowConfig:
     """Load and validate a configuration from a plain dictionary."""
 
-    _reject_legacy_data_config(raw)
     raw = _migrate_legacy_noise_schedule_config(raw)
     config = _coerce_dataclass(StochaflowConfig, raw, "config")
     _load_configured_modules(config)

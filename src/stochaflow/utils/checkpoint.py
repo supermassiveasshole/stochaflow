@@ -15,7 +15,7 @@ else:
     ExponentialMovingAverage = Any
 
 
-CHECKPOINT_FORMAT_VERSION = 2
+CHECKPOINT_FORMAT_VERSION = 3
 
 
 class CheckpointState(TypedDict, total=False):
@@ -152,6 +152,12 @@ class CheckpointManager:
 
         checkpoint_path = Path(path)
         state = self.load_payload(checkpoint_path, map_location=map_location)
+        version = state.get("format_version")
+        if version != CHECKPOINT_FORMAT_VERSION:
+            raise ValueError(
+                f"checkpoint format version {version!r} is unsupported; "
+                f"expected version {CHECKPOINT_FORMAT_VERSION}"
+            )
         model_state_dict = state.get("model_state_dict")
         if not isinstance(model_state_dict, dict):
             raise TypeError("checkpoint is missing a valid model_state_dict")

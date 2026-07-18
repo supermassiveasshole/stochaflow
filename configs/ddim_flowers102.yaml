@@ -7,7 +7,9 @@ extensions:
   modules: []
 
 data:
-  datasets:
+  name: multi_resolution_image
+  params:
+    datasets:
     - id: flowers102
       factory: flowers102
       params:
@@ -18,26 +20,26 @@ data:
         train: train
         validation: val
         test: test
-  image:
-    channels: 3
-    normalize: true
-  batching:
-    buckets:
+    image:
+      channels: 3
+      normalize: true
+    batching:
+      buckets:
       - name: square_64
         height: 64
         width: 64
-    sample_bucket: square_64
-    dynamic_batch_size: true
-    steps_per_epoch: auto
-  dataloader:
-    batch_size: 64
-    num_workers: 2
-    shuffle: true
-    drop_last: true
-    pin_memory: true
-    persistent_workers: false
-  splits:
-    mode: official
+      base_bucket: square_64
+      dynamic_batch_size: true
+    dataloader:
+      batch_size: 64
+      num_workers: 2
+      shuffle: true
+      drop_last: true
+      pin_memory: true
+      persistent_workers: false
+      steps_per_epoch: auto
+    splits:
+      mode: official
 
 model:
   name: unet
@@ -95,15 +97,19 @@ ema:
 
 sampling:
   sampler: null
+  shape: [3, 64, 64]
   num_samples: 64
   batch_size: 16
   seed: null
-  grid_nrow: 8
+  writers:
+    - name: tensor
+      params: {}
+    - name: image
+      params: {grid_nrow: 8, gif_fps: 8, denormalize: true}
   debug:
     trajectory:
       enabled: false
       params: {}
-      gif_fps: 8
 
 diagnostics:
   - name: diffusion_quality

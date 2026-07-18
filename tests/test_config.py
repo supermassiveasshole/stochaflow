@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from stochaflow.data import build_data_pipeline
 from stochaflow.utils.config import (
     ConfigError,
     StochaflowConfig,
@@ -18,18 +19,15 @@ def test_load_ddpm_mnist_config() -> None:
     config = load_config(Path("configs/ddpm_mnist.yaml"))
     assert isinstance(config, StochaflowConfig)
     assert config.model.name == "unet"
-    assert config.data.datasets[0].factory == "mnist"
-    assert config.data.datasets[0].id == "mnist"
-    assert config.data.image.channels == 1
-    assert config.data.batching.sample_bucket == "square_32"
-    assert config.data.splits.mode == "random_holdout"
-    assert config.data.splits.validation_size == 10000
+    assert config.data.name == "multi_resolution_image"
+    assert config.data.params["datasets"][0]["factory"] == "mnist"
+    assert config.data.params["image"]["channels"] == 1
+    assert config.data.params["batching"]["base_bucket"] == "square_32"
+    assert config.data.params["splits"]["mode"] == "random_holdout"
     assert config.diffusion.name == "ddpm"
     assert len(config.logging.backends) >= 1
     assert config.diffusion.noise_schedule.params["num_timesteps"] == 1000
-    assert config.data.dataloader.num_workers == 0
-    assert not config.data.dataloader.pin_memory
-    assert not config.data.dataloader.persistent_workers
+    assert config.data.params["dataloader"]["num_workers"] == 0
     assert config.lr_scheduler.name == "cosine"
     assert config.lr_scheduler.interval == "epoch"
     assert config.lr_scheduler.params == {
@@ -48,7 +46,11 @@ def test_load_ddpm_mnist_config() -> None:
     assert config.ema.use_for_sampling
     assert config.sampling.num_samples == 64
     assert config.sampling.batch_size == 64
-    assert config.sampling.grid_nrow == 8
+    assert config.sampling.shape == [1, 32, 32]
+    assert [writer.name for writer in config.sampling.writers] == [
+        "tensor",
+        "image",
+    ]
     assert config.sampling.debug.trajectory.enabled
     assert config.sampling.debug.trajectory.params == {"step_interval": 5}
     assert config.trainer.num_epochs == 30
@@ -67,11 +69,13 @@ def test_config_loads_custom_modules_before_validation(
 import torch.nn as nn
 
 from stochaflow.extensions import (
-    DataPartitions,
+    DataBundle,
+    DataPipeline,
     DatasetFactory,
     DatasetView,
     REGISTRIES,
-    SplitStrategy,
+    SamplingArtifactWriter,
+    SplitData,
 )
 
 
@@ -88,7 +92,6 @@ class ConfigExtensionDataset(DatasetFactory):
             source_id=self.context.source_id,
             dataset=[],
             sample_keys=(),
-            bucket_ids=(),
         )
 
 
@@ -100,28 +103,30 @@ class ConfigExtensionDiffusion(nn.Module):
         self.noise_schedule = noise_schedule
 
 
-@REGISTRIES.split_strategies.register("config_extension_split")
-class ConfigExtensionSplit(SplitStrategy):
-    def split(self, context):
-        train = self._required(
-            context.datasets.build("train", role="train"),
-            logical_split="train",
-        )
-        return [DataPartitions(train=train)]
+@REGISTRIES.data_pipelines.register("config_extension_pipeline")
+class ConfigExtensionPipeline(DataPipeline):
+    def build(self):
+        return [DataBundle(train=SplitData("train", [0], num_batches=1))]
+
+
+@REGISTRIES.sampling_artifact_writers.register("config_extension_writer")
+class ConfigExtensionWriter(SamplingArtifactWriter):
+    def write(self, context):
+        raise NotImplementedError
 """,
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
     raw["extensions"]["modules"] = ["config_extension"]
-    raw["data"]["splits"] = {"mode": "config_extension_split"}
+    raw["data"] = {"name": "config_extension_pipeline", "params": {}}
 
     config = load_config_dict(raw)
     repeated = load_config_dict(raw)
 
     assert config.extensions.modules == ["config_extension"]
-    assert config.data.splits.mode == "config_extension_split"
-    assert repeated.data.splits.mode == "config_extension_split"
+    assert config.data.name == "config_extension_pipeline"
+    assert repeated.data.name == "config_extension_pipeline"
     assert REGISTRIES.models.resolve("config_extension_model").__name__ == (
         "ConfigExtensionModel"
     )
@@ -132,9 +137,12 @@ class ConfigExtensionSplit(SplitStrategy):
         "config_extension_diffusion"
     ).__name__ == "ConfigExtensionDiffusion"
     assert (
-        REGISTRIES.split_strategies.resolve("config_extension_split").__name__
-        == "ConfigExtensionSplit"
+        REGISTRIES.data_pipelines.resolve("config_extension_pipeline").__name__
+        == "ConfigExtensionPipeline"
     )
+    assert REGISTRIES.sampling_artifact_writers.resolve(
+        "config_extension_writer"
+    ).__name__ == "ConfigExtensionWriter"
 
 
 def test_config_rejects_removed_data_modules_without_mutating_input() -> None:
@@ -165,9 +173,9 @@ def test_config_reports_missing_extension_module() -> None:
         load_config_dict(raw)
 
 
-def test_config_rejects_empty_split_registry_name() -> None:
+def test_config_rejects_empty_data_pipeline_name() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["data"]["splits"] = {"mode": ""}
+    raw["data"]["name"] = ""
 
     with pytest.raises(ConfigError, match="non-empty registry name"):
         load_config_dict(raw)
@@ -177,12 +185,10 @@ def test_load_ddpm_flowers102_config() -> None:
     config = load_config(Path("configs/ddpm_flowers102.yaml"))
     assert isinstance(config, StochaflowConfig)
     assert config.model.name == "unet"
-    assert config.data.datasets[0].factory == "flowers102"
-    assert config.data.batching.buckets[0].height == 64
-    assert config.data.splits.mode == "official"
-    assert config.data.datasets[0].splits.validation == "val"
-    assert config.data.datasets[0].splits.test == "test"
-    assert config.data.dataloader.batch_size == 64
+    assert config.data.params["datasets"][0]["factory"] == "flowers102"
+    assert config.data.params["batching"]["buckets"][0]["height"] == 64
+    assert config.data.params["splits"]["mode"] == "official"
+    assert config.data.params["dataloader"]["batch_size"] == 64
     assert config.diffusion.name == "ddpm"
     assert config.diffusion.params["clip_denoised"] is True
     assert config.diffusion.noise_schedule.name == "linear_beta"
@@ -253,9 +259,12 @@ def test_config_to_dict_preserves_top_level_sections() -> None:
 def test_load_multi_source_weighted_config() -> None:
     config = load_config(Path("configs/ddpm_mnist_flowers102.yaml"))
 
-    assert [source.id for source in config.data.datasets] == ["digits", "flowers"]
-    assert [source.sampling_weight for source in config.data.datasets] == [0.4, 0.6]
-    assert [bucket.name for bucket in config.data.batching.buckets] == [
+    sources = config.data.params["datasets"]
+    assert [source["id"] for source in sources] == ["digits", "flowers"]
+    assert [source["sampling_weight"] for source in sources] == [0.4, 0.6]
+    assert [
+        bucket["name"] for bucket in config.data.params["batching"]["buckets"]
+    ] == [
         "square_32",
         "square_64",
     ]
@@ -265,28 +274,30 @@ def test_config_rejects_removed_single_dataset_schema() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
     raw["data"] = {
         "dataset": {"name": "mnist", "params": {}},
-        "dataloader": raw["data"]["dataloader"],
+        "dataloader": {},
         "splits": {"mode": "none"},
     }
 
-    with pytest.raises(ConfigError, match="legacy data config"):
+    with pytest.raises(ConfigError, match=r"config\.data\.dataset"):
         load_config_dict(raw)
 
 
 def test_config_requires_all_or_no_source_weights() -> None:
     raw = load_config(Path("configs/ddpm_mnist_flowers102.yaml")).to_dict()
-    raw["data"]["datasets"][0]["sampling_weight"] = None
+    raw["data"]["params"]["datasets"][0]["sampling_weight"] = None
 
     with pytest.raises(ConfigError, match="sampling_weight"):
-        load_config_dict(raw)
+        config = load_config_dict(raw)
+        build_data_pipeline(config.data, seed=config.experiment.seed)
 
 
 def test_config_rejects_bucket_incompatible_with_unet_depth() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["data"]["batching"]["buckets"][0]["height"] = 31
+    raw["data"]["params"]["batching"]["buckets"][0]["height"] = 0
 
-    with pytest.raises(ConfigError, match="divisible by"):
-        load_config_dict(raw)
+    with pytest.raises(ConfigError, match="dimensions must be positive"):
+        config = load_config_dict(raw)
+        build_data_pipeline(config.data, seed=config.experiment.seed)
 
 
 def test_lr_scheduler_config_rejects_invalid_interval() -> None:
@@ -338,7 +349,10 @@ def test_sampling_section_is_optional() -> None:
     config = load_config_dict(raw)
 
     assert config.sampling.sampler is None
+    assert config.sampling.shape is None
     assert config.sampling.num_samples == 16
+    assert config.sampling.batch_size == 16
+    assert [writer.name for writer in config.sampling.writers] == ["tensor"]
     assert not config.sampling.debug.trajectory.enabled
 
 
@@ -347,8 +361,9 @@ def test_sampling_section_is_optional() -> None:
     [
         (("num_samples",), 0),
         (("batch_size",), -1),
-        (("grid_nrow",), 0),
-        (("debug", "trajectory", "gif_fps"), 0),
+        (("shape",), []),
+        (("shape",), [3, 0, 32]),
+        (("writers", 0, "name"), ""),
     ],
 )
 def test_sampling_config_rejects_non_positive_values(path, value) -> None:

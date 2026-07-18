@@ -4,9 +4,9 @@ Stochaflow is a research-oriented Python project for stochastic flows. The
 current implementation includes config-driven DDPM and DDIM training and
 sampling paths for MNIST, CIFAR-10, and Oxford Flowers 102.
 
-The codebase is organized around registries and config-driven factories:
-datasets, data splits, models, diffusion processes, objectives, optimizers,
-learning-rate schedulers, diagnostics, loggers, checkpoints, and runners are
+The codebase is organized around registries and config-driven components: whole
+data pipelines, reusable dataset factories, sampling artifact writers, models,
+diffusion processes, objectives, optimizers, diagnostics, and loggers are
 constructed from YAML configuration.
 
 ## Status
@@ -16,9 +16,11 @@ Implemented:
 - DDPM/DDIM epsilon-prediction training
 - DDPM and DDIM reverse sampling with sampler-specific debug trajectories
 - beta-native linear and alpha-bar-native cosine noise schedules
+- registered modality-neutral data pipelines with structured-batch passthrough
+- built-in fixed-batch `map` and multi-resolution image pipelines
 - class-based MNIST, CIFAR-10, and Oxford Flowers 102 dataset factories
-- multi-source mixtures with optional step weights and global holdout/K-fold splits
-- per-sample resolution buckets with pixel-budget-scaled batch sizes
+- multi-source image mixtures, global holdout/K-fold, and dynamic pixel batches
+- registered tensor, image, and user-defined sampling artifact writers
 - UNet backbone with optional attention blocks
 - EMA tracking and EMA sampling
 - warmup-cosine and common PyTorch optimizer LR schedulers
@@ -119,7 +121,7 @@ uv run stochaflow train \
   --limit-batches 10
 ```
 
-Custom factories are registered as classes and imported through
+Custom data pipelines and factories are registered as classes and imported through
 `extensions.modules`; see [Extensions and registries](docs/configuration/extensions.md).
 
 For the complete YAML schema, defaults, validation rules, built-in component
@@ -224,13 +226,14 @@ parameters are discarded before the CLI parameters are applied.
 
 You can alternatively pass only `--config`; Stochaflow then finds the newest
 `best.pt` under `experiment.output_dir`. With both inputs, the checkpoint
-provides weights while the external config supplies the sampling section after
-model, training diffusion, noise schedule, and channel compatibility checks.
+provides weights while the external config supplies the complete sampling section
+after model, training diffusion, and noise-schedule compatibility checks.
 
 EMA denoiser weights are used when `ema.enabled` and `ema.use_for_sampling` are
-both true. Every sampling run writes raw samples, a PNG grid, and
-`resolved_sampling.yaml`. Enabling `sampling.debug.trajectory` additionally
-writes a raw trajectory, static grid, and looping GIF.
+both true. Declared `sampling.writers` decide the outputs: `tensor` writes PT
+files, `image` validates NCHW data and writes PNG/GIF artifacts, and extensions
+can write domain formats such as NetCDF. Every run also writes
+`resolved_sampling.yaml`.
 
 ## Configuration
 
@@ -248,20 +251,20 @@ configs/ddpm_mnist_flowers102.yaml
 Important sections:
 
 - `experiment`: run name, seed, and output directory
-- `data`: dataset declaration, dataloader policy, and split policy
+- `data`: registered pipeline name plus pipeline-owned parameters
 - `model`: registered model name and constructor parameters
 - `diffusion`: process type, forward noise schedule, and sampler parameters
 - `objective`: training objective
 - `optimizer`: optimizer name and hyperparameters
 - `lr_scheduler`: optional optimizer learning-rate scheduler
 - `ema`: optional exponential moving average tracking and sampling policy
-- `sampling`: optional sampler selection, sample batching, and debug artifacts
+- `sampling`: sample shape/batching, sampler selection, writers, and debug trajectory
 - `diagnostics`: optional denoiser and multi-sampler training diagnostics
 - `trainer`: loop, device, gradient, and early stopping policy
 - `logging`: metric logging backends
 - `artifacts`: checkpoint cadence
 
-Data split modes:
+The built-in `map` and `multi_resolution_image` pipelines support these split modes:
 
 - `random_holdout`: deterministic train/validation split from one source split
 - `official`: named dataset splits directly
@@ -276,7 +279,8 @@ posterior DDPM sampling, and a warmup-cosine optimizer LR schedule.
 ## Architecture
 
 `src/stochaflow/data/`
-: dataset builders, transforms, and the unified data bundle pipeline.
+: modality-neutral pipeline contracts, built-in pipelines, dataset factories,
+  and image-specific bucket helpers.
 
 `src/stochaflow/models/`
 : UNet, residual blocks, attention blocks, and timestep embeddings.
@@ -290,7 +294,7 @@ posterior DDPM sampling, and a warmup-cosine optimizer LR schedule.
 : trainer, train-step adapters, diagnostics, reporting, and EMA.
 
 `src/stochaflow/sampling/`
-: checkpoint sampling runtime plus image-grid, trajectory, and GIF artifacts.
+: checkpoint sampling runtime and registered tensor/image artifact writers.
 
 `src/stochaflow/utils/`
 : config loading, registries, factories, checkpointing, logging, and seeding.

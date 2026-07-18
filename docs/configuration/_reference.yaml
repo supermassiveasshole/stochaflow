@@ -10,40 +10,9 @@ fields:
   extensions: {description: 在配置校验、训练组件构建和 checkpoint 采样前加载的通用 Registry 扩展。}
   extensions.modules: {description: 按声明顺序幂等导入的 Python 扩展模块；模块导入应执行 Registry 装饰器。, constraints: 每项是非空 import path。}
 
-  data: {description: 数据源、图像契约、分桶、加载器和全局划分配置。}
-  data.datasets: {description: 按声明顺序参与全局合并的数据源列表。, constraints: 至少包含一个元素；id 必须唯一。}
-  "data.datasets[].id": {description: 当前数据源在混合数据集中的稳定标识。, constraints: 非空且在列表内唯一。}
-  "data.datasets[].factory": {description: dataset_factories Registry 中的 Factory 名称。, interactions: 扩展 Factory 所在模块必须写入 extensions.modules。}
-  "data.datasets[].params": {description: 原样传给 DatasetFactoryContext.params 的 Factory 专属参数。}
-  "data.datasets[].splits": {description: 实验逻辑分区到该数据源原生 split 名的映射。}
-  "data.datasets[].splits.train": {description: 逻辑训练分区使用的原生 split 名称。, constraints: 非空。}
-  "data.datasets[].splits.validation": {description: official 模式的逻辑验证分区；null 表示该源不提供验证分区。}
-  "data.datasets[].splits.test": {description: 最终测试分区；null 表示不构建测试集。, constraints: 所有数据源必须全部声明或全部省略。}
-  "data.datasets[].sampling_weight": {description: 加权训练时该源占训练 step 的期望比例。, constraints: 所有源全部省略，或全部填写正数；无需归一化。}
-  data.image: {description: 所有 Factory 输出必须满足的全局图像 Tensor 契约。}
-  data.image.channels: {description: 图像和模型输入输出的通道数。, constraints: 正整数；内置 Factory 支持 1 或 3。}
-  data.image.normalize: {description: true 时内置 Factory 将零到一的图像映射到负一到一。}
-  data.batching: {description: 分辨率 bucket、像素预算 batch size 与 epoch 长度策略。}
-  data.batching.buckets: {description: 允许的数据空间尺寸列表，声明顺序也是最终 tie-break 顺序。, constraints: 至少一个；名称唯一且高宽为正。}
-  "data.batching.buckets[].name": {description: bucket 的稳定名称，供样本元数据和 sample_bucket 引用。}
-  "data.batching.buckets[].height": {description: bucket 输出 Tensor 的高度。}
-  "data.batching.buckets[].width": {description: bucket 输出 Tensor 的宽度。}
-  data.batching.sample_bucket: {description: 采样、trajectory、diagnostic 形状及基础 batch size 的基准 bucket。, constraints: 必须引用已声明 bucket。}
-  data.batching.dynamic_batch_size: {description: 是否按基准 bucket 的像素预算缩放每个 bucket 的 batch size。}
-  data.batching.steps_per_epoch: {description: 每个训练 epoch 的严格 step 数；auto 表示自然完整遍历所需 batch 数。, constraints: auto 或正整数。}
-  data.dataloader: {description: PyTorch DataLoader 与训练 sampler 的通用参数。}
-  data.dataloader.batch_size: {description: sample_bucket 对应的基础 batch size；动态模式下其他 bucket 按像素比缩放。, constraints: 正整数。}
-  data.dataloader.num_workers: {description: 每个 DataLoader 的 worker 进程数。, constraints: 非负整数。}
-  data.dataloader.shuffle: {description: 训练 sampler 是否在每个 epoch 打乱 bucket 内样本；评估始终不打乱。}
-  data.dataloader.drop_last: {description: 自然训练遍历是否丢弃 bucket 内最后一个不完整 batch；评估始终保留。}
-  data.dataloader.pin_memory: {description: 是否为 DataLoader 启用 pinned host memory。}
-  data.dataloader.persistent_workers: {description: 是否在 epoch 间保留 worker。, constraints: true 要求 num_workers 大于 0。}
-  data.dataloader.prefetch_factor: {description: 每个 worker 预取的 batch 数；null 使用 PyTorch 默认值。, constraints: 非 null 时为正数且 num_workers 大于 0。}
-  data.splits: {description: 所有数据源按配置顺序合并后执行的全局 SplitStrategy 配置。}
-  data.splits.mode: {description: split_strategies Registry 名称；内置值为 none、official、random_holdout、kfold。, constraints: 非空 Registry 名称。}
-  data.splits.validation_size: {description: random_holdout 的全局验证集大小；整数表示样本数，浮点数表示比例。, constraints: 整数为正；浮点数位于 0 与 1 之间。}
-  data.splits.num_folds: {description: kfold 的 fold 数量。, constraints: kfold 时至少为 2，且运行时不能超过总样本数。}
-  data.splits.fold_index: {description: 只运行指定的零起始 fold；null 表示依次构建全部 fold。, constraints: 大于等于零且小于 num_folds。}
+  data: {description: 由 data_pipelines Registry 构建的模态无关数据管线。}
+  data.name: {description: data_pipelines Registry 名称。}
+  data.params: {description: 数据管线完整拥有的参数；核心不解释 dataset、split、sampler、collate 或 batch 语义。}
 
   model: {description: 由 models Registry 构建的去噪模型。}
   model.name: {description: models Registry 名称。}
@@ -74,15 +43,17 @@ fields:
   sampling.sampler: {description: 可选采样器覆盖；null 时使用 diffusion.name 与 diffusion.params。}
   sampling.sampler.name: {description: 作为采样器使用的 diffusions Registry 名称。, cli: "sample --sampler"}
   sampling.sampler.params: {description: 采样器构造参数；CLI --sampler-param 在其后覆盖。, cli: "sample --sampler-param"}
+  sampling.shape: {description: 单个生成 state 的形状，不含 batch 维；null 允许不需要固定 shape 的自定义运行时。, constraints: 非 null 时为非空正整数列表。}
   sampling.num_samples: {description: 一次采样生成的总样本数。, constraints: 正整数。}
-  sampling.batch_size: {description: 采样时每批样本数；null 使用 data.dataloader.batch_size。}
+  sampling.batch_size: {description: 采样时每批样本数，与 data pipeline 独立。, constraints: 正整数。}
   sampling.seed: {description: 采样专用随机种子；null 使用 experiment.seed。}
-  sampling.grid_nrow: {description: PNG 网格每行的样本数。, constraints: 正整数。}
+  sampling.writers: {description: 按声明顺序运行的 sampling_artifact_writers 组件。, constraints: 至少一个。}
+  "sampling.writers[].name": {description: sampling_artifact_writers Registry 名称。}
+  "sampling.writers[].params": {description: writer 构造参数；图像网格与 GIF 参数属于 image writer。}
   sampling.debug: {description: 仅用于调试的采样 artifact 设置。}
   sampling.debug.trajectory: {description: 反向过程 trajectory 的输出设置。}
   sampling.debug.trajectory.enabled: {description: 是否保存原始 trajectory、静态网格和 GIF。}
   sampling.debug.trajectory.params: {description: 透传给采样器 trajectory 方法的参数。}
-  sampling.debug.trajectory.gif_fps: {description: trajectory GIF 的帧率。, constraints: 正整数。}
   diagnostics: {description: 训练期间按声明顺序实例化的 diagnostics Registry 组件列表。}
   "diagnostics[].name": {description: diagnostics Registry 名称。}
   "diagnostics[].params": {description: diagnostic 构造参数；logger、output_dir 与 sample_shape 由运行时注入。}
@@ -115,8 +86,8 @@ registries:
       unet:
         description: 带时间嵌入、残差块和可选注意力的图像 UNet。
         parameters:
-          in_channels: {description: 输入图像通道数；必须等于 data.image.channels。}
-          out_channels: {description: 输出噪声预测通道数；必须等于 data.image.channels。}
+          in_channels: {description: 输入 state 的通道数；由所用模型和训练策略共同约定。}
+          out_channels: {description: 输出预测的通道数；由所用模型和训练策略共同约定。}
           base_channels: {description: 第一层特征通道数。}
           channel_multipliers: {description: 每个分辨率层相对 base_channels 的通道倍数；长度决定下采样深度。}
           num_res_blocks: {description: 每个分辨率层的残差块数量。}
@@ -126,9 +97,9 @@ registries:
           attention_heads: {description: 每个注意力块的 head 数。}
 
   dataset_factories:
-    description: 将一个原生 split 构建为带稳定 sample_keys 和逐样本 bucket_ids 的 DatasetView。
+    description: 将一个原生 split 构建为带稳定 sample_keys 和可选 batch_metadata 的 DatasetView。
     base: stochaflow.data.DatasetFactory
-    config_path: data.datasets[].factory / data.datasets[].params
+    config_path: 内置 data pipeline 的 dataset.factory / dataset.params
     entries:
       cifar10:
         description: Torchvision CIFAR-10 Factory；原生 train/test，固定原始尺寸 32×32。
@@ -154,15 +125,34 @@ registries:
           root: {description: 数据根目录；默认 ./data。}
           download: {description: 缺少数据时是否允许 torchvision 下载；默认 true。}
 
-  split_strategies:
-    description: 在所有 source 合并后产生一个或多个 DataPartitions。
-    base: stochaflow.data.SplitStrategy
-    config_path: data.splits.mode 与 data.splits 其余字段
+  data_pipelines:
+    description: 完整拥有数据构建、划分、混合、采样、collate 与 epoch 语义。
+    base: stochaflow.data.DataPipeline
+    config_path: data.name / data.params
     entries:
-      kfold: {description: 对合并后的逻辑 train 做确定性平衡 K-fold；split() 接收运行时 SplitContext。, parameters: {}}
-      none: {description: 使用完整逻辑 train，不创建验证集；仍可构建测试集。, parameters: {}}
-      official: {description: 直接使用每个 source 的 train/validation/test 原生映射。, parameters: {}}
-      random_holdout: {description: 在合并后的逻辑 train 上生成一次确定性全局 holdout。, parameters: {}}
+      map:
+        description: 单一 map-style DatasetFactory、固定 batch、默认 PyTorch collation 与常见 split。
+        runtime_parameters: [context]
+        parameters: {}
+      multi_resolution_image:
+        description: 多源加权混合、分辨率 bucket 与动态像素预算 batch 的图像管线。
+        runtime_parameters: [context]
+        parameters: {}
+
+  sampling_artifact_writers:
+    description: 将生成 batch 写成模态相关 artifact，并返回已存在的文件路径。
+    base: stochaflow.sampling.SamplingArtifactWriter
+    config_path: sampling.writers[].name / sampling.writers[].params
+    entries:
+      tensor:
+        description: 保存 samples.pt 和可选 trajectory.pt。
+        parameters: {}
+      image:
+        description: 校验 NCHW 图像并保存 PNG、trajectory grid 和 GIF。
+        parameters:
+          grid_nrow: {description: 图像网格每行样本数。}
+          gif_fps: {description: trajectory GIF 帧率。}
+          denormalize: {description: 写图前是否将负一到一映射为零到一。}
 
   noise_schedules:
     description: 定义前向噪声路径以及离散 VP 系数。

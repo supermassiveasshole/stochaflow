@@ -11,12 +11,12 @@ import torch
 import torch.nn as nn
 import yaml
 
-from stochaflow.sampling.grid import (
-    save_image_grid,
-    save_trajectory_gif,
-    save_trajectory_grid,
-)
 from stochaflow.sampling.sampler import SamplingTrace
+from stochaflow.sampling.writers import (
+    SamplingArtifactContext,
+    SamplingBatch,
+    write_sampling_artifacts,
+)
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     CheckpointManager,
@@ -91,19 +91,16 @@ def parse_sampler_params(values: list[str] | None) -> dict[str, Any]:
     return parsed
 
 
-def image_sample_shape(config: StochaflowConfig, num_samples: int) -> torch.Size:
-    """Build a batch-first sample shape from the configured sample bucket."""
+def sample_shape(config: StochaflowConfig, num_samples: int) -> torch.Size:
+    """Build a batch-first shape from the modality-neutral sampling config."""
 
     if num_samples <= 0:
         raise ValueError("num_samples must be positive")
-    bucket = next(
-        bucket
-        for bucket in config.data.batching.buckets
-        if bucket.name == config.data.batching.sample_bucket
-    )
-    return torch.Size(
-        (num_samples, config.data.image.channels, bucket.height, bucket.width)
-    )
+    if config.sampling.shape is None:
+        raise ValueError(
+            "sampling.shape is required by the configured tensor sampler"
+        )
+    return torch.Size((num_samples, *config.sampling.shape))
 
 
 def resolve_sampling_inputs(
@@ -166,8 +163,6 @@ def validate_sampling_compatibility(
         mismatches.append("model")
     if external.diffusion != checkpoint.diffusion:
         mismatches.append("diffusion")
-    if external.data.image.channels != checkpoint.data.image.channels:
-        mismatches.append("data.image.channels")
     if mismatches:
         raise ValueError(
             "external config is incompatible with checkpoint training config: "
@@ -218,21 +213,18 @@ def run_sampling(
         else _default_sampling_output_dir(inputs.checkpoint_path)
     )
     target_dir.mkdir(parents=True, exist_ok=True)
-    batch_size = sampling.batch_size or config.data.dataloader.batch_size
+    batch_size = sampling.batch_size
 
     with torch.no_grad():
-        samples, trajectory = _sample_batches(
+        batches = _sample_batches(
             sampler,
             config,
             device=device,
             batch_size=batch_size,
         )
-    artifacts = _write_sampling_artifacts(
-        samples,
-        trajectory,
-        output_dir=target_dir,
-        grid_nrow=sampling.grid_nrow,
-        gif_fps=sampling.debug.trajectory.gif_fps,
+    artifacts = write_sampling_artifacts(
+        sampling.writers,
+        SamplingArtifactContext(output_dir=target_dir, batches=batches),
     )
     manifest_path = target_dir / "resolved_sampling.yaml"
     manifest = {
@@ -276,6 +268,12 @@ def _resolve_checkpoint_path(
 
 
 def _load_checkpoint_config(payload: CheckpointState) -> StochaflowConfig:
+    version = payload.get("format_version")
+    if version != CHECKPOINT_FORMAT_VERSION:
+        raise ValueError(
+            f"checkpoint format version {version!r} is unsupported; "
+            f"expected version {CHECKPOINT_FORMAT_VERSION}"
+        )
     raw_config = payload.get("config")
     if not isinstance(raw_config, dict):
         raise ValueError("checkpoint does not contain a Stochaflow config")
@@ -313,16 +311,15 @@ def _sample_batches(
     *,
     device: torch.device,
     batch_size: int,
-) -> tuple[torch.Tensor, dict[int, torch.Tensor] | None]:
+) -> tuple[SamplingBatch, ...]:
     sampling = config.sampling
     counts = _batched_sample_counts(sampling.num_samples, batch_size)
     trajectory_config = sampling.debug.trajectory
-    sample_parts: list[torch.Tensor] = []
-    trajectory_parts: dict[int, list[torch.Tensor]] = {}
+    batches: list[SamplingBatch] = []
     expected_state_times: list[int] | None = None
 
     for count in counts:
-        shape = image_sample_shape(config, count)
+        shape = sample_shape(config, count)
         if trajectory_config.enabled:
             trajectory_fn = getattr(sampler, "sample_trajectory", None)
             if not callable(trajectory_fn):
@@ -342,11 +339,15 @@ def _sample_batches(
                 expected_state_times = state_times
             elif state_times != expected_state_times:
                 raise ValueError("trajectory frame times changed between sample batches")
-            for frame in trace.frames:
-                trajectory_parts.setdefault(frame.state_time, []).append(
-                    frame.samples.detach().cpu()
+            batches.append(
+                SamplingBatch(
+                    samples=trace.samples.detach().cpu(),
+                    trajectory={
+                        frame.state_time: frame.samples.detach().cpu()
+                        for frame in trace.frames
+                    },
                 )
-            sample_parts.append(trace.samples.detach().cpu())
+            )
         else:
             sample_fn = getattr(sampler, "sample", None)
             if not callable(sample_fn):
@@ -354,16 +355,9 @@ def _sample_batches(
             sampled = sample_fn(shape, device=device)
             if not isinstance(sampled, torch.Tensor):
                 raise TypeError("sample() must return a torch.Tensor")
-            sample_parts.append(sampled.detach().cpu())
+            batches.append(SamplingBatch(samples=sampled.detach().cpu()))
 
-    samples = torch.cat(sample_parts, dim=0)
-    if not trajectory_config.enabled:
-        return samples, None
-    trajectory = {
-        state_time: torch.cat(parts, dim=0)
-        for state_time, parts in trajectory_parts.items()
-    }
-    return samples, trajectory
+    return tuple(batches)
 
 
 def _batched_sample_counts(num_samples: int, batch_size: int) -> list[int]:
@@ -375,41 +369,6 @@ def _batched_sample_counts(num_samples: int, batch_size: int) -> list[int]:
         min(batch_size, num_samples - offset)
         for offset in range(0, num_samples, batch_size)
     ]
-
-
-def _write_sampling_artifacts(
-    samples: torch.Tensor,
-    trajectory: dict[int, torch.Tensor] | None,
-    *,
-    output_dir: Path,
-    grid_nrow: int,
-    gif_fps: int,
-) -> dict[str, Path]:
-    artifacts = {
-        "raw_samples": output_dir / "samples.pt",
-        "samples": output_dir / "samples.png",
-    }
-    torch.save(samples, artifacts["raw_samples"])
-    save_image_grid(samples, artifacts["samples"], nrow=grid_nrow)
-    if trajectory is None:
-        return artifacts
-
-    artifacts.update(
-        {
-            "raw_trajectory": output_dir / "trajectory.pt",
-            "trajectory": output_dir / "trajectory.png",
-            "trajectory_gif": output_dir / "trajectory.gif",
-        }
-    )
-    torch.save(trajectory, artifacts["raw_trajectory"])
-    save_trajectory_grid(trajectory, artifacts["trajectory"])
-    save_trajectory_gif(
-        trajectory,
-        artifacts["trajectory_gif"],
-        nrow=grid_nrow,
-        fps=gif_fps,
-    )
-    return artifacts
 
 
 def _default_sampling_output_dir(checkpoint_path: Path) -> Path:
@@ -426,7 +385,7 @@ def _default_sampling_output_dir(checkpoint_path: Path) -> Path:
 __all__ = [
     "ResolvedSamplingInputs",
     "SamplingRunResult",
-    "image_sample_shape",
+    "sample_shape",
     "parse_sampler_params",
     "resolve_sampling_inputs",
     "run_sampling",

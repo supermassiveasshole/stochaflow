@@ -63,7 +63,7 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
         *,
         logger: ExperimentLogger,
         output_dir: str | Path,
-        sample_shape: Sequence[int],
+        sample_shape: Sequence[int] | None,
         samplers: Sequence[Mapping[str, Any]],
         modules: Sequence[str] = (),
         cadence: Mapping[str, Any] | None = None,
@@ -73,6 +73,10 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
         use_ema: bool = True,
         failure_policy: str = "raise",
     ) -> None:
+        if sample_shape is None:
+            raise ValueError(
+                "diffusion_quality requires sampling.shape with C, H, W"
+            )
         if len(sample_shape) != 3 or any(
             isinstance(value, bool)
             or not isinstance(value, int)

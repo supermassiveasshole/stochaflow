@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence, Sized
 import math
 import random
 from typing import Protocol
@@ -16,8 +16,11 @@ from stochaflow.data.contracts import ResolutionBucketPolicy
 class BucketedDataset(Protocol):
     """Structural metadata required by :class:`MixtureBatchSampler`."""
 
-    bucket_ids: Sequence[str]
-    source_ids: Sequence[str]
+    @property
+    def bucket_ids(self) -> Sequence[str]: ...
+
+    @property
+    def source_ids(self) -> Sequence[str]: ...
 
     def __len__(self) -> int: ...
 
@@ -47,6 +50,77 @@ class _CyclingIndexPool:
             values.extend(self._current[self._offset : self._offset + available])
             self._offset += available
         return values
+
+
+class FixedBatchSampler(Sampler[list[int]]):
+    """Reproducible fixed-size batches for a finite map-style dataset."""
+
+    def __init__(
+        self,
+        dataset: Sized,
+        *,
+        batch_size: int,
+        drop_last: bool,
+        shuffle: bool,
+        seed: int,
+        steps_per_epoch: int | str = "auto",
+    ) -> None:
+        size = len(dataset)
+        if size <= 0:
+            raise ValueError("fixed batch sampler requires a non-empty dataset")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if steps_per_epoch != "auto" and (
+            not isinstance(steps_per_epoch, int) or steps_per_epoch <= 0
+        ):
+            raise ValueError("steps_per_epoch must be positive or 'auto'")
+        self.size = size
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.shuffle = shuffle
+        self.seed = seed
+        self.steps_per_epoch = steps_per_epoch
+        self.epoch = 0
+        natural_steps = (
+            size // batch_size if drop_last else math.ceil(size / batch_size)
+        )
+        if natural_steps <= 0 and steps_per_epoch == "auto":
+            raise ValueError("fixed batch sampler would yield no batches")
+        self._natural_steps = natural_steps
+
+    def set_epoch(self, epoch: int) -> None:
+        """Select the deterministic shuffle stream for an epoch."""
+
+        if epoch < 0:
+            raise ValueError("epoch must be non-negative")
+        self.epoch = epoch
+
+    def __len__(self) -> int:
+        if isinstance(self.steps_per_epoch, int):
+            return self.steps_per_epoch
+        return self._natural_steps
+
+    def __iter__(self) -> Iterator[list[int]]:
+        rng = random.Random(self.seed + self.epoch)
+        target_steps = len(self)
+        yielded = 0
+        while yielded < target_steps:
+            indices = list(range(self.size))
+            if self.shuffle:
+                rng.shuffle(indices)
+            for offset in range(0, self.size, self.batch_size):
+                batch = indices[offset : offset + self.batch_size]
+                if len(batch) < self.batch_size and self.drop_last:
+                    continue
+                yielded += 1
+                yield batch
+                if yielded >= target_steps:
+                    return
+            if self._natural_steps == 0:
+                pool = _CyclingIndexPool(indices, rng)
+                while yielded < target_steps:
+                    yielded += 1
+                    yield pool.draw(self.batch_size)
 
 
 class MixtureBatchSampler(Sampler[list[int]]):
@@ -223,4 +297,9 @@ class MixtureBatchSampler(Sampler[list[int]]):
 BucketBatchSampler = MixtureBatchSampler
 
 
-__all__ = ["BucketBatchSampler", "BucketedDataset", "MixtureBatchSampler"]
+__all__ = [
+    "BucketBatchSampler",
+    "BucketedDataset",
+    "FixedBatchSampler",
+    "MixtureBatchSampler",
+]

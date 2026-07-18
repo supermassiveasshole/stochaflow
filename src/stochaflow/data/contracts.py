@@ -1,4 +1,4 @@
-"""Public object model for registered datasets and resolution buckets."""
+"""Public dataset-factory contracts and image-pipeline helpers."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 
 from torch.utils.data import Dataset
 
-from stochaflow.utils.config import ImageDataConfig, ResolutionBucketConfig
+from stochaflow.utils.config import ResolutionBucketConfig
 
 DatasetRole = Literal["train", "eval"]
 
@@ -38,7 +38,7 @@ class ResolutionBucketPolicy:
         self,
         buckets: Sequence[ResolutionBucketConfig | ResolutionBucket],
         *,
-        sample_bucket: str,
+        base_bucket: str,
         dynamic_batch_size: bool,
     ) -> None:
         self._buckets = tuple(
@@ -53,10 +53,10 @@ class ResolutionBucketPolicy:
         if len(self._by_name) != len(self._buckets):
             raise ValueError("resolution bucket names must be unique")
         try:
-            self._sample_bucket = self._by_name[sample_bucket]
+            self._base_bucket = self._by_name[base_bucket]
         except KeyError as exc:
             raise ValueError(
-                f"unknown sample bucket '{sample_bucket}'"
+                f"unknown base bucket '{base_bucket}'"
             ) from exc
         self.dynamic_batch_size = dynamic_batch_size
 
@@ -67,10 +67,10 @@ class ResolutionBucketPolicy:
         return self._buckets
 
     @property
-    def sample_bucket(self) -> ResolutionBucket:
-        """Return the bucket used for generated artifacts and base batch size."""
+    def base_bucket(self) -> ResolutionBucket:
+        """Return the bucket defining the dynamic batch pixel budget."""
 
-        return self._sample_bucket
+        return self._base_bucket
 
     def resolve(self, name: str) -> ResolutionBucket:
         """Resolve one bucket by name."""
@@ -111,7 +111,7 @@ class ResolutionBucketPolicy:
             1,
             math.floor(
                 base_batch_size
-                * self.sample_bucket.pixels
+                * self.base_bucket.pixels
                 / bucket.pixels
             ),
         )
@@ -123,8 +123,6 @@ class DatasetFactoryContext:
 
     source_id: str
     params: dict[str, Any]
-    image: ImageDataConfig
-    buckets: ResolutionBucketPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,19 +142,21 @@ class DatasetBuildRequest:
 
 @dataclass(frozen=True, slots=True)
 class DatasetView:
-    """A materialized dataset plus stable sample and bucket metadata."""
+    """A materialized dataset plus stable keys and optional batch metadata."""
 
     source_id: str
     dataset: Dataset[Any]
     sample_keys: Sequence[Hashable]
-    bucket_ids: Sequence[str]
+    batch_metadata: Sequence[Any] | None = None
 
     def __post_init__(self) -> None:
         size = len(cast(Sized, self.dataset))
         if len(self.sample_keys) != size:
             raise ValueError("dataset sample_keys length must match dataset length")
-        if len(self.bucket_ids) != size:
-            raise ValueError("dataset bucket_ids length must match dataset length")
+        if self.batch_metadata is not None and len(self.batch_metadata) != size:
+            raise ValueError(
+                "dataset batch_metadata length must match dataset length"
+            )
         if len(set(self.sample_keys)) != size:
             raise ValueError(
                 f"dataset view '{self.source_id}' sample_keys must be unique"
@@ -167,11 +167,6 @@ class DatasetView:
 
     def __getitem__(self, index: int) -> Any:
         return self.dataset[index]
-
-    def bucket_for(self, index: int) -> str:
-        """Return the configured bucket name for one sample."""
-
-        return self.bucket_ids[index]
 
 
 class DatasetFactory(ABC):
@@ -186,7 +181,7 @@ class DatasetFactory(ABC):
 
 
 class DatasetMixture(Dataset[Any]):
-    """Indexable union that preserves source, key, and bucket metadata."""
+    """Indexable union preserving source, key, and optional batch metadata."""
 
     def __init__(self, views: Sequence[DatasetView]) -> None:
         if not views:
@@ -196,7 +191,10 @@ class DatasetMixture(Dataset[Any]):
         total = 0
         source_ids: list[str] = []
         sample_keys: list[tuple[str, Hashable]] = []
-        bucket_ids: list[str] = []
+        batch_metadata: list[Any] = []
+        has_batch_metadata = all(
+            view.batch_metadata is not None for view in self.views
+        )
         for view in self.views:
             total += len(view)
             self._ends.append(total)
@@ -204,10 +202,11 @@ class DatasetMixture(Dataset[Any]):
             sample_keys.extend(
                 (view.source_id, sample_key) for sample_key in view.sample_keys
             )
-            bucket_ids.extend(view.bucket_ids)
+            if view.batch_metadata is not None:
+                batch_metadata.extend(view.batch_metadata)
         self.source_ids = tuple(source_ids)
         self.sample_keys = tuple(sample_keys)
-        self.bucket_ids = tuple(bucket_ids)
+        self.batch_metadata = tuple(batch_metadata) if has_batch_metadata else None
 
     def __len__(self) -> int:
         return self._ends[-1]
@@ -225,11 +224,6 @@ class DatasetMixture(Dataset[Any]):
         view_index, local_index = self._locate(index)
         return self.views[view_index][local_index]
 
-    def bucket_for(self, index: int) -> str:
-        """Return the bucket assigned to a global mixture index."""
-
-        return self.bucket_ids[index]
-
     def source_for(self, index: int) -> str:
         """Return the source id assigned to a global mixture index."""
 
@@ -246,18 +240,17 @@ class DatasetSelection(Dataset[Any]):
             raise IndexError("dataset selection contains an out-of-range index")
         self.source_ids = tuple(dataset.source_ids[index] for index in self.indices)
         self.sample_keys = tuple(dataset.sample_keys[index] for index in self.indices)
-        self.bucket_ids = tuple(dataset.bucket_ids[index] for index in self.indices)
+        self.batch_metadata = (
+            tuple(dataset.batch_metadata[index] for index in self.indices)
+            if dataset.batch_metadata is not None
+            else None
+        )
 
     def __len__(self) -> int:
         return len(self.indices)
 
     def __getitem__(self, index: int) -> Any:
         return self.dataset[self.indices[index]]
-
-    def bucket_for(self, index: int) -> str:
-        """Return the bucket assigned to a selection-local index."""
-
-        return self.bucket_ids[index]
 
     def source_for(self, index: int) -> str:
         """Return the source assigned to a selection-local index."""

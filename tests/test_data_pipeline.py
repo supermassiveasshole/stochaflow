@@ -1,8 +1,8 @@
-"""Tests for class-based multi-source data orchestration."""
+"""Tests for registered modality-neutral data pipelines."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence, Sized
+from collections.abc import Iterator, Mapping, Sized
 from typing import Any, cast
 
 import pytest
@@ -12,433 +12,349 @@ from torch.optim import Adam
 from torch.utils.data import Dataset
 
 from stochaflow.data import (
-    DataPartitions,
+    DataBundle,
     DataPipeline,
+    DataPipelineContext,
     DatasetBuildRequest,
     DatasetFactory,
     DatasetSelection,
     DatasetView,
+    ImageSampleMetadata,
     MixtureBatchSampler,
-    ResolutionBucketPolicy,
-    SplitContext,
-    SplitStrategy,
+    SplitData,
+    build_data_pipeline,
 )
 from stochaflow.diffusion import DDPM, DDPMEpsilonObjective, LinearBetaSchedule
 from stochaflow.training import Trainer
 from stochaflow.training.losses import ddpm_epsilon_train_step
-from stochaflow.utils.config import (
-    DataBatchingConfig,
-    DataConfig,
-    DataSplitConfig,
-    DataloaderConfig,
-    DatasetConfig,
-    DatasetSplitMapConfig,
-    ImageDataConfig,
-    ResolutionBucketConfig,
-)
-from stochaflow.utils.registry import REGISTRIES
+from stochaflow.utils.config import ComponentConfig
+from stochaflow.utils.registry import REGISTRIES, RegistryError
 
 
-@REGISTRIES.split_strategies.register("test_train_only")
-class RegisteredTrainOnlySplitStrategy(SplitStrategy):
-    """Test extension proving custom split strategies use the public contract."""
-
-    def split(self, context: SplitContext) -> list[DataPartitions]:
-        train = self._required(
-            context.datasets.build("train", role="train"),
-            logical_split="train",
-        )
-        return [DataPartitions(train=train)]
-
-
-def _length(value: object) -> int:
-    return len(cast(Sized, value))
-
-
-class SyntheticImageDataset(Dataset):
-    def __init__(
-        self,
-        bucket_ids: Sequence[str],
-        policy: ResolutionBucketPolicy,
-        *,
-        offset: int,
-        retain_payload: bool,
-    ) -> None:
-        self.bucket_ids = tuple(bucket_ids)
-        self.policy = policy
+class StructuredDataset(Dataset[Any]):
+    def __init__(self, size: int, *, kind: str, offset: int = 0) -> None:
+        self.size = size
+        self.kind = kind
         self.offset = offset
-        self.retain_payload = retain_payload
 
     def __len__(self) -> int:
-        return len(self.bucket_ids)
+        return self.size
 
-    def __getitem__(self, index: int):
-        bucket = self.policy.resolve(self.bucket_ids[index])
-        image = torch.full(
-            (3, bucket.height, bucket.width),
-            float(index + self.offset),
-        )
-        return (image, index) if self.retain_payload else image
+    def __getitem__(self, index: int) -> Any:
+        value = torch.tensor([float(index + self.offset)])
+        if self.kind == "tensor":
+            return value
+        if self.kind == "mapping":
+            return {"state": value, "condition": {"index": index}}
+        if self.kind == "tuple":
+            return value, index
+        if self.kind == "list":
+            return [value, index]
+        raise ValueError(self.kind)
 
 
-@REGISTRIES.dataset_factories.register("synthetic_images")
-class SyntheticDatasetFactory(DatasetFactory):
+@REGISTRIES.dataset_factories.register("stage2_structured")
+class StructuredDatasetFactory(DatasetFactory):
     def build(self, request: DatasetBuildRequest) -> DatasetView:
-        sizes = self.context.params["sizes"]
-        size = int(sizes[request.native_split])
-        dimensions = tuple(self.context.params.get("dimensions", (32, 32)))
-        bucket = self.context.buckets.select(*dimensions)
-        bucket_ids = (bucket.name,) * size
-        role_offset = 100 if request.role == "eval" else 0
-        split_offset = {"train": 0, "val": 1000, "test": 2000}.get(
-            request.native_split,
-            3000,
-        )
-        return DatasetView(
-            source_id=self.context.source_id,
-            dataset=SyntheticImageDataset(
-                bucket_ids,
-                self.context.buckets,
-                offset=role_offset + split_offset,
-                retain_payload=bool(
-                    self.context.params.get("retain_payload", True)
-                ),
-            ),
-            sample_keys=tuple(
-                f"{request.native_split}:{index}" for index in range(size)
-            ),
-            bucket_ids=bucket_ids,
-        )
-
-
-def _source(
-    source_id: str,
-    *,
-    train_size: int,
-    dimensions: tuple[int, int],
-    sampling_weight: float | None = None,
-    retain_payload: bool = True,
-) -> DatasetConfig:
-    return DatasetConfig(
-        id=source_id,
-        factory="synthetic_images",
-        sampling_weight=sampling_weight,
-        params={
-            "sizes": {"train": train_size, "val": 2, "test": 1},
-            "dimensions": dimensions,
-            "retain_payload": retain_payload,
-        },
-        splits=DatasetSplitMapConfig(
-            train="train",
-            validation="val",
-            test="test",
-        ),
-    )
-
-
-def _data_config(
-    splits: DataSplitConfig,
-    *,
-    sources: list[DatasetConfig] | None = None,
-    steps_per_epoch: int | str = "auto",
-    drop_last: bool = False,
-) -> DataConfig:
-    return DataConfig(
-        datasets=sources
-        or [
-            _source("small", train_size=6, dimensions=(32, 32)),
-            _source("large", train_size=4, dimensions=(64, 64)),
-        ],
-        image=ImageDataConfig(channels=3, normalize=True),
-        batching=DataBatchingConfig(
-            buckets=[
-                ResolutionBucketConfig("square_32", 32, 32),
-                ResolutionBucketConfig("square_64", 64, 64),
-            ],
-            sample_bucket="square_64",
-            dynamic_batch_size=True,
-            steps_per_epoch=steps_per_epoch,
-        ),
-        dataloader=DataloaderConfig(
-            batch_size=2,
-            num_workers=0,
-            shuffle=True,
-            drop_last=drop_last,
-            pin_memory=False,
-            persistent_workers=False,
-        ),
-        splits=splits,
-    )
-
-
-def test_random_holdout_is_global_deterministic_and_builds_test_union() -> None:
-    config = _data_config(
-        DataSplitConfig(mode="random_holdout", validation_size=3)
-    )
-
-    first = DataPipeline(config, seed=7).build()[0]
-    second = DataPipeline(config, seed=7).build()[0]
-
-    assert first.valid is not None
-    assert second.valid is not None
-    assert first.test is not None
-    assert isinstance(first.train.dataset, DatasetSelection)
-    assert isinstance(first.valid.dataset, DatasetSelection)
-    assert isinstance(second.train.dataset, DatasetSelection)
-    assert isinstance(second.valid.dataset, DatasetSelection)
-    assert first.train.dataset.indices == second.train.dataset.indices
-    assert first.valid.dataset.indices == second.valid.dataset.indices
-    assert len(first.train.dataset) == 7
-    assert len(first.valid.dataset) == 3
-    assert _length(first.test.dataset) == 2
-    assert {source for source, _ in first.train.dataset.sample_keys} <= {
-        "small",
-        "large",
-    }
-
-
-def test_official_mode_uses_each_sources_native_split_mapping() -> None:
-    bundle = DataPipeline(
-        _data_config(DataSplitConfig(mode="official")),
-        seed=3,
-    ).build()[0]
-
-    assert _length(bundle.train.dataset) == 10
-    assert bundle.valid is not None
-    assert _length(bundle.valid.dataset) == 4
-    assert bundle.test is not None
-    assert _length(bundle.test.dataset) == 2
-
-
-def test_train_only_mode_keeps_optional_test_union() -> None:
-    bundle = DataPipeline(
-        _data_config(DataSplitConfig(mode="none")),
-        seed=11,
-    ).build()[0]
-
-    assert _length(bundle.train.dataset) == 10
-    assert bundle.valid is None
-    assert bundle.test is not None
-    assert _length(bundle.test.dataset) == 2
-
-
-def test_custom_split_strategy_resolves_by_configured_registry_name() -> None:
-    bundle = DataPipeline(
-        _data_config(DataSplitConfig(mode="test_train_only")),
-        seed=12,
-    ).build()[0]
-
-    assert _length(bundle.train.dataset) == 10
-    assert bundle.valid is None
-    assert bundle.test is None
-
-
-def test_kfold_validation_indices_cover_global_union_once() -> None:
-    bundles = DataPipeline(
-        _data_config(DataSplitConfig(mode="kfold", num_folds=3)),
-        seed=13,
-    ).build()
-
-    validation_indices: list[int] = []
-    fold_sizes: list[int] = []
-    for fold_index, bundle in enumerate(bundles):
-        assert bundle.fold_index == fold_index
-        assert bundle.num_folds == 3
-        assert bundle.valid is not None
-        assert isinstance(bundle.valid.dataset, DatasetSelection)
-        validation_indices.extend(bundle.valid.dataset.indices)
-        fold_sizes.append(len(bundle.valid.dataset))
-
-    assert sorted(validation_indices) == list(range(10))
-    assert len(set(validation_indices)) == 10
-    assert max(fold_sizes) - min(fold_sizes) <= 1
-
-
-def test_bucket_sampler_keeps_shapes_homogeneous_and_scales_batch_size() -> None:
-    bundle = DataPipeline(
-        _data_config(DataSplitConfig(mode="none")),
-        seed=17,
-    ).build()[0]
-    sampler = bundle.train.dataloader.batch_sampler
-    assert isinstance(sampler, MixtureBatchSampler)
-    train_dataset = cast(Any, bundle.train.dataset)
-
-    seen_sizes: dict[str, set[int]] = {"square_32": set(), "square_64": set()}
-    for indices in sampler:
-        bucket_ids = {train_dataset.bucket_ids[index] for index in indices}
-        assert len(bucket_ids) == 1
-        bucket_id = next(iter(bucket_ids))
-        seen_sizes[bucket_id].add(len(indices))
-
-    assert seen_sizes["square_32"] == {6}
-    assert seen_sizes["square_64"] == {2}
-    batches = list(bundle.train.dataloader)
-    assert {tuple(batch[0].shape[-2:]) for batch in batches} == {(32, 32), (64, 64)}
-
-
-def test_loader_collates_tensor_and_tuple_sources_into_image_batch() -> None:
-    sources = [
-        _source(
-            "with_payload",
-            train_size=1,
-            dimensions=(64, 64),
-            retain_payload=True,
-        ),
-        _source(
-            "image_only",
-            train_size=1,
-            dimensions=(64, 64),
-            retain_payload=False,
-        ),
-    ]
-    bundle = DataPipeline(
-        _data_config(DataSplitConfig(mode="none"), sources=sources),
-        seed=19,
-    ).build()[0]
-
-    batch = next(iter(bundle.train.dataloader))
-
-    assert isinstance(batch, torch.Tensor)
-    assert batch.shape == (2, 3, 64, 64)
-
-
-def test_weighted_sampler_uses_source_homogeneous_step_probabilities() -> None:
-    sources = [
-        _source(
-            "small",
-            train_size=3,
-            dimensions=(32, 32),
-            sampling_weight=0.2,
-        ),
-        _source(
-            "large",
-            train_size=3,
-            dimensions=(64, 64),
-            sampling_weight=0.8,
-        ),
-    ]
-    bundle = DataPipeline(
-        _data_config(
-            DataSplitConfig(mode="none"),
-            sources=sources,
-            steps_per_epoch=500,
-        ),
-        seed=23,
-    ).build()[0]
-    sampler = bundle.train.dataloader.batch_sampler
-    assert isinstance(sampler, MixtureBatchSampler)
-    train_dataset = cast(Any, bundle.train.dataset)
-
-    counts = {"small": 0, "large": 0}
-    for indices in sampler:
-        source_ids = {train_dataset.source_ids[index] for index in indices}
-        assert len(source_ids) == 1
-        counts[next(iter(source_ids))] += 1
-
-    assert counts["small"] / 500 == pytest.approx(0.2, abs=0.05)
-    assert counts["large"] / 500 == pytest.approx(0.8, abs=0.05)
-
-
-def test_weighted_explicit_steps_cycle_sources_smaller_than_one_batch() -> None:
-    sources = [
-        _source(
-            "tiny",
-            train_size=2,
-            dimensions=(32, 32),
-            sampling_weight=1.0,
-        )
-    ]
-    bundle = DataPipeline(
-        _data_config(
-            DataSplitConfig(mode="none"),
-            sources=sources,
-            steps_per_epoch=3,
-            drop_last=True,
-        ),
-        seed=27,
-    ).build()[0]
-    sampler = bundle.train.dataloader.batch_sampler
-    assert isinstance(sampler, MixtureBatchSampler)
-
-    batches = list(sampler)
-
-    assert len(batches) == 3
-    assert {len(batch) for batch in batches} == {8}
-    assert all(set(batch) <= {0, 1} for batch in batches)
-
-
-def test_sampler_set_epoch_is_reproducible_and_changes_order() -> None:
-    bundle = DataPipeline(
-        _data_config(DataSplitConfig(mode="none")),
-        seed=29,
-    ).build()[0]
-    sampler = bundle.train.dataloader.batch_sampler
-    assert isinstance(sampler, MixtureBatchSampler)
-
-    sampler.set_epoch(1)
-    first = list(sampler)
-    sampler.set_epoch(1)
-    repeated = list(sampler)
-    sampler.set_epoch(2)
-    second = list(sampler)
-
-    assert first == repeated
-    assert first != second
-
-
-def test_registered_factory_receives_context_without_data_module_loading(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    module_path = tmp_path / "auto_dataset_plugin.py"
-    module_path.write_text(
-        """
-import torch
-from torch.utils.data import TensorDataset
-
-from stochaflow.data import DatasetFactory, DatasetView
-from stochaflow.utils.registry import REGISTRIES
-
-
-@REGISTRIES.dataset_factories.register("auto_test_factory")
-class AutoTestFactory(DatasetFactory):
-    def build(self, request):
-        bucket = self.context.buckets.sample_bucket
-        dataset = TensorDataset(
-            torch.zeros(2, self.context.image.channels, bucket.height, bucket.width)
+        sizes = cast(Mapping[str, int], self.context.params["sizes"])
+        size = sizes[request.native_split]
+        offset = 100 if request.role == "eval" else 0
+        dataset = StructuredDataset(
+            size,
+            kind=str(self.context.params.get("kind", "tensor")),
+            offset=offset,
         )
         return DatasetView(
             source_id=self.context.source_id,
             dataset=dataset,
-            sample_keys=("first", "second"),
-            bucket_ids=(bucket.name, bucket.name),
+            sample_keys=tuple(
+                f"{request.native_split}:{index}" for index in range(size)
+            ),
         )
-""",
-        encoding="utf-8",
+
+
+class RawImageDataset(Dataset[Any]):
+    def __init__(self, size: int, dimensions: tuple[int, int], offset: int) -> None:
+        self.size = size
+        self.width, self.height = dimensions
+        self.offset = offset
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, dict[str, int]]:
+        image = torch.full(
+            (3, self.height, self.width),
+            float(index + self.offset) / 255.0,
+        )
+        return image, {"label": index}
+
+
+@REGISTRIES.dataset_factories.register("stage2_images")
+class RawImageDatasetFactory(DatasetFactory):
+    def build(self, request: DatasetBuildRequest) -> DatasetView:
+        sizes = cast(Mapping[str, int], self.context.params["sizes"])
+        size = sizes[request.native_split]
+        dimensions = cast(tuple[int, int], self.context.params["dimensions"])
+        dataset = RawImageDataset(
+            size,
+            dimensions,
+            100 if request.role == "eval" else 0,
+        )
+        metadata = ImageSampleMetadata(*dimensions)
+        return DatasetView(
+            source_id=self.context.source_id,
+            dataset=dataset,
+            sample_keys=tuple(
+                f"{request.native_split}:{index}" for index in range(size)
+            ),
+            batch_metadata=(metadata,) * size,
+        )
+
+
+def _map_component(
+    *,
+    mode: str = "none",
+    kind: str = "tensor",
+    validation_size: int | float | None = None,
+    num_folds: int | None = None,
+) -> ComponentConfig:
+    return ComponentConfig(
+        name="map",
+        params={
+            "dataset": {
+                "id": "physics",
+                "factory": "stage2_structured",
+                "params": {
+                    "sizes": {"train": 10, "val": 3, "test": 2},
+                    "kind": kind,
+                },
+                "splits": {
+                    "train": "train",
+                    "validation": "val",
+                    "test": "test",
+                },
+            },
+            "splits": {
+                "mode": mode,
+                "validation_size": validation_size,
+                "num_folds": num_folds,
+            },
+            "dataloader": {
+                "batch_size": 4,
+                "num_workers": 0,
+                "shuffle": True,
+                "drop_last": False,
+                "pin_memory": False,
+                "persistent_workers": False,
+                "steps_per_epoch": "auto",
+            },
+        },
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    REGISTRIES.load_modules(["auto_dataset_plugin"])
-    config = _data_config(
-        DataSplitConfig(mode="none"),
+
+
+def _image_source(
+    source_id: str,
+    *,
+    size: int,
+    dimensions: tuple[int, int],
+    weight: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": source_id,
+        "factory": "stage2_images",
+        "sampling_weight": weight,
+        "params": {
+            "sizes": {"train": size, "val": 2, "test": 1},
+            "dimensions": list(dimensions),
+        },
+        "splits": {"train": "train", "validation": "val", "test": "test"},
+    }
+
+
+def _image_component(
+    *,
+    sources: list[dict[str, Any]] | None = None,
+    mode: str = "none",
+    validation_size: int | float | None = None,
+    steps_per_epoch: int | str = "auto",
+) -> ComponentConfig:
+    return ComponentConfig(
+        name="multi_resolution_image",
+        params={
+            "datasets": sources
+            or [
+                _image_source("small", size=6, dimensions=(32, 32)),
+                _image_source("large", size=4, dimensions=(64, 64)),
+            ],
+            "image": {"channels": 3, "normalize": True},
+            "batching": {
+                "buckets": [
+                    {"name": "square_32", "height": 32, "width": 32},
+                    {"name": "square_64", "height": 64, "width": 64},
+                ],
+                "base_bucket": "square_64",
+                "dynamic_batch_size": True,
+            },
+            "dataloader": {
+                "batch_size": 2,
+                "num_workers": 0,
+                "shuffle": True,
+                "drop_last": False,
+                "pin_memory": False,
+                "persistent_workers": False,
+                "steps_per_epoch": steps_per_epoch,
+            },
+            "splits": {
+                "mode": mode,
+                "validation_size": validation_size,
+            },
+        },
+    )
+
+
+@pytest.mark.parametrize("kind", ["tensor", "mapping", "tuple", "list"])
+def test_map_pipeline_preserves_default_collation_structures(kind: str) -> None:
+    bundle = build_data_pipeline(_map_component(kind=kind), seed=7)[0]
+
+    batch = next(iter(bundle.train.dataloader))
+
+    if kind == "tensor":
+        assert isinstance(batch, torch.Tensor)
+    elif kind == "mapping":
+        assert isinstance(batch, Mapping)
+        assert set(batch) == {"state", "condition"}
+    else:
+        assert isinstance(batch, list)
+        assert len(batch) == 2
+
+
+def test_map_pipeline_supports_official_random_holdout_and_kfold() -> None:
+    official = build_data_pipeline(_map_component(mode="official"), seed=11)[0]
+    holdout = build_data_pipeline(
+        _map_component(mode="random_holdout", validation_size=3),
+        seed=11,
+    )[0]
+    folds = build_data_pipeline(
+        _map_component(mode="kfold", num_folds=3),
+        seed=11,
+    )
+
+    assert official.valid is not None and official.valid.num_samples == 3
+    assert holdout.valid is not None and holdout.valid.num_samples == 3
+    assert isinstance(holdout.valid.dataset, DatasetSelection)
+    assert len(folds) == 3
+    assert [bundle.fold_index for bundle in folds] == [0, 1, 2]
+
+
+def test_map_pipeline_rejects_sampling_weight() -> None:
+    component = _map_component()
+    cast(dict[str, Any], component.params["dataset"])["sampling_weight"] = 1.0
+
+    with pytest.raises(ValueError, match="sampling_weight is not supported"):
+        build_data_pipeline(component, seed=1)
+
+
+def test_image_pipeline_keeps_bucket_batches_and_labels() -> None:
+    bundle = build_data_pipeline(_image_component(), seed=17)[0]
+    sampler = cast(Any, bundle.train.dataloader).batch_sampler
+    dataset = cast(Any, bundle.train.dataset)
+
+    assert isinstance(sampler, MixtureBatchSampler)
+    for indices in sampler:
+        assert len({dataset.bucket_ids[index] for index in indices}) == 1
+    batches = list(bundle.train.dataloader)
+    assert {tuple(batch[0].shape[-2:]) for batch in batches} == {
+        (32, 32),
+        (64, 64),
+    }
+    assert all(isinstance(batch[1], Mapping) and "label" in batch[1] for batch in batches)
+
+
+def test_image_pipeline_weighting_and_set_epoch_are_deterministic() -> None:
+    component = _image_component(
         sources=[
-            DatasetConfig(
-                id="automatic",
-                factory="auto_test_factory",
-                splits=DatasetSplitMapConfig(train="train"),
-            )
+            _image_source("small", size=3, dimensions=(32, 32), weight=0.2),
+            _image_source("large", size=3, dimensions=(64, 64), weight=0.8),
         ],
+        steps_per_epoch=500,
+    )
+    bundle = build_data_pipeline(component, seed=23)[0]
+    sampler = cast(
+        MixtureBatchSampler,
+        cast(Any, bundle.train.dataloader).batch_sampler,
+    )
+    dataset = cast(Any, bundle.train.dataset)
+    counts = {"small": 0, "large": 0}
+    for indices in sampler:
+        sources = {dataset.source_ids[index] for index in indices}
+        assert len(sources) == 1
+        counts[next(iter(sources))] += 1
+    assert counts["small"] / 500 == pytest.approx(0.2, abs=0.05)
+
+    sampler.set_epoch(2)
+    first = list(sampler)
+    sampler.set_epoch(2)
+    assert list(sampler) == first
+    sampler.set_epoch(3)
+    assert list(sampler) != first
+
+
+class FiniteStream:
+    def __iter__(self) -> Iterator[torch.Tensor]:
+        while True:
+            yield torch.zeros(2, 1)
+
+
+@REGISTRIES.data_pipelines.register("stage2_stream")
+class StreamingPipeline(DataPipeline):
+    def build(self) -> list[DataBundle]:
+        return [
+            DataBundle(
+                train=SplitData(
+                    name="train",
+                    dataloader=FiniteStream(),
+                    num_batches=int(self.context.params["num_batches"]),
+                )
+            )
+        ]
+
+
+def test_custom_iterable_pipeline_needs_no_dataset_or_sample_keys() -> None:
+    bundles = build_data_pipeline(
+        ComponentConfig(name="stage2_stream", params={"num_batches": 5}),
+        seed=31,
     )
 
-    bundle = DataPipeline(config, seed=31).build()[0]
-
-    assert _length(bundle.train.dataset) == 2
-    assert tuple(cast(Any, bundle.train.dataset).source_ids) == (
-        "automatic",
-        "automatic",
-    )
+    assert bundles[0].train.dataset is None
+    assert bundles[0].train.resolved_num_batches() == 5
 
 
-def test_multi_source_bucket_loader_runs_ddpm_training_smoke() -> None:
+class EmptyPipeline(DataPipeline):
+    def build(self) -> list[DataBundle]:
+        return []
+
+
+def test_pipeline_registry_and_build_contract_fail_clearly() -> None:
+    with pytest.raises(RegistryError, match="must inherit"):
+        REGISTRIES.data_pipelines.add("stage2_wrong_base", object)
+    REGISTRIES.data_pipelines.add("stage2_empty", EmptyPipeline)
+    with pytest.raises(ValueError, match="non-empty"):
+        build_data_pipeline(ComponentConfig(name="stage2_empty"), seed=1)
+    with pytest.raises(RegistryError, match="unknown data pipeline"):
+        build_data_pipeline(ComponentConfig(name="missing_stage2_pipeline"), seed=1)
+
+
+def test_custom_pipeline_context_receives_a_params_copy() -> None:
+    params = {"nested": {"value": 1}}
+    context = DataPipelineContext(params=params, seed=41)
+
+    cast(dict[str, Any], params["nested"])["value"] = 9
+
+    assert cast(dict[str, Any], context.params["nested"])["value"] == 1
+
+
+def test_multi_resolution_batches_run_tensor_diffusion_training() -> None:
     class TinyDenoiser(nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -452,10 +368,7 @@ def test_multi_source_bucket_loader_runs_ddpm_training_smoke() -> None:
             del timesteps
             return self.projection(images)
 
-    bundle = DataPipeline(
-        _data_config(DataSplitConfig(mode="none")),
-        seed=37,
-    ).build()[0]
+    bundle = build_data_pipeline(_image_component(), seed=37)[0]
     diffusion = DDPM(
         model=TinyDenoiser(),
         noise_schedule=LinearBetaSchedule(num_timesteps=4),
@@ -477,3 +390,18 @@ def test_multi_source_bucket_loader_runs_ddpm_training_smoke() -> None:
 
     assert metrics["num_batches"] == 2.0
     assert torch.isfinite(torch.tensor(metrics["loss"]))
+
+
+def test_dataset_view_validates_optional_batch_metadata_length() -> None:
+    dataset = StructuredDataset(2, kind="tensor")
+    with pytest.raises(ValueError, match="batch_metadata length"):
+        DatasetView(
+            source_id="bad",
+            dataset=dataset,
+            sample_keys=("a", "b"),
+            batch_metadata=({},),
+        )
+
+
+def _length(value: object) -> int:
+    return len(cast(Sized, value))

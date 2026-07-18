@@ -157,7 +157,10 @@ class RegistryCatalog:
     def __init__(self) -> None:
         self.models: Registry[type[Any]] = Registry("model")
         self.dataset_factories: Registry[type[Any]] = Registry("dataset factory")
-        self.split_strategies: Registry[type[Any]] = Registry("split strategy")
+        self.data_pipelines: Registry[type[Any]] = Registry("data pipeline")
+        self.sampling_artifact_writers: Registry[type[Any]] = Registry(
+            "sampling artifact writer"
+        )
         self.noise_schedules: Registry[type[Any]] = Registry("noise schedule")
         self.diffusions: Registry[type[Any]] = Registry("diffusion")
         self.objectives: Registry[type[Any]] = Registry("objective")

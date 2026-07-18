@@ -1,6 +1,6 @@
 """Tests for the stable third-party extension API."""
 
-from stochaflow import data, diffusion, training
+from stochaflow import data, diffusion, sampling, training
 from stochaflow import extensions as public
 from stochaflow.utils import config, logging, registry
 
@@ -8,12 +8,12 @@ from stochaflow.utils import config, logging, registry
 def test_public_extension_contracts_reexport_runtime_types() -> None:
     expected = {
         "ComponentConfig": config.ComponentConfig,
-        "DataPartitions": data.DataPartitions,
+        "DataBundle": data.DataBundle,
+        "DataPipeline": data.DataPipeline,
+        "DataPipelineContext": data.DataPipelineContext,
         "DatasetBuildRequest": data.DatasetBuildRequest,
         "DatasetFactory": data.DatasetFactory,
         "DatasetFactoryContext": data.DatasetFactoryContext,
-        "DatasetMaterializer": data.DatasetMaterializer,
-        "DatasetSelection": data.DatasetSelection,
         "DatasetView": data.DatasetView,
         "DiagnosticBuildContext": training.DiagnosticBuildContext,
         "ExperimentLogger": logging.ExperimentLogger,
@@ -22,8 +22,10 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "REGISTRIES": registry.REGISTRIES,
         "Registry": registry.Registry,
         "RegistryError": registry.RegistryError,
-        "SplitContext": data.SplitContext,
-        "SplitStrategy": data.SplitStrategy,
+        "SamplingArtifactContext": sampling.SamplingArtifactContext,
+        "SamplingArtifactWriter": sampling.SamplingArtifactWriter,
+        "SamplingBatch": sampling.SamplingBatch,
+        "SplitData": data.SplitData,
         "TrainBatchEndEvent": training.TrainBatchEndEvent,
         "TrainEpochEndEvent": training.TrainEpochEndEvent,
         "TrainingDiagnostic": training.TrainingDiagnostic,

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Sized
+from collections.abc import Mapping, Sized
+from dataclasses import dataclass
 import random
 from typing import Any, cast
 
@@ -18,7 +19,9 @@ from stochaflow.data.contracts import (
     DatasetFactory,
     DatasetView,
     ResolutionBucket,
+    ResolutionBucketPolicy,
 )
+from stochaflow.utils.config import ImageDataConfig
 from stochaflow.utils.registry import REGISTRIES
 
 REGISTRIES.dataset_factories.require_base(DatasetFactory)
@@ -120,20 +123,80 @@ class BucketImageTransform:
         return tensor
 
 
+@dataclass(frozen=True, slots=True)
+class ImageSampleMetadata:
+    """Image dimensions and augmentation hints returned by dataset factories."""
+
+    width: int
+    height: int
+    random_horizontal_flip: bool = False
+
+
+def _coerce_image_metadata(value: Any, *, index: int) -> ImageSampleMetadata:
+    if isinstance(value, ImageSampleMetadata):
+        metadata = value
+    elif isinstance(value, Mapping):
+        try:
+            metadata = ImageSampleMetadata(
+                width=int(value["width"]),
+                height=int(value["height"]),
+                random_horizontal_flip=bool(
+                    value.get("random_horizontal_flip", False)
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"image batch_metadata[{index}] must declare width and height"
+            ) from exc
+    else:
+        raise TypeError(
+            f"image batch_metadata[{index}] must be ImageSampleMetadata or a mapping"
+        )
+    if metadata.width <= 0 or metadata.height <= 0:
+        raise ValueError(f"image batch_metadata[{index}] dimensions must be positive")
+    return metadata
+
+
 class BucketedVisionDataset(Dataset[Any]):
     """Apply the transform corresponding to each sample's assigned bucket."""
 
     def __init__(
         self,
         dataset: Dataset[Any],
-        bucket_ids: tuple[str, ...],
-        transforms_by_bucket: dict[str, BucketImageTransform],
+        bucket_policy: ResolutionBucketPolicy,
+        image: ImageDataConfig,
+        *,
+        role: str,
     ) -> None:
-        if len(cast(Sized, dataset)) != len(bucket_ids):
-            raise ValueError("bucket metadata length must match dataset length")
+        metadata_values = getattr(dataset, "batch_metadata", None)
+        if metadata_values is None:
+            raise ValueError(
+                "multi_resolution_image datasets must provide batch_metadata"
+            )
+        if len(cast(Sized, dataset)) != len(metadata_values):
+            raise ValueError("image metadata length must match dataset length")
         self.dataset = dataset
-        self.bucket_ids = bucket_ids
-        self.transforms_by_bucket = transforms_by_bucket
+        self.metadata = tuple(
+            _coerce_image_metadata(value, index=index)
+            for index, value in enumerate(metadata_values)
+        )
+        self.bucket_ids = tuple(
+            bucket_policy.select(value.width, value.height).name
+            for value in self.metadata
+        )
+        self.source_ids = cast(tuple[str, ...], tuple(getattr(dataset, "source_ids")))
+        self.sample_keys = tuple(getattr(dataset, "sample_keys"))
+        self.transforms_by_bucket = {
+            (bucket.name, random_horizontal_flip): BucketImageTransform(
+                bucket,
+                role=role,
+                channels=image.channels,
+                normalize=image.normalize,
+                random_horizontal_flip=random_horizontal_flip,
+            )
+            for bucket in bucket_policy.buckets
+            for random_horizontal_flip in (False, True)
+        }
 
     def __len__(self) -> int:
         return len(cast(Sized, self.dataset))
@@ -141,12 +204,14 @@ class BucketedVisionDataset(Dataset[Any]):
     def __getitem__(self, index: int) -> Any:
         sample = self.dataset[index]
         image = _first_value(sample)
-        transform = self.transforms_by_bucket[self.bucket_ids[index]]
+        transform = self.transforms_by_bucket[
+            (self.bucket_ids[index], self.metadata[index].random_horizontal_flip)
+        ]
         return _replace_first_value(sample, transform(image))
 
 
 class TorchvisionDatasetFactory(DatasetFactory):
-    """Base class for map-style torchvision datasets with bucket metadata."""
+    """Base class returning raw torchvision samples and image metadata."""
 
     config_parameters: frozenset[str] = frozenset()
     random_horizontal_flip = False
@@ -158,43 +223,42 @@ class TorchvisionDatasetFactory(DatasetFactory):
     def _fixed_image_size(self) -> tuple[int, int] | None:
         return None
 
-    def _bucket_ids(self, dataset: Dataset[Any]) -> tuple[str, ...]:
+    def _image_metadata(
+        self,
+        dataset: Dataset[Any],
+    ) -> tuple[ImageSampleMetadata, ...]:
         fixed_size = self._fixed_image_size()
         if fixed_size is not None:
-            bucket = self.context.buckets.select(*fixed_size)
-            return (bucket.name,) * len(cast(Sized, dataset))
-        bucket_ids: list[str] = []
+            width, height = fixed_size
+            metadata = ImageSampleMetadata(
+                width=width,
+                height=height,
+                random_horizontal_flip=self.random_horizontal_flip,
+            )
+            return (metadata,) * len(cast(Sized, dataset))
+        result: list[ImageSampleMetadata] = []
         for index in range(len(cast(Sized, dataset))):
             width, height = _image_size(_first_value(dataset[index]))
-            bucket_ids.append(self.context.buckets.select(width, height).name)
-        return tuple(bucket_ids)
+            result.append(
+                ImageSampleMetadata(
+                    width=width,
+                    height=height,
+                    random_horizontal_flip=self.random_horizontal_flip,
+                )
+            )
+        return tuple(result)
 
     def build(self, request: DatasetBuildRequest) -> DatasetView:
         raw_dataset = self._build_raw_dataset(request)
-        bucket_ids = self._bucket_ids(raw_dataset)
-        transforms_by_bucket = {
-            bucket.name: BucketImageTransform(
-                bucket,
-                role=request.role,
-                channels=self.context.image.channels,
-                normalize=self.context.image.normalize,
-                random_horizontal_flip=self.random_horizontal_flip,
-            )
-            for bucket in self.context.buckets.buckets
-        }
-        dataset = BucketedVisionDataset(
-            raw_dataset,
-            bucket_ids,
-            transforms_by_bucket,
-        )
         sample_keys = tuple(
-            f"{request.native_split}:{index}" for index in range(len(dataset))
+            f"{request.native_split}:{index}"
+            for index in range(len(cast(Sized, raw_dataset)))
         )
         return DatasetView(
             source_id=self.context.source_id,
-            dataset=dataset,
+            dataset=raw_dataset,
             sample_keys=sample_keys,
-            bucket_ids=bucket_ids,
+            batch_metadata=self._image_metadata(raw_dataset),
         )
 
     def _params(self) -> dict[str, Any]:
@@ -297,6 +361,7 @@ __all__ = [
     "BucketedVisionDataset",
     "CIFAR10DatasetFactory",
     "Flowers102DatasetFactory",
+    "ImageSampleMetadata",
     "MNISTDatasetFactory",
     "TorchvisionDatasetFactory",
 ]

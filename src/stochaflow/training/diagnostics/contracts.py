@@ -19,7 +19,7 @@ class DiagnosticBuildContext:
 
     logger: ExperimentLogger
     output_dir: str | Path
-    sample_shape: tuple[int, int, int]
+    sample_shape: tuple[int, ...] | None
 
 
 class ContextAwareDiagnostic(Protocol):
@@ -89,7 +89,7 @@ class ProviderValidationContext:
     """Stable runtime capabilities available to provider validation."""
 
     diffusion: Any
-    sample_shape: tuple[int, int, int]
+    sample_shape: tuple[int, ...] | None
 
 
 @dataclass(frozen=True, slots=True)

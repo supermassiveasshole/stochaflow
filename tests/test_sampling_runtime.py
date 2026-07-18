@@ -18,32 +18,35 @@ from stochaflow.utils.registry import REGISTRIES
 
 def _image_data_config(*, image_size: int = 8, channels: int = 1) -> dict:
     return {
-        "datasets": [
-            {
-                "id": "mnist",
-                "factory": "mnist",
-                "params": {"root": "./data", "download": False},
-                "splits": {"train": "train"},
-            }
-        ],
-        "image": {"channels": channels, "normalize": True},
-        "batching": {
-            "buckets": [
-                {"name": "sample", "height": image_size, "width": image_size}
+        "name": "multi_resolution_image",
+        "params": {
+            "datasets": [
+                {
+                    "id": "mnist",
+                    "factory": "mnist",
+                    "params": {"root": "./data", "download": False},
+                    "splits": {"train": "train"},
+                }
             ],
-            "sample_bucket": "sample",
-            "dynamic_batch_size": True,
-            "steps_per_epoch": "auto",
+            "image": {"channels": channels, "normalize": True},
+            "batching": {
+                "buckets": [
+                    {"name": "sample", "height": image_size, "width": image_size}
+                ],
+                "base_bucket": "sample",
+                "dynamic_batch_size": True,
+            },
+            "dataloader": {
+                "batch_size": 2,
+                "num_workers": 0,
+                "shuffle": True,
+                "drop_last": True,
+                "pin_memory": False,
+                "persistent_workers": False,
+                "steps_per_epoch": "auto",
+            },
+            "splits": {"mode": "none"},
         },
-        "dataloader": {
-            "batch_size": 2,
-            "num_workers": 0,
-            "shuffle": True,
-            "drop_last": True,
-            "pin_memory": False,
-            "persistent_workers": False,
-        },
-        "splits": {"mode": "none"},
     }
 
 
@@ -74,14 +77,24 @@ def _raw_config(*, ema: bool = False, trajectory: bool = False) -> dict:
         "objective": {"name": "ddpm_epsilon", "params": {}},
         "ema": {"enabled": ema, "use_for_sampling": ema},
         "sampling": {
+            "shape": [1, 8, 8],
             "num_samples": 3,
             "batch_size": 2,
-            "grid_nrow": 2,
+            "writers": [
+                {"name": "tensor", "params": {}},
+                {
+                    "name": "image",
+                    "params": {
+                        "grid_nrow": 2,
+                        "gif_fps": 4,
+                        "denormalize": True,
+                    },
+                },
+            ],
             "debug": {
                 "trajectory": {
                     "enabled": trajectory,
                     "params": {"state_interval": 1} if trajectory else {},
-                    "gif_fps": 4,
                 }
             },
         },
@@ -151,18 +164,18 @@ def test_checkpoint_only_sampling_loads_custom_modules(
     module_path = tmp_path / "checkpoint_sampling_extension.py"
     module_path.write_text(
         """
-from stochaflow.data import DataPartitions, SplitStrategy
+from pathlib import Path
+
+from stochaflow.sampling import SamplingArtifactWriter
 from stochaflow.utils.registry import REGISTRIES
 
 
-@REGISTRIES.split_strategies.register("checkpoint_sampling_split")
-class CheckpointSamplingSplit(SplitStrategy):
-    def split(self, context):
-        train = self._required(
-            context.datasets.build("train", role="train"),
-            logical_split="train",
-        )
-        return [DataPartitions(train=train)]
+@REGISTRIES.sampling_artifact_writers.register("checkpoint_sampling_writer")
+class CheckpointSamplingWriter(SamplingArtifactWriter):
+    def write(self, context):
+        path = context.output_dir / "custom.txt"
+        path.write_text("ok")
+        return {"custom": Path(path)}
 """,
         encoding="utf-8",
     )
@@ -175,7 +188,9 @@ class CheckpointSamplingSplit(SplitStrategy):
     checkpoint_config["extensions"]["modules"] = [
         "checkpoint_sampling_extension"
     ]
-    checkpoint_config["data"]["splits"] = {"mode": "checkpoint_sampling_split"}
+    checkpoint_config["sampling"]["writers"] = [
+        {"name": "checkpoint_sampling_writer", "params": {}}
+    ]
     torch.save(payload, checkpoint)
 
     resolved = runtime.resolve_sampling_inputs(
@@ -183,13 +198,15 @@ class CheckpointSamplingSplit(SplitStrategy):
         checkpoint=checkpoint,
     )
 
-    assert resolved.config.data.splits.mode == "checkpoint_sampling_split"
+    assert resolved.config.sampling.writers[0].name == "checkpoint_sampling_writer"
     assert resolved.config.extensions.modules == [
         "checkpoint_sampling_extension"
     ]
     assert (
-        REGISTRIES.split_strategies.resolve("checkpoint_sampling_split").__name__
-        == "CheckpointSamplingSplit"
+        REGISTRIES.sampling_artifact_writers.resolve(
+            "checkpoint_sampling_writer"
+        ).__name__
+        == "CheckpointSamplingWriter"
     )
 
 
@@ -225,12 +242,13 @@ def test_external_config_overrides_sampling_section(tmp_path) -> None:
     checkpoint = tmp_path / "best.pt"
     config = _save_checkpoint(checkpoint)
     config.experiment.seed = 99
-    config.data.batching.buckets[0].height = 12
+    config.data = ComponentConfig(name="external_data", params={"anything": True})
     config.sampling.sampler = ComponentConfig(
         name="ddim",
         params={"num_inference_steps": 1, "eta": 0.0},
     )
     config.sampling.num_samples = 5
+    config.sampling.shape = [1, 12, 12]
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config.to_dict()), encoding="utf-8")
 
@@ -242,7 +260,8 @@ def test_external_config_overrides_sampling_section(tmp_path) -> None:
     assert resolved.sampler.name == "ddim"
     assert resolved.config.sampling.num_samples == 5
     assert resolved.config.experiment.seed == 7
-    assert runtime.image_sample_shape(resolved.config, 1) == (1, 1, 8, 8)
+    assert runtime.sample_shape(resolved.config, 1) == (1, 1, 12, 12)
+    assert resolved.config.data.name == "multi_resolution_image"
 
 
 def test_external_config_rejects_incompatible_model(tmp_path) -> None:
@@ -331,7 +350,7 @@ def test_old_checkpoint_is_rejected_for_sampling(tmp_path) -> None:
         checkpoint,
     )
 
-    with pytest.raises(ValueError, match="portable denoiser"):
+    with pytest.raises(ValueError, match="checkpoint format version"):
         runtime.run_sampling(checkpoint=checkpoint, device_name="cpu")
 
 

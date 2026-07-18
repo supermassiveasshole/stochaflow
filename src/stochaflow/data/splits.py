@@ -1,4 +1,4 @@
-"""Object-oriented global split strategies for dataset mixtures."""
+"""Internal split policies reused by built-in data pipelines."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from stochaflow.data.contracts import (
     DatasetSelection,
 )
 from stochaflow.utils.config import DataSplitConfig, DatasetConfig
-from stochaflow.utils.registry import REGISTRIES
 
 LogicalSplit = Literal["train", "validation", "test"]
 
@@ -128,10 +127,6 @@ class SplitStrategy(ABC):
             )
 
 
-REGISTRIES.split_strategies.require_base(SplitStrategy)
-
-
-@REGISTRIES.split_strategies.register("none")
 class TrainOnlySplitStrategy(SplitStrategy):
     """Use complete native training partitions without validation."""
 
@@ -144,7 +139,6 @@ class TrainOnlySplitStrategy(SplitStrategy):
         return [DataPartitions(train=train, test=test)]
 
 
-@REGISTRIES.split_strategies.register("official")
 class OfficialSplitStrategy(SplitStrategy):
     """Use each source's configured native train/validation/test mapping."""
 
@@ -178,7 +172,6 @@ def _validation_count(size: int, requested: int | float | None) -> int:
     return count
 
 
-@REGISTRIES.split_strategies.register("random_holdout")
 class RandomHoldoutSplitStrategy(SplitStrategy):
     """Generate one deterministic global holdout after source union."""
 
@@ -220,7 +213,6 @@ def _folds(indices: list[int], *, num_folds: int) -> list[list[int]]:
     return result
 
 
-@REGISTRIES.split_strategies.register("kfold")
 class KFoldSplitStrategy(SplitStrategy):
     """Generate deterministic balanced folds over the global source union."""
 
@@ -268,6 +260,28 @@ class KFoldSplitStrategy(SplitStrategy):
         return bundles
 
 
+_SPLIT_STRATEGIES: dict[str, type[SplitStrategy]] = {
+    "none": TrainOnlySplitStrategy,
+    "official": OfficialSplitStrategy,
+    "random_holdout": RandomHoldoutSplitStrategy,
+    "kfold": KFoldSplitStrategy,
+}
+
+
+def build_data_partitions(context: SplitContext) -> list[DataPartitions]:
+    """Apply one built-in split policy without exposing a global registry."""
+
+    try:
+        strategy_type = _SPLIT_STRATEGIES[context.config.mode]
+    except KeyError as exc:
+        available = ", ".join(sorted(_SPLIT_STRATEGIES))
+        raise ValueError(
+            f"unknown built-in split mode '{context.config.mode}'. "
+            f"Available: {available}"
+        ) from exc
+    return strategy_type().split(context)
+
+
 __all__ = [
     "ConfiguredDatasetFactory",
     "DataPartitions",
@@ -278,4 +292,5 @@ __all__ = [
     "SplitContext",
     "SplitStrategy",
     "TrainOnlySplitStrategy",
+    "build_data_partitions",
 ]

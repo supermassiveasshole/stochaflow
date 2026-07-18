@@ -1,6 +1,5 @@
-"""Object-oriented data factories, mixtures, splits, and loaders."""
+"""Modality-neutral data pipeline and reusable dataset contracts."""
 
-from .collation import ImageBatchCollator
 from .contracts import (
     DatasetBuildRequest,
     DatasetFactory,
@@ -17,20 +16,18 @@ from .datasets import (
     BucketedVisionDataset,
     CIFAR10DatasetFactory,
     Flowers102DatasetFactory,
+    ImageSampleMetadata,
     MNISTDatasetFactory,
 )
-from .pipeline import DataBundle, DataLoaderFactory, DataPipeline, SplitData
-from .samplers import BucketBatchSampler, MixtureBatchSampler
-from .splits import (
-    DataPartitions,
-    DatasetMaterializer,
-    KFoldSplitStrategy,
-    OfficialSplitStrategy,
-    RandomHoldoutSplitStrategy,
-    SplitContext,
-    SplitStrategy,
-    TrainOnlySplitStrategy,
+from .pipeline import (
+    DataBundle,
+    DataPipeline,
+    DataPipelineContext,
+    SplitData,
+    build_data_pipeline,
 )
+from .samplers import BucketBatchSampler, FixedBatchSampler, MixtureBatchSampler
+from .builtin import MapDataPipeline, MultiResolutionImageDataPipeline
 
 __all__ = [
     "BucketBatchSampler",
@@ -38,28 +35,24 @@ __all__ = [
     "BucketedVisionDataset",
     "CIFAR10DatasetFactory",
     "DataBundle",
-    "DataLoaderFactory",
     "DataPipeline",
-    "DataPartitions",
+    "DataPipelineContext",
     "DatasetBuildRequest",
     "DatasetFactory",
     "DatasetFactoryContext",
     "DatasetMixture",
-    "DatasetMaterializer",
     "DatasetRole",
     "DatasetSelection",
     "DatasetView",
     "Flowers102DatasetFactory",
-    "ImageBatchCollator",
-    "KFoldSplitStrategy",
+    "FixedBatchSampler",
+    "ImageSampleMetadata",
+    "MapDataPipeline",
     "MNISTDatasetFactory",
     "MixtureBatchSampler",
-    "OfficialSplitStrategy",
-    "RandomHoldoutSplitStrategy",
+    "MultiResolutionImageDataPipeline",
     "ResolutionBucket",
     "ResolutionBucketPolicy",
     "SplitData",
-    "SplitContext",
-    "SplitStrategy",
-    "TrainOnlySplitStrategy",
+    "build_data_pipeline",
 ]

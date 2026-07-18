@@ -1,8 +1,8 @@
 # Stochaflow 配置手册
 
 本手册是 `stochaflow train`、`stochaflow sample`、内置组件和自定义扩展的
-可查阅说明。配置采用严格 schema：未知字段会报错，旧的 `data.dataset` 与
-`data.source` 不再兼容。
+可查阅说明。顶层配置采用严格 schema；`data.params` 的语义由所选 DataPipeline
+拥有。
 
 ```{toctree}
 :maxdepth: 2
@@ -20,8 +20,8 @@ troubleshooting
 | 任务 | 入口 |
 | --- | --- |
 | 查某个 YAML 字段、默认值或 CLI 覆盖 | [完整字段参考](reference.md) |
-| 配置单数据源、多数据源、bucket 或 K-fold | [数据管线](data-pipeline.md) |
-| 注册自定义 DatasetFactory、SplitStrategy 或其他组件 | [扩展与 Registry](extensions.md) |
+| 配置 map、图像、流式或自定义数据管线 | [数据管线](data-pipeline.md) |
+| 注册自定义 DataPipeline、DatasetFactory、writer 或其他组件 | [扩展与 Registry](extensions.md) |
 | 训练、smoke run、恢复和 checkpoint 采样 | [常用工作流](workflows.md) |
 | 根据错误信息定位问题 | [排错索引](troubleshooting.md) |
 
@@ -62,20 +62,17 @@ experiment:
   name: minimal_mnist
 
 data:
-  datasets:
-    - id: mnist
-      factory: mnist
-      splits:
-        train: train
-        test: test
-  image:
-    channels: 1
-  batching:
-    buckets:
-      - name: square_32
-        height: 32
-        width: 32
-    sample_bucket: square_32
+  name: multi_resolution_image
+  params:
+    datasets:
+      - id: mnist
+        factory: mnist
+        splits: {train: train, test: test}
+    image: {channels: 1, normalize: true}
+    batching:
+      buckets:
+        - {name: square_32, height: 32, width: 32}
+      base_bucket: square_32
 
 model:
   name: unet
@@ -93,9 +90,15 @@ diffusion:
 objective:
   name: ddpm_epsilon
   params: {}
+
+sampling:
+  shape: [1, 32, 32]
+  writers:
+    - {name: tensor, params: {}}
+    - {name: image, params: {grid_nrow: 4}}
 ```
 
-配置加载顺序是：迁移旧 schema → YAML 结构化为 dataclass → 导入
+配置加载顺序是：YAML 结构化为 dataclass → 导入
 `extensions.modules` → 执行跨字段校验 → runner 应用 CLI 覆盖 → 构建数据和训练
 组件。自定义模块因此既可用于训练，也可在只读取 checkpoint 的采样流程中注册组件。
 
@@ -105,7 +108,7 @@ objective:
 | --- | --- |
 | `experiment` | 名称、seed、输出根目录和 run id |
 | `extensions` | 训练、采样和 checkpoint 重建前导入的 Registry 扩展模块 |
-| `data` | 数据源、图像契约、bucket、DataLoader 和划分 |
+| `data` | DataPipeline Registry 声明与管线专属参数 |
 | `model` | 去噪模型 Registry 声明 |
 | `diffusion` | 训练扩散过程和前向噪声 schedule |
 | `objective` | 训练损失 |
@@ -120,8 +123,7 @@ objective:
 ## 术语表
 
 source
-: `data.datasets` 中的一项，由唯一 `id` 标识。source 是配置概念，不等于某个
-  Torchvision 类。
+: 内置图像管线 `data.params.datasets` 中的一项，由唯一 `id` 标识。
 
 native split
 : 数据集实现提供的物理分区名，例如 MNIST 的 `train`/`test`、Flowers102 的
@@ -137,12 +139,11 @@ role
   eval-role 两个对齐视图。
 
 bucket
-: 一个命名的 `C×H×W` 输出规格。每个样本先声明 bucket id，batch sampler 再保证
-  一个 batch 内形状一致。
+: `multi_resolution_image` 管线的命名空间尺寸；图像 metadata 决定 bucket，batch
+  sampler 保证一个 batch 内形状一致。
 
-sample bucket
-: 采样、trajectory、diagnostic 的输出尺寸，也是 `data.dataloader.batch_size`
-  对应的像素预算基准。
+base bucket
+: 只定义图像管线动态 batch 的像素预算基准；采样输出由 `sampling.shape` 独立声明。
 
 Registry
 : 名称到组件类/构造器的显式映射。配置只写名称和参数；`extensions.modules`

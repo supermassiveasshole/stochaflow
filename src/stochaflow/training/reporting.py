@@ -48,10 +48,10 @@ class RunSummary:
     exp_id: str | None
     device: str
     output_dir: str | Path
-    train_size: int
+    train_size: int | None
     valid_size: int | None
     test_size: int | None
-    batch_size: int
+    batch_size: int | None
 
 
 @dataclass(slots=True)
@@ -85,13 +85,18 @@ class RichTrainingReporter:
         table.add_row("exp_id", summary.exp_id or "-")
         table.add_row("Device", summary.device)
         table.add_row("Output", str(summary.output_dir))
-        dataset_parts = [f"train={summary.train_size}"]
+        dataset_parts = [
+            f"train={summary.train_size if summary.train_size is not None else '-'}"
+        ]
         if summary.valid_size is not None:
             dataset_parts.append(f"valid={summary.valid_size}")
         if summary.test_size is not None:
             dataset_parts.append(f"test={summary.test_size}")
         table.add_row("Dataset", " ".join(dataset_parts))
-        table.add_row("Batch size", str(summary.batch_size))
+        table.add_row(
+            "Batch size",
+            str(summary.batch_size) if summary.batch_size is not None else "-",
+        )
         self.console.print(Panel(table, title="Stochaflow Training", border_style="cyan"))
 
     def on_epoch_start(self, epoch: int, total_epochs: int) -> None:
