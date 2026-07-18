@@ -8,13 +8,9 @@ from stochaflow.utils import config, logging, registry
 def test_public_extension_contracts_reexport_runtime_types() -> None:
     expected = {
         "ComponentConfig": config.ComponentConfig,
-        "DataBundle": data.DataBundle,
-        "DataPipeline": data.DataPipeline,
-        "DataPipelineContext": data.DataPipelineContext,
-        "DatasetBuildRequest": data.DatasetBuildRequest,
-        "DatasetFactory": data.DatasetFactory,
-        "DatasetFactoryContext": data.DatasetFactoryContext,
-        "DatasetView": data.DatasetView,
+        "DataBuilder": data.DataBuilder,
+        "DataBuilderContext": data.DataBuilderContext,
+        "DataLoaders": data.DataLoaders,
         "DiagnosticBuildContext": training.DiagnosticBuildContext,
         "ExperimentLogger": logging.ExperimentLogger,
         "FitStartEvent": training.FitStartEvent,
@@ -25,7 +21,6 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "SamplingArtifactContext": sampling.SamplingArtifactContext,
         "SamplingArtifactWriter": sampling.SamplingArtifactWriter,
         "SamplingBatch": sampling.SamplingBatch,
-        "SplitData": data.SplitData,
         "TrainBatchEndEvent": training.TrainBatchEndEvent,
         "TrainEpochEndEvent": training.TrainEpochEndEvent,
         "TrainingDiagnostic": training.TrainingDiagnostic,
@@ -34,3 +29,15 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
     assert set(public.__all__) == set(expected)
     for name, component in expected.items():
         assert getattr(public, name) is component
+
+    for removed in (
+        "DataPipeline",
+        "DataBundle",
+        "SplitData",
+        "DatasetFactory",
+        "DatasetView",
+        "DatasetBuildRequest",
+    ):
+        assert not hasattr(public, removed)
+    assert not hasattr(registry.REGISTRIES, "data_pipelines")
+    assert not hasattr(registry.REGISTRIES, "dataset_factories")

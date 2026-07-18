@@ -1,58 +1,19 @@
-"""Modality-neutral data pipeline and reusable dataset contracts."""
+"""Data builders and built-in task recipes."""
 
-from .contracts import (
-    DatasetBuildRequest,
-    DatasetFactory,
-    DatasetFactoryContext,
-    DatasetMixture,
-    DatasetRole,
-    DatasetSelection,
-    DatasetView,
-    ResolutionBucket,
-    ResolutionBucketPolicy,
+from importlib import import_module
+
+from .builder import (
+    DataBuilder,
+    DataBuilderContext,
+    DataLoaders,
+    build_data_loaders,
 )
-from .datasets import (
-    BucketImageTransform,
-    BucketedVisionDataset,
-    CIFAR10DatasetFactory,
-    Flowers102DatasetFactory,
-    ImageSampleMetadata,
-    MNISTDatasetFactory,
-)
-from .pipeline import (
-    DataBundle,
-    DataPipeline,
-    DataPipelineContext,
-    SplitData,
-    build_data_pipeline,
-)
-from .samplers import BucketBatchSampler, FixedBatchSampler, MixtureBatchSampler
-from .builtin import MapDataPipeline, MultiResolutionImageDataPipeline
+
+import_module("stochaflow.data.builtin")
 
 __all__ = [
-    "BucketBatchSampler",
-    "BucketImageTransform",
-    "BucketedVisionDataset",
-    "CIFAR10DatasetFactory",
-    "DataBundle",
-    "DataPipeline",
-    "DataPipelineContext",
-    "DatasetBuildRequest",
-    "DatasetFactory",
-    "DatasetFactoryContext",
-    "DatasetMixture",
-    "DatasetRole",
-    "DatasetSelection",
-    "DatasetView",
-    "Flowers102DatasetFactory",
-    "FixedBatchSampler",
-    "ImageSampleMetadata",
-    "MapDataPipeline",
-    "MNISTDatasetFactory",
-    "MixtureBatchSampler",
-    "MultiResolutionImageDataPipeline",
-    "ResolutionBucket",
-    "ResolutionBucketPolicy",
-    "SplitData",
-    "build_data_pipeline",
+    "DataBuilder",
+    "DataBuilderContext",
+    "DataLoaders",
+    "build_data_loaders",
 ]

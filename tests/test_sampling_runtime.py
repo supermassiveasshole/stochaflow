@@ -18,25 +18,20 @@ from stochaflow.utils.registry import REGISTRIES
 
 def _image_data_config(*, image_size: int = 8, channels: int = 1) -> dict:
     return {
-        "name": "multi_resolution_image",
+        "name": "image",
         "params": {
-            "datasets": [
-                {
-                    "id": "mnist",
-                    "factory": "mnist",
-                    "params": {"root": "./data", "download": False},
-                    "splits": {"train": "train"},
-                }
-            ],
-            "image": {"channels": channels, "normalize": True},
-            "batching": {
-                "buckets": [
-                    {"name": "sample", "height": image_size, "width": image_size}
-                ],
-                "base_bucket": "sample",
-                "dynamic_batch_size": True,
+            "source": {
+                "kind": "torchvision",
+                "dataset": "MNIST",
+                "root": "./data",
+                "download": False,
             },
-            "dataloader": {
+            "image": {
+                "size": [image_size, image_size],
+                "channels": channels,
+                "normalize": True,
+            },
+            "loader": {
                 "batch_size": 2,
                 "num_workers": 0,
                 "shuffle": True,
@@ -45,7 +40,7 @@ def _image_data_config(*, image_size: int = 8, channels: int = 1) -> dict:
                 "persistent_workers": False,
                 "steps_per_epoch": "auto",
             },
-            "splits": {"mode": "none"},
+            "partition": {"mode": "none"},
         },
     }
 
@@ -218,7 +213,9 @@ def test_checkpoint_config_persists_global_extensions(tmp_path: Path) -> None:
     checkpoint_config = payload.get("config")
 
     assert isinstance(checkpoint_config, dict)
+    assert payload.get("format_version") == 4
     assert checkpoint_config["extensions"] == {"modules": []}
+    assert checkpoint_config["data"] == _image_data_config()
     assert "modules" not in checkpoint_config["data"]
 
 
@@ -261,7 +258,7 @@ def test_external_config_overrides_sampling_section(tmp_path) -> None:
     assert resolved.config.sampling.num_samples == 5
     assert resolved.config.experiment.seed == 7
     assert runtime.sample_shape(resolved.config, 1) == (1, 1, 12, 12)
-    assert resolved.config.data.name == "multi_resolution_image"
+    assert resolved.config.data.name == "image"
 
 
 def test_external_config_rejects_incompatible_model(tmp_path) -> None:
@@ -346,11 +343,15 @@ def test_run_sampling_writes_samples_trajectory_gif_and_manifest(tmp_path) -> No
 def test_old_checkpoint_is_rejected_for_sampling(tmp_path) -> None:
     checkpoint = tmp_path / "old.pt"
     torch.save(
-        {"model_state_dict": {}, "config": _raw_config()},
+        {
+            "format_version": 3,
+            "model_state_dict": {},
+            "config": _raw_config(),
+        },
         checkpoint,
     )
 
-    with pytest.raises(ValueError, match="checkpoint format version"):
+    with pytest.raises(ValueError, match="expected version 4"):
         runtime.run_sampling(checkpoint=checkpoint, device_name="cpu")
 
 

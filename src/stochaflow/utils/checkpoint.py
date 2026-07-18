@@ -15,7 +15,7 @@ else:
     ExponentialMovingAverage = Any
 
 
-CHECKPOINT_FORMAT_VERSION = 3
+CHECKPOINT_FORMAT_VERSION = 4
 
 
 class CheckpointState(TypedDict, total=False):

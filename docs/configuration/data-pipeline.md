@@ -1,178 +1,193 @@
-# 数据管线
+# 数据构建
 
-`data` 是一个普通 Registry 组件声明。核心只负责构建所选 `DataPipeline`，然后消费
-它返回的 `DataBundle`；Dataset 类型、split、混合、sampler、collate 和 batch 结构
-都属于具体管线。
+`data` 只选择一个注册的 `DataBuilder`。核心不会根据 YAML 重新组装 Dataset、split、
+Sampler、collate 或 DataLoader，而是一次性接收 builder 已经组装好的 loader：
 
 ```mermaid
 flowchart LR
-    A["data.name / data.params"] --> B["data_pipelines Registry"]
-    B --> C["DataPipeline.build()"]
-    C --> D["list[DataBundle]"]
+    A["data.name / data.params"] --> B["data_builders Registry"]
+    B --> C["DataBuilder.build()"]
+    C --> D["DataLoaders"]
     D --> E["Runner / Trainer"]
 ```
 
-每个 bundle 必须包含 `train: SplitData`，可以包含 `valid` 和 `test`。`SplitData`
-保存 loader，并可提供 `dataset`、`num_samples`、`num_batches`。流式管线不需要暴露
-Dataset，但训练 split 必须通过 loader 的 `len()` 或 `num_batches` 给出有限 epoch
-长度。
+```python
+@dataclass(frozen=True, slots=True)
+class DataLoaders:
+    train: Iterable[Any]
+    validation: Iterable[Any] | None = None
+    test: Iterable[Any] | None = None
+    steps_per_epoch: int | None = None
+```
 
-## `map` 管线
+loader 只需可迭代。训练 loader 没有 `len()` 时，builder 必须显式提供正数
+`steps_per_epoch`；有长度时可省略。`--limit-batches` 会在最终训练步数上取更小值。
+validation 和 test 不要求长度，CLI limit 仍可限制无限或未知长度的 iterable。
 
-`map` 面向单一 map-style `DatasetFactory`，使用固定 batch 和 PyTorch 默认
-collation。Tensor、mapping、tuple 和 list 等结构都会作为 structured batch 进入
-Trainer；管线不解释 state、target 或 condition。
+## `image` recipe
+
+`image` 提供常见的单源图像训练组合：
 
 ```yaml
 data:
-  name: map
+  name: image
   params:
-    dataset:
-      id: physics
-      factory: physics_fields
-      params: {}
-      splits:
-        train: train
-        validation: validation
-        test: test
-    splits:
-      mode: official
-    dataloader:
-      batch_size: 64
+    source:
+      kind: torchvision
+      dataset: CIFAR10
+      root: ./data
+      download: true
+    partition:
+      mode: holdout
+      validation_size: 5000
+    image:
+      size: [32, 32]
+      channels: 3
+      normalize: true
+      random_horizontal_flip: true
+    loader:
+      batch_size: 128
       num_workers: 4
       shuffle: true
       drop_last: true
       pin_memory: true
       persistent_workers: true
+      prefetch_factor: null
       steps_per_epoch: auto
 ```
 
-内置 split mode 为：
+`source.kind` 支持 `torchvision` 和 `image_folder`。torchvision 首批支持 MNIST、
+CIFAR10 和 Flowers102；本地目录会递归、稳定排序地读取常见图片格式。`download: true`
+由 torchvision 自身负责下载。
+
+partition 是这个 recipe 的私有能力：
 
 | mode | 行为 |
 | --- | --- |
-| `none` | 使用完整 train，可选 test，不创建 validation。 |
-| `official` | 使用 Factory 的原生 train/validation/test 映射。 |
-| `random_holdout` | 对 train 做确定性全局 holdout；`validation_size` 可为数量或比例。 |
-| `kfold` | 对 train 做确定性 K-fold；`fold_index: null` 构建全部 fold。 |
+| `none` | 完整训练集，不额外创建 validation。 |
+| `official` | 使用 source 提供的原生 train/validation/test。 |
+| `holdout` | 从有限、可索引训练集确定性划分 validation。 |
+| `kfold` | 使用指定的 `num_folds` 和 `fold_index` 构建一个 fold。 |
 
-`map` 不接受 `sampling_weight`。复杂数据组织应注册完整 DataPipeline，而不是继续往
-`map` 中叠加策略。
+K-fold 配置只代表一次独立运行；需要五折时执行五次配置或由外部 sweep 展开。默认
+batch 为 `(images, {})`。
 
-## `multi_resolution_image` 管线
+## `super_resolution` recipe
 
-图像管线承接多源混合、source sampling weight、同 bucket batch、动态像素预算、
-图像预处理以及确定性 `set_epoch`：
+在线 bicubic 模式从 HR 图像生成 LR condition：
+
+```yaml
+data:
+  name: super_resolution
+  params:
+    source:
+      kind: image_folder
+      path: ./data/hr
+    partition:
+      mode: holdout
+      validation_size: 0.1
+    image:
+      high_resolution: [256, 256]
+      low_resolution: [64, 64]
+      channels: 3
+      normalize: true
+      random_horizontal_flip: true
+    low_resolution:
+      kind: bicubic
+    loader:
+      batch_size: 16
+      num_workers: 4
+      steps_per_epoch: auto
+```
+
+在线模式先对 HR 做对齐 crop 和可选 flip，再生成 LR。配对模式使用
+`source.kind: paired_folders`，声明 `high_resolution_path`、`low_resolution_path`，并将
+`low_resolution.kind` 设为 `paired`。文件按相对路径和 stem 稳定匹配；LR/HR 共享几何
+变换并校验整数尺度。默认 batch 为 `(high_res, {"low_res": low_res})`。
+
+## `multi_resolution_image` recipe
+
+高级图像 recipe 保留多 source 权重、分辨率 bucket、同 bucket batch、动态像素预算和
+确定性 `set_epoch`：
 
 ```yaml
 data:
   name: multi_resolution_image
   params:
-    datasets:
-      - id: flowers
-        factory: flowers102
-        sampling_weight: 0.6
-        params: {root: ./data, download: true}
-        splits: {train: train, validation: val, test: test}
+    sources:
       - id: digits
-        factory: mnist
         sampling_weight: 0.4
-        params: {root: ./data, download: true}
-        splits: {train: train, test: test}
+        source:
+          kind: torchvision
+          dataset: MNIST
+          root: ./data
+          download: true
+      - id: flowers
+        sampling_weight: 0.6
+        source:
+          kind: image_folder
+          path: ./data/flowers
     image:
       channels: 3
       normalize: true
+      random_horizontal_flip: true
     batching:
       buckets:
         - {name: square_32, height: 32, width: 32}
         - {name: square_64, height: 64, width: 64}
       base_bucket: square_64
       dynamic_batch_size: true
-    dataloader:
+    partition:
+      mode: holdout
+      validation_size: 0.1
+    loader:
       batch_size: 64
       steps_per_epoch: auto
-    splits:
-      mode: random_holdout
-      validation_size: 0.1
 ```
 
-全部 source 要么都省略 `sampling_weight`，要么都填写正数。加权训练先选择 source，
-再选择该 source 的 bucket；验证和测试始终自然遍历。`steps_per_epoch` 为正整数时，
-训练 sampler 会循环较小 source 以严格提供指定 step 数。
-
-每个样本按宽高比距离、面积距离、bucket 声明顺序选择目标 bucket。动态 batch size
-使用：
+bucket metadata、source id、采样索引和 partition helper 都是 recipe 私有实现，不属于
+扩展 API。动态 batch size 将 `base_bucket` 的像素量作为基础预算：
 
 $$
 B_b = \max\left(1, \left\lfloor B_0
 \frac{H_{base}W_{base}}{H_bW_b}\right\rfloor\right)
 $$
 
-`base_bucket` 只定义基础 batch 的像素预算，不再隐式决定采样输出 shape。
+## 自定义 DataBuilder
 
-内置 torchvision Factory 返回原始样本和 `ImageSampleMetadata`。图像管线负责
-resize-cover、train random crop / eval center crop、通道转换和 normalize。最终使用
-默认 collation，因此 label、condition 等辅助字段不会被丢弃。
-
-## DatasetFactory 契约
-
-`DatasetFactory` 是 `map` 和图像管线可复用的低层扩展：
+复杂数据逻辑应直接使用 Python 和 PyTorch，而不是扩展一份通用 YAML 拓扑：
 
 ```python
+from torch.utils.data import DataLoader
+
 from stochaflow.extensions import (
-    DatasetBuildRequest,
-    DatasetFactory,
-    DatasetView,
+    DataBuilder,
+    DataLoaders,
     REGISTRIES,
 )
 
 
-@REGISTRIES.dataset_factories.register("physics_fields")
-class PhysicsFieldsFactory(DatasetFactory):
-    def build(self, request: DatasetBuildRequest) -> DatasetView:
-        dataset = build_fields(
-            split=request.native_split,
-            training=request.role == "train",
-            **self.context.params,
+@REGISTRIES.data_builders.register("physics")
+class PhysicsDataBuilder(DataBuilder):
+    def build(self) -> DataLoaders:
+        dataset = StreamingPhysicsDataset(**self.context.params)
+        loader = DataLoader(
+            dataset,
+            sampler=PhysicsSampler(dataset),
+            collate_fn=physics_collate,
         )
-        return DatasetView(
-            source_id=self.context.source_id,
-            dataset=dataset,
-            sample_keys=tuple(record.id for record in dataset.records),
-        )
+        return DataLoaders(train=loader, steps_per_epoch=1000)
 ```
 
-`DatasetFactoryContext` 只提供 `source_id` 与复制后的 `params`。`DatasetView` 要求
-`dataset` 和稳定、唯一、等长的 `sample_keys`；可选 `batch_metadata` 也必须等长。
-Factory 不依赖图像配置或 bucket policy。
-
-## 自定义流式管线
-
-当内置管线的语义不合适时，直接拥有整个数据生命周期：
-
-```python
-from stochaflow.extensions import (
-    DataBundle,
-    DataPipeline,
-    REGISTRIES,
-    SplitData,
-)
-
-
-@REGISTRIES.data_pipelines.register("simulation_stream")
-class SimulationStream(DataPipeline):
-    def build(self) -> list[DataBundle]:
-        loader = build_stream(self.context.params, seed=self.context.seed)
-        return [
-            DataBundle(
-                train=SplitData(
-                    name="train",
-                    dataloader=loader,
-                    num_batches=self.context.params["steps_per_epoch"],
-                )
-            )
-        ]
+```yaml
+extensions:
+  modules: [my_project.data]
+data:
+  name: physics
+  params:
+    path: data/simulation.zarr
 ```
 
-完整注册方式见[扩展与 Registry](extensions.md)，字段与内置组件索引见
-[配置参考](reference.md)。
+Trainer 递归迁移 structured batch 中的 Tensor，但不解释 state、target、condition 或
+模型签名。batch 与训练语义的适配属于 TrainingStrategy。完整注册规则见
+[扩展与 Registry](extensions.md)。

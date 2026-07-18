@@ -7,30 +7,19 @@ extensions:
   modules: []
 
 data:
-  name: multi_resolution_image
+  name: image
   params:
-    datasets:
-    - id: flowers102
-      factory: flowers102
-      params:
-        root: ./data
-        download: true
-        random_horizontal_flip: true
-      splits:
-        train: train
-        validation: val
-        test: test
+    source:
+      kind: torchvision
+      dataset: Flowers102
+      root: ./data
+      download: true
     image:
+      size: [64, 64]
       channels: 3
       normalize: true
-    batching:
-      buckets:
-      - name: square_64
-        height: 64
-        width: 64
-      base_bucket: square_64
-      dynamic_batch_size: true
-    dataloader:
+      random_horizontal_flip: true
+    loader:
       batch_size: 64
       num_workers: 2
       shuffle: true
@@ -38,7 +27,7 @@ data:
       pin_memory: true
       persistent_workers: false
       steps_per_epoch: auto
-    splits:
+    partition:
       mode: official
 
 model:

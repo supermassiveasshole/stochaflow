@@ -4,10 +4,9 @@ Stochaflow is a research-oriented Python project for stochastic flows. The
 current implementation includes config-driven DDPM and DDIM training and
 sampling paths for MNIST, CIFAR-10, and Oxford Flowers 102.
 
-The codebase is organized around registries and config-driven components: whole
-data pipelines, reusable dataset factories, sampling artifact writers, models,
-diffusion processes, objectives, optimizers, diagnostics, and loggers are
-constructed from YAML configuration.
+The codebase is organized around registries and config-driven components: thin
+data builders, sampling artifact writers, models, diffusion processes,
+objectives, optimizers, diagnostics, and loggers are selected from YAML.
 
 ## Status
 
@@ -16,10 +15,10 @@ Implemented:
 - DDPM/DDIM epsilon-prediction training
 - DDPM and DDIM reverse sampling with sampler-specific debug trajectories
 - beta-native linear and alpha-bar-native cosine noise schedules
-- registered modality-neutral data pipelines with structured-batch passthrough
-- built-in fixed-batch `map` and multi-resolution image pipelines
-- class-based MNIST, CIFAR-10, and Oxford Flowers 102 dataset factories
-- multi-source image mixtures, global holdout/K-fold, and dynamic pixel batches
+- a thin, modality-neutral `DataBuilder -> DataLoaders` extension contract
+- built-in image, super-resolution, and multi-resolution image recipes
+- torchvision and stable local image-folder sources for built-in recipes
+- recipe-local holdout/K-fold, multi-source mixtures, and dynamic pixel batches
 - registered tensor, image, and user-defined sampling artifact writers
 - UNet backbone with optional attention blocks
 - EMA tracking and EMA sampling
@@ -121,7 +120,7 @@ uv run stochaflow train \
   --limit-batches 10
 ```
 
-Custom data pipelines and factories are registered as classes and imported through
+Custom data builders are registered as classes and imported through
 `extensions.modules`; see [Extensions and registries](docs/configuration/extensions.md).
 
 For the complete YAML schema, defaults, validation rules, built-in component
@@ -251,7 +250,7 @@ configs/ddpm_mnist_flowers102.yaml
 Important sections:
 
 - `experiment`: run name, seed, and output directory
-- `data`: registered pipeline name plus pipeline-owned parameters
+- `data`: registered builder name plus builder-owned parameters
 - `model`: registered model name and constructor parameters
 - `diffusion`: process type, forward noise schedule, and sampler parameters
 - `objective`: training objective
@@ -264,12 +263,16 @@ Important sections:
 - `logging`: metric logging backends
 - `artifacts`: checkpoint cadence
 
-The built-in `map` and `multi_resolution_image` pipelines support these split modes:
+The built-in image recipes provide these private partition modes:
 
-- `random_holdout`: deterministic train/validation split from one source split
-- `official`: named dataset splits directly
+- `holdout`: deterministic train/validation split from a finite source
+- `official`: source-provided train/validation/test roles
 - `none`: build only a training split
-- `kfold`: deterministic cross-validation bundles
+- `kfold`: one deterministic fold per independent run
+
+These modes are recipe capabilities, not requirements on custom DataBuilders.
+K-fold requires both `num_folds` and `fold_index`; running all folds is left to
+a project script or sweep.
 
 The Flowers102 config trains on the official `train` split, validates on `val`,
 and reserves `test` for final evaluation. It uses train-time random crops,
@@ -279,8 +282,8 @@ posterior DDPM sampling, and a warmup-cosine optimizer LR schedule.
 ## Architecture
 
 `src/stochaflow/data/`
-: modality-neutral pipeline contracts, built-in pipelines, dataset factories,
-  and image-specific bucket helpers.
+: the thin DataBuilder contract plus private image, super-resolution, source,
+  partition, and bucket recipe implementations.
 
 `src/stochaflow/models/`
 : UNet, residual blocks, attention blocks, and timestep embeddings.

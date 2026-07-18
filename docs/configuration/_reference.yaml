@@ -10,9 +10,9 @@ fields:
   extensions: {description: 在配置校验、训练组件构建和 checkpoint 采样前加载的通用 Registry 扩展。}
   extensions.modules: {description: 按声明顺序幂等导入的 Python 扩展模块；模块导入应执行 Registry 装饰器。, constraints: 每项是非空 import path。}
 
-  data: {description: 由 data_pipelines Registry 构建的模态无关数据管线。}
-  data.name: {description: data_pipelines Registry 名称。}
-  data.params: {description: 数据管线完整拥有的参数；核心不解释 dataset、split、sampler、collate 或 batch 语义。}
+  data: {description: 由 data_builders Registry 构建的一次训练运行数据入口。}
+  data.name: {description: data_builders Registry 名称。}
+  data.params: {description: DataBuilder 完整拥有的参数；核心不解释 Dataset、split、sampler、collate 或 batch 语义。}
 
   model: {description: 由 models Registry 构建的去噪模型。}
   model.name: {description: models Registry 名称。}
@@ -45,7 +45,7 @@ fields:
   sampling.sampler.params: {description: 采样器构造参数；CLI --sampler-param 在其后覆盖。, cli: "sample --sampler-param"}
   sampling.shape: {description: 单个生成 state 的形状，不含 batch 维；null 允许不需要固定 shape 的自定义运行时。, constraints: 非 null 时为非空正整数列表。}
   sampling.num_samples: {description: 一次采样生成的总样本数。, constraints: 正整数。}
-  sampling.batch_size: {description: 采样时每批样本数，与 data pipeline 独立。, constraints: 正整数。}
+  sampling.batch_size: {description: 采样时每批样本数，与 DataBuilder 独立。, constraints: 正整数。}
   sampling.seed: {description: 采样专用随机种子；null 使用 experiment.seed。}
   sampling.writers: {description: 按声明顺序运行的 sampling_artifact_writers 组件。, constraints: 至少一个。}
   "sampling.writers[].name": {description: sampling_artifact_writers Registry 名称。}
@@ -96,46 +96,21 @@ registries:
           attention_levels: {description: 启用空间注意力的零起始分辨率层索引；null 禁用。}
           attention_heads: {description: 每个注意力块的 head 数。}
 
-  dataset_factories:
-    description: 将一个原生 split 构建为带稳定 sample_keys 和可选 batch_metadata 的 DatasetView。
-    base: stochaflow.data.DatasetFactory
-    config_path: 内置 data pipeline 的 dataset.factory / dataset.params
-    entries:
-      cifar10:
-        description: Torchvision CIFAR-10 Factory；原生 train/test，固定原始尺寸 32×32。
-        inspect: config_parameters
-        runtime_parameters: [context]
-        parameters:
-          root: {description: 数据根目录；默认 ./data。}
-          download: {description: 缺少数据时是否允许 torchvision 下载；默认 true。}
-          random_horizontal_flip: {description: train role 是否随机水平翻转；默认 true。}
-      flowers102:
-        description: Torchvision Oxford Flowers 102 Factory；原生 train/val/test，并按单图尺寸选择 bucket。
-        inspect: config_parameters
-        runtime_parameters: [context]
-        parameters:
-          root: {description: 数据根目录；默认 ./data。}
-          download: {description: 缺少数据时是否允许 torchvision 下载；默认 true。}
-          random_horizontal_flip: {description: train role 是否随机水平翻转；默认 true。}
-      mnist:
-        description: Torchvision MNIST Factory；原生 train/test，固定原始尺寸 28×28。
-        inspect: config_parameters
-        runtime_parameters: [context]
-        parameters:
-          root: {description: 数据根目录；默认 ./data。}
-          download: {description: 缺少数据时是否允许 torchvision 下载；默认 true。}
-
-  data_pipelines:
-    description: 完整拥有数据构建、划分、混合、采样、collate 与 epoch 语义。
-    base: stochaflow.data.DataPipeline
+  data_builders:
+    description: 直接组装 Dataset、划分、sampler、collate 和 loader，并返回单次运行的 DataLoaders。
+    base: stochaflow.data.DataBuilder
     config_path: data.name / data.params
     entries:
-      map:
-        description: 单一 map-style DatasetFactory、固定 batch、默认 PyTorch collation 与常见 split。
+      image:
+        description: 单一 torchvision 或本地图像来源的标准图像 recipe。
         runtime_parameters: [context]
         parameters: {}
       multi_resolution_image:
-        description: 多源加权混合、分辨率 bucket 与动态像素预算 batch 的图像管线。
+        description: 多源加权混合、resolution bucket 与动态像素预算 batch 的图像 recipe。
+        runtime_parameters: [context]
+        parameters: {}
+      super_resolution:
+        description: 从 HR 在线生成 LR 或读取配对目录的图像超分 recipe。
         runtime_parameters: [context]
         parameters: {}
 

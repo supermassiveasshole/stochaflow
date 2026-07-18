@@ -85,6 +85,26 @@ class CountingScheduler:
         self.count = state["count"]
 
 
+class EpochRecorder:
+    def __init__(self) -> None:
+        self.epochs: list[int] = []
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epochs.append(epoch)
+
+
+class EpochAwareLoader:
+    def __init__(self) -> None:
+        self.sampler = EpochRecorder()
+        self.batch_sampler = self.sampler
+
+    def __len__(self) -> int:
+        return 1
+
+    def __iter__(self):
+        yield torch.tensor([[1.0]]), torch.tensor([[1.0]])
+
+
 class RecordingDiagnostic(TrainingDiagnostic):
     def __init__(self) -> None:
         self.fit_started = False
@@ -268,6 +288,46 @@ def test_structured_train_step_runs_diagnostics_hooks(tmp_path) -> None:
     assert (tmp_path / "checkpoints" / "latest.pt").exists()
 
 
+def test_structured_batch_reaches_custom_train_step(tmp_path) -> None:
+    model = TinyRegressor()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    observed: list[object] = []
+
+    def train_step(
+        model: nn.Module,
+        criterion: nn.Module,
+        batch,
+        device: torch.device,
+    ) -> torch.Tensor:
+        observed.append(batch)
+        assert batch["state"].device == device
+        assert batch["condition"]["scale"].device == device
+        assert batch["metadata"] == {"source": "physics"}
+        prediction = model(batch["state"])
+        return criterion(prediction, batch["target"])
+
+    trainer = Trainer(
+        model=model,
+        optimizer=optimizer,
+        criterion=nn.MSELoss(),
+        device="cpu",
+        train_step_fn=train_step,
+        checkpoint_manager=CheckpointManager(model=model, optimizer=optimizer),
+        checkpoint_dir=tmp_path / "checkpoints",
+        checkpoint_every=1,
+    )
+    batch = {
+        "state": torch.tensor([[1.0]]),
+        "target": torch.tensor([[0.0]]),
+        "condition": {"scale": torch.tensor([2.0])},
+        "metadata": {"source": "physics"},
+    }
+
+    trainer.train_epoch([batch], show_progress=False)
+
+    assert len(observed) == 1
+
+
 def test_ema_updates_once_per_train_batch(tmp_path) -> None:
     model = TinyRegressor()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -319,6 +379,15 @@ def test_epoch_lr_scheduler_steps_once_per_epoch(tmp_path) -> None:
     assert scheduler.count == 2
 
 
+def test_train_loader_set_epoch_is_called_once_per_epoch(tmp_path) -> None:
+    trainer = _make_trainer(tmp_path)
+    loader = EpochAwareLoader()
+
+    trainer.fit(loader, num_epochs=2, show_progress=False, track_best=False)
+
+    assert loader.sampler.epochs == [1, 2]
+
+
 def test_checkpoint_saves_and_restores_lr_scheduler_state(tmp_path) -> None:
     scheduler = CountingScheduler()
     trainer = _make_trainer_with_scheduler(tmp_path, scheduler, interval="epoch")
@@ -331,3 +400,16 @@ def test_checkpoint_saves_and_restores_lr_scheduler_state(tmp_path) -> None:
     checkpoint_manager.load(checkpoint_path)
 
     assert scheduler.count == 1
+
+
+def test_checkpoint_manager_rejects_v3(tmp_path) -> None:
+    trainer = _make_trainer(tmp_path)
+    checkpoint_manager = trainer.checkpoint_manager
+    assert checkpoint_manager is not None
+    checkpoint = tmp_path / "v3.pt"
+    payload = checkpoint_manager.build_state()
+    payload["format_version"] = 3
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(ValueError, match="expected version 4"):
+        checkpoint_manager.load(checkpoint)

@@ -7,8 +7,7 @@
 
 | Registry | 扩展契约 | YAML 选择位置 |
 | --- | --- | --- |
-| `data_pipelines` | `DataPipeline` 类 | `data.name` |
-| `dataset_factories` | `DatasetFactory` 类 | 内置管线的 dataset factory 字段 |
+| `data_builders` | `DataBuilder` 类 | `data.name` |
 | `sampling_artifact_writers` | `SamplingArtifactWriter` 类 | `sampling.writers[].name` |
 | `models` | `torch.nn.Module` 类 | `model.name` |
 | `noise_schedules` | `NoiseSchedule` 类 | `diffusion.noise_schedule.name` |
@@ -19,8 +18,8 @@
 | `loggers` | `ExperimentLogger` 类 | `logging.backends[].name` |
 | `diagnostics` | `TrainingDiagnostic` 类 | `diagnostics[].name` |
 
-复杂 split、混合、batch sampler 和 collate 不再拥有独立全局 Registry；自定义
-`DataPipeline` 完整拥有这些语义。
+Dataset、source、partition、degradation、Sampler、collate 和 DataLoader 不拥有全局
+Registry。一个自定义 `DataBuilder` 完整拥有数据组合及其兼容性。
 
 ## 模块加载
 
@@ -44,77 +43,58 @@ model:
   params: {}
 ```
 
-`load_config()` 和 `load_config_dict()` 在 dataclass 构建后导入这些模块，再执行跨字段
-校验。`RegistryCatalog.load_modules()` 保证同一进程内幂等。注册名必须非空且唯一；
-错误基类、重复名称和未知名称会抛出 `RegistryError`。
+`load_config()` 和 `load_config_dict()` 在 dataclass 构建后导入模块，再执行跨字段校验。
+`RegistryCatalog.load_modules()` 保证同一进程内幂等。注册名必须非空且唯一；错误基类、
+重复名称和未知名称会抛出 `RegistryError`。
 
-第三方代码应从 `stochaflow.extensions` 导入稳定契约。该入口包括 DataPipeline、
-DatasetFactory、sampling writer、Registry、配置组件、NoiseSchedule、logger 和
-diagnostic 生命周期类型，不导出内置 split 或图像 bucket 的实现细节。
+第三方代码应从 `stochaflow.extensions` 导入稳定契约。数据层只导出 `DataBuilder`、
+`DataBuilderContext` 和 `DataLoaders`；内置 recipe 的 source、partition、transform、bucket
+与 sampler helper 均为私有实现。
 
-## 自定义 DataPipeline
+## 自定义 DataBuilder
 
 ```python
-from stochaflow.extensions import (
-    DataBundle,
-    DataPipeline,
-    REGISTRIES,
-    SplitData,
-)
+from torch.utils.data import DataLoader
+
+from stochaflow.extensions import DataBuilder, DataLoaders, REGISTRIES
 
 
-@REGISTRIES.data_pipelines.register("physics")
-class PhysicsPipeline(DataPipeline):
-    def build(self) -> list[DataBundle]:
-        train, valid = build_physics_loaders(
-            self.context.params,
+@REGISTRIES.data_builders.register("physics")
+class PhysicsDataBuilder(DataBuilder):
+    def build(self) -> DataLoaders:
+        params = self.context.params
+        train_dataset, validation_dataset = build_physics_datasets(
+            params["path"],
             seed=self.context.seed,
         )
-        return [
-            DataBundle(
-                train=SplitData("train", train, num_batches=1000),
-                valid=SplitData("valid", valid, num_batches=100),
-            )
-        ]
+        return DataLoaders(
+            train=DataLoader(
+                train_dataset,
+                sampler=PhysicsSampler(train_dataset),
+                collate_fn=physics_collate,
+            ),
+            validation=DataLoader(validation_dataset),
+            steps_per_epoch=params.get("steps_per_epoch"),
+        )
 ```
 
 ```yaml
+extensions:
+  modules: [my_project.extensions]
 data:
   name: physics
   params:
-    mesh: data/mesh.zarr
+    path: data/simulation.zarr
     steps_per_epoch: 1000
 ```
 
-`DataPipelineContext.params` 是配置参数的深拷贝，`seed` 是实验种子。`build()` 必须
-返回非空 `list[DataBundle]`；训练 split 必须具有有限 epoch 长度。核心不要求
-Dataset、sample key 或图像 batch。
+`DataBuilderContext.params` 是调用方配置的深拷贝，`seed` 是实验种子。`build()` 必须
+返回一个 `DataLoaders`；train loader 必须可迭代，并通过自身 `len()` 或显式
+`steps_per_epoch` 给出有限 epoch。validation/test 可以是未知长度的 iterable。
 
-## 自定义 DatasetFactory
-
-`DatasetFactory` 适合复用内置 `map` 或 `multi_resolution_image` 的数据读取层：
-
-```python
-from stochaflow.extensions import DatasetFactory, DatasetView, REGISTRIES
-
-
-@REGISTRIES.dataset_factories.register("field_archive")
-class FieldArchiveFactory(DatasetFactory):
-    def build(self, request):
-        dataset = FieldArchive(
-            self.context.params["path"],
-            split=request.native_split,
-        )
-        return DatasetView(
-            source_id=self.context.source_id,
-            dataset=dataset,
-            sample_keys=tuple(dataset.stable_ids),
-        )
-```
-
-Factory context 只含 `source_id` 与 `params`。若图像管线需要逐样本尺寸，Factory 在
-`DatasetView.batch_metadata` 中返回等长的 `ImageSampleMetadata` 或包含
-`width`、`height` 的 mapping；图像 resize/crop/normalize 由管线处理。
+每个 epoch 开始时，Trainer 会对 train loader 的 `sampler` 和 `batch_sampler` 做去重后
+的 duck-typed `set_epoch(epoch)` 调用。其他 Dataset 或 DataLoader 属性只用于
+best-effort 报告，不属于扩展契约。
 
 ## 自定义 sampling artifact writer
 
@@ -143,17 +123,15 @@ sampling:
       params: {variable: velocity}
 ```
 
-writer 返回的 mapping 不能为空；artifact key 在全部 writer 间必须唯一，路径必须
-已经存在。任何 writer 失败都会使采样失败。内置 `tensor` 支持任意 rank Tensor；
-内置 `image` 才校验 NCHW、1/3 通道，并拥有 `grid_nrow`、`gif_fps` 与
-`denormalize` 参数。
+writer 返回的 mapping 不能为空；artifact key 在全部 writer 间必须唯一，路径必须已经
+存在。任何 writer 失败都会使采样失败。内置 `tensor` 支持任意 rank Tensor；内置
+`image` 才校验 NCHW、1/3 通道，并拥有 `grid_nrow`、`gif_fps` 与 `denormalize` 参数。
 
 ## 其他构造约定
 
 组件 `params` 通常作为关键字参数传给注册类。以下参数由运行时注入：
 
-- DataPipeline：`DataPipelineContext`；
-- DatasetFactory：`DatasetFactoryContext`；
+- DataBuilder：`DataBuilderContext`；
 - diffusion：`model`、`noise_schedule`；
 - optimizer / LR scheduler：模型参数或 optimizer；
 - logger：`output_dir`、`run_name`；

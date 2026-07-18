@@ -58,7 +58,7 @@
 (config-field-path-data)=
 ### `data`
 
-由 data_pipelines Registry 构建的模态无关数据管线。
+由 data_builders Registry 构建的一次训练运行数据入口。
 
 - 类型：`mapping`
 - 必填：是
@@ -66,7 +66,7 @@
 (config-field-path-data-name)=
 ### `data.name`
 
-data_pipelines Registry 名称。
+data_builders Registry 名称。
 
 - 类型：`str`
 - 必填：是
@@ -74,7 +74,7 @@ data_pipelines Registry 名称。
 (config-field-path-data-params)=
 ### `data.params`
 
-数据管线完整拥有的参数；核心不解释 dataset、split、sampler、collate 或 batch 语义。
+DataBuilder 完整拥有的参数；核心不解释 Dataset、split、sampler、collate 或 batch 语义。
 
 - 类型：`mapping[str, any]`
 - 必填：否
@@ -396,7 +396,7 @@ lr_schedulers Registry 名称；null 禁用调度器。
 (config-field-path-sampling-batch-size)=
 ### `sampling.batch_size`
 
-采样时每批样本数，与 data pipeline 独立。
+采样时每批样本数，与 DataBuilder 独立。
 
 - 类型：`int`
 - 必填：否
@@ -717,73 +717,36 @@ logger 构造参数；output_dir 与 run_name 由运行时注入。
 | `attention_levels` | 启用空间注意力的零起始分辨率层索引；null 禁用。 |
 | `attention_heads` | 每个注意力块的 head 数。 |
 
-(config-registry-name-dataset-factories)=
-### `dataset_factories`
+(config-registry-name-data-builders)=
+### `data_builders`
 
-将一个原生 split 构建为带稳定 sample_keys 和可选 batch_metadata 的 DatasetView。
+直接组装 Dataset、划分、sampler、collate 和 loader，并返回单次运行的 DataLoaders。
 
-- 基类/契约：`stochaflow.data.DatasetFactory`
-- 配置位置：`内置 data pipeline 的 dataset.factory / dataset.params`
-
-(config-component-dataset_factories-cifar10)=
-#### `cifar10`
-
-Torchvision CIFAR-10 Factory；原生 train/test，固定原始尺寸 32×32。
-
-运行时注入（不得在 YAML 中覆盖）：`context`。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `root` | 数据根目录；默认 ./data。 |
-| `download` | 缺少数据时是否允许 torchvision 下载；默认 true。 |
-| `random_horizontal_flip` | train role 是否随机水平翻转；默认 true。 |
-
-(config-component-dataset_factories-flowers102)=
-#### `flowers102`
-
-Torchvision Oxford Flowers 102 Factory；原生 train/val/test，并按单图尺寸选择 bucket。
-
-运行时注入（不得在 YAML 中覆盖）：`context`。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `root` | 数据根目录；默认 ./data。 |
-| `download` | 缺少数据时是否允许 torchvision 下载；默认 true。 |
-| `random_horizontal_flip` | train role 是否随机水平翻转；默认 true。 |
-
-(config-component-dataset_factories-mnist)=
-#### `mnist`
-
-Torchvision MNIST Factory；原生 train/test，固定原始尺寸 28×28。
-
-运行时注入（不得在 YAML 中覆盖）：`context`。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `root` | 数据根目录；默认 ./data。 |
-| `download` | 缺少数据时是否允许 torchvision 下载；默认 true。 |
-
-(config-registry-name-data-pipelines)=
-### `data_pipelines`
-
-完整拥有数据构建、划分、混合、采样、collate 与 epoch 语义。
-
-- 基类/契约：`stochaflow.data.DataPipeline`
+- 基类/契约：`stochaflow.data.DataBuilder`
 - 配置位置：`data.name / data.params`
 
-(config-component-data_pipelines-map)=
-#### `map`
+(config-component-data_builders-image)=
+#### `image`
 
-单一 map-style DatasetFactory、固定 batch、默认 PyTorch collation 与常见 split。
+单一 torchvision 或本地图像来源的标准图像 recipe。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
 无组件级配置参数。
 
-(config-component-data_pipelines-multi-resolution-image)=
+(config-component-data_builders-multi-resolution-image)=
 #### `multi_resolution_image`
 
-多源加权混合、分辨率 bucket 与动态像素预算 batch 的图像管线。
+多源加权混合、resolution bucket 与动态像素预算 batch 的图像 recipe。
+
+运行时注入（不得在 YAML 中覆盖）：`context`。
+
+无组件级配置参数。
+
+(config-component-data_builders-super-resolution)=
+#### `super_resolution`
+
+从 HR 在线生成 LR 或读取配对目录的图像超分 recipe。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 

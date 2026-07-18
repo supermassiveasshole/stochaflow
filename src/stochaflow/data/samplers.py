@@ -3,14 +3,88 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterator, Mapping, Sequence, Sized
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 import math
 import random
 from typing import Protocol
 
 from torch.utils.data import Sampler
 
-from stochaflow.data.contracts import ResolutionBucketPolicy
+from stochaflow.data.recipe_config import ResolutionBucketRecipeConfig
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionBucket:
+    """One private multi-resolution recipe bucket."""
+
+    name: str
+    height: int
+    width: int
+
+    @property
+    def pixels(self) -> int:
+        return self.height * self.width
+
+
+class ResolutionBucketPolicy:
+    """Assign images to buckets and derive pixel-budget batch sizes."""
+
+    def __init__(
+        self,
+        buckets: Sequence[ResolutionBucketRecipeConfig],
+        *,
+        base_bucket: str,
+        dynamic_batch_size: bool,
+    ) -> None:
+        self.buckets = tuple(
+            ResolutionBucket(bucket.name, bucket.height, bucket.width)
+            for bucket in buckets
+        )
+        if not self.buckets:
+            raise ValueError("resolution buckets must not be empty")
+        self._by_name = {bucket.name: bucket for bucket in self.buckets}
+        if len(self._by_name) != len(self.buckets):
+            raise ValueError("resolution bucket names must be unique")
+        try:
+            self.base_bucket = self._by_name[base_bucket]
+        except KeyError as exc:
+            raise ValueError(f"unknown base bucket '{base_bucket}'") from exc
+        self.dynamic_batch_size = dynamic_batch_size
+
+    def resolve(self, name: str) -> ResolutionBucket:
+        try:
+            return self._by_name[name]
+        except KeyError as exc:
+            raise ValueError(f"unknown resolution bucket '{name}'") from exc
+
+    def select(self, width: int, height: int) -> ResolutionBucket:
+        if width <= 0 or height <= 0:
+            raise ValueError("image width and height must be positive")
+        image_ratio = width / height
+        image_area = width * height
+
+        def distance(bucket: ResolutionBucket) -> tuple[float, float]:
+            ratio = bucket.width / bucket.height
+            return (
+                abs(math.log(image_ratio / ratio)),
+                abs(math.log(image_area / bucket.pixels)),
+            )
+
+        return min(self.buckets, key=distance)
+
+    def batch_size(self, bucket_name: str, *, base_batch_size: int) -> int:
+        if base_batch_size <= 0:
+            raise ValueError("base batch size must be positive")
+        if not self.dynamic_batch_size:
+            return base_batch_size
+        bucket = self.resolve(bucket_name)
+        return max(
+            1,
+            math.floor(
+                base_batch_size * self.base_bucket.pixels / bucket.pixels
+            ),
+        )
 
 
 class BucketedDataset(Protocol):
@@ -50,77 +124,6 @@ class _CyclingIndexPool:
             values.extend(self._current[self._offset : self._offset + available])
             self._offset += available
         return values
-
-
-class FixedBatchSampler(Sampler[list[int]]):
-    """Reproducible fixed-size batches for a finite map-style dataset."""
-
-    def __init__(
-        self,
-        dataset: Sized,
-        *,
-        batch_size: int,
-        drop_last: bool,
-        shuffle: bool,
-        seed: int,
-        steps_per_epoch: int | str = "auto",
-    ) -> None:
-        size = len(dataset)
-        if size <= 0:
-            raise ValueError("fixed batch sampler requires a non-empty dataset")
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-        if steps_per_epoch != "auto" and (
-            not isinstance(steps_per_epoch, int) or steps_per_epoch <= 0
-        ):
-            raise ValueError("steps_per_epoch must be positive or 'auto'")
-        self.size = size
-        self.batch_size = batch_size
-        self.drop_last = drop_last
-        self.shuffle = shuffle
-        self.seed = seed
-        self.steps_per_epoch = steps_per_epoch
-        self.epoch = 0
-        natural_steps = (
-            size // batch_size if drop_last else math.ceil(size / batch_size)
-        )
-        if natural_steps <= 0 and steps_per_epoch == "auto":
-            raise ValueError("fixed batch sampler would yield no batches")
-        self._natural_steps = natural_steps
-
-    def set_epoch(self, epoch: int) -> None:
-        """Select the deterministic shuffle stream for an epoch."""
-
-        if epoch < 0:
-            raise ValueError("epoch must be non-negative")
-        self.epoch = epoch
-
-    def __len__(self) -> int:
-        if isinstance(self.steps_per_epoch, int):
-            return self.steps_per_epoch
-        return self._natural_steps
-
-    def __iter__(self) -> Iterator[list[int]]:
-        rng = random.Random(self.seed + self.epoch)
-        target_steps = len(self)
-        yielded = 0
-        while yielded < target_steps:
-            indices = list(range(self.size))
-            if self.shuffle:
-                rng.shuffle(indices)
-            for offset in range(0, self.size, self.batch_size):
-                batch = indices[offset : offset + self.batch_size]
-                if len(batch) < self.batch_size and self.drop_last:
-                    continue
-                yielded += 1
-                yield batch
-                if yielded >= target_steps:
-                    return
-            if self._natural_steps == 0:
-                pool = _CyclingIndexPool(indices, rng)
-                while yielded < target_steps:
-                    yielded += 1
-                    yield pool.draw(self.batch_size)
 
 
 class MixtureBatchSampler(Sampler[list[int]]):
@@ -294,12 +297,9 @@ class MixtureBatchSampler(Sampler[list[int]]):
             yield from self._weighted_batches(rng)
 
 
-BucketBatchSampler = MixtureBatchSampler
-
-
 __all__ = [
-    "BucketBatchSampler",
     "BucketedDataset",
-    "FixedBatchSampler",
     "MixtureBatchSampler",
+    "ResolutionBucket",
+    "ResolutionBucketPolicy",
 ]

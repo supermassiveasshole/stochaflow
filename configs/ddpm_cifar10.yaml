@@ -7,29 +7,19 @@ extensions:
   modules: []
 
 data:
-  name: multi_resolution_image
+  name: image
   params:
-    datasets:
-    - id: cifar10
-      factory: cifar10
-      params:
-        root: ./data
-        download: true
-        random_horizontal_flip: true
-      splits:
-        train: train
-        test: test
+    source:
+      kind: torchvision
+      dataset: CIFAR10
+      root: ./data
+      download: true
     image:
+      size: [32, 32]
       channels: 3
       normalize: true
-    batching:
-      buckets:
-      - name: square_32
-        height: 32
-        width: 32
-      base_bucket: square_32
-      dynamic_batch_size: true
-    dataloader:
+      random_horizontal_flip: true
+    loader:
       batch_size: 128
       num_workers: 4
       shuffle: true
@@ -37,8 +27,8 @@ data:
       pin_memory: true
       persistent_workers: true
       steps_per_epoch: auto
-    splits:
-      mode: random_holdout
+    partition:
+      mode: holdout
       validation_size: 5000
 
 model:

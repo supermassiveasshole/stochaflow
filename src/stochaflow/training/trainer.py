@@ -57,7 +57,7 @@ def _default_train_step(
 ) -> torch.Tensor:
     """Run a default supervised train step for ``(inputs, targets)`` batches."""
 
-    batch = _move_to_device(batch, device)
+    del device
     if not isinstance(batch, (tuple, list)) or len(batch) != 2:
         raise TypeError(
             "default train step expects batches shaped like (inputs, targets); "
@@ -101,6 +101,20 @@ def _resolve_total_batches(
             return min(total, max_batches)
         return total
     return max_batches
+
+
+def _set_dataloader_epoch(dataloader: Iterable[Batch], epoch: int) -> None:
+    """Propagate an epoch to distinct duck-typed PyTorch sampler objects."""
+
+    seen: set[int] = set()
+    for attribute in ("sampler", "batch_sampler"):
+        sampler = getattr(dataloader, attribute, None)
+        if sampler is None or id(sampler) in seen:
+            continue
+        seen.add(id(sampler))
+        set_epoch = getattr(sampler, "set_epoch", None)
+        if callable(set_epoch):
+            set_epoch(epoch)
 
 
 def _normalize_train_step_result(result: TrainStepResult) -> TrainStepOutput:
@@ -239,8 +253,14 @@ class Trainer:
 
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
+        prepared_batch = _move_to_device(batch, self.device)
         output = _normalize_train_step_result(
-            self.train_step_fn(self.model, self.criterion, batch, self.device)
+            self.train_step_fn(
+                self.model,
+                self.criterion,
+                prepared_batch,
+                self.device,
+            )
         )
         loss = output.loss
         loss.backward()
@@ -270,10 +290,7 @@ class Trainer:
         if max_batches is not None and max_batches <= 0:
             raise ValueError("max_batches must be positive when provided")
         if epoch_index is not None:
-            batch_sampler = getattr(dataloader, "batch_sampler", None)
-            set_epoch = getattr(batch_sampler, "set_epoch", None)
-            if callable(set_epoch):
-                set_epoch(epoch_index)
+            _set_dataloader_epoch(dataloader, epoch_index)
 
         progress_reporter = reporter
         if progress_reporter is not None:
@@ -383,11 +400,12 @@ class Trainer:
                 for batch in iterator:
                     if max_batches is not None and num_batches >= max_batches:
                         break
+                    prepared_batch = _move_to_device(batch, self.device)
                     output = _normalize_train_step_result(
                         self.train_step_fn(
                             self.model,
                             self.criterion,
-                            batch,
+                            prepared_batch,
                             self.device,
                         )
                     )

@@ -9,29 +9,25 @@ extensions:
 data:
   name: multi_resolution_image
   params:
-    datasets:
+    sources:
     - id: digits
-      factory: mnist
       sampling_weight: 0.4
-      params:
+      source:
+        kind: torchvision
+        dataset: MNIST
         root: ./data
         download: true
-      splits:
-        train: train
-        test: test
     - id: flowers
-      factory: flowers102
       sampling_weight: 0.6
-      params:
+      source:
+        kind: torchvision
+        dataset: Flowers102
         root: ./data
         download: true
-        random_horizontal_flip: true
-      splits:
-        train: train
-        test: test
     image:
       channels: 3
       normalize: true
+      random_horizontal_flip: true
     batching:
       buckets:
       - name: square_32
@@ -42,7 +38,7 @@ data:
         width: 64
       base_bucket: square_64
       dynamic_batch_size: true
-    dataloader:
+    loader:
       batch_size: 64
       num_workers: 4
       shuffle: true
@@ -50,8 +46,8 @@ data:
       pin_memory: true
       persistent_workers: true
       steps_per_epoch: auto
-    splits:
-      mode: random_holdout
+    partition:
+      mode: holdout
       validation_size: 0.1
 
 model:

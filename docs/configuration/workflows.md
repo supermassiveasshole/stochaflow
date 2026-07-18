@@ -8,8 +8,8 @@
 uv run stochaflow train --config configs/ddpm_mnist.yaml
 ```
 
-runner 加载配置、应用 CLI 覆盖、创建时间戳 run 目录，然后为每个 DataBundle（或
-每个 K-fold）构建独立训练组件。所有训练参数见[CLI 参数索引](reference.md#cli-参数索引)。
+runner 加载配置、应用 CLI 覆盖、创建一个时间戳 run 目录，调用一次 DataBuilder，
+然后构建一套训练组件。所有训练参数见[CLI 参数索引](reference.md#cli-参数索引)。
 
 ### Smoke run
 
@@ -87,34 +87,33 @@ uv run stochaflow train \
   --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt
 ```
 
-checkpoint 保存模型、optimizer、scheduler、EMA、训练进度和新 schema 配置。恢复时
-配置与 checkpoint 必须兼容；旧 `data.dataset`/`data.source` checkpoint 会收到明确
-迁移错误，不自动转换。
+checkpoint 保存模型、optimizer、scheduler、EMA、训练进度和 resolved 配置。v4 只保存
+`data: {name, params}`，不保存 Dataset、Sampler、DataLoader 或 partition 运行时状态。
+恢复时配置与 checkpoint 必须兼容；旧格式会收到明确错误，不自动转换。
 
 ## K-fold
 
-运行所有 fold：
+K-fold 是支持它的图像 recipe 的私有能力。一次配置只运行一个 fold，例如第三个 fold
+（索引从 0 开始）：
 
 ```yaml
 data:
-  splits:
-    mode: kfold
-    num_folds: 5
-    fold_index: null
+  name: image
+  params:
+    source:
+      kind: image_folder
+      path: ./data/images
+    partition:
+      mode: kfold
+      num_folds: 5
+      fold_index: 2
+    image:
+      size: [64, 64]
 ```
 
-只运行第三个 fold（索引从 0 开始）：
-
-```yaml
-data:
-  splits:
-    mode: kfold
-    num_folds: 5
-    fold_index: 2
-```
-
-划分先按 YAML source 顺序合并，再使用 `experiment.seed` 生成全局索引。每个 fold
-独立构建 DataBundle、模型、optimizer、日志与 checkpoint；不要跨 fold 共享训练状态。
+`fold_index` 不可省略。运行全部五折需要五次独立运行，通常由项目脚本或外部 sweep
+分别覆盖这个字段。每次运行独立构建 DataBuilder、模型、optimizer、日志和 checkpoint；
+核心 runner 不展开 fold，也不跨 fold 共享训练状态。
 
 ## 训练期多 sampler diagnostic
 
@@ -236,7 +235,7 @@ uv run stochaflow sample --config configs/ddpm_mnist.yaml
 ## 采样形状与 EMA
 
 独立采样、训练后验收、trajectory 和 diffusion quality diagnostic 使用
-`sampling.shape`，它不含 batch 维且与 data pipeline 独立。`ema.enabled` 与
+`sampling.shape`，它不含 batch 维且与 DataBuilder 独立。`ema.enabled` 与
 `ema.use_for_sampling` 同时为 true 且 checkpoint 含 EMA 时，
 采样优先使用 EMA 权重。
 

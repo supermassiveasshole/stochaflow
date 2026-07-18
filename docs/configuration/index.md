@@ -1,7 +1,7 @@
 # Stochaflow 配置手册
 
 本手册是 `stochaflow train`、`stochaflow sample`、内置组件和自定义扩展的
-可查阅说明。顶层配置采用严格 schema；`data.params` 的语义由所选 DataPipeline
+可查阅说明。顶层配置采用严格 schema；`data.params` 的语义由所选 DataBuilder
 拥有。
 
 ```{toctree}
@@ -20,8 +20,8 @@ troubleshooting
 | 任务 | 入口 |
 | --- | --- |
 | 查某个 YAML 字段、默认值或 CLI 覆盖 | [完整字段参考](reference.md) |
-| 配置 map、图像、流式或自定义数据管线 | [数据管线](data-pipeline.md) |
-| 注册自定义 DataPipeline、DatasetFactory、writer 或其他组件 | [扩展与 Registry](extensions.md) |
+| 配置图像、超分辨率或自定义数据构建 | [数据构建](data-pipeline.md) |
+| 注册自定义 DataBuilder、writer 或其他组件 | [扩展与 Registry](extensions.md) |
 | 训练、smoke run、恢复和 checkpoint 采样 | [常用工作流](workflows.md) |
 | 根据错误信息定位问题 | [排错索引](troubleshooting.md) |
 
@@ -62,17 +62,15 @@ experiment:
   name: minimal_mnist
 
 data:
-  name: multi_resolution_image
+  name: image
   params:
-    datasets:
-      - id: mnist
-        factory: mnist
-        splits: {train: train, test: test}
-    image: {channels: 1, normalize: true}
-    batching:
-      buckets:
-        - {name: square_32, height: 32, width: 32}
-      base_bucket: square_32
+    source:
+      kind: torchvision
+      dataset: MNIST
+      root: ./data
+      download: true
+    partition: {mode: none}
+    image: {size: [32, 32], channels: 1, normalize: true}
 
 model:
   name: unet
@@ -108,7 +106,7 @@ sampling:
 | --- | --- |
 | `experiment` | 名称、seed、输出根目录和 run id |
 | `extensions` | 训练、采样和 checkpoint 重建前导入的 Registry 扩展模块 |
-| `data` | DataPipeline Registry 声明与管线专属参数 |
+| `data` | DataBuilder Registry 声明与 builder 专属参数 |
 | `model` | 去噪模型 Registry 声明 |
 | `diffusion` | 训练扩散过程和前向噪声 schedule |
 | `objective` | 训练损失 |
@@ -123,27 +121,17 @@ sampling:
 ## 术语表
 
 source
-: 内置图像管线 `data.params.datasets` 中的一项，由唯一 `id` 标识。
+: 内置图像 recipe 的原始数据入口，例如 torchvision 数据集或本地图像目录。
 
-native split
-: 数据集实现提供的物理分区名，例如 MNIST 的 `train`/`test`、Flowers102 的
-  `train`/`val`/`test`。
-
-logical split
-: Stochaflow 统一使用的 `train`、`validation`、`test` 角色，由每个 source 的
-  `splits` 映射到 native split。
-
-role
-: Factory 构建视图时收到的 `train` 或 `eval` 预处理角色。它与 native split
-  分开：random holdout 会从同一个 native train split 构建 train-role 与
-  eval-role 两个对齐视图。
+partition
+: `image`、`super_resolution` 和 `multi_resolution_image` recipe 的私有划分功能。
+  它不是所有 DataBuilder 都必须支持的通用策略。
 
 bucket
-: `multi_resolution_image` 管线的命名空间尺寸；图像 metadata 决定 bucket，batch
-  sampler 保证一个 batch 内形状一致。
+: `multi_resolution_image` recipe 的命名尺寸；私有 sampler 保证一个 batch 内形状一致。
 
 base bucket
-: 只定义图像管线动态 batch 的像素预算基准；采样输出由 `sampling.shape` 独立声明。
+: 只定义图像 recipe 动态 batch 的像素预算基准；采样输出由 `sampling.shape` 独立声明。
 
 Registry
 : 名称到组件类/构造器的显式映射。配置只写名称和参数；`extensions.modules`

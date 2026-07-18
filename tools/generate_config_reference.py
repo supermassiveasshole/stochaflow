@@ -25,8 +25,7 @@ OUTPUT_PATH = REPO_ROOT / "docs" / "configuration" / "reference.md"
 
 REGISTRY_NAMES = (
     "models",
-    "dataset_factories",
-    "data_pipelines",
+    "data_builders",
     "sampling_artifact_writers",
     "noise_schedules",
     "diffusions",

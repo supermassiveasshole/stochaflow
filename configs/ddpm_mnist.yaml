@@ -7,28 +7,19 @@ extensions:
   modules: []
 
 data:
-  name: multi_resolution_image
+  name: image
   params:
-    datasets:
-    - id: mnist
-      factory: mnist
-      params:
-        root: ./data
-        download: true
-      splits:
-        train: train
-        test: test
+    source:
+      kind: torchvision
+      dataset: MNIST
+      root: ./data
+      download: true
     image:
+      size: [32, 32]
       channels: 1
       normalize: true
-    batching:
-      buckets:
-      - name: square_32
-        height: 32
-        width: 32
-      base_bucket: square_32
-      dynamic_batch_size: true
-    dataloader:
+      random_horizontal_flip: false
+    loader:
       batch_size: 128
       num_workers: 0
       shuffle: true
@@ -36,8 +27,8 @@ data:
       pin_memory: false
       persistent_workers: false
       steps_per_epoch: auto
-    splits:
-      mode: random_holdout
+    partition:
+      mode: holdout
       validation_size: 10000
 
 model:

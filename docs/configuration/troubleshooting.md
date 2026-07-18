@@ -39,55 +39,55 @@ dotted path。schema 不忽略未知字段。
 
 ### `registrations must inherit ...`
 
-注册类继承了错误基类。完整数据管线继承 `DataPipeline`，Dataset 读取层继承
-`DatasetFactory`，采样输出继承 `SamplingArtifactWriter`；模型/扩散/目标继承
-`torch.nn.Module`，logger 继承 `ExperimentLogger`。
+注册类继承了错误基类。数据入口继承 `DataBuilder`，采样输出继承
+`SamplingArtifactWriter`；模型/扩散/目标继承 `torch.nn.Module`，logger 继承
+`ExperimentLogger`。
 
 ### `config cannot override runtime parameter(s)`
 
 从组件 `params` 删除运行时注入参数，例如 diagnostic 的 `logger`、`output_dir`、
 `sample_shape`。完整列表见[扩展手册](extensions.md#其他组件的构造约定)。
 
-## 数据与 split
+## 数据与 partition
 
-### `training and evaluation views ... identical stable sample_keys`
+### `DataBuilder.build() must return DataLoaders`
 
-同一 native train split 的 train/eval view 长度、顺序或 key 不一致。随机 crop、翻转
-只能改变 `__getitem__` 返回的图像，不能改变记录顺序。key 应来自持久 id/路径，不要
-使用随机数或 role。
+自定义 builder 返回了 Dataset、DataLoader、list 或旧数据契约。将组装后的 train、
+validation、test iterable 包装为单个 `DataLoaders`。
 
-### `sample_keys must be unique` / `metadata length must match`
+### `train loader has no length; steps_per_epoch is required`
 
-Factory 返回的 `sample_keys` 或可选 `batch_metadata` 与 Dataset 不对齐。构建 view
-后验证长度；同一 source view 内 key 必须唯一。
+生成器或流式 loader 没有 `len()`，核心无法判断 epoch 何时结束。由 builder 返回
+`DataLoaders(train=loader, steps_per_epoch=<正整数>)`。
 
-### `logical split ... must be declared by every configured source or omitted`
+### `partition mode 'official' requires ...`
 
-多 source 对同一个 logical validation/test 的声明不一致。为每个 source 都填写映射，
-或全部设为 `null`/省略。`official` 的 validation 和所有模式的 test 都遵守此规则。
+所选内置 source 没有提供 recipe 需要的原生 role。改用 `none`/`holdout`，或选择具有
+对应 train/validation/test 分区的 source。partition 只属于支持它的内置 recipe；自定义
+DataBuilder 可以采用完全不同的逻辑。
 
 ### `validation_size must leave at least one ... sample`
 
-holdout 样本数为 0 或占满合并后的 train。浮点比例必须位于 0 与 1 之间；整数必须
-小于全局训练样本数。
+holdout 样本数为 0 或占满 train。浮点比例必须位于 0 与 1 之间；整数必须小于训练
+样本数。
 
-### `num_folds must not exceed the combined dataset size`
+### `num_folds must not exceed the dataset size` / `fold_index is required`
 
-降低 `num_folds` 或增加训练样本。K-fold 在所有 source 合并后执行。
+降低 `num_folds`、增加训练样本，并为本次独立运行指定从 0 开始的 `fold_index`。
 
 ## bucket、batch 与 worker
 
 ### 一个 batch 出现不同形状
 
-`map` 使用默认 collation，不会自动 resize 或 padding；自定义 Dataset 必须返回可
-collate 的同形状样本。`multi_resolution_image` 根据 `batch_metadata` 选择 bucket 并
-负责 resize/crop，检查 metadata 的 `width`、`height` 是否与原始图像一致。
+自定义 DataBuilder 应通过 transform、Sampler 或 collate 保证 batch 兼容。
+`multi_resolution_image` 会在其私有实现中扫描图像尺寸、选择 bucket 并 resize/crop；
+若扩展数据不满足该 recipe 的约束，应注册自己的 DataBuilder。
 
 ### batch size 与配置值不同
 
-图像管线的 `data.params.dataloader.batch_size` 只对应 `base_bucket`。启用
+图像 recipe 的 `data.params.loader.batch_size` 只对应 `base_bucket`。启用
 `dynamic_batch_size` 后，其他 bucket 按像素预算缩放；公式见
-[数据管线](data-pipeline.md#multi-resolution-image-管线)。
+[数据构建](data-pipeline.md#multi-resolution-image-recipe)。
 
 ### `persistent_workers requires num_workers > 0`
 
@@ -103,8 +103,8 @@ pickle、文件句柄是否按 worker 打开、路径是否有效。确认后逐
 
 ### 训练时出现 state shape / channel 错误
 
-核心不再把模型 shape 与数据管线做图像专属交叉校验。确认所选 DataPipeline 的
-batch、TrainingStrategy/当前 tensor train step、模型输入输出契约彼此一致。图像管线
+核心不把模型 shape 与数据构建做任务专属交叉校验。确认所选 DataBuilder 的 batch、
+TrainingStrategy/当前 tensor train step、模型输入输出契约彼此一致。内置图像 recipe
 的通道配置位于 `data.params.image.channels`。
 
 ### resume 找不到 `latest.pt`
@@ -131,7 +131,7 @@ batch、TrainingStrategy/当前 tensor train step、模型输入输出契约彼�
 ### `sampling.shape is required`
 
 当前 DDPM/DDIM tensor sampler 需要固定 shape。把单样本形状（不含 batch 维）写入
-`sampling.shape`。该值与 data pipeline 独立，外部 sampling 配置可以覆盖它。
+`sampling.shape`。该值与 DataBuilder 独立，外部 sampling 配置可以覆盖它。
 
 ### image writer 报 NCHW 或通道错误
 
@@ -140,7 +140,7 @@ Tensor 只声明 `tensor` writer，或注册领域 writer。
 
 ### `checkpoint format version ... is unsupported`
 
-Stage 2 checkpoint 格式为 v3。训练恢复和 checkpoint-only sampling 不读取旧格式；
+Stage 2 checkpoint 格式为 v4。训练恢复和 checkpoint-only sampling 不读取 v3；
 请用当前代码重新训练或重新生成 checkpoint。
 
 ## 文档生成与 CI

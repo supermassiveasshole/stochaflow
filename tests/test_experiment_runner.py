@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 import yaml
 
-from stochaflow.data.pipeline import DataBundle, SplitData
+from stochaflow.data import DataLoaders
 from stochaflow.sampling.runtime import sample_shape
 from stochaflow.scripts import experiment_runner
 from stochaflow.utils.config import load_config
@@ -46,12 +46,16 @@ class RecordingLogger:
         self.closed = True
 
 
-def _split(name: str) -> SplitData:
+def _loader() -> DataLoader:
     dataset = TensorDataset(torch.zeros(2, 1))
-    return SplitData(
-        name=name,
-        dataset=dataset,
-        dataloader=DataLoader(dataset, batch_size=1),
+    return DataLoader(dataset, batch_size=1)
+
+
+def _loaders(*, validation: bool = False, test: bool = False) -> DataLoaders:
+    return DataLoaders(
+        train=_loader(),
+        validation=_loader() if validation else None,
+        test=_loader() if test else None,
     )
 
 
@@ -117,9 +121,9 @@ def test_runner_uses_valid_loss_when_validation_is_available(monkeypatch, tmp_pa
         build_training_components,
     )
 
-    experiment_runner._run_single_bundle(
+    experiment_runner._run_single_run(
         config,
-        DataBundle(train=_split("train"), valid=_split("valid")),
+        _loaders(validation=True),
         _options(config),
     )
 
@@ -142,9 +146,9 @@ def test_runner_uses_train_loss_and_skips_test_without_validation(monkeypatch, t
         lambda config, **kwargs: _training_components(trainer, logger),
     )
 
-    experiment_runner._run_single_bundle(
+    experiment_runner._run_single_run(
         config,
-        DataBundle(train=_split("train")),
+        _loaders(),
         _options(config),
     )
 
@@ -176,9 +180,9 @@ def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
     args.epochs = 3
     options = _options(config, args)
 
-    experiment_runner._run_single_bundle(
+    experiment_runner._run_single_run(
         config,
-        DataBundle(train=_split("train")),
+        _loaders(),
         options,
     )
 
@@ -188,6 +192,10 @@ def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
     resolved = yaml.safe_load((tmp_path / "resolved_config.yaml").read_text())
     assert resolved["trainer"]["num_epochs"] == 3
     assert resolved["trainer"]["show_progress"] is False
+    assert resolved["data"] == {
+        "name": config.data.name,
+        "params": config.data.params,
+    }
 
 
 def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):
@@ -213,9 +221,9 @@ def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):
     args = _args()
     args.skip_final_sample = False
 
-    experiment_runner._run_single_bundle(
+    experiment_runner._run_single_run(
         config,
-        DataBundle(train=_split("train")),
+        _loaders(),
         _options(config, args),
     )
 
@@ -246,9 +254,9 @@ def test_runner_closes_logger_when_resume_loading_fails(monkeypatch, tmp_path):
     args.resume = tmp_path / "checkpoint.pt"
 
     with pytest.raises(RuntimeError, match="broken checkpoint"):
-        experiment_runner._run_single_bundle(
+        experiment_runner._run_single_run(
             config,
-            DataBundle(train=_split("train")),
+            _loaders(),
             _options(config, args),
         )
 
@@ -275,9 +283,9 @@ def test_runner_rejects_checkpoint_at_target_epoch(monkeypatch, tmp_path):
     args.resume = tmp_path / "checkpoint.pt"
 
     with pytest.raises(ValueError, match="increase --epochs to continue"):
-        experiment_runner._run_single_bundle(
+        experiment_runner._run_single_run(
             config,
-            DataBundle(train=_split("train")),
+            _loaders(),
             _options(config, args),
         )
 
@@ -313,30 +321,30 @@ def test_run_options_reject_non_positive_limits(
     "config_path",
     [Path("configs/ddpm_mnist.yaml"), Path("configs/ddim_cifar10.yaml")],
 )
-def test_runner_builds_registered_data_pipeline(monkeypatch, tmp_path, config_path):
+def test_runner_builds_registered_data_builder(monkeypatch, tmp_path, config_path):
     config = load_config(config_path)
     config.experiment.output_dir = str(tmp_path / "outputs")
     args = _args()
     args.config = Path("unused.yaml")
     observed = {}
 
-    def stub_pipeline(data_config, *, seed):
-        observed["pipeline_config"] = data_config
+    def stub_builder(data_config, *, seed):
+        observed["builder_config"] = data_config
         observed["seed"] = seed
-        return [DataBundle(train=_split("train"))]
+        return _loaders()
 
     monkeypatch.setattr(experiment_runner, "load_config", lambda path: config)
-    monkeypatch.setattr(experiment_runner, "build_data_pipeline", stub_pipeline)
+    monkeypatch.setattr(experiment_runner, "build_data_loaders", stub_builder)
     monkeypatch.setattr(
         experiment_runner,
-        "_run_single_bundle",
+        "_run_single_run",
         lambda *args, **kwargs: None,
     )
 
     experiment_runner.run_experiment_from_args(args)
 
     assert observed == {
-        "pipeline_config": config.data,
+        "builder_config": config.data,
         "seed": config.experiment.seed,
     }
 
@@ -374,56 +382,3 @@ def test_resolve_resume_checkpoint_accepts_run_directory(tmp_path):
     )
 
     assert resolved == checkpoint_path
-
-
-def test_resolve_resume_checkpoint_keeps_folds_isolated(tmp_path):
-    fold_zero = tmp_path / "older" / "fold_00" / "checkpoints" / "latest.pt"
-    fold_one = tmp_path / "newer" / "fold_01" / "checkpoints" / "latest.pt"
-    fold_zero.parent.mkdir(parents=True)
-    fold_one.parent.mkdir(parents=True)
-    fold_zero.write_bytes(b"fold zero")
-    fold_one.write_bytes(b"fold one")
-    os.utime(fold_zero, (1, 1))
-    os.utime(fold_one, (2, 2))
-
-    resolved = experiment_runner._resolve_resume_checkpoint(
-        Path("latest"),
-        output_root=tmp_path,
-        fold_index=0,
-    )
-
-    assert resolved == fold_zero
-
-
-def test_configure_run_output_scopes_an_individual_fold(tmp_path):
-    config = load_config(Path("configs/ddpm_mnist.yaml"))
-
-    experiment_runner._configure_run_output(
-        config,
-        base_exp_id="run",
-        base_output_dir=tmp_path,
-        bundle=DataBundle(train=_split("train"), fold_index=2, num_folds=3),
-    )
-
-    assert config.experiment.exp_id == "run_fold_02"
-    assert config.experiment.output_dir == str(tmp_path / "fold_02")
-
-
-def test_resume_scope_rejects_one_checkpoint_for_all_folds(tmp_path):
-    bundles = [
-        DataBundle(train=_split("train"), fold_index=index, num_folds=3)
-        for index in range(3)
-    ]
-
-    with pytest.raises(ValueError, match="fold-specific checkpoints"):
-        experiment_runner._validate_resume_scope(bundles, tmp_path / "latest.pt")
-
-
-def test_resume_scope_accepts_a_fold_checkpoint_directory(tmp_path):
-    bundles = [
-        DataBundle(train=_split("train"), fold_index=index, num_folds=3)
-        for index in range(3)
-    ]
-    tmp_path.mkdir(exist_ok=True)
-
-    experiment_runner._validate_resume_scope(bundles, tmp_path)

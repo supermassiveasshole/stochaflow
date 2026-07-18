@@ -1,7 +1,7 @@
 """Shared command-line runner helpers for config-driven experiments."""
 
 import argparse
-from copy import deepcopy
+from collections.abc import Sized
 from dataclasses import dataclass, replace
 from datetime import datetime
 import gc
@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 import yaml
 
-from stochaflow.data.pipeline import DataBundle, SplitData, build_data_pipeline
+from stochaflow.data import DataLoaders, build_data_loaders
 from stochaflow.sampling.runtime import run_sampling
 from stochaflow.training.reporting import (
     FinalSummary,
@@ -188,20 +188,25 @@ def _local_log_paths(config: StochaflowConfig) -> tuple[Path, Path]:
     return output_dir / metrics_filename, output_dir / text_filename
 
 
-def _dataset_size(split: SplitData | None) -> int | None:
-    if split is None:
+def _dataset_size(loader: object | None) -> int | None:
+    if loader is None:
         return None
-    return split.resolved_num_samples()
+    dataset = getattr(loader, "dataset", None)
+    if isinstance(dataset, Sized):
+        return len(dataset)
+    return None
 
 
 def _effective_steps_per_epoch(
-    split: SplitData,
+    loaders: DataLoaders,
     *,
     max_batches: int | None,
 ) -> int:
-    steps_per_epoch = split.resolved_num_batches()
+    steps_per_epoch = loaders.steps_per_epoch
     if steps_per_epoch is None:
-        raise TypeError("training split does not expose a finite epoch length")
+        if not isinstance(loaders.train, Sized):
+            raise TypeError("training loader does not expose a finite epoch length")
+        steps_per_epoch = len(loaders.train)
     if max_batches is not None:
         steps_per_epoch = min(steps_per_epoch, max_batches)
     if steps_per_epoch <= 0:
@@ -209,11 +214,11 @@ def _effective_steps_per_epoch(
     return steps_per_epoch
 
 
-def _batch_size(split: SplitData) -> int | None:
-    loader_batch_size = getattr(split.dataloader, "batch_size", None)
+def _batch_size(loader: object) -> int | None:
+    loader_batch_size = getattr(loader, "batch_size", None)
     if isinstance(loader_batch_size, int):
         return loader_batch_size
-    sampler = getattr(split.dataloader, "batch_sampler", None)
+    sampler = getattr(loader, "batch_sampler", None)
     for attribute in ("batch_size", "base_batch_size"):
         value = getattr(sampler, attribute, None)
         if isinstance(value, int):
@@ -221,8 +226,8 @@ def _batch_size(split: SplitData) -> int | None:
     return None
 
 
-def _resolve_monitor(config: StochaflowConfig, bundle: DataBundle) -> str:
-    if bundle.valid is None:
+def _resolve_monitor(config: StochaflowConfig, loaders: DataLoaders) -> str:
+    if loaders.validation is None:
         return "train_loss"
     return config.trainer.early_stopping.monitor
 
@@ -231,71 +236,16 @@ def _resolve_resume_checkpoint(
     resume: Path | None,
     *,
     output_root: str | Path,
-    fold_index: int | None = None,
 ) -> Path | None:
     if resume is None:
         return None
     if resume.is_file():
         return resume
-    search_root = Path(output_root) if resume == Path("latest") else resume
-    if fold_index is not None:
-        return _find_latest_fold_checkpoint(search_root, fold_index=fold_index)
     if resume == Path("latest"):
         return CheckpointManager.find_latest(output_root)
     if resume.is_dir():
         return CheckpointManager.find_latest(resume)
     return resume
-
-
-def _find_latest_fold_checkpoint(root: str | Path, *, fold_index: int) -> Path:
-    """Find the newest latest checkpoint belonging to one fold only."""
-
-    root_path = Path(root)
-    if not root_path.exists():
-        raise FileNotFoundError(f"checkpoint search root does not exist: {root_path}")
-    fold_name = f"fold_{fold_index:02d}"
-    candidates = [
-        path
-        for path in root_path.rglob("latest.pt")
-        if path.parent.name == "checkpoints" and fold_name in path.parts
-    ]
-    if not candidates:
-        raise FileNotFoundError(
-            f"could not find 'latest.pt' for {fold_name} under: {root_path}"
-        )
-    return max(candidates, key=lambda path: path.stat().st_mtime)
-
-
-def _validate_resume_scope(
-    bundles: list[DataBundle],
-    resume: Path | None,
-) -> None:
-    """Reject one-checkpoint-to-many-run resume requests."""
-
-    if len(bundles) <= 1 or resume is None:
-        return
-    if resume != Path("latest") and not resume.is_dir():
-        raise ValueError(
-            "resuming multiple folds requires --resume without a value or a "
-            "directory containing fold-specific checkpoints"
-        )
-
-
-def _configure_run_output(
-    config: StochaflowConfig,
-    *,
-    base_exp_id: str,
-    base_output_dir: Path,
-    bundle: DataBundle,
-) -> None:
-    if bundle.fold_index is not None:
-        output_dir = base_output_dir / f"fold_{bundle.fold_index:02d}"
-        output_dir.mkdir(parents=True, exist_ok=False)
-        config.experiment.exp_id = f"{base_exp_id}_fold_{bundle.fold_index:02d}"
-        config.experiment.output_dir = str(output_dir)
-    else:
-        config.experiment.exp_id = base_exp_id
-        config.experiment.output_dir = str(base_output_dir)
 
 
 def _write_resolved_config(config: StochaflowConfig) -> Path:
@@ -343,40 +293,31 @@ def _restore_training_state(
 def _fit_and_select_best(
     training: TrainingComponents,
     config: StochaflowConfig,
-    bundle: DataBundle,
+    loaders: DataLoaders,
     options: ExperimentRunOptions,
     *,
     start_epoch: int,
     reporter: RichTrainingReporter,
 ) -> TrainingResult:
-    """Fit a bundle, restore its selected checkpoint, and summarize it."""
+    """Fit one run, restore its selected checkpoint, and summarize it."""
 
     early_stopping = config.trainer.early_stopping
     history = training.trainer.fit(
-        bundle.train.dataloader,
+        loaders.train,
         num_epochs=options.num_epochs,
         show_progress=options.show_progress,
         max_batches_per_epoch=_effective_steps_per_epoch(
-            bundle.train,
+            loaders,
             max_batches=options.max_train_batches,
         ),
-        validation_dataloader=(
-            bundle.valid.dataloader if bundle.valid is not None else None
-        ),
-        max_validation_batches=(
-            _effective_steps_per_epoch(
-                bundle.valid,
-                max_batches=options.max_validation_batches,
-            )
-            if bundle.valid is not None
-            else None
-        ),
+        validation_dataloader=loaders.validation,
+        max_validation_batches=options.max_validation_batches,
         start_epoch=start_epoch,
         close_logger=False,
         early_stopping_patience=(
             early_stopping.patience if early_stopping.enabled else None
         ),
-        early_stopping_monitor=_resolve_monitor(config, bundle),
+        early_stopping_monitor=_resolve_monitor(config, loaders),
         early_stopping_mode=early_stopping.mode,
         early_stopping_min_delta=early_stopping.min_delta,
         reporter=reporter,
@@ -402,29 +343,26 @@ def _fit_and_select_best(
 
 def _evaluate_test_split(
     training: TrainingComponents,
-    bundle: DataBundle,
+    loaders: DataLoaders,
     options: ExperimentRunOptions,
     *,
     reporter: RichTrainingReporter,
 ) -> float | None:
-    if bundle.test is None:
+    if loaders.test is None:
         return None
     metrics = training.trainer.evaluate_epoch(
-        bundle.test.dataloader,
+        loaders.test,
         show_progress=options.show_progress,
-        max_batches=_effective_steps_per_epoch(
-            bundle.test,
-            max_batches=options.max_test_batches,
-        ),
+        max_batches=options.max_test_batches,
         metric_prefix="test",
         reporter=reporter,
     )
     return metrics["loss"]
 
 
-def _run_single_bundle(
+def _run_single_run(
     config: StochaflowConfig,
-    bundle: DataBundle,
+    loaders: DataLoaders,
     options: ExperimentRunOptions,
 ) -> None:
     config.trainer.num_epochs = options.num_epochs
@@ -435,7 +373,7 @@ def _run_single_bundle(
     training = build_training_components(
         config,
         steps_per_epoch=_effective_steps_per_epoch(
-            bundle.train,
+            loaders,
             max_batches=options.max_train_batches,
         ),
         num_epochs=options.num_epochs,
@@ -450,10 +388,10 @@ def _run_single_bundle(
                 exp_id=config.experiment.exp_id,
                 device=str(training.trainer.device),
                 output_dir=config.experiment.output_dir,
-                train_size=_dataset_size(bundle.train),
-                valid_size=_dataset_size(bundle.valid),
-                test_size=_dataset_size(bundle.test),
-                batch_size=_batch_size(bundle.train),
+                train_size=_dataset_size(loaders.train),
+                valid_size=_dataset_size(loaders.validation),
+                test_size=_dataset_size(loaders.test),
+                batch_size=_batch_size(loaders.train),
             )
         )
         start_epoch = _restore_training_state(
@@ -464,14 +402,14 @@ def _run_single_bundle(
         result = _fit_and_select_best(
             training,
             config,
-            bundle,
+            loaders,
             options,
             start_epoch=start_epoch,
             reporter=reporter,
         )
         test_loss = _evaluate_test_split(
             training,
-            bundle,
+            loaders,
             options,
             reporter=reporter,
         )
@@ -517,7 +455,7 @@ def _run_single_bundle(
 
 
 def run_experiment_from_args(args: argparse.Namespace) -> None:
-    """Run one registered single- or multi-dataset experiment."""
+    """Run one registered data builder as one independent experiment."""
 
     config = load_config(args.config)
     if args.output_dir is not None:
@@ -529,42 +467,19 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
         configured_show_progress=config.trainer.show_progress,
     )
     set_seed(config.experiment.seed, deterministic=options.deterministic)
-    bundles = build_data_pipeline(
+    loaders = build_data_loaders(
         config.data,
         seed=config.experiment.seed,
     )
-    _validate_resume_scope(bundles, options.resume_checkpoint)
-    resume_checkpoints = [
-        _resolve_resume_checkpoint(
-            options.resume_checkpoint,
-            output_root=config.experiment.output_dir,
-            fold_index=bundle.fold_index,
-        )
-        for bundle in bundles
-    ]
-    base_exp_id, base_output_dir = _make_timestamped_output_dir(
+    resume_checkpoint = _resolve_resume_checkpoint(
+        options.resume_checkpoint,
+        output_root=config.experiment.output_dir,
+    )
+    exp_id, output_dir = _make_timestamped_output_dir(
         config.experiment.output_dir
     )
-
-    for bundle, resume_checkpoint in zip(
-        bundles,
-        resume_checkpoints,
-        strict=True,
-    ):
-        run_config = deepcopy(config)
-        _configure_run_output(
-            run_config,
-            base_exp_id=base_exp_id,
-            base_output_dir=base_output_dir,
-            bundle=bundle,
-        )
-        run_options = replace(
-            options,
-            resume_checkpoint=resume_checkpoint,
-        )
-        set_seed(run_config.experiment.seed, deterministic=options.deterministic)
-        _run_single_bundle(
-            run_config,
-            bundle,
-            run_options,
-        )
+    config.experiment.exp_id = exp_id
+    config.experiment.output_dir = str(output_dir)
+    options = replace(options, resume_checkpoint=resume_checkpoint)
+    set_seed(config.experiment.seed, deterministic=options.deterministic)
+    _run_single_run(config, loaders, options)
