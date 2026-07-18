@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sized
+from collections.abc import Iterable, Iterator, Sized
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -39,6 +39,10 @@ class DataLoaders:
             loader = getattr(self, role)
             if loader is not None and not isinstance(loader, Iterable):
                 raise TypeError(f"{role} loader must be iterable")
+            if loader is not None and isinstance(loader, Iterator):
+                raise TypeError(
+                    f"{role} loader must be re-iterable, not a one-shot iterator"
+                )
         if self.steps_per_epoch is not None:
             if (
                 not isinstance(self.steps_per_epoch, int)

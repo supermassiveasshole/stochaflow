@@ -16,14 +16,21 @@ from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog, RegistryError
 
 
+class ReiterableStream:
+    def __iter__(self):
+        while True:
+            yield {"state": 1, "condition": {"value": 2}}
+
+
+class FiniteIterable:
+    def __iter__(self):
+        yield from (1, 2)
+
+
 @REGISTRIES.data_builders.register("test_streaming_builder")
 class StreamingBuilder(DataBuilder):
     def build(self) -> DataLoaders:
-        def stream():
-            while True:
-                yield {"state": 1, "condition": {"value": 2}}
-
-        return DataLoaders(train=stream(), steps_per_epoch=3)
+        return DataLoaders(train=ReiterableStream(), steps_per_epoch=3)
 
 
 @REGISTRIES.data_builders.register("test_wrong_result_builder")
@@ -44,8 +51,8 @@ def test_context_copies_params() -> None:
 
 def test_sized_and_streaming_loaders_validate_epoch_length() -> None:
     sized = DataLoaders(train=[1, 2])
-    finite_generator = DataLoaders(
-        train=(value for value in [1, 2]),
+    finite_iterable = DataLoaders(
+        train=FiniteIterable(),
         steps_per_epoch=2,
     )
     streaming = build_data_loaders(
@@ -54,7 +61,8 @@ def test_sized_and_streaming_loaders_validate_epoch_length() -> None:
     )
 
     assert sized.steps_per_epoch is None
-    assert list(finite_generator.train) == [1, 2]
+    assert list(finite_iterable.train) == [1, 2]
+    assert list(finite_iterable.train) == [1, 2]
     assert streaming.steps_per_epoch == 3
     assert next(iter(streaming.train))["condition"] == {"value": 2}
 
@@ -63,7 +71,9 @@ def test_data_loaders_reject_invalid_values() -> None:
     with pytest.raises(TypeError, match="train loader must be iterable"):
         DataLoaders(train=object())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="expose len"):
-        DataLoaders(train=iter([1]))
+        DataLoaders(train=FiniteIterable())
+    with pytest.raises(TypeError, match="re-iterable"):
+        DataLoaders(train=iter([1]), steps_per_epoch=1)
     with pytest.raises(ValueError, match="positive"):
         DataLoaders(train=[1], steps_per_epoch=0)
     with pytest.raises(ValueError, match="must not exceed"):

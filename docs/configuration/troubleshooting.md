@@ -131,7 +131,8 @@ TrainingStrategy/当前 tensor train step、模型输入输出契约彼此一致
 ### `sampling.shape is required`
 
 当前 DDPM/DDIM tensor sampler 需要固定 shape。把单样本形状（不含 batch 维）写入
-`sampling.shape`。该值与 DataBuilder 独立，外部 sampling 配置可以覆盖它。
+`sampling.shape`。该值与 DataBuilder 独立，外部 sampling 配置可以覆盖它。训练配置未
+声明 shape 时会跳过默认的训练后采样；显式运行 sampling CLI 仍会报告此错误。
 
 ### image writer 报 NCHW 或通道错误
 

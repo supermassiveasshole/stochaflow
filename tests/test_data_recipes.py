@@ -11,7 +11,7 @@ import pytest
 from torch.utils.data import Dataset
 
 from stochaflow.data import build_data_loaders
-from stochaflow.data.sources import build_image_source
+from stochaflow.data.sources import SourceDatasets, build_image_source
 from stochaflow.utils.config import ComponentConfig, ConfigError
 
 
@@ -374,3 +374,55 @@ def test_multi_resolution_batches_are_homogeneous_and_weighted(
 
     assert counts["landscape"] / sum(counts.values()) == pytest.approx(0.8, abs=0.1)
     assert len(next(iter(loaders.train))[0]) in {2, 4}
+
+
+def test_multi_resolution_holdout_ignores_native_validation_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stochaflow.data import builtin
+
+    def source(raw, **kwargs):
+        del kwargs
+        validation = (
+            _TinyVisionDataset(2)
+            if raw["dataset"] == "Flowers102"
+            else None
+        )
+        return SourceDatasets(
+            train=_TinyVisionDataset(6),
+            validation=validation,
+            test=_TinyVisionDataset(2),
+        )
+
+    monkeypatch.setattr(builtin, "build_image_source", source)
+    component = ComponentConfig(
+        name="multi_resolution_image",
+        params={
+            "sources": [
+                {
+                    "id": "digits",
+                    "source": {"kind": "torchvision", "dataset": "MNIST"},
+                },
+                {
+                    "id": "flowers",
+                    "source": {
+                        "kind": "torchvision",
+                        "dataset": "Flowers102",
+                    },
+                },
+            ],
+            "partition": {"mode": "holdout", "validation_size": 2},
+            "image": {"channels": 3, "normalize": False},
+            "batching": {
+                "buckets": [{"name": "square", "height": 8, "width": 8}],
+                "base_bucket": "square",
+            },
+            "loader": _loader_params(),
+        },
+    )
+
+    loaders = build_data_loaders(component, seed=3)
+
+    assert len(cast(Any, loaders.train).dataset) == 10
+    assert loaders.validation is not None
+    assert len(cast(Any, loaders.validation).dataset) == 2

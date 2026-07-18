@@ -416,7 +416,10 @@ def _run_single_run(
         stopped_early = training.trainer.stopped_early
 
         artifact_paths: dict[str, Path] | None = None
-        if options.sample_after_training:
+        if (
+            options.sample_after_training
+            and config.sampling.shape is not None
+        ):
             if result.best_checkpoint is None:
                 raise RuntimeError(
                     "post-training sampling requires a selected best checkpoint"

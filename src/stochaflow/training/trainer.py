@@ -1,10 +1,12 @@
 """Generic training loop utilities."""
 
 import time
-from collections.abc import Callable, Iterable, Mapping, Sized
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sized
+from copy import copy
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -41,11 +43,35 @@ def _move_to_device(batch: Batch, device: torch.device) -> Batch:
     if isinstance(batch, torch.Tensor):
         return batch.to(device)
     if isinstance(batch, Mapping):
-        return {key: _move_to_device(value, device) for key, value in batch.items()}
+        moved_items = {
+            key: _move_to_device(value, device) for key, value in batch.items()
+        }
+        if isinstance(batch, MutableMapping):
+            moved_mapping = copy(batch)
+            moved_mapping.clear()
+            moved_mapping.update(moved_items)
+            return moved_mapping
+        try:
+            mapping_type = cast(
+                Callable[[Mapping[Any, Any]], Mapping[Any, Any]],
+                type(batch),
+            )
+            return mapping_type(moved_items)
+        except TypeError:
+            return moved_items
     if isinstance(batch, tuple):
-        return tuple(_move_to_device(item, device) for item in batch)
+        moved_tuple = tuple(_move_to_device(item, device) for item in batch)
+        if hasattr(batch, "_fields"):
+            return type(batch)(*moved_tuple)
+        return moved_tuple
     if isinstance(batch, list):
-        return [_move_to_device(item, device) for item in batch]
+        moved_list = [_move_to_device(item, device) for item in batch]
+        if type(batch) is list:
+            return moved_list
+        try:
+            return type(batch)(moved_list)
+        except TypeError:
+            return moved_list
     return batch
 
 
@@ -301,15 +327,17 @@ class Trainer:
                 enabled=show_progress,
             )
 
-        iterator = dataloader
+        iterator = (
+            islice(dataloader, max_batches)
+            if max_batches is not None
+            else iter(dataloader)
+        )
 
         total_loss = 0.0
         num_batches = 0
         started_at = time.perf_counter()
         try:
             for batch in iterator:
-                if max_batches is not None and num_batches >= max_batches:
-                    break
                 batch_loss = self.train_batch(batch)
                 train_step_output = self._last_train_step_output
                 if train_step_output is None:
@@ -389,7 +417,11 @@ class Trainer:
                 enabled=show_progress,
             )
 
-        iterator = dataloader
+        iterator = (
+            islice(dataloader, max_batches)
+            if max_batches is not None
+            else iter(dataloader)
+        )
 
         self.model.eval()
         total_loss = 0.0
@@ -398,8 +430,6 @@ class Trainer:
         try:
             with torch.no_grad():
                 for batch in iterator:
-                    if max_batches is not None and num_batches >= max_batches:
-                        break
                     prepared_batch = _move_to_device(batch, self.device)
                     output = _normalize_train_step_result(
                         self.train_step_fn(

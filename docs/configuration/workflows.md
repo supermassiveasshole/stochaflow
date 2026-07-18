@@ -25,7 +25,8 @@ uv run stochaflow train \
 ```
 
 `--limit-*` 只截断本次运行，不修改 YAML。若想测试最终采样，移除
-`--skip-final-sample`。
+`--skip-final-sample`；若 `sampling.shape` 为 null，训练后默认不执行固定 shape
+采样。
 
 ### CLI 覆盖优先级
 

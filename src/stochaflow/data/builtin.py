@@ -599,7 +599,11 @@ class MultiResolutionImageDataBuilder(DataBuilder):
         ]
         combined = SourceDatasets(
             train=cast(Dataset[Any], _combine_sources(sources, "train")),
-            validation=_combine_sources(sources, "validation"),
+            validation=(
+                _combine_sources(sources, "validation")
+                if self.config.partition.mode == "official"
+                else None
+            ),
             test=_combine_sources(sources, "test"),
         )
         partitions = partition_datasets(

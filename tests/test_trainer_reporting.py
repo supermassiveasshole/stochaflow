@@ -1,5 +1,7 @@
 """Tests for trainer reporting and validation checkpoint behavior."""
 
+from typing import NamedTuple
+
 import pytest
 import torch
 import torch.nn as nn
@@ -103,6 +105,21 @@ class EpochAwareLoader:
 
     def __iter__(self):
         yield torch.tensor([[1.0]]), torch.tensor([[1.0]])
+
+
+class CountingLoader:
+    def __init__(self) -> None:
+        self.num_pulls = 0
+
+    def __iter__(self):
+        for _ in range(5):
+            self.num_pulls += 1
+            yield torch.tensor([[1.0]]), torch.tensor([[1.0]])
+
+
+class NamedBatch(NamedTuple):
+    inputs: torch.Tensor
+    targets: torch.Tensor
 
 
 class RecordingDiagnostic(TrainingDiagnostic):
@@ -324,6 +341,62 @@ def test_structured_batch_reaches_custom_train_step(tmp_path) -> None:
     }
 
     trainer.train_epoch([batch], show_progress=False)
+
+    assert len(observed) == 1
+
+
+def test_batch_limit_does_not_consume_an_extra_item(tmp_path) -> None:
+    model = TinyRegressor()
+    trainer = Trainer(
+        model=model,
+        optimizer=torch.optim.SGD(model.parameters(), lr=0.01),
+        criterion=nn.MSELoss(),
+        device="cpu",
+        checkpoint_dir=tmp_path / "checkpoints",
+    )
+    train_loader = CountingLoader()
+    validation_loader = CountingLoader()
+
+    trainer.train_epoch(train_loader, show_progress=False, max_batches=2)
+    trainer.evaluate_epoch(
+        validation_loader,
+        show_progress=False,
+        max_batches=2,
+        log_metrics=False,
+    )
+
+    assert train_loader.num_pulls == 2
+    assert validation_loader.num_pulls == 2
+
+
+def test_device_transfer_preserves_namedtuple_batch(tmp_path) -> None:
+    model = TinyRegressor()
+    observed: list[NamedBatch] = []
+
+    def train_step(
+        model: nn.Module,
+        criterion: nn.Module,
+        batch,
+        device: torch.device,
+    ) -> torch.Tensor:
+        assert isinstance(batch, NamedBatch)
+        assert batch.inputs.device == device
+        observed.append(batch)
+        return criterion(model(batch.inputs), batch.targets)
+
+    trainer = Trainer(
+        model=model,
+        optimizer=torch.optim.SGD(model.parameters(), lr=0.01),
+        criterion=nn.MSELoss(),
+        device="cpu",
+        train_step_fn=train_step,
+        checkpoint_dir=tmp_path / "checkpoints",
+    )
+
+    trainer.train_epoch(
+        [NamedBatch(torch.tensor([[1.0]]), torch.tensor([[0.0]]))],
+        show_progress=False,
+    )
 
     assert len(observed) == 1
 

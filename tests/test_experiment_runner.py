@@ -232,6 +232,37 @@ def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):
     assert logger.closed
 
 
+def test_runner_skips_default_final_sample_without_shape(monkeypatch, tmp_path):
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "test"
+    config.sampling.shape = None
+    trainer = RecordingTrainer()
+    trainer.best_checkpoint_path = tmp_path / "checkpoints" / "best.pt"
+    logger = RecordingLogger()
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+
+    def unexpected_sampling(**kwargs):
+        del kwargs
+        raise AssertionError("final sampling must be skipped without a shape")
+
+    monkeypatch.setattr(experiment_runner, "run_sampling", unexpected_sampling)
+    args = _args()
+    args.skip_final_sample = False
+
+    experiment_runner._run_single_run(
+        config,
+        _loaders(),
+        _options(config, args),
+    )
+
+    assert logger.closed
+
+
 def test_runner_closes_logger_when_resume_loading_fails(monkeypatch, tmp_path):
     config = load_config(Path("configs/ddpm_mnist.yaml"))
     config.experiment.output_dir = str(tmp_path)

@@ -148,6 +148,8 @@ class DataBuilder(ABC):
   `REGISTRIES.data_builders` 构建；
 - `DataBuilderContext` 只提供复制后的 `params` 与实验 seed；
 - `DataLoaders` 只表达 Trainer 真正需要的 train/validation/test 角色；
+- loader 必须可重复迭代；一次性 generator/iterator 应包装为每次 `__iter__()` 创建新
+  iterator 的对象；
 - `steps_per_epoch` 只为没有 `len()` 的 iterable/streaming train loader 提供有限 epoch；
   有 `len()` 时可以省略；显式值必须为正；
 - builder 每次只描述一次训练运行，不返回 `list[DataBundle]`，核心不理解 fold index 或
@@ -279,7 +281,8 @@ Hugging Face Dataset 和 WebDataset 留给自定义 DataBuilder 或后续真实�
   不描述它们的内部拓扑；
 - bare Tensor、mapping、tuple/list、condition dict 和自定义对象 batch 能原样到达
   TrainingStrategy；
-- iterable loader 使用 `steps_per_epoch` 工作，缺少有限 epoch 信息时明确失败；
+- 可重复 iterable loader 使用 `steps_per_epoch` 工作，缺少有限 epoch 信息或直接返回
+  一次性 iterator 时明确失败；
 - `image` 可从 torchvision 与本地文件夹训练，split、transform、worker seed 和默认
   batch 约定有测试；
 - `super_resolution` 保证在线 bicubic 与 paired folder 的 HR/LR 对齐，并输出

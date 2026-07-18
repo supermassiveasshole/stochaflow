@@ -20,9 +20,10 @@ class DataLoaders:
     steps_per_epoch: int | None = None
 ```
 
-loader 只需可迭代。训练 loader 没有 `len()` 时，builder 必须显式提供正数
-`steps_per_epoch`；有长度时可省略。`--limit-batches` 会在最终训练步数上取更小值。
-validation 和 test 不要求长度，CLI limit 仍可限制无限或未知长度的 iterable。
+loader 必须可重复迭代，不能直接返回一次性的 generator/iterator。训练 loader 没有
+`len()` 时，builder 必须显式提供正数 `steps_per_epoch`；有长度时可省略。
+`--limit-batches` 会在最终训练步数上取更小值。validation 和 test 不要求长度，CLI
+limit 仍可限制无限或未知长度的可重复 iterable。
 
 ## `image` recipe
 

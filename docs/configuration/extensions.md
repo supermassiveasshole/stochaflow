@@ -89,8 +89,9 @@ data:
 ```
 
 `DataBuilderContext.params` 是调用方配置的深拷贝，`seed` 是实验种子。`build()` 必须
-返回一个 `DataLoaders`；train loader 必须可迭代，并通过自身 `len()` 或显式
-`steps_per_epoch` 给出有限 epoch。validation/test 可以是未知长度的 iterable。
+返回一个 `DataLoaders`；所有 loader 必须可重复迭代，不能直接返回一次性的 generator。
+train loader 通过自身 `len()` 或显式 `steps_per_epoch` 给出有限 epoch。
+validation/test 可以是未知长度的可重复 iterable。
 
 每个 epoch 开始时，Trainer 会对 train loader 的 `sampler` 和 `batch_sampler` 做去重后
 的 duck-typed `set_epoch(epoch)` 调用。其他 Dataset 或 DataLoader 属性只用于
