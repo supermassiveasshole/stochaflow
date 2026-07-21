@@ -1,4 +1,6 @@
-"""Built-in training objectives."""
+"""Built-in reusable training objectives."""
+
+from typing import Protocol, cast, runtime_checkable
 
 import torch
 import torch.nn as nn
@@ -7,39 +9,80 @@ import torch.nn.functional as F
 from stochaflow.utils.registry import REGISTRIES
 
 
-@REGISTRIES.objectives.register("ddpm_epsilon")
-class DDPMEpsilonObjective(nn.Module):
-    """Mean-squared-error objective for epsilon prediction."""
+@runtime_checkable
+class PerSampleObjective(Protocol):
+    """Optional capability for diagnostics needing per-sample losses."""
+
+    def per_sample_loss(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return one scalar loss per leading batch item."""
+
+        ...
+
+
+@REGISTRIES.objectives.register("mse")
+class MSEObjective(nn.Module):
+    """Task-neutral mean-squared-error objective."""
 
     def __init__(self, reduction: str = "mean") -> None:
         super().__init__()
-        if reduction not in {"mean", "sum", "none"}:
-            raise ValueError("DDPM epsilon objective reduction must be mean, sum, or none")
+        if reduction not in {"mean", "sum"}:
+            raise ValueError("MSE objective reduction must be mean or sum")
         self.reduction = reduction
 
-    def compute(
+    def per_sample_loss(
         self,
-        predicted_noise: torch.Tensor,
-        noise: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return the configured loss and batch-aligned per-sample losses."""
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return batch-aligned MSE values for diagnostics."""
 
-        elementwise = F.mse_loss(predicted_noise, noise, reduction="none")
+        elementwise = F.mse_loss(prediction, target, reduction="none")
         if elementwise.ndim == 0:
-            raise ValueError("DDPM epsilon objective requires a batch dimension")
-        per_sample = elementwise.reshape(elementwise.shape[0], -1).mean(dim=1)
-        if self.reduction == "mean":
-            loss = elementwise.mean()
-        elif self.reduction == "sum":
-            loss = elementwise.sum()
-        else:
-            loss = elementwise
-        return loss, per_sample
+            raise ValueError("per-sample MSE requires a batch dimension")
+        flattened = elementwise.reshape(elementwise.shape[0], -1)
+        if self.reduction == "sum":
+            return flattened.sum(dim=1)
+        return flattened.mean(dim=1)
 
-    def forward(self, predicted_noise: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-        """Compare predicted and target Gaussian noise."""
+    def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Compare prediction and target with configured scalar reduction."""
 
-        return self.compute(predicted_noise, noise)[0]
+        return F.mse_loss(prediction, target, reduction=self.reduction)
 
 
-__all__ = ["DDPMEpsilonObjective"]
+def compute_objective(
+    objective: nn.Module,
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Evaluate a generic Objective and its optional per-sample capability."""
+
+    loss_value: object = objective(prediction, target)
+    if not isinstance(loss_value, torch.Tensor):
+        raise TypeError("training objective must return a Tensor")
+    if loss_value.ndim != 0:
+        raise ValueError("training objective must return a scalar Tensor")
+    per_sample_value: object | None = None
+    if isinstance(objective, PerSampleObjective):
+        per_sample_value = cast(
+            object,
+            objective.per_sample_loss(prediction, target),
+        )
+    if per_sample_value is not None:
+        if not isinstance(per_sample_value, torch.Tensor):
+            raise TypeError("per-sample objective capability must return a Tensor")
+        if (
+            per_sample_value.ndim != 1
+            or per_sample_value.shape[0] != prediction.shape[0]
+        ):
+            raise ValueError(
+                "per-sample objective output must match the prediction batch"
+            )
+    return loss_value, per_sample_value
+
+
+__all__ = ["MSEObjective", "PerSampleObjective", "compute_objective"]

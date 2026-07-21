@@ -43,8 +43,8 @@ only as class-level style guidance:
   but it must not absorb unrelated runtime orchestration.
 - **Open-Closed:** core runtime code coordinates stable lifecycles; task and
   algorithm variation belongs in registered components. A compatible
-  DataBuilder, Process, Sampler, SamplingBuilder, model, Loss, or
-  TrainingStrategy must be addable through implementation, registration,
+  DataBuilder, Process, Sampler, SamplingBuilder, TrainingBuilder, model, or
+  Objective must be addable through implementation, registration,
   configuration, and tests without editing core dispatch or adding branches
   keyed by a registered name or concrete class.
 - **Liskov Substitution:** implementations of a public base class or capability
@@ -76,6 +76,23 @@ where the complete task composition is known. In particular:
   bucket, or metadata fields. Do not create universal Dataset/Sampler/DataLoader
   registries or schemas; optional source adapters may exist only as helpers for
   a specific built-in recipe.
+- TrainingBuilder is the training-side composition entrypoint. It assembles a
+  TrainingPlan containing an injected TrainingStrategy, the primary model,
+  optional Process and Objective, and any named auxiliary modules. Core code
+  validates the plan and owns device, mode, optimization, EMA, and checkpoint
+  lifecycles for those assets. TrainingStrategy owns only batch interpretation,
+  model/objective calls, and loss/metric computation; it must not construct,
+  move, freeze, select parameters from, or serialize training assets. Do not
+  create a universal YAML graph for multi-model training: complex composition
+  belongs in a concrete TrainingBuilder's private parameters and Python code.
+  Frozen-teacher distillation follows the same boundary: the Builder constructs,
+  loads, freezes, and declares the teacher as a managed auxiliary module, while
+  the Strategy only combines forward passes and Objectives into one scalar loss.
+  Independent optimizers, alternating updates, or manual backward define a new
+  training-loop family rather than optional Strategy modes.
+  Diagnostics must consume an explicit narrow Strategy capability for any
+  task-specific model invocation; they must not infer a primary model signature
+  from a Process family or a prediction-type field.
 - Process describes a model-free probability path and its mathematical
   capabilities. It must not own a task model, interpret a training batch, or run
   a sampling loop. The `Process` root is a registry and lifecycle boundary, not

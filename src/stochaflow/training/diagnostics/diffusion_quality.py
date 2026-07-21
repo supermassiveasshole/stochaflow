@@ -9,7 +9,6 @@ from typing import Any, cast
 
 import torch
 
-from stochaflow.training.gaussian import GaussianEpsilonTrainingSystem
 from stochaflow.training.diagnostics.config import (
     ProviderSpec,
     SamplerProfileConfig,
@@ -35,11 +34,13 @@ from stochaflow.training.diagnostics.providers.reference import ReferenceMetricS
 from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 from stochaflow.training.diagnostics.runtime import (
     EvaluationGuard,
+    GaussianTrainingRuntime,
     ReconstructionEvaluator,
     SamplerPool,
     SamplerRunner,
     SeedPolicy,
     clean_samples_from_event,
+    gaussian_training_runtime,
 )
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
@@ -145,7 +146,7 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
     def on_fit_start(self, event: FitStartEvent) -> None:
         """Validate providers, construct samplers, and cache real features."""
 
-        system = self._training_system(event.trainer)
+        system = self._training_runtime(event.trainer)
         with self.seed_policy.fork_rng(event.trainer.device):
             self._sampler_pool = SamplerPool(
                 system,
@@ -219,7 +220,7 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
             )
             return
         context = StepMetricContext(
-            process=self._training_system(event.trainer).process,
+            process=self._training_runtime(event.trainer).process,
             diagnostics=diagnostics,
             clean_samples=self._last_clean_batch,
             sample_num=self.config.sampling.sample_num,
@@ -540,13 +541,8 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
             for spec, provider in zip(specs, providers, strict=True):
                 yield spec.name, provider
 
-    def _training_system(self, trainer: Any) -> GaussianEpsilonTrainingSystem:
-        model = getattr(trainer, "model", None)
-        if not isinstance(model, GaussianEpsilonTrainingSystem):
-            raise TypeError(
-                "diffusion_quality requires GaussianEpsilonTrainingSystem"
-            )
-        return model
+    def _training_runtime(self, trainer: Any) -> GaussianTrainingRuntime:
+        return gaussian_training_runtime(trainer)
 
     def _handle_reference_error(
         self,

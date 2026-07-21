@@ -17,17 +17,16 @@ from torch.optim.lr_scheduler import (
     StepLR,
 )
 
-from stochaflow.processes import (
-    DiscreteGaussianDenoisingProcess,
-    GaussianNoiseSchedule,
-    Process,
+from stochaflow.processes import GaussianNoiseSchedule, Process
+from stochaflow.training import (
+    DiagnosticBuildContext,
+    Trainer,
+    TrainingDiagnostic,
+    TrainingPlan,
+    build_training_plan,
+    trainable_parameters,
 )
-from stochaflow.training import DiagnosticBuildContext, Trainer, TrainingDiagnostic
 from stochaflow.training.ema import ExponentialMovingAverage
-from stochaflow.training.gaussian import (
-    GaussianEpsilonTrainingSystem,
-    ddpm_epsilon_train_step,
-)
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
     ComponentConfig,
@@ -47,6 +46,7 @@ BUILTIN_COMPONENT_MODULES = (
     "stochaflow.models",
     "stochaflow.processes",
     "stochaflow.sampling",
+    "stochaflow.training",
     "stochaflow.training.diagnostics",
 )
 
@@ -79,9 +79,9 @@ class TrainingComponents:
     """Fully built training components for an experiment."""
 
     model: nn.Module
-    process: Process
-    training_system: nn.Module
-    objective: nn.Module
+    process: Process | None
+    objective: nn.Module | None
+    plan: TrainingPlan
     optimizer: Optimizer
     lr_scheduler: Any | None
     ema: ExponentialMovingAverage | None
@@ -360,14 +360,6 @@ def build_ema(config: EMAConfig, model: nn.Module) -> ExponentialMovingAverage |
     )
 
 
-def resolve_train_step_fn(objective_name: str):
-    """Resolve the Stage 3 Gaussian training bridge by capability."""
-
-    if objective_name == "ddpm_epsilon":
-        return ddpm_epsilon_train_step
-    return None
-
-
 def resolve_device(device_name: str) -> torch.device:
     """Resolve special device keywords into concrete torch devices."""
 
@@ -389,21 +381,20 @@ def build_training_components(
     """Build model-side training components without dataset I/O side effects."""
 
     model = build_model(config.model)
-    process_declaration = config.process
-    if process_declaration is None:
-        raise TypeError(
-            "Stage 3 Gaussian epsilon training requires "
-            "DiscreteGaussianDenoisingProcess, but process is not configured"
-        )
-    process = build_process(process_declaration)
-    if not isinstance(process, DiscreteGaussianDenoisingProcess):
-        raise TypeError(
-            "Stage 3 Gaussian epsilon training requires a compatible "
-            "DiscreteGaussianDenoisingProcess"
-        )
-    training_system = GaussianEpsilonTrainingSystem(model, process)
-    objective = build_objective(config.objective)
-    optimizer = build_optimizer(config.optimizer, training_system.parameters())
+    process = build_process(config.process) if config.process is not None else None
+    objective = (
+        build_objective(config.objective) if config.objective is not None else None
+    )
+    plan = build_training_plan(
+        config.training,
+        primary_model=model,
+        process=process,
+        objective=objective,
+        model_factory=build_model,
+        objective_factory=build_objective,
+    )
+    parameters = trainable_parameters(plan)
+    optimizer = build_optimizer(config.optimizer, parameters)
     lr_scheduler = build_lr_scheduler(
         config.lr_scheduler,
         optimizer,
@@ -414,6 +405,10 @@ def build_training_components(
     checkpoint_manager = CheckpointManager(
         model=model,
         process=process,
+        objective=objective,
+        auxiliary_modules={
+            name: asset.module for name, asset in plan.auxiliary_modules.items()
+        },
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
         ema=ema,
@@ -434,19 +429,15 @@ def build_training_components(
             else None
         ),
     )
-    train_step_fn = resolve_train_step_fn(config.objective.name)
     trainer = Trainer(
-        model=training_system,
+        plan=plan,
         optimizer=optimizer,
-        criterion=objective,
         device=device,
-        train_step_fn=train_step_fn,
         lr_scheduler=lr_scheduler,
         lr_scheduler_interval=(
             config.lr_scheduler.interval if lr_scheduler is not None else "step"
         ),
         ema=ema,
-        ema_model=model,
         max_grad_norm=config.trainer.max_grad_norm,
         logger=logger,
         diagnostics=diagnostics,
@@ -459,8 +450,8 @@ def build_training_components(
     return TrainingComponents(
         model=model,
         process=process,
-        training_system=training_system,
         objective=objective,
+        plan=plan,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
         ema=ema,

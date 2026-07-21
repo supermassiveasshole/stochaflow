@@ -83,7 +83,7 @@ def resolve_sampling_inputs(
                     "a sampling-only config requires an explicit --checkpoint"
                 )
             sampling_overlay = raw_external
-        elif {"experiment", "data", "model", "objective"} <= keys:
+        elif {"experiment", "data", "model", "training"} <= keys:
             external = load_config_dict(raw_external)
         else:
             raise ConfigError(

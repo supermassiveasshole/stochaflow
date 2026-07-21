@@ -82,6 +82,7 @@ from stochaflow.extensions import (
     SamplingBuilder,
     SamplingOutput,
     SamplingArtifactWriter,
+    TrainingBuilder,
 )
 
 
@@ -118,6 +119,12 @@ class ConfigExtensionBuilder(DataBuilder):
 class ConfigExtensionWriter(SamplingArtifactWriter):
     def write(self, context):
         raise NotImplementedError
+
+
+@REGISTRIES.training_builders.register("config_extension_training")
+class ConfigExtensionTrainingBuilder(TrainingBuilder):
+    def build(self):
+        raise NotImplementedError
 """,
         encoding="utf-8",
     )
@@ -151,6 +158,9 @@ class ConfigExtensionWriter(SamplingArtifactWriter):
     assert REGISTRIES.sampling_artifact_writers.resolve(
         "config_extension_writer"
     ).__name__ == "ConfigExtensionWriter"
+    assert REGISTRIES.training_builders.resolve(
+        "config_extension_training"
+    ).__name__ == "ConfigExtensionTrainingBuilder"
 
 
 def test_config_rejects_removed_data_modules_without_mutating_input() -> None:
@@ -228,7 +238,9 @@ def test_load_ddim_cifar10_config() -> None:
     assert config.sampling.builder is not None
     assert config.sampling.builder.params["sampler"]["name"] == "ddim"
     assert config.sampling.builder.params["sampler"]["params"]["eta"] == 0.0
-    assert config.objective.name == "ddpm_epsilon"
+    assert config.training.name == "gaussian_denoising"
+    assert config.objective is not None
+    assert config.objective.name == "mse"
 
 
 def test_legacy_diffusion_config_is_rejected() -> None:
@@ -278,11 +290,42 @@ def test_config_to_dict_preserves_top_level_sections() -> None:
     assert "experiment" in data
     assert data["extensions"] == {"modules": []}
     assert "model" in data
+    assert "training" in data
     assert "ema" in data
     assert "sampling" in data
     assert "lr_scheduler" in data
     assert "diagnostics" in data
     assert "trainer" in data
+
+
+@pytest.mark.parametrize("declaration", [None, "missing"])
+def test_objective_is_optional_and_resolves_to_null(declaration: object) -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    if declaration == "missing":
+        raw.pop("objective")
+    else:
+        raw["objective"] = None
+
+    config = load_config_dict(raw)
+
+    assert config.objective is None
+    assert config.to_dict()["objective"] is None
+
+
+def test_config_requires_training_declaration() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw.pop("training")
+
+    with pytest.raises(TypeError, match="training"):
+        load_config_dict(raw)
+
+
+def test_config_rejects_empty_training_name() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["training"]["name"] = ""
+
+    with pytest.raises(ConfigError, match="training.name"):
+        load_config_dict(raw)
 
 
 def test_load_multi_source_weighted_config() -> None:

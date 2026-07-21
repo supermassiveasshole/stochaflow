@@ -133,7 +133,8 @@ class StochaflowConfig:
     experiment: ExperimentConfig
     data: ComponentConfig
     model: ComponentConfig
-    objective: ComponentConfig
+    training: ComponentConfig
+    objective: ComponentConfig | None = None
     process: ComponentConfig | None = None
     extensions: ExtensionsConfig = field(default_factory=ExtensionsConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
@@ -153,6 +154,17 @@ class StochaflowConfig:
             raise ConfigError("data.name must be a non-empty registry name")
         if not isinstance(cast(object, self.data.params), dict):
             raise ConfigError("data.params must be a mapping")
+        training_name = cast(object, self.training.name)
+        if not isinstance(training_name, str) or not training_name.strip():
+            raise ConfigError("training.name must be a non-empty registry name")
+        if not isinstance(cast(object, self.training.params), dict):
+            raise ConfigError("training.params must be a mapping")
+        if self.objective is not None:
+            objective_name = cast(object, self.objective.name)
+            if not isinstance(objective_name, str) or not objective_name.strip():
+                raise ConfigError("objective.name must be a non-empty registry name")
+            if not isinstance(cast(object, self.objective.params), dict):
+                raise ConfigError("objective.params must be a mapping")
         for index, declared_module in enumerate(self.extensions.modules):
             module = cast(object, declared_module)
             if not isinstance(module, str) or not module.strip():

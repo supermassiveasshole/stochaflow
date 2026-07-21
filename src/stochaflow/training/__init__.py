@@ -1,5 +1,16 @@
-"""Training package."""
+"""Training package and public extension contracts."""
 
+from .builder import (
+    ManagedTrainingModule,
+    TrainingBuilder,
+    TrainingBuilderContext,
+    TrainingPlan,
+    build_training_plan,
+    trainable_parameters,
+    training_module_roots,
+    validate_training_plan,
+)
+from .builtin import SupervisedTrainingBuilder, SupervisedTrainingStrategy
 from .diagnostics import (
     ContextAwareDiagnostic,
     DiagnosticBuildContext,
@@ -9,25 +20,53 @@ from .diagnostics import (
     TrainingDiagnostic,
 )
 from .ema import ExponentialMovingAverage
-from .gaussian import GaussianEpsilonTrainingOutput, GaussianEpsilonTrainingSystem
-from .objectives import DDPMEpsilonObjective
+from .gaussian import (
+    GaussianDiagnosticSemantics,
+    GaussianDenoisingTrainingBuilder,
+    GaussianDenoisingTrainingStrategy,
+)
+from .objectives import MSEObjective, PerSampleObjective, compute_objective
 from .reporting import FinalSummary, RichTrainingReporter, RunSummary
-from .trainer import Trainer, TrainStepOutput
+from .strategy import (
+    Batch,
+    ScalarMetric,
+    TrainStepOutput,
+    TrainingStrategy,
+    validate_train_step_output,
+)
+from .trainer import Trainer
 
 __all__ = [
-    "ExponentialMovingAverage",
-    "DDPMEpsilonObjective",
-    "GaussianEpsilonTrainingOutput",
-    "GaussianEpsilonTrainingSystem",
+    "Batch",
     "ContextAwareDiagnostic",
     "DiagnosticBuildContext",
-    "FitStartEvent",
+    "ExponentialMovingAverage",
     "FinalSummary",
+    "FitStartEvent",
+    "GaussianDiagnosticSemantics",
+    "GaussianDenoisingTrainingBuilder",
+    "GaussianDenoisingTrainingStrategy",
+    "MSEObjective",
+    "ManagedTrainingModule",
+    "PerSampleObjective",
     "RichTrainingReporter",
     "RunSummary",
-    "Trainer",
+    "ScalarMetric",
+    "SupervisedTrainingBuilder",
+    "SupervisedTrainingStrategy",
     "TrainBatchEndEvent",
     "TrainEpochEndEvent",
     "TrainStepOutput",
+    "Trainer",
+    "TrainingBuilder",
+    "TrainingBuilderContext",
     "TrainingDiagnostic",
+    "TrainingPlan",
+    "TrainingStrategy",
+    "build_training_plan",
+    "compute_objective",
+    "trainable_parameters",
+    "training_module_roots",
+    "validate_train_step_output",
+    "validate_training_plan",
 ]

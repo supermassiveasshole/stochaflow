@@ -7,7 +7,7 @@ sampling for MNIST, CIFAR-10, and Oxford Flowers 102.
 
 The codebase is organized around registries and config-driven components: thin
 data builders, models, optional probability processes, complete samplers, task sampling
-builders, artifact writers, objectives, optimizers, diagnostics, and loggers
+builders, training builders, artifact writers, objectives, optimizers, diagnostics, and loggers
 are selected from YAML.
 
 ## Scope
@@ -59,6 +59,8 @@ Implemented:
 - torchvision and stable local image-folder sources for built-in recipes
 - recipe-local holdout/K-fold, multi-source mixtures, and dynamic pixel batches
 - registered tensor, image, and user-defined sampling artifact writers
+- registered TrainingBuilder composition with thin task-specific TrainingStrategy
+- reusable scalar Objectives and managed auxiliary modules for frozen-teacher distillation
 - UNet backbone with optional attention blocks
 - EMA tracking and EMA sampling
 - warmup-cosine and common PyTorch optimizer LR schedulers
@@ -70,7 +72,7 @@ Implemented:
 Still evolving:
 
 - faster samplers and broader learned/perceptual evaluation metrics
-- registered TrainingStrategy and Loss contracts
+- multi-optimizer and manual-optimization training loop families
 - probability-flow ODE, flow-matching, rectified-flow, and continuous-flow
   implementations beyond the current diffusion baseline
 
@@ -294,8 +296,9 @@ Important sections:
 - `experiment`: run name, seed, and output directory
 - `data`: registered builder name plus builder-owned parameters
 - `model`: registered model name and constructor parameters
+- `training`: registered TrainingBuilder and builder-owned task parameters
 - `process`: optional registered model-free probability process and its parameters
-- `objective`: training objective
+- `objective`: optional reusable scalar training objective
 - `optimizer`: optimizer name and hyperparameters
 - `lr_scheduler`: optional optimizer learning-rate scheduler
 - `ema`: optional exponential moving average tracking and sampling policy
@@ -335,8 +338,8 @@ posterior DDPM sampling, and a warmup-cosine optimizer LR schedule.
   processes, and class-based `noise_schedules/` parameterizations.
 
 `src/stochaflow/training/`
-: trainer, the temporary Gaussian training bridge, objectives, diagnostics,
-  reporting, and EMA.
+: TrainingBuilder/Plan/Strategy contracts, built-in supervised and Gaussian
+  training composition, objectives, trainer lifecycle, diagnostics, reporting, and EMA.
 
 `src/stochaflow/sampling/`
 : unified Samplers and observers, task SamplingBuilders, checkpoint sampling

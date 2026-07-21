@@ -14,6 +14,7 @@
 | `processes` | `Process` 类 | `process.name` |
 | `samplers` | `Sampler` 类 | SamplingBuilder 专属参数 |
 | `sampling_builders` | `SamplingBuilder` 类 | `sampling.builder.name` |
+| `training_builders` | `TrainingBuilder` 类 | `training.name` |
 | `objectives` | `torch.nn.Module` 类 | `objective.name` |
 | `optimizers` | `torch.optim.Optimizer` 类 | `optimizer.name` |
 | `lr_schedulers` | scheduler 类或 builder | `lr_scheduler.name` |
@@ -98,9 +99,10 @@ Schedule 返回与 `state_times` 同形的系数，样本 rank 的 broadcast 由
 子模块；检测到 `Parameter`、需要梯度或非法系数会明确失败。marginal、posterior、device
 迁移和 checkpoint 因而始终读取同一份 Process-owned state。
 
-现有 epsilon 训练桥接、`standard_denoising`、DDPM 和 DDIM 都依赖公开的
-`DiscreteGaussianDenoisingProcess`。第三方实现该 Process 接口即可复用这些组件，无需继承
-`DiscreteGaussianProcess`；timestep sampling policy 暂由训练桥接拥有。
+内置 `gaussian_denoising` TrainingBuilder、`standard_denoising` SamplingBuilder、DDPM
+和 DDIM 都依赖公开的 `DiscreteGaussianDenoisingProcess`。第三方实现该 Process 接口即可
+复用这些组件，无需继承 `DiscreteGaussianProcess`；训练 timestep sampling policy 由
+Gaussian TrainingStrategy 拥有。
 
 ```python
 from stochaflow.extensions import (
@@ -270,8 +272,151 @@ class DirectTransformBuilder(SamplingBuilder):
 
 对应配置省略 `process` 或写 `process: null`；resolved config 和 checkpoint 不保存
 `process_state_dict`。这条路径不需要占位 Process、Dynamics 或 Sampler，也不需要核心增加
-按算法名称分支。当前 Stage 3 训练桥接仍要求离散 Gaussian Process；通用训练扩展由后续
-TrainingStrategy Stage 完成。
+按算法名称分支。训练侧是否需要 Process 由所选 TrainingBuilder 在组合边界校验。
+
+## 自定义 TrainingBuilder 与 TrainingStrategy
+
+训练侧的注册入口是 `TrainingBuilder`，而不是 Strategy。Builder 接收核心预先构建的
+primary model、可选 Process/Objective 和辅助 factory，返回完成依赖注入的
+`TrainingPlan`。`TrainingStrategy` 只是普通训练计算对象：解释 structured batch、调用
+注入的模型和 Objective，并返回 `TrainStepOutput(loss, metrics, diagnostics)`。
+
+```python
+from stochaflow.extensions import (
+    ManagedTrainingModule,
+    REGISTRIES,
+    TrainStepOutput,
+    TrainingBuilder,
+    TrainingPlan,
+    TrainingStrategy,
+)
+
+
+class ConditionalStrategy(TrainingStrategy):
+    def __init__(self, model, objective):
+        self.model = model
+        self.objective = objective
+
+    def training_step(self, batch):
+        high_res, conditions = batch
+        prediction = self.model(high_res, low_res=conditions["low_res"])
+        return TrainStepOutput(self.objective(prediction, high_res))
+
+
+@REGISTRIES.training_builders.register("conditional_sr")
+class ConditionalSRBuilder(TrainingBuilder):
+    def build(self):
+        objective = self.context.objective
+        if objective is None:
+            raise TypeError("conditional_sr requires objective")
+        return TrainingPlan(
+            strategy=ConditionalStrategy(self.context.primary_model, objective),
+            primary_model=self.context.primary_model,
+            process=self.context.process,
+            objective=objective,
+        )
+```
+
+Strategy 不拥有 `to/train/eval`、optimizer、factory、parameter selection 或 checkpoint
+API。Plan 通过稳定名称声明辅助 `nn.Module`，核心统一管理 device、mode、优化和持久化。
+
+### Frozen-teacher 蒸馏
+
+蒸馏不需要 Trainer 的任务分支。自定义 Builder 构建并加载 teacher、关闭其梯度，再用
+稳定名称把它交给 Plan；Strategy 只定义 student/teacher forward 和损失组合：
+
+```python
+import torch
+
+
+class DistillationStrategy(TrainingStrategy):
+    def __init__(self, student, teacher, task_objective, distill_objective, alpha):
+        self.student = student
+        self.teacher = teacher
+        self.task_objective = task_objective
+        self.distill_objective = distill_objective
+        self.alpha = alpha
+
+    def training_step(self, batch):
+        inputs, targets = batch
+        with torch.no_grad():
+            teacher_output = self.teacher(inputs)
+        student_output = self.student(inputs)
+        task_loss = self.task_objective(student_output, targets)
+        distill_loss = self.distill_objective(student_output, teacher_output)
+        total_loss = (1 - self.alpha) * task_loss + self.alpha * distill_loss
+        return TrainStepOutput(
+            total_loss,
+            metrics={
+                "task_loss": task_loss.detach(),
+                "distill_loss": distill_loss.detach(),
+            },
+        )
+
+
+class DistillationBuilder(TrainingBuilder):
+    def build(self):
+        if self.context.objective is None:
+            raise TypeError("distillation requires a task objective")
+        teacher = build_and_load_teacher(self.context)
+        teacher.requires_grad_(False)
+        distill_objective = build_distillation_objective(self.context)
+        strategy = DistillationStrategy(
+            self.context.primary_model,
+            teacher,
+            self.context.objective,
+            distill_objective,
+            alpha=0.5,
+        )
+        return TrainingPlan(
+            strategy=strategy,
+            primary_model=self.context.primary_model,
+            process=self.context.process,
+            objective=self.context.objective,
+            auxiliary_modules={
+                "teacher": ManagedTrainingModule(teacher, mode="eval"),
+                "distill_objective": ManagedTrainingModule(distill_objective),
+            },
+        )
+```
+
+核心会迁移并 checkpoint teacher，保持其 eval mode；`requires_grad=False` 使 teacher 不进入
+optimizer。offline distillation 可直接由 DataBuilder 提供 teacher target，因此无需
+auxiliary teacher。feature、logit 或 score distillation 也采用同一边界，只需在具体
+Strategy 内解释输出并返回单一标量总 loss。
+
+Stage 4 的自动生命周期只支持一个 optimizer 和一次 backward。独立 teacher optimizer、
+交替更新、EMA teacher 或 manual backward 属于新的训练 loop family，不通过向 Strategy
+增加生命周期开关来模拟。
+
+### 复用 Gaussian diagnostic
+
+`diffusion_quality` 不猜测 primary model 的调用签名。希望复用它的 Gaussian Strategy
+必须满足稳定的 `GaussianDiagnosticSemantics` 窄能力：
+
+```python
+from stochaflow.extensions import GaussianDiagnosticSemantics
+
+
+class ConditionalGaussianStrategy(TrainingStrategy, GaussianDiagnosticSemantics):
+    @property
+    def prediction_type(self):
+        return "epsilon"
+
+    def predict_gaussian_model(self, state, model_time):
+        return self.model(
+            {"state": state, "time": model_time},
+            condition=self.diagnostic_condition,
+        )
+```
+
+这是结构化 Protocol，不要求 Strategy 显式继承它；示例继承用于类型标注和能力发现。
+`prediction_type` 说明 Gaussian parameterization，`predict_gaussian_model()` 封装任务自己的
+模型签名。diagnostic 用该 callable 与 Process 构造 Dynamics，不直接调用 primary model。
+
+如果条件任务无法为 diagnostic 提供明确的 condition，就不应伪造该 capability；启用
+`diffusion_quality` 时会得到清晰的不兼容错误。该能力不让 Strategy 构建 Sampler、运行
+diagnostic 或管理 artifact，因此不改变 Strategy 的训练计算职责。
 
 ## 自定义 DataBuilder
 
@@ -355,6 +500,7 @@ writer 返回的 mapping 不能为空；artifact key 在全部 writer 间必须�
 组件 `params` 通常作为关键字参数传给注册类。以下参数由运行时注入：
 
 - DataBuilder：`DataBuilderContext`；
+- TrainingBuilder：`TrainingBuilderContext`；
 - SamplingBuilder：`SamplingBuilderContext`；
 - optimizer / LR scheduler：模型参数或 optimizer；
 - logger：`output_dir`、`run_name`；

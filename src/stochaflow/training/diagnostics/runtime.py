@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import hashlib
@@ -16,11 +16,12 @@ from stochaflow.processes import DiscreteGaussianDenoisingProcess
 from stochaflow.sampling import (
     GaussianDenoisingDynamics,
     GaussianModelDynamics,
+    PredictionType,
     Sampler,
     SamplerResult,
     SamplingObservation,
 )
-from stochaflow.training.gaussian import GaussianEpsilonTrainingSystem
+from stochaflow.training.gaussian import GaussianDiagnosticSemantics
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
     ReconstructionFrame,
@@ -150,14 +151,23 @@ class EvaluationGuard:
         self.model = trainer.model
         self.ema_model = getattr(trainer, "ema_model", self.model)
         self._stack = ExitStack()
-        self._was_training = bool(self.model.training)
         self._ema = trainer.ema if use_ema else None
         self._ema_stored = False
-        self._evaluation_module_modes = tuple(
-            (module, bool(module.training))
-            for module in evaluation_modules
-            if module is not self.model
-        )
+        discovered: list[nn.Module] = [self.model, *evaluation_modules]
+        managed = getattr(trainer, "managed_modules", None)
+        if isinstance(managed, Mapping):
+            for asset in managed.values():
+                module = getattr(asset, "module", asset)
+                if isinstance(module, nn.Module):
+                    discovered.append(module)
+        seen: set[int] = set()
+        evaluation_module_modes: list[tuple[nn.Module, bool]] = []
+        for module in discovered:
+            if id(module) in seen:
+                continue
+            seen.add(id(module))
+            evaluation_module_modes.append((module, bool(module.training)))
+        self._evaluation_module_modes = tuple(evaluation_module_modes)
 
     def __enter__(self) -> nn.Module:
         self._stack.__enter__()
@@ -173,7 +183,6 @@ class EvaluationGuard:
                 self._ema.store(self.ema_model)
                 self._ema_stored = True
                 self._ema.copy_to(self.ema_model)
-            self.model.eval()
             for module, _ in self._evaluation_module_modes:
                 module.eval()
             return self.model
@@ -198,7 +207,38 @@ class EvaluationGuard:
         finally:
             for module, was_training in self._evaluation_module_modes:
                 module.train(was_training)
-            self.model.train(self._was_training)
+
+
+@dataclass(frozen=True, slots=True)
+class GaussianTrainingRuntime:
+    """Gaussian process and task-adapted prediction used by diagnostics."""
+
+    process: DiscreteGaussianDenoisingProcess
+    prediction_type: PredictionType
+    predict_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
+
+def gaussian_training_runtime(trainer: Any) -> GaussianTrainingRuntime:
+    """Resolve the narrow Gaussian training capability from a Trainer."""
+
+    model = getattr(trainer, "model", None)
+    if not isinstance(model, nn.Module):
+        raise TypeError("Gaussian diagnostics require a primary nn.Module model")
+    process = getattr(trainer, "process", None)
+    if not isinstance(process, DiscreteGaussianDenoisingProcess):
+        raise TypeError(
+            "Gaussian diagnostics require DiscreteGaussianDenoisingProcess"
+        )
+    strategy = getattr(trainer, "strategy", None)
+    if not isinstance(strategy, GaussianDiagnosticSemantics):
+        raise TypeError(
+            "Gaussian diagnostics require GaussianDiagnosticSemantics strategy"
+        )
+    return GaussianTrainingRuntime(
+        process,
+        strategy.prediction_type,
+        strategy.predict_gaussian_model,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,20 +254,18 @@ class SamplerPool:
 
     def __init__(
         self,
-        training_system: GaussianEpsilonTrainingSystem,
+        training_runtime: GaussianTrainingRuntime,
         profiles: Sequence[SamplerProfileConfig],
         *,
         device: torch.device,
     ) -> None:
         del device
         self._samplers: dict[str, BoundSampler] = {}
-        process = training_system.process
+        process = training_runtime.process
         dynamics = GaussianModelDynamics(
             process,
-            lambda state, model_time: training_system.inference_model(
-                state, model_time
-            ),
-            prediction_type="epsilon",
+            training_runtime.predict_fn,
+            prediction_type=training_runtime.prediction_type,
             clip_denoised=True,
         )
         for profile in profiles:
@@ -453,20 +491,17 @@ class ReconstructionEvaluator:
         if x0.ndim != 4:
             raise ValueError("reconstruction samples must have shape (N, C, H, W)")
         frames: list[ReconstructionFrame] = []
+        runtime = gaussian_training_runtime(self.trainer)
         with EvaluationGuard(
             self.trainer,
             seed=self.seed_policy.base_seed,
             use_ema=use_ema,
-        ) as model:
-            if not isinstance(model, GaussianEpsilonTrainingSystem):
-                raise TypeError(
-                    "reconstruction requires GaussianEpsilonTrainingSystem"
-                )
-            process = model.process
+        ):
+            process = runtime.process
             dynamics = GaussianModelDynamics(
                 process,
-                lambda state, model_time: model.inference_model(state, model_time),
-                prediction_type="epsilon",
+                runtime.predict_fn,
+                prediction_type=runtime.prediction_type,
                 clip_denoised=True,
             )
             for timestep in timesteps:
@@ -498,6 +533,7 @@ class ReconstructionEvaluator:
 
 
 __all__ = [
+    "GaussianTrainingRuntime",
     "EvaluationGuard",
     "BoundSampler",
     "ReconstructionEvaluator",
@@ -505,6 +541,7 @@ __all__ = [
     "SamplerRunner",
     "SeedPolicy",
     "clean_samples_from_event",
+    "gaussian_training_runtime",
     "first_tensor_from_batch",
     "prepare_reference_images",
 ]

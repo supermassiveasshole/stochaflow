@@ -52,6 +52,7 @@ class ExponentialMovingAverage:
         self.shadow_buffers: OrderedDict[str, torch.Tensor] = OrderedDict()
         self._stored_params: OrderedDict[str, torch.Tensor] = OrderedDict()
         self._stored_buffers: OrderedDict[str, torch.Tensor] = OrderedDict()
+        self._has_stored_state = False
         self._register_from_module(module)
 
     def _register_from_module(self, module: nn.Module) -> None:
@@ -150,11 +151,12 @@ class ExponentialMovingAverage:
             for name, buffer in module.named_buffers()
             if torch.is_floating_point(buffer)
         )
+        self._has_stored_state = True
 
     def restore(self, module: nn.Module) -> None:
         """Restore module state previously captured by ``store``."""
 
-        if not self._stored_params and not self._stored_buffers:
+        if not self._has_stored_state:
             raise RuntimeError("no stored EMA state available; call store(module) first")
 
         module_parameters = dict(module.named_parameters())
@@ -171,6 +173,7 @@ class ExponentialMovingAverage:
 
         self._stored_params = OrderedDict()
         self._stored_buffers = OrderedDict()
+        self._has_stored_state = False
 
     def to(self, device: torch.device | str) -> None:
         """Move EMA shadow state to a device."""
@@ -235,3 +238,6 @@ class ExponentialMovingAverage:
         self.shadow_buffers = OrderedDict(
             (name, tensor.detach().clone()) for name, tensor in typed_buffers.items()
         )
+        self._stored_params = OrderedDict()
+        self._stored_buffers = OrderedDict()
+        self._has_stored_state = False

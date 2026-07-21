@@ -113,7 +113,7 @@ pickle、文件句柄是否按 worker 打开、路径是否有效。确认后逐
 ### 训练时出现 state shape / channel 错误
 
 核心不把模型 shape 与数据构建做任务专属交叉校验。确认所选 DataBuilder 的 batch、
-TrainingStrategy/当前 tensor train step、模型输入输出契约彼此一致。内置图像 recipe
+TrainingBuilder 组装的 TrainingStrategy、模型输入输出契约彼此一致。内置图像 recipe
 的通道配置位于 `data.params.image.channels`。
 
 ### resume 找不到 `latest.pt`
@@ -153,7 +153,8 @@ Tensor 只声明 `tensor` writer，或注册领域 writer。
 
 ### `checkpoint format version ... is unsupported`
 
-Stage 3 checkpoint 格式为 v5，分别保存 model、Process 和可选 EMA model state。训练
+Stage 4 checkpoint 格式为 v6，分别保存 primary model、可选 Process/Objective、可选
+EMA model、optimizer/scheduler 和按稳定名称组织的 training assets。训练
 恢复和 checkpoint-only sampling 不读取 v4；
 请用当前代码重新训练或重新生成 checkpoint。
 

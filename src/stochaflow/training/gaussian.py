@@ -1,121 +1,212 @@
-"""Internal bridge for existing Gaussian epsilon training."""
+"""Gaussian-family training strategy and registered builder."""
 
-from dataclasses import dataclass
-from typing import Any
+from __future__ import annotations
+
+from typing import Any, Protocol, cast, runtime_checkable
 
 import torch
 import torch.nn as nn
 
-from stochaflow.processes import DiscreteGaussianDenoisingProcess, Process
-from stochaflow.training.objectives import DDPMEpsilonObjective
-from stochaflow.training.trainer import TrainStepOutput
+from stochaflow.processes import DiscreteGaussianDenoisingProcess
+from stochaflow.sampling import GaussianModelDynamics, PredictionType
+from stochaflow.training.builder import TrainingBuilder, TrainingPlan
+from stochaflow.training.objectives import compute_objective
+from stochaflow.training.strategy import TrainStepOutput, TrainingStrategy
+from stochaflow.utils.registry import REGISTRIES
 
 
-@dataclass(frozen=True, slots=True)
-class GaussianEpsilonTrainingOutput:
-    """Tensors produced by one Gaussian epsilon training forward pass."""
+@runtime_checkable
+class GaussianDiagnosticSemantics(Protocol):
+    """Optional Gaussian model-invocation capability for diagnostics."""
 
-    timesteps: torch.Tensor
-    noisy: torch.Tensor
-    noise: torch.Tensor
-    predicted_noise: torch.Tensor
+    @property
+    def prediction_type(self) -> PredictionType:
+        """Return the model prediction parameterization used for training."""
+
+        ...
+
+    def predict_gaussian_model(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+    ) -> torch.Tensor:
+        """Invoke the task-adapted model for a Gaussian diagnostic."""
+
+        ...
 
 
-class GaussianEpsilonTrainingSystem(nn.Module):
-    """Capability bridge combining an inference model and Gaussian process."""
+class GaussianDenoisingTrainingStrategy(TrainingStrategy):
+    """Train a model against one discrete Gaussian marginal target."""
 
     def __init__(
         self,
-        inference_model: nn.Module,
-        process: Process,
+        model: nn.Module,
+        process: DiscreteGaussianDenoisingProcess,
+        objective: nn.Module,
+        *,
+        prediction_type: PredictionType = "epsilon",
     ) -> None:
-        super().__init__()
-        if not isinstance(process, DiscreteGaussianDenoisingProcess):
-            raise TypeError(
-                "Gaussian epsilon training requires "
-                "DiscreteGaussianDenoisingProcess capability"
+        if prediction_type not in ("epsilon", "x0", "v", "score"):
+            raise ValueError(
+                "Gaussian prediction_type must be epsilon, x0, v, or score"
             )
         if process.terminal_time <= process.clean_time:
             raise ValueError("Gaussian training requires a non-empty noisy time range")
-        self.inference_model = inference_model
+        self.model = model
         self.process = process
+        self.objective = objective
+        self._prediction_type: PredictionType = cast(
+            PredictionType,
+            prediction_type,
+        )
+        self.dynamics = GaussianModelDynamics(
+            self.process,
+            self.predict_gaussian_model,
+            prediction_type=self.prediction_type,
+            clip_denoised=False,
+        )
 
-    def forward(
+    @property
+    def prediction_type(self) -> PredictionType:
+        """Return the configured Gaussian model parameterization."""
+
+        return self._prediction_type
+
+    def predict_gaussian_model(
         self,
-        clean: torch.Tensor,
-        timesteps: torch.Tensor | None = None,
-    ) -> GaussianEpsilonTrainingOutput:
-        """Sample a marginal state and predict its epsilon target."""
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+    ) -> torch.Tensor:
+        """Invoke the built-in unconditional Gaussian model signature."""
 
-        if timesteps is None:
-            timesteps = torch.randint(
-                self.process.clean_time + 1,
-                self.process.terminal_time + 1,
-                (clean.shape[0],),
-                device=clean.device,
+        prediction: object = self.model(state, model_time)
+        if not isinstance(prediction, torch.Tensor):
+            raise TypeError("Gaussian model must return a Tensor")
+        return prediction
+
+    def training_step(self, batch: Any) -> TrainStepOutput:
+        """Sample a noisy marginal and compare the configured model target."""
+
+        clean = _clean_samples(batch)
+        state_times = torch.randint(
+            self.process.clean_time + 1,
+            self.process.terminal_time + 1,
+            (clean.shape[0],),
+            device=clean.device,
+        )
+        noisy, noise = self.process.sample_marginal(clean, state_times)
+        prediction = self.dynamics.predict(noisy, state_times)
+        target = _training_target(
+            self.process,
+            clean=clean,
+            noise=noise,
+            state_times=state_times,
+            prediction_type=self.prediction_type,
+        )
+        loss, per_sample = compute_objective(
+            self.objective,
+            prediction.model_output,
+            target,
+        )
+        diagnostics: dict[str, Any] = {
+            "timesteps": state_times.detach(),
+            "predicted_noise": prediction.epsilon.detach(),
+            "target_noise": noise.detach(),
+            "predicted_clean": prediction.clean.detach(),
+            "clean_samples": clean.detach(),
+        }
+        if per_sample is not None:
+            diagnostics["per_sample_loss"] = per_sample.detach()
+        return TrainStepOutput(loss=loss, diagnostics=diagnostics)
+
+
+@REGISTRIES.training_builders.register("gaussian_denoising")
+class GaussianDenoisingTrainingBuilder(TrainingBuilder):
+    """Assemble the built-in discrete Gaussian training strategy."""
+
+    def build(self) -> TrainingPlan:
+        """Validate family assets and return a Gaussian training plan."""
+
+        params = dict(self.context.params)
+        prediction_type = params.pop("prediction_type", "epsilon")
+        if params:
+            unknown = ", ".join(sorted(params))
+            raise ValueError(
+                f"unknown gaussian_denoising training parameter(s): {unknown}"
             )
-        noisy, noise = self.process.sample_marginal(clean, timesteps)
-        model_times = timesteps - self.process.clean_time - 1
-        predicted_value: object = self.inference_model(noisy, model_times)
-        if not isinstance(predicted_value, torch.Tensor):
-            raise TypeError("inference model must return a Tensor")
-        if predicted_value.shape != noisy.shape:
-            raise ValueError("inference model output must match the noisy sample shape")
-        return GaussianEpsilonTrainingOutput(
-            timesteps, noisy, noise, predicted_value
+        process = self.context.process
+        if not isinstance(process, DiscreteGaussianDenoisingProcess):
+            raise TypeError(
+                "gaussian_denoising training requires "
+                "DiscreteGaussianDenoisingProcess"
+            )
+        objective = self.context.objective
+        if objective is None:
+            raise TypeError("gaussian_denoising training requires objective")
+        if not isinstance(prediction_type, str) or prediction_type not in (
+            "epsilon",
+            "x0",
+            "v",
+            "score",
+        ):
+            raise ValueError(
+                "training.params.prediction_type must be epsilon, x0, v, or score"
+            )
+        strategy = GaussianDenoisingTrainingStrategy(
+            self.context.primary_model,
+            process,
+            objective,
+            prediction_type=cast(PredictionType, prediction_type),
+        )
+        return TrainingPlan(
+            strategy=strategy,
+            primary_model=self.context.primary_model,
+            process=process,
+            objective=objective,
         )
 
 
-def ddpm_epsilon_train_step(
-    model: nn.Module,
-    criterion: nn.Module,
-    batch: Any,
-    device: torch.device,
-) -> TrainStepOutput:
-    """Adapt the temporary Gaussian epsilon system to the generic Trainer."""
-
-    if not isinstance(model, GaussianEpsilonTrainingSystem):
-        raise TypeError(
-            "ddpm_epsilon_train_step expects GaussianEpsilonTrainingSystem"
-        )
-    if not isinstance(criterion, DDPMEpsilonObjective):
-        raise TypeError(
-            "ddpm_epsilon_train_step expects DDPMEpsilonObjective"
-        )
+def _clean_samples(batch: Any) -> torch.Tensor:
     if isinstance(batch, (tuple, list)):
-        if not batch:
-            raise TypeError("batch tuple/list must contain at least one tensor")
-        clean = batch[0]
+        if len(batch) != 2:
+            raise TypeError(
+                "gaussian_denoising expects a Tensor or (Tensor, conditions) batch"
+            )
+        clean, conditions = batch
+        if not isinstance(conditions, dict) or conditions:
+            raise TypeError(
+                "built-in gaussian_denoising supports only empty condition mappings; "
+                "use a custom TrainingBuilder for conditional training"
+            )
     else:
         clean = batch
     if not isinstance(clean, torch.Tensor):
-        raise TypeError(
-            "ddpm_epsilon_train_step expects a clean-sample Tensor"
-        )
+        raise TypeError("gaussian_denoising clean samples must be a Tensor")
+    if clean.ndim == 0:
+        raise ValueError("gaussian_denoising samples must have a batch dimension")
+    return clean
 
-    output = model(clean.to(device))
-    loss, per_sample_loss = criterion.compute(
-        output.predicted_noise,
-        output.noise,
-    )
-    if loss.ndim != 0:
-        raise ValueError(
-            "ddpm_epsilon training requires an objective with scalar reduction"
-        )
-    return TrainStepOutput(
-        loss=loss,
-        diagnostics={
-            "timesteps": output.timesteps.detach(),
-            "per_sample_loss": per_sample_loss.detach(),
-            "predicted_noise": output.predicted_noise.detach(),
-            "target_noise": output.noise.detach(),
-            "clean_samples": clean.detach(),
-        },
-    )
+
+def _training_target(
+    process: DiscreteGaussianDenoisingProcess,
+    *,
+    clean: torch.Tensor,
+    noise: torch.Tensor,
+    state_times: torch.Tensor,
+    prediction_type: PredictionType,
+) -> torch.Tensor:
+    if prediction_type == "epsilon":
+        return noise
+    if prediction_type == "x0":
+        return clean
+    scales = process.marginal_scales(state_times, clean.size())
+    if prediction_type == "v":
+        return scales.signal * noise - scales.noise * clean
+    return -noise / scales.noise
 
 
 __all__ = [
-    "GaussianEpsilonTrainingOutput",
-    "GaussianEpsilonTrainingSystem",
-    "ddpm_epsilon_train_step",
+    "GaussianDiagnosticSemantics",
+    "GaussianDenoisingTrainingBuilder",
+    "GaussianDenoisingTrainingStrategy",
 ]

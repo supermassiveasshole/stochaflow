@@ -17,10 +17,13 @@ fields:
   model: {description: 由 models Registry 构建的去噪模型。}
   model.name: {description: models Registry 名称。}
   model.params: {description: 模型构造参数；内置参数见 Registry 组件索引。}
+  training: {description: 由 training_builders Registry 组装 TrainingPlan 的训练任务声明。}
+  training.name: {description: training_builders Registry 名称。}
+  training.params: {description: TrainingBuilder 独占的组合参数；核心不解释多模型、condition 或 target 语义。}
   process: {description: 可选的 model-free、可迁移且可 checkpoint 的 probability process 声明；null 表示算法不需要 Process。}
   process.name: {description: processes Registry 名称。}
   process.params: {description: Process 构造参数；模型、condition 和 sampler 不进入此处。}
-  objective: {description: 训练目标函数的 Registry 声明。}
+  objective: {description: 可选训练目标函数的 Registry 声明；具体 TrainingBuilder 决定是否需要。}
   objective.name: {description: objectives Registry 名称。}
   objective.params: {description: 目标函数构造参数。}
   optimizer: {description: 优化器 Registry 声明。}
@@ -179,15 +182,29 @@ registries:
         runtime_parameters: [context]
         parameters: {}
 
+  training_builders:
+    description: 组装 primary model、可选 Process/Objective、TrainingStrategy 和辅助训练资产。
+    base: stochaflow.training.TrainingBuilder
+    config_path: training.name / training.params
+    entries:
+      gaussian_denoising:
+        description: 使用离散 Gaussian marginal 和指定 prediction target 训练去噪模型。
+        runtime_parameters: [context]
+        parameters: {}
+      supervised:
+        description: 对标准 inputs/targets batch 执行模型 forward 与注入的 Objective。
+        runtime_parameters: [context]
+        parameters: {}
+
   objectives:
-    description: 将模型输出和前向噪声目标转换为标量训练损失。
+    description: 将 Strategy 已定义语义的 prediction/target 转换为标量训练损失。
     base: torch.nn.Module
     config_path: objective.name / objective.params
     entries:
-      ddpm_epsilon:
-        description: 训练模型预测前向过程注入的 epsilon 噪声。
+      mse:
+        description: 可跨 supervised、Gaussian 和自定义 Strategy 复用的均方误差。
         parameters:
-          reduction: {description: MSE 聚合方式；支持 mean、sum 或 none。}
+          reduction: {description: MSE 标量聚合方式；支持 mean 或 sum。}
 
   optimizers:
     description: 构建 PyTorch 优化器；模型 parameters 由运行时注入。

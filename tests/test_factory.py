@@ -13,8 +13,8 @@ from stochaflow.processes import (
 )
 from stochaflow.models import UNet
 from stochaflow.training import (
-    DDPMEpsilonObjective,
-    GaussianEpsilonTrainingSystem,
+    GaussianDenoisingTrainingStrategy,
+    MSEObjective,
     Trainer,
     TrainingDiagnostic,
 )
@@ -95,8 +95,8 @@ def test_build_training_components_from_ddpm_mnist_config() -> None:
     assert isinstance(components.process, DiscreteGaussianProcess)
     assert not hasattr(components.process, "schedule")
     assert components.process.num_timesteps == 1000
-    assert isinstance(components.training_system, GaussianEpsilonTrainingSystem)
-    assert isinstance(components.objective, DDPMEpsilonObjective)
+    assert isinstance(components.plan.strategy, GaussianDenoisingTrainingStrategy)
+    assert isinstance(components.objective, MSEObjective)
     assert isinstance(components.optimizer, Optimizer)
     assert components.ema is not None
     assert isinstance(components.lr_scheduler, CosineAnnealingLR)
@@ -115,8 +115,8 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
     assert isinstance(components.process, DiscreteGaussianProcess)
     assert not hasattr(components.process, "schedule")
     assert components.process.num_timesteps == 1000
-    assert isinstance(components.training_system, GaussianEpsilonTrainingSystem)
-    assert isinstance(components.objective, DDPMEpsilonObjective)
+    assert isinstance(components.plan.strategy, GaussianDenoisingTrainingStrategy)
+    assert isinstance(components.objective, MSEObjective)
     assert isinstance(components.optimizer, Optimizer)
     assert isinstance(components.lr_scheduler, LambdaLR)
     assert components.ema is not None
@@ -126,28 +126,36 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
     assert isinstance(components.trainer, Trainer)
 
 
-def test_stage3_gaussian_training_requires_a_configured_process() -> None:
+def test_gaussian_training_requires_a_configured_process() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
     raw["process"] = None
     config = load_config_dict(raw)
 
     with pytest.raises(
         TypeError,
-        match="DiscreteGaussianDenoisingProcess.*not configured",
+        match="gaussian_denoising.*DiscreteGaussianDenoisingProcess",
     ):
         build_training_components(config)
 
 
-def test_ddpm_objective_owns_scalar_and_per_sample_loss_semantics() -> None:
-    objective = DDPMEpsilonObjective(reduction="mean")
+def test_mse_objective_owns_scalar_and_per_sample_loss_semantics() -> None:
+    objective = MSEObjective(reduction="mean")
     predicted = torch.tensor([[0.0, 2.0], [1.0, 5.0]])
     target = torch.tensor([[0.0, 0.0], [3.0, 1.0]])
 
-    loss, per_sample = objective.compute(predicted, target)
+    loss = objective(predicted, target)
+    per_sample = objective.per_sample_loss(predicted, target)
 
     assert torch.equal(per_sample, torch.tensor([2.0, 10.0]))
     assert loss.item() == pytest.approx(6.0)
     assert torch.equal(objective(predicted, target), loss)
+
+    summed = MSEObjective(reduction="sum")
+    assert torch.equal(
+        summed.per_sample_loss(predicted, target),
+        torch.tensor([4.0, 20.0]),
+    )
+    assert summed(predicted, target).item() == pytest.approx(24.0)
 
 
 def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> None:
@@ -169,11 +177,13 @@ def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> 
     assert "process_gain" not in components.ema.shadow_params
 
     state = components.checkpoint_manager.build_state()
-    assert state.get("format_version") == 5
+    assert state.get("format_version") == 6
     process_state = state.get("process_state_dict")
     assert process_state is not None
     assert "process_gain" in process_state
     assert "ema_model_state_dict" in state
+    assert "objective_state_dict" in state
+    assert state.get("training_assets_state_dict") == {}
     assert "denoiser_state_dict" not in state
     assert "ema_denoiser_state_dict" not in state
 

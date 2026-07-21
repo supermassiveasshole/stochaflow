@@ -306,7 +306,8 @@ def _raw_config(*, builder: dict[str, Any] | None) -> dict[str, Any]:
                 }
             },
         },
-        "objective": {"name": "ddpm_epsilon", "params": {}},
+        "training": {"name": "gaussian_denoising", "params": {}},
+        "objective": {"name": "mse", "params": {}},
         "sampling": {
             "builder": builder,
             "shape": None,
@@ -318,7 +319,7 @@ def _raw_config(*, builder: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _checkpoint(path: Path, raw: dict[str, Any], *, version: int = 5) -> Path:
+def _checkpoint(path: Path, raw: dict[str, Any], *, version: int = 6) -> Path:
     model = TinyDenoiser()
     payload: dict[str, Any] = {
         "format_version": version,
@@ -748,6 +749,22 @@ def test_complete_config_can_locate_checkpoint(tmp_path: Path) -> None:
     assert result.checkpoint_path == checkpoint
 
 
+def test_checkpoint_only_sampling_does_not_build_training_assets(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    raw["training"] = {"name": "not_registered", "params": {}}
+    raw["objective"] = {"name": "also_not_registered", "params": {}}
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        output_dir=tmp_path / "samples",
+    )
+
+    assert result.builder_name == "stage3_no_shape"
+
+
 def test_sampling_only_config_requires_explicit_checkpoint(tmp_path: Path) -> None:
     config_path = tmp_path / "sampling.yaml"
     config_path.write_text(
@@ -759,11 +776,11 @@ def test_sampling_only_config_requires_explicit_checkpoint(tmp_path: Path) -> No
         run_sampling(config_path=config_path)
 
 
-def test_checkpoint_v4_is_rejected(tmp_path: Path) -> None:
+def test_checkpoint_v5_is_rejected(tmp_path: Path) -> None:
     raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=4)
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=5)
 
-    with pytest.raises(ValueError, match="expected version 5"):
+    with pytest.raises(ValueError, match="expected version 6"):
         run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
 
 
@@ -850,4 +867,4 @@ def test_sampling_builder_context_copies_params() -> None:
     )
     context.params["nested"]["value"] = 2
     assert raw == {"nested": {"value": 1}}
-    assert CHECKPOINT_FORMAT_VERSION == 5
+    assert CHECKPOINT_FORMAT_VERSION == 6

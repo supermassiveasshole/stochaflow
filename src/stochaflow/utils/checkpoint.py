@@ -1,5 +1,7 @@
 """Checkpoint save/load helpers."""
 
+from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -15,7 +17,7 @@ else:
     ExponentialMovingAverage = Any
 
 
-CHECKPOINT_FORMAT_VERSION = 5
+CHECKPOINT_FORMAT_VERSION = 6
 
 
 class CheckpointState(TypedDict, total=False):
@@ -24,9 +26,11 @@ class CheckpointState(TypedDict, total=False):
     format_version: int
     epoch: int
     global_step: int
-    model_state_dict: dict[str, torch.Tensor]
-    process_state_dict: dict[str, torch.Tensor]
-    ema_model_state_dict: dict[str, torch.Tensor]
+    model_state_dict: dict[str, Any]
+    process_state_dict: dict[str, Any]
+    objective_state_dict: dict[str, Any]
+    training_assets_state_dict: dict[str, dict[str, Any]]
+    ema_model_state_dict: dict[str, Any]
     optimizer_state_dict: dict[str, Any]
     lr_scheduler_state_dict: dict[str, Any]
     ema_state_dict: EMAStateDict
@@ -58,6 +62,8 @@ class CheckpointManager:
 
     model: nn.Module
     process: nn.Module | None = None
+    objective: nn.Module | None = None
+    auxiliary_modules: dict[str, nn.Module] = field(default_factory=dict)
     optimizer: Optimizer | None = None
     lr_scheduler: Any | None = None
     ema: ExponentialMovingAverage | None = None
@@ -91,6 +97,12 @@ class CheckpointManager:
         }
         if self.process is not None:
             state["process_state_dict"] = _clone_module_state(self.process)
+        if self.objective is not None:
+            state["objective_state_dict"] = _clone_module_state(self.objective)
+        state["training_assets_state_dict"] = {
+            name: _clone_module_state(module)
+            for name, module in self.auxiliary_modules.items()
+        }
         if self.ema is not None:
             self.ema.store(self.model)
             try:
@@ -174,10 +186,57 @@ class CheckpointManager:
                 raise TypeError("process_state_dict must be a dictionary")
             validated_process_state = process_state_dict
 
+        has_objective_state = "objective_state_dict" in state
+        objective_state_dict = cast(object, state.get("objective_state_dict"))
+        validated_objective_state: dict[str, Any] | None = None
+        if self.objective is None:
+            if has_objective_state:
+                raise ValueError(
+                    "checkpoint contains objective_state_dict but runtime has no "
+                    "objective"
+                )
+        else:
+            if not has_objective_state:
+                raise TypeError("checkpoint is missing objective_state_dict")
+            if not isinstance(objective_state_dict, dict):
+                raise TypeError("objective_state_dict must be a dictionary")
+            validated_objective_state = objective_state_dict
+
+        assets_value = cast(object, state.get("training_assets_state_dict"))
+        if not isinstance(assets_value, dict):
+            raise TypeError("checkpoint is missing training_assets_state_dict")
+        expected_assets = set(self.auxiliary_modules)
+        actual_assets = set(assets_value)
+        if expected_assets != actual_assets:
+            missing = sorted(expected_assets - actual_assets)
+            unexpected = sorted(actual_assets - expected_assets)
+            details: list[str] = []
+            if missing:
+                details.append("missing: " + ", ".join(missing))
+            if unexpected:
+                details.append("unexpected: " + ", ".join(unexpected))
+            raise ValueError(
+                "checkpoint training asset names do not match runtime ("
+                + "; ".join(details)
+                + ")"
+            )
+        validated_assets: dict[str, dict[str, Any]] = {}
+        for name, asset_state in assets_value.items():
+            if not isinstance(name, str) or not isinstance(asset_state, dict):
+                raise TypeError(
+                    "training_assets_state_dict must map strings to dictionaries"
+                )
+            validated_assets[name] = asset_state
+
         self.model.load_state_dict(model_state_dict)
         if self.process is not None:
             assert validated_process_state is not None
             self.process.load_state_dict(validated_process_state)
+        if self.objective is not None:
+            assert validated_objective_state is not None
+            self.objective.load_state_dict(validated_objective_state)
+        for name, module in self.auxiliary_modules.items():
+            module.load_state_dict(validated_assets[name])
 
         optimizer_state_dict = cast(object, state.get("optimizer_state_dict"))
         if self.optimizer is not None:
@@ -261,13 +320,25 @@ def _ensure_parent_directory(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _clone_module_state(module: nn.Module) -> dict[str, torch.Tensor]:
+def _clone_module_state(module: nn.Module) -> OrderedDict[str, Any]:
     """Clone a module state so temporary EMA swaps cannot mutate a snapshot."""
 
-    return {
-        name: tensor.detach().clone()
-        for name, tensor in module.state_dict().items()
-    }
+    source = module.state_dict()
+    cloned = OrderedDict(
+        (
+            name,
+            (
+                value.detach().clone()
+                if isinstance(value, torch.Tensor)
+                else deepcopy(value)
+            ),
+        )
+        for name, value in source.items()
+    )
+    metadata = getattr(source, "_metadata", None)
+    if metadata is not None:
+        setattr(cloned, "_metadata", deepcopy(metadata))
+    return cloned
 
 
 def _find_named_checkpoint(root: str | Path, filename: str) -> Path:

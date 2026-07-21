@@ -107,15 +107,43 @@ models Registry 名称。
 - 必填：否
 - 默认值：`{}`
 
+## `training`
+
+(config-field-path-training)=
+### `training`
+
+由 training_builders Registry 组装 TrainingPlan 的训练任务声明。
+
+- 类型：`mapping`
+- 必填：是
+
+(config-field-path-training-name)=
+### `training.name`
+
+training_builders Registry 名称。
+
+- 类型：`str`
+- 必填：是
+
+(config-field-path-training-params)=
+### `training.params`
+
+TrainingBuilder 独占的组合参数；核心不解释多模型、condition 或 target 语义。
+
+- 类型：`mapping[str, any]`
+- 必填：否
+- 默认值：`{}`
+
 ## `objective`
 
 (config-field-path-objective)=
 ### `objective`
 
-训练目标函数的 Registry 声明。
+可选训练目标函数的 Registry 声明；具体 TrainingBuilder 决定是否需要。
 
-- 类型：`mapping`
-- 必填：是
+- 类型：`mapping | null`
+- 必填：否
+- 默认值：`null`
 
 (config-field-path-objective-name)=
 ### `objective.name`
@@ -811,22 +839,48 @@ logger 构造参数；output_dir 与 run_name 由运行时注入。
 
 无组件级配置参数。
 
+(config-registry-name-training-builders)=
+### `training_builders`
+
+组装 primary model、可选 Process/Objective、TrainingStrategy 和辅助训练资产。
+
+- 基类/契约：`stochaflow.training.TrainingBuilder`
+- 配置位置：`training.name / training.params`
+
+(config-component-training_builders-gaussian-denoising)=
+#### `gaussian_denoising`
+
+使用离散 Gaussian marginal 和指定 prediction target 训练去噪模型。
+
+运行时注入（不得在 YAML 中覆盖）：`context`。
+
+无组件级配置参数。
+
+(config-component-training_builders-supervised)=
+#### `supervised`
+
+对标准 inputs/targets batch 执行模型 forward 与注入的 Objective。
+
+运行时注入（不得在 YAML 中覆盖）：`context`。
+
+无组件级配置参数。
+
 (config-registry-name-objectives)=
 ### `objectives`
 
-将模型输出和前向噪声目标转换为标量训练损失。
+将 Strategy 已定义语义的 prediction/target 转换为标量训练损失。
 
 - 基类/契约：`torch.nn.Module`
 - 配置位置：`objective.name / objective.params`
 
-(config-component-objectives-ddpm-epsilon)=
-#### `ddpm_epsilon`
+(config-component-objectives-mse)=
+#### `mse`
 
-训练模型预测前向过程注入的 epsilon 噪声。
+可跨 supervised、Gaussian 和自定义 Strategy 复用的均方误差。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `reduction` | MSE 聚合方式；支持 mean、sum 或 none。 |
+| `reduction` | MSE 标量聚合方式；支持 mean 或 sum。 |
 
 (config-registry-name-optimizers)=
 ### `optimizers`

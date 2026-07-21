@@ -88,9 +88,10 @@ uv run stochaflow train \
   --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt
 ```
 
-checkpoint v5 分别保存 inference model、Process、可选 EMA model、optimizer、scheduler、
-EMA、训练进度和 resolved 配置。它只保存 `data: {name, params}`，不保存 Dataset、
-PyTorch Sampler、DataLoader、partition 或数值 solver 的运行时状态。
+checkpoint v6 分别保存 primary inference model、可选 Process/Objective、可选 EMA model、
+optimizer、scheduler、EMA、具名 training assets、训练进度和 resolved 配置。它只保存
+`data: {name, params}`，不保存 Dataset、PyTorch Sampler、DataLoader、partition 或数值
+solver 的运行时状态。
 恢复时配置与 checkpoint 必须兼容；旧格式会收到明确错误，不自动转换。
 
 ## K-fold

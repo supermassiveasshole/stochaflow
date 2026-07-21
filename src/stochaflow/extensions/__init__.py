@@ -37,9 +37,17 @@ from stochaflow.sampling import (
 from stochaflow.training import (
     DiagnosticBuildContext,
     FitStartEvent,
+    GaussianDiagnosticSemantics,
+    ManagedTrainingModule,
+    MSEObjective,
     TrainBatchEndEvent,
     TrainEpochEndEvent,
+    TrainStepOutput,
+    TrainingBuilder,
+    TrainingBuilderContext,
     TrainingDiagnostic,
+    TrainingPlan,
+    TrainingStrategy,
 )
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.logging import ExperimentLogger
@@ -57,6 +65,7 @@ __all__ = [
     "DiscreteVPSchedule",
     "ExperimentLogger",
     "FitStartEvent",
+    "GaussianDiagnosticSemantics",
     "GaussianDenoisingDynamics",
     "GaussianModelDynamics",
     "GaussianNoiseSchedule",
@@ -64,6 +73,8 @@ __all__ = [
     "GaussianScales",
     "GenerativeDynamics",
     "InferenceModelProvider",
+    "MSEObjective",
+    "ManagedTrainingModule",
     "Process",
     "PredictionType",
     "REGISTRIES",
@@ -81,7 +92,12 @@ __all__ = [
     "SamplingOutput",
     "TrainBatchEndEvent",
     "TrainEpochEndEvent",
+    "TrainStepOutput",
+    "TrainingBuilder",
+    "TrainingBuilderContext",
     "TrainingDiagnostic",
+    "TrainingPlan",
+    "TrainingStrategy",
     "TrajectoryObserver",
     "TabulatedDiscreteVPSchedule",
 ]

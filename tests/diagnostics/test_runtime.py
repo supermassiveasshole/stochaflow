@@ -1,13 +1,20 @@
 """State, RNG, and sampling runtime service tests."""
 
+from types import SimpleNamespace
+
 import pytest
 import torch
+import torch.nn as nn
 
+from stochaflow.sampling import PredictionType
+from stochaflow.training import TrainStepOutput, TrainingStrategy
 from stochaflow.training.diagnostics.runtime import (
     EvaluationGuard,
+    GaussianTrainingRuntime,
     SamplerPool,
     SamplerRunner,
     SeedPolicy,
+    gaussian_training_runtime,
     prepare_reference_images,
 )
 from stochaflow.training.diagnostics.config import (
@@ -17,6 +24,47 @@ from stochaflow.training.diagnostics.config import (
 from stochaflow.training.ema import ExponentialMovingAverage
 
 from .helpers import TinyDenoiser, gaussian_system, trainer
+
+
+class MappingSignatureModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.offset = nn.Parameter(torch.zeros(()))
+        self.calls = 0
+
+    def forward(self, inputs: dict[str, torch.Tensor]) -> torch.Tensor:
+        self.calls += 1
+        return torch.zeros_like(inputs["state"]) + self.offset
+
+
+class MappingGaussianStrategy(TrainingStrategy):
+    def __init__(self, model: MappingSignatureModel) -> None:
+        self.model = model
+
+    @property
+    def prediction_type(self) -> PredictionType:
+        return "epsilon"
+
+    def predict_gaussian_model(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.model({"state": state, "time": model_time})
+
+    def training_step(self, batch) -> TrainStepOutput:
+        del batch
+        return TrainStepOutput(self.model.offset.square())
+
+
+class PredictionOnlyGaussianStrategy(TrainingStrategy):
+    @property
+    def prediction_type(self) -> PredictionType:
+        return "epsilon"
+
+    def training_step(self, batch) -> TrainStepOutput:
+        del batch
+        return TrainStepOutput(torch.zeros((), requires_grad=True))
 
 
 @pytest.mark.parametrize("device_name", ["cpu", "cuda"])
@@ -45,7 +93,7 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
     )
 
     with EvaluationGuard(runtime, seed=123, use_ema=True):
-        assert not model.training
+        assert not model.inference_model.training
         torch.rand(4, device=device)
 
     assert model.training
@@ -96,9 +144,15 @@ def test_diagnostic_sampler_rejects_nonterminal_start() -> None:
         params={"start_time": 2},
         trajectory=TrajectoryProviderConfig(),
     )
+    system = gaussian_system(num_timesteps=4)
+    runtime = GaussianTrainingRuntime(
+        system.process,
+        system.prediction_type,
+        system.strategy.predict_gaussian_model,
+    )
 
     pool = SamplerPool(
-        gaussian_system(num_timesteps=4),
+        runtime,
         [profile],
         device=torch.device("cpu"),
     )
@@ -117,9 +171,15 @@ def test_diagnostic_sampler_rejects_nonclean_end() -> None:
         params={"end_time": 2},
         trajectory=TrajectoryProviderConfig(),
     )
+    system = gaussian_system(num_timesteps=4)
+    runtime = GaussianTrainingRuntime(
+        system.process,
+        system.prediction_type,
+        system.strategy.predict_gaussian_model,
+    )
 
     pool = SamplerPool(
-        gaussian_system(num_timesteps=4),
+        runtime,
         [profile],
         device=torch.device("cpu"),
     )
@@ -128,4 +188,41 @@ def test_diagnostic_sampler_rejects_nonclean_end() -> None:
             pool.get("partial"),
             profile,
             torch.randn(1, 1, 4, 4),
+        )
+
+
+def test_gaussian_diagnostic_uses_strategy_model_adapter() -> None:
+    assets = gaussian_system(num_timesteps=2)
+    model = MappingSignatureModel()
+    strategy = MappingGaussianStrategy(model)
+    resolved = gaussian_training_runtime(
+        SimpleNamespace(model=model, process=assets.process, strategy=strategy)
+    )
+    profile = SamplerProfileConfig(
+        id="adapted",
+        name="ddpm",
+        params={},
+        trajectory=TrajectoryProviderConfig(),
+    )
+    pool = SamplerPool(resolved, [profile], device=torch.device("cpu"))
+
+    SamplerRunner(batch_size=1).run(
+        pool.get("adapted"),
+        profile,
+        torch.randn(1, 1, 4, 4),
+    )
+
+    assert model.calls == assets.process.num_timesteps
+
+
+def test_gaussian_diagnostic_rejects_prediction_type_only_strategy() -> None:
+    assets = gaussian_system(num_timesteps=2)
+
+    with pytest.raises(TypeError, match="GaussianDiagnosticSemantics"):
+        gaussian_training_runtime(
+            SimpleNamespace(
+                model=assets.inference_model,
+                process=assets.process,
+                strategy=PredictionOnlyGaussianStrategy(),
+            )
         )

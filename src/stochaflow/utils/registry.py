@@ -166,6 +166,7 @@ class RegistryCatalog:
         self.processes: Registry[type[Any]] = Registry("process")
         self.samplers: Registry[type[Any]] = Registry("sampler")
         self.sampling_builders: Registry[type[Any]] = Registry("sampling builder")
+        self.training_builders: Registry[type[Any]] = Registry("training builder")
         self.objectives: Registry[type[Any]] = Registry("objective")
         self.optimizers: Registry[type[Any]] = Registry("optimizer")
         self.lr_schedulers: Registry[Callable[..., Any]] = Registry("lr scheduler")

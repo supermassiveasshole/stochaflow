@@ -31,6 +31,7 @@ REGISTRY_NAMES = (
     "processes",
     "samplers",
     "sampling_builders",
+    "training_builders",
     "objectives",
     "optimizers",
     "lr_schedulers",

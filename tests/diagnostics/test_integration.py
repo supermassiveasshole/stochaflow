@@ -59,7 +59,7 @@ def test_step_pipeline_logs_all_denoiser_provider_metrics(tmp_path) -> None:
     assert "diagnostics/denoiser/reconstruction_t_0001/mse" in metrics
 
 
-def test_training_system_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
+def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
     logger = RecordingLogger()
     diagnostic = _diagnostic(
         tmp_path,

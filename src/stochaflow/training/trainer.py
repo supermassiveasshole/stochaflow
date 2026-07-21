@@ -3,9 +3,9 @@
 import time
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sized
 from copy import copy
-from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, cast
 
 import torch
@@ -19,22 +19,20 @@ from stochaflow.training.diagnostics.contracts import (
     TrainingDiagnostic,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
+from stochaflow.training.builder import (
+    ManagedTrainingModule,
+    TrainingPlan,
+    trainable_parameters as plan_trainable_parameters,
+    validate_training_plan,
+)
+from stochaflow.training.strategy import (
+    Batch,
+    ScalarMetric,
+    TrainStepOutput,
+    validate_train_step_output,
+)
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
-
-Batch = Any
-
-
-@dataclass(slots=True)
-class TrainStepOutput:
-    """Structured result from an algorithm-specific training step."""
-
-    loss: torch.Tensor
-    diagnostics: dict[str, Any] = field(default_factory=dict)
-
-
-TrainStepResult = torch.Tensor | TrainStepOutput
-TrainStepFn = Callable[[nn.Module, nn.Module, Batch, torch.device], TrainStepResult]
 
 
 def _move_to_device(batch: Batch, device: torch.device) -> Batch:
@@ -73,25 +71,6 @@ def _move_to_device(batch: Batch, device: torch.device) -> Batch:
         except TypeError:
             return moved_list
     return batch
-
-
-def _default_train_step(
-    model: nn.Module,
-    criterion: nn.Module,
-    batch: Batch,
-    device: torch.device,
-) -> torch.Tensor:
-    """Run a default supervised train step for ``(inputs, targets)`` batches."""
-
-    del device
-    if not isinstance(batch, (tuple, list)) or len(batch) != 2:
-        raise TypeError(
-            "default train step expects batches shaped like (inputs, targets); "
-            "provide a custom train_step_fn for other batch formats"
-        )
-    inputs, targets = batch
-    predictions = model(inputs)
-    return criterion(predictions, targets)
 
 
 def _optimizer_metrics(optimizer: Optimizer) -> dict[str, float]:
@@ -143,16 +122,66 @@ def _set_dataloader_epoch(dataloader: Iterable[Batch], epoch: int) -> None:
             set_epoch(epoch)
 
 
-def _normalize_train_step_result(result: object) -> TrainStepOutput:
-    if isinstance(result, TrainStepOutput):
-        return result
-    if isinstance(result, torch.Tensor):
-        return TrainStepOutput(loss=result)
-    raise TypeError("train_step_fn must return a Tensor or TrainStepOutput")
+def _scalar_metrics(metrics: Mapping[str, ScalarMetric]) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for name, value in metrics.items():
+        if isinstance(value, torch.Tensor):
+            result[name] = float(value.detach().item())
+        else:
+            result[name] = float(value)
+    return result
+
+
+def _validate_optimizer_parameters(
+    optimizer: Optimizer,
+    expected_parameters: tuple[nn.Parameter, ...],
+) -> None:
+    """Require the optimizer to own exactly the Plan-selected parameters."""
+
+    actual_parameters = tuple(
+        parameter
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    )
+    actual_ids = tuple(map(id, actual_parameters))
+    expected_ids = tuple(map(id, expected_parameters))
+    if len(set(actual_ids)) != len(actual_ids) or set(actual_ids) != set(expected_ids):
+        raise ValueError("optimizer parameters must exactly match TrainingPlan")
+
+
+def _validate_checkpoint_manager(
+    manager: CheckpointManager,
+    *,
+    plan: TrainingPlan,
+    optimizer: Optimizer,
+    lr_scheduler: Any | None,
+    ema: ExponentialMovingAverage | None,
+) -> None:
+    """Keep checkpoint ownership identical to the validated training Plan."""
+
+    if manager.model is not plan.primary_model:
+        raise ValueError("CheckpointManager model must match TrainingPlan")
+    if manager.process is not plan.process:
+        raise ValueError("CheckpointManager process must match TrainingPlan")
+    if manager.objective is not plan.objective:
+        raise ValueError("CheckpointManager objective must match TrainingPlan")
+    if set(manager.auxiliary_modules) != set(plan.auxiliary_modules):
+        raise ValueError("CheckpointManager auxiliary names must match TrainingPlan")
+    for name, asset in plan.auxiliary_modules.items():
+        if manager.auxiliary_modules[name] is not asset.module:
+            raise ValueError(
+                f"CheckpointManager auxiliary '{name}' must match TrainingPlan"
+            )
+    if manager.optimizer is not optimizer:
+        raise ValueError("CheckpointManager optimizer must match Trainer")
+    if manager.lr_scheduler is not lr_scheduler:
+        raise ValueError("CheckpointManager lr_scheduler must match Trainer")
+    if manager.ema is not ema:
+        raise ValueError("CheckpointManager EMA must match Trainer")
 
 
 class Trainer:
-    """Generic optimization loop wrapper.
+    """Automatic optimization and experiment lifecycle wrapper.
 
     The trainer owns loop mechanics such as:
     - device placement
@@ -161,22 +190,18 @@ class Trainer:
     - optional gradient clipping
     - optional scheduler stepping
 
-    Algorithm-specific batch handling is delegated to ``train_step_fn`` so the
-    trainer itself stays generic.
+    Algorithm-specific batch handling is delegated to the injected strategy.
     """
 
     def __init__(
         self,
-        model: nn.Module,
+        plan: TrainingPlan,
         optimizer: Optimizer,
-        criterion: nn.Module,
         *,
         device: torch.device | str,
-        train_step_fn: TrainStepFn | None = None,
         lr_scheduler: Any | None = None,
         lr_scheduler_interval: str = "step",
         ema: ExponentialMovingAverage | None = None,
-        ema_model: nn.Module | None = None,
         diagnostics: Iterable[TrainingDiagnostic] | None = None,
         max_grad_norm: float | None = None,
         logger: ExperimentLogger | None = None,
@@ -187,15 +212,30 @@ class Trainer:
         checkpoint_config: dict[str, Any] | None = None,
         checkpoint_metadata: dict[str, Any] | None = None,
     ) -> None:
-        self.model = model
+        self.plan = validate_training_plan(plan)
+        self.strategy = self.plan.strategy
+        self.model = self.plan.primary_model
+        self.process = self.plan.process
+        self.objective = self.plan.objective
         self.optimizer = optimizer
-        self.criterion = criterion
         self.device = torch.device(device)
-        self.train_step_fn = train_step_fn or _default_train_step
+        self.trainable_parameters = plan_trainable_parameters(self.plan)
+        _validate_optimizer_parameters(self.optimizer, self.trainable_parameters)
         self.lr_scheduler = lr_scheduler
         self.lr_scheduler_interval = lr_scheduler_interval
         self.ema = ema
-        self.ema_model = ema_model or model
+        self.ema_model = self.model
+        managed_modules: dict[str, ManagedTrainingModule] = {
+            "primary_model": ManagedTrainingModule(self.model),
+        }
+        if self.process is not None:
+            managed_modules["process"] = ManagedTrainingModule(self.process)
+        if self.objective is not None:
+            managed_modules["objective"] = ManagedTrainingModule(self.objective)
+        managed_modules.update(self.plan.auxiliary_modules)
+        self.managed_modules: Mapping[str, ManagedTrainingModule] = MappingProxyType(
+            managed_modules
+        )
         self.diagnostics = list(diagnostics or [])
         self.max_grad_norm = max_grad_norm
         self.logger = logger or NullLogger()
@@ -216,12 +256,28 @@ class Trainer:
             raise ValueError("checkpoint_every must be positive when provided")
         if self.checkpoint_manager is not None and self.checkpoint_dir is None:
             raise ValueError("checkpoint_dir is required when checkpoint_manager is provided")
+        if self.checkpoint_manager is not None:
+            _validate_checkpoint_manager(
+                self.checkpoint_manager,
+                plan=self.plan,
+                optimizer=self.optimizer,
+                lr_scheduler=self.lr_scheduler,
+                ema=self.ema,
+            )
         if self.lr_scheduler_interval not in {"step", "epoch"}:
             raise ValueError("lr_scheduler_interval must be 'step' or 'epoch'")
 
-        self.model.to(self.device)
+        for asset in self.managed_modules.values():
+            asset.module.to(self.device)
         if self.ema is not None:
             self.ema.to(self.device)
+
+    def _set_module_modes(self, *, training: bool) -> None:
+        for asset in self.managed_modules.values():
+            if training and asset.mode == "follow":
+                asset.module.train()
+            else:
+                asset.module.eval()
 
     def _step_lr_scheduler(self, interval: str) -> None:
         if self.lr_scheduler is None or self.lr_scheduler_interval != interval:
@@ -279,22 +335,20 @@ class Trainer:
     def train_batch(self, batch: Batch) -> float:
         """Run one optimization step and return the scalar loss."""
 
-        self.model.train()
+        self._set_module_modes(training=True)
         self.optimizer.zero_grad(set_to_none=True)
         prepared_batch = _move_to_device(batch, self.device)
-        output = _normalize_train_step_result(
-            self.train_step_fn(
-                self.model,
-                self.criterion,
-                prepared_batch,
-                self.device,
-            )
+        output = validate_train_step_output(
+            cast(object, self.strategy.training_step(prepared_batch))
         )
         loss = output.loss
         loss.backward()
 
         if self.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                self.trainable_parameters,
+                self.max_grad_norm,
+            )
 
         self.optimizer.step()
         if self.ema is not None:
@@ -362,6 +416,14 @@ class Trainer:
                             float(epoch_index) if epoch_index is not None else 0.0
                         ),
                     }
+                    metrics.update(
+                        {
+                            f"train/strategy/{name}": value
+                            for name, value in _scalar_metrics(
+                                train_step_output.metrics
+                            ).items()
+                        }
+                    )
                     metrics.update(_optimizer_metrics(self.optimizer))
                     self.logger.log_metrics(metrics, step=self.global_step)
                 if progress_reporter is not None:
@@ -425,7 +487,7 @@ class Trainer:
             else iter(dataloader)
         )
 
-        self.model.eval()
+        self._set_module_modes(training=False)
         total_loss = 0.0
         num_batches = 0
         started_at = time.perf_counter()
@@ -433,13 +495,8 @@ class Trainer:
             with torch.no_grad():
                 for batch in iterator:
                     prepared_batch = _move_to_device(batch, self.device)
-                    output = _normalize_train_step_result(
-                        self.train_step_fn(
-                            self.model,
-                            self.criterion,
-                            prepared_batch,
-                            self.device,
-                        )
+                    output = validate_train_step_output(
+                        cast(object, self.strategy.evaluation_step(prepared_batch))
                     )
                     batch_loss = float(output.loss.detach().item())
                     total_loss += batch_loss

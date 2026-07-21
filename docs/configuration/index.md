@@ -86,9 +86,14 @@ process:
       params:
         num_timesteps: 1000
 
+training:
+  name: gaussian_denoising
+  params:
+    prediction_type: epsilon
+
 objective:
-  name: ddpm_epsilon
-  params: {}
+  name: mse
+  params: {reduction: mean}
 
 sampling:
   shape: [1, 32, 32]
@@ -117,8 +122,9 @@ sampling:
 | `extensions` | 训练、采样和 checkpoint 重建前导入的 Registry 扩展模块 |
 | `data` | DataBuilder Registry 声明与 builder 专属参数 |
 | `model` | 去噪模型 Registry 声明 |
+| `training` | TrainingBuilder Registry 声明与任务组合参数 |
 | `process` | 可选的 model-free probability process；`null` 表示所选算法不需要 |
-| `objective` | 训练损失 |
+| `objective` | 可选、可复用的标量训练目标；由 TrainingBuilder 决定是否需要 |
 | `optimizer` / `lr_scheduler` | 参数更新与学习率策略 |
 | `ema` | 模型参数指数移动平均 |
 | `sampling` | 独立采样和训练后验收采样 |

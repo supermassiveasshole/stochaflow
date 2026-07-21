@@ -1,8 +1,8 @@
 # 自定义代码扩展支持实施计划
 
-- 状态：Stage 3 完成，Stage 4 待实施
+- 状态：Stage 4 完成，Stage 5 待实施
 - 制定日期：2026-07-17
-- 最近修订：2026-07-20
+- 最近修订：2026-07-21
 - 目标分支：`feature/custom-code-extension-support`
 
 ## 目标
@@ -22,7 +22,8 @@
 → stochaflow project create my_project
 → 编写并注册 extension
 → 在项目清单中声明 extension 模块
-→ 在 YAML 中选择数据 builder、模型、Strategy、Builder，以及算法需要的 Process/Sampler
+→ 在 YAML 中选择数据 builder、模型、TrainingBuilder、可选 Objective，以及采样所需的
+  Process/SamplingBuilder
 → stochaflow train / stochaflow sample
 ```
 
@@ -31,8 +32,8 @@
 ### Open–Closed Principle
 
 Stochaflow 核心对扩展开放、对任务特例关闭。一个与现有契约兼容的新 DataBuilder、
-Process、Sampler、SamplingBuilder、Loss 或 TrainingStrategy，应当只需新增实现、注册和
-配置，不应修改核心 runner、CLI 或按名称分支的 dispatch 代码。
+Process、Sampler、SamplingBuilder、Objective 或 TrainingBuilder，应当只需新增实现、
+注册和配置，不应修改核心 runner、CLI 或按名称分支的 dispatch 代码。
 
 具体约束：
 
@@ -59,6 +60,9 @@ DataBuilder
 Framework: Registry / config / checkpoint / train and sample lifecycle
   └─ selects registered components without requiring one universal algorithm shape
 
+Training task: TrainingBuilder -> TrainingPlan -> TrainingStrategy
+  └─ assembles managed assets, then delegates only step computation to Strategy
+
 Algorithm family: optional Process + family Dynamics + optional compatible Sampler
   └─ defines cohesive mathematics only within that family
 
@@ -79,8 +83,10 @@ Task: SamplingBuilder + model callable + condition / guidance / initial state
   多步历史和循环。它不解释 condition，也不拥有业务模型。
 - 不需要数值求解循环的直接生成变换可以由 SamplingBuilder 执行，不为满足框架形状虚构
   Sampler；统一 `Sampler.sample()` 只约束实际选择了 Sampler 的 workflow。
-- **TrainingStrategy** 和 **SamplingBuilder** 分别是训练与推理的任务组合层，负责解释
-  batch、调用模型、条件注入、guidance、prediction semantics 以及兼容性检查。
+- **TrainingBuilder** 组装训练依赖并返回 TrainingPlan；核心验证 Plan 并管理
+  其资产 lifecycle。**TrainingStrategy** 只定义 batch 到 loss/metrics 的训练计算。
+- **SamplingBuilder** 是推理任务组合层，负责模型适配、condition/guidance、
+  initialization 和 family 兼容性检查。
 
 这样的划分吸收两类现有实现的优点，而不复制它们的耦合：OpenAI diffusion 将高复用的
 Gaussian math 集中在 `GaussianDiffusion`，但也合并了训练 Loss、模型输出解释和采样
@@ -97,9 +103,10 @@ Gaussian math 集中在 `GaussianDiffusion`，但也合并了训练 Loss、模�
   `Tensor`，或由 mapping、tuple、list 和 Tensor 组成的嵌套结构；
 - 提供开箱即用的普通图像、多分辨率图像和 paired super-resolution recipe，但这些
   recipe 的参数不是核心数据契约；
-- 支持多模型、多 Loss，但首版只有一个优化器和一次反向传播；
+- 首版 TrainingStrategy 支持单 primary model、可选 Objective、一个优化器和
+  一次反向传播；TrainingBuilder 可组装 teacher 等核心托管的辅助模块；
 - 首版训练与采样仍要求一个 primary inference model；Process 则是可选组件，由具体
-  TrainingStrategy 或 SamplingBuilder 决定是否需要；
+  TrainingBuilder 或 SamplingBuilder 决定是否需要；
 - 核心 Trainer 管理训练循环、反传、调度、日志和 checkpoint；
 - 扩展相关 schema 直接使用新格式，不提供 legacy 迁移或兼容别名。
 
@@ -564,101 +571,247 @@ Stage 3 在保留既有数学分层的前提下完成以下收口：
 
 `Separate diffusion processes and samplers`
 
-## Stage 4：TrainingStrategy、Loss 与训练资产边界
+## Stage 4：TrainingBuilder、TrainingPlan 与单一职责 Strategy（已完成）
 
-### 目标
+### Summary
 
-移除当前 `Gaussian Process + objective.name == ddpm_epsilon → train_step_fn` 的临时硬编码，
-让训练层达到与 Stage 2 数据层、Stage 3 采样层相同的 OCP 水平。Stage 4 是项目脚手架和
-端到端自定义任务之前的必要依赖，不再后置。
+用薄 `TrainingStrategy` 取代 Trainer 中的 `_default_train_step` 和
+`train_step_fn`。Strategy 只定义一次训练/评估计算；新增注册化
+`TrainingBuilder` 组装 Model、Objective、Process、Strategy 和可选辅助模块，
+并将一个已完成依赖注入的 `TrainingPlan` 交给核心。
 
-职责固定为：
+核心采纳 Plan 中的资产后，统一管理 device、module mode、backward、optimizer、
+scheduler、EMA、gradient clipping、日志和 checkpoint。Strategy 可以引用任意已
+注入依赖，但不构建、迁移、冻结、选择参数或序列化它们。
 
-```text
-TrainingStrategy
-  └─ structured batch interpretation / model invocation / optional Process use
-     / target and condition semantics / Loss composition
-
-Trainer
-  └─ epoch lifecycle / backward / optimizer / scheduler / EMA / logging
-     / validation cadence / checkpoint cadence
-```
+Objective 继续是唯一 loss 抽象，不增加重复的 Loss API。首版仍只支持
+“一个标量总 loss + 一个 optimizer”的自动优化生命周期。
 
 ### 配置与 Registry
 
+`training` 选择 TrainingBuilder，不在 YAML 中建立通用多模型/多 Objective 资产图：
+
 ```yaml
 training:
-  strategy:
-    name: gaussian_denoising
-    params:
-      prediction_type: epsilon
-      loss:
-        name: mse
-        params: {}
+  name: gaussian_denoising
+  params:
+    prediction_type: epsilon
 
-trainer:
-  num_epochs: 30
-  device: auto
+objective:
+  name: mse
+  params:
+    reduction: mean
 ```
 
-- `training` 只选择一个 `TrainingStrategy`；具体 Loss 配置属于 strategy 的私有 params，
-  核心不定义一张适用于所有训练算法的 `losses` 图；
-- 移除顶层 `objective` 和 `REGISTRIES.objectives`，旧字段作为未知字段报错；
-- 新增 `REGISTRIES.training_strategies`；`REGISTRIES.losses` 是 Strategy 可选使用的低层
-  构造点，核心 Trainer 不查找、不调用也不组合 Loss；
-- Loss 不与 objective 并列表达同一 prediction/target 语义。Strategy 决定 model output、
-  target 和 reduction 的含义，再选择是否复用注册 Loss。
+- 新增必填 `training: ComponentConfig` 和 `REGISTRIES.training_builders`；注册类
+  必须继承 `TrainingBuilder`。
+- `TrainingStrategy` 是 Builder 组装的运行时逻辑契约，没有 Registry 或独立
+  YAML 身份。不同 Strategy 的构造依赖不必伪装成统一 context map。
+- `StochaflowConfig.objective` 改为 `ComponentConfig | None`；不需要 Objective 的
+  Builder 不必伪造 loss。
+- 保留 `REGISTRIES.objectives`，将任务绑定的 `ddpm_epsilon` 收缩为可复用的
+  `mse` Objective；不新增 `REGISTRIES.losses`。
+- 顶层 `model`、`objective` 和 `process` 是 standard Builder 的主资产输入。自定义
+  Builder 的 teacher、额外 Objective 等组合配置完全属于它的 `params`。
+- `optimizer`、`lr_scheduler`、`ema`、gradient clipping 和 Trainer 配置继续是核心
+  通用配置，不进入 Builder/Strategy params。
 
-### TrainingStrategy 契约
+### 公共契约
 
-公开 Strategy 提供：
+```python
+@dataclass(frozen=True, slots=True)
+class ManagedTrainingModule:
+    module: nn.Module
+    mode: Literal["follow", "eval"] = "follow"
 
-- `training_step(batch)` 与 `evaluation_step(batch)`；
-- `trainable_parameters()`；
-- `to(device)`、`train_mode()` 与 `eval_mode()`；
-- 明确的 primary inference model 访问能力；
-- 与主模型、可选 Process 分离的 strategy-owned auxiliary state 保存与恢复能力。
 
-`TrainStepOutput` 包含可反传总 `loss`、可序列化标量 metrics，以及 diagnostic 可选消费的
-窄中间结果。Strategy 接收 Stage 2 的 structured batch，自行解释 state、condition、
-target、mask 和模型签名；需要 probability path 的 Strategy 在构造边界要求 Stage 3 的
-family Process capability，不需要 Process 的 Strategy 直接省略。Strategy 不调用 Sampler。
+@dataclass(frozen=True, slots=True)
+class TrainingPlan:
+    strategy: TrainingStrategy
+    primary_model: nn.Module
+    process: Process | None
+    objective: nn.Module | None
+    auxiliary_modules: Mapping[str, ManagedTrainingModule]
 
-内置 Gaussian epsilon 路径迁移为正式 `gaussian_denoising` Strategy。现有
-`GaussianEpsilonTrainingSystem` 和 `ddpm_epsilon_train_step` 不再作为 factory 的特殊分支；
-super-resolution 的 `low_res` 是否以及如何传给模型，由所选 Strategy/model adapter 明确
-处理，不能被通用训练桥接静默丢弃。
 
-### Checkpoint、EMA 与 diagnostics
+@dataclass(frozen=True, slots=True)
+class TrainingBuilderContext:
+    params: dict[str, Any]
+    primary_model: nn.Module
+    process: Process | None
+    objective: nn.Module | None
+    model_factory: ModelFactory
+    objective_factory: ObjectiveFactory
 
-- checkpoint 升级到 v6，明确区分 primary inference model、可选 Process、EMA model 与
-  strategy auxiliary state；strategy state 不重复主模型或 Process 权重；
-- EMA 首版只跟踪 primary inference model；Process 的可学习参数和 auxiliary model 是否
-  参与优化由 Strategy 的 `trainable_parameters()` 决定；
-- checkpoint-only sampling 只构建 primary model、可选 Process 与 SamplingBuilder，不
-  强制实例化 TrainingStrategy；
-- teacher、auxiliary model 或其他策略私有状态通过统一 strategy state 保存，不向 checkpoint
-  顶层不断追加 `teacher_state_dict`、`second_model_state_dict` 等任务字段；
-- diagnostic 依赖注入的 primary model、可选 Process、`TrainStepOutput` 或明确的窄
-  diagnostic capability，不再检查具体 `GaussianEpsilonTrainingSystem`；行为兼容的自定义
-  Gaussian Strategy 应能复用 diffusion-quality diagnostic。
 
-### 验收条件
+class TrainingBuilder(ABC):
+    @abstractmethod
+    def build(self) -> TrainingPlan: ...
 
-- 自定义非 Gaussian Strategy 通过注册和配置完成 train/eval，不修改 core factory 或
-  Trainer dispatch；
-- 内置 Gaussian epsilon 训练数值、optimizer、scheduler、EMA 和 resume 行为保持一致；
-- 自定义 conditional/SR Strategy 能消费 `(high_res, {"low_res": low_res})`，condition 不被
-  通用代码丢弃；
-- 单 Loss、多 Loss、教师模型和自定义 batch 解释均由 Strategy 组合；
-- v6 checkpoint 能恢复主模型、可选 Process、strategy auxiliary state 和训练进度，且
-  checkpoint-only sampling 不构建 Strategy；
-- diffusion-quality diagnostic 通过 capability/injection 复用于独立的兼容 Strategy；
-- 配置 reference、扩展手册、workflow 和 troubleshooting 同步更新。
 
-### 逻辑提交
+class TrainingStrategy(ABC):
+    @abstractmethod
+    def training_step(self, batch: Any) -> TrainStepOutput: ...
 
-`Add extensible training strategies`
+    def evaluation_step(self, batch: Any) -> TrainStepOutput: ...
+```
+
+- Builder context 深复制 params。factory 只注入 Builder，因为资产组装是 Builder 的
+  职责；Strategy 不访问 Registry 或 factory。
+- `primary_model`、`process` 和 `objective` 是具有 sampling/checkpoint 固定身份的
+  主资产，不得在 `auxiliary_modules` 重复声明。
+- auxiliary name 必须稳定、非空且唯一。首版所有 auxiliary module 都进入
+  checkpoint，不增加 external/reference-only 保存策略。
+- `mode="follow"` 跟随 train/eval lifecycle；`mode="eval"` 在训练时也保持 eval，
+  用于 frozen teacher。是否进入 optimizer 只由 `requires_grad` 决定。
+- Strategy 是无持久状态的训练逻辑对象，不继承 `nn.Module`，不提供
+  `to/train/eval`、parameter selection、optimizer、factory 或 checkpoint/state API。
+- `TrainStepOutput` 包含标量可反传 `loss`、可选 scalar `metrics` 和可选
+  `diagnostics`。Trainer 在调用 Strategy 前递归迁移 structured batch。
+
+### 内置 Builder 与 Strategy
+
+`supervised` Builder 使用顶层 Model/Objective 构造通用 Strategy：
+
+- 要求 Objective，只接受 `(inputs, targets)` batch；
+- 执行 `predictions = model(inputs)` 和 `loss = objective(predictions, targets)`；
+- 不认识 Process、condition、timestep 或 diffusion。
+
+`gaussian_denoising` Builder 接替临时 Gaussian training bridge：
+
+- 要求 `DiscreteGaussianDenoisingProcess` 和 Objective；
+- 构造支持 `epsilon`、`x0`、`v` 和 `score` target 的 Strategy；
+- Strategy 调用 Objective 计算 prediction/target loss，不复制 MSE；
+- 接受 bare Tensor 或 `(images, {})`；非空 condition 明确失败，不静默丢弃
+  `low_res`；conditional/SR 由自定义 Builder 组装匹配的 Strategy；
+- 删除 `GaussianEpsilonTrainingSystem`、`resolve_train_step_fn()`、
+  `ddpm_epsilon_train_step()` 和 factory 中按 objective 名称 dispatch 的分支。
+
+### 蒸馏组合
+
+自定义 `knowledge_distillation` Builder 的私有 params 可声明 teacher model/checkpoint、
+蒸馏 Objective 和权重。Builder 通过注入的 factory 构建 teacher 与额外 Objective，
+加载并冻结 teacher，然后显式构造：
+
+```python
+KnowledgeDistillationStrategy(
+    student=primary_model,
+    teacher=teacher,
+    task_objective=objective,
+    distill_objective=distill_objective,
+    alpha=alpha,
+)
+```
+
+Plan 将 student 作为 `primary_model`，teacher 以 `mode="eval"` 进入 auxiliary modules；
+teacher 的 `requires_grad=False` 使其不进入 optimizer。Strategy 只执行 teacher
+no-grad forward、student forward、两项 Objective 和 total loss/metrics 组合。
+
+```text
+TrainingBuilder
+  ├─ 构建/加载/冻结 teacher
+  ├─ 构建 task 与 distillation Objective
+  └─ 返回 TrainingPlan(student, teacher, objectives, strategy)
+
+TrainingStrategy
+  └─ L_total = (1 - alpha) * L_task + alpha * L_distill
+
+Trainer/core
+  └─ 托管 module mode、device、单 optimizer、backward 与 checkpoint
+```
+
+蒸馏不会成为 Strategy 的通用 mode，也不会给通用配置增加 `teacher`、`temperature`、
+`feature_layers` 等字段。这些都是具体蒸馏 Builder/Strategy 的私有任务语义。只要多个
+损失能够合成为一个标量总 loss，自动训练循环就无需理解蒸馏。
+
+首版覆盖 frozen-teacher online distillation；预先生成 teacher target 的 offline
+distillation 则不需要 auxiliary teacher。需要联合更新 teacher、独立 teacher optimizer、
+EMA teacher 或交替优化的方案具有不同训练 lifecycle，不通过继续给 Strategy 增加可选
+控制字段来兼容，而应在出现真实需求后定义新的训练 loop family。
+
+### Core runtime 与 lifecycle
+
+- core 先构建顶层 primary model、可选 Process 和可选 Objective，再构建所选
+  TrainingBuilder 并只调用一次 `build()`。
+- 集中验证 `TrainingPlan`、资产身份/名称/重复、mode policy 和 Strategy 类型；
+  core/Trainer 不按 Builder 名称分支。
+- core 稳定去重所有 managed module 中 `requires_grad=True` 的参数，并用同一
+  tuple 构建 optimizer 与执行 gradient clipping。EMA 仍只跟踪 primary model。
+- Trainer 直接调用 `strategy.training_step()` / `evaluation_step()`；移除
+  `criterion`、`train_step_fn`、`_default_train_step` 和任意 model-output fallback。
+- backward、单 optimizer step、scheduler interval、batch limit 和 epoch lifecycle 保持核心
+  职责。多 optimizer、交替更新和 custom backward 不在本 Stage 承诺内。
+
+### Checkpoint v6
+
+- 固定字段保存 `model_state_dict`、可选 `process_state_dict`、可选
+  `objective_state_dict`、可选 `ema_model_state_dict`、optimizer、scheduler、EMA、config
+  和进度。
+- 新增 `training_assets_state_dict: Mapping[str, Mapping[str, Any]]`，按 Plan 中稳定名称
+  保存所有 auxiliary module。resume 必须严格匹配当前 Plan 的 auxiliary names。
+- 不保存 `strategy_state_dict`；Strategy 契约不允许可变持久状态。
+- checkpoint-only sampling 只构建并加载 primary model、可选 Process 与
+  SamplingBuilder，忽略 Objective、TrainingBuilder、Strategy 和 training assets。
+- v5 直接拒绝，不增加迁移层。
+
+### Diagnostics capability
+
+- Trainer 和 diagnostic event 暴露当前 Plan/Strategy 与 core-managed assets。
+- Gaussian diagnostic 通过可选窄 capability 获取 prediction type 和已经适配好模型签名的
+  prediction callable；它不得假设 primary model 可直接以 `(state, model_time)` 调用。
+  Dynamics 仍由 diagnostic 用该 callable 与 Process 组合。
+- 该 callable 只表达 Strategy 已拥有的 Gaussian 模型调用语义，不让 Strategy 构建
+  Sampler、运行 diagnostic 或管理 artifacts。需要 condition 的 Strategy 必须显式提供
+  diagnostic 可用的上下文；无法提供时不声明 capability，并得到明确不兼容错误。
+- step providers 从 `TrainStepOutput.diagnostics` 按需验证字段；通用 Strategy 不被迫
+  产生 Gaussian intermediate。
+- EvaluationGuard 对全部 managed modules 执行 mode/RNG/EMA 保护，并恢复
+  `mode="eval"` 的固定策略。
+
+### Test Plan
+
+- Builder/Plan：错误注册基类、params 深复制、错误返回类型、非法 auxiliary
+  name/module/mode、重复资产和不可训练 Plan 明确失败。
+- Strategy：非法 step output 失败；公共契约无 lifecycle/state/factory API；自定义
+  structured batch 原样到达 Strategy。
+- 简单路径：`supervised` 对 `(inputs, targets)` 完成 train/eval；
+  `gaussian_denoising + mse` 覆盖四种 prediction target 并与现有 epsilon 数学回归一致。
+- OCP：测试私有非 Gaussian Builder/Strategy 只通过注册/config 驱动 Trainer，
+  core 无名称分支。
+- 蒸馏：测试私有 Builder 显式注入 student/teacher/两个 Objective；teacher 无梯度、
+  始终 eval、不进入 optimizer；Strategy 组合总 loss 并记录分项 metrics。
+- checkpoint：primary model、可选 Process/Objective、EMA、auxiliary modules、
+  optimizer/scheduler/progress 恢复；auxiliary names 不匹配失败；sampling 不构建训练侧
+  Builder/Strategy/assets；v5 拒绝。
+- diagnostics：内置与真正独立、使用非标准模型签名的测试私有 Gaussian-compatible
+  Strategy 均通过 prediction callable 复用 diffusion-quality；非 capability Strategy
+  得到明确错误。
+- 配置、YAML、公开导出、README、extension/workflow/troubleshooting 和 reference 同步。
+
+实施完成后的日常检查：
+
+```bash
+uv run pytest tests/test_training_builder.py tests/test_training_strategy.py \
+  tests/test_factory.py tests/test_trainer_reporting.py \
+  tests/test_experiment_runner.py tests/test_sampling_runtime.py tests/diagnostics
+uv run ruff check .
+uv run pyright
+```
+
+完整 pytest、build、Sphinx 和额外静态检查留到整版 feature 分支合并验收。
+
+### Assumptions
+
+- Stage 4 不保留 `ddpm_epsilon` Objective 名称、旧训练 bridge、v5 checkpoint 或
+  未发布 API 兼容层。
+- primary model 仍是顶层必填资产；Objective 和 Process 可选，具体 Builder 验证
+  自己必需的资产与 family capability。
+- Builder 可构建辅助模块，但不执行训练循环；Strategy 可引用资产，但不管理
+  其 lifecycle。
+- 首版 auxiliary module 全部 checkpoint 自包含；对外部 teacher reference 只保存路径/
+  hash 的容量优化等真实需求再设计。
+- Stage 4 只统一自动单 optimizer lifecycle；多 optimizer 需要新的训练 loop family。
+- Stage 4 形成单一逻辑提交：`Stage 4: Add extensible training builders`。
 
 ## Stage 5：用户项目系统与 CLI 脚手架
 
@@ -713,13 +866,13 @@ super-resolution 的 `low_res` 是否以及如何传给模型，由所选 Strate
 - CLI 加载 `source_roots` 后按清单顺序导入扩展；
 - 清单模块与配置中的 `extensions.modules` 按顺序合并并稳定去重；
 - 项目名中的连字符转换为 Python 包名下划线；非空目标目录拒绝覆盖；
-- 模板按独立小示例展示 DataBuilder、Model、TrainingStrategy、可选 Loss、可选 Process、
+- 模板按独立小示例展示 DataBuilder、Model、TrainingBuilder/Strategy、可选 Objective、可选 Process、
   Sampler 和 SamplingBuilder 注册，不暗示每个项目必须实现全部角色。
 
 ### 验收条件
 
 - CLI 可以生成合法、可安装、可测试的 `src` 项目；
-- 自定义 DataBuilder/TrainingStrategy 可以直接被 `train` 使用，自定义 SamplingBuilder
+- 自定义 DataBuilder/TrainingBuilder 可以直接被 `train` 使用，自定义 SamplingBuilder
   可以直接被 `sample` 使用；
 - checkpoint-only sampling 使用同一项目发现和扩展导入逻辑；
 - 临时合成数据完成端到端 CLI 测试，不依赖网络下载；
@@ -772,7 +925,8 @@ super-resolution 的 `low_res` 是否以及如何传给模型，由所选 Strate
 
 - 以独立用户项目实现条件模型和 physics 数据处理；
 - 复用内置 `DiscreteGaussianProcess` 和 DDPM/DDIM Sampler；
-- 使用自定义 TrainingStrategy 解释 LR/HR 或时序场 batch；
+- 使用自定义 TrainingBuilder 组装模型/Objective/Process 和只解释 LR/HR 或
+  时序场 batch 的 TrainingStrategy；
 - 使用自定义 SamplingBuilder 实现条件输入、partial noising、physics guidance 或所需
   sampling state；
 - low-resolution、physics state 和模型签名由 Builder/model callable 拥有；若 physics
@@ -785,10 +939,10 @@ super-resolution 的 `low_res` 是否以及如何传给模型，由所选 Strate
 
 ### 7B：知识蒸馏
 
-- 提供自定义蒸馏 Loss 与 `KnowledgeDistillationStrategy`；
-- 构建教师模型、加载 checkpoint、冻结并保持 eval；
-- 组合基础 Loss 和蒸馏 Loss，记录分项指标；
-- 验证 strategy auxiliary state 与 checkpoint resume。
+- 使用自定义 TrainingBuilder 构建教师模型、加载 checkpoint、冻结并将其
+  以固定 eval auxiliary module 交给核心托管；
+- 提供可复用 Objective 和只定义蒸馏计算的 `KnowledgeDistillationStrategy`；
+- Strategy 组合基础与蒸馏 Objective 结果为单一 total loss，并记录分项指标。
 
 ### 验收条件
 
@@ -796,6 +950,7 @@ super-resolution 的 `low_res` 是否以及如何传给模型，由所选 Strate
 - Physics 案例只通过注册扩展与配置组合复用 Process/Sampler，核心无任务分支；
 - 更换 DDPM/DDIM 只改变 sampling 配置或 Builder 参数；
 - 教师参数无梯度且保持不变，学生正常更新；
+- teacher 与额外 Objective 通过 `training_assets_state_dict` 恢复，sampling 不构建它们；
 - 两个案例共同证明数据、训练和采样三个扩展轴可以独立替换；
 - 大型样本和 trajectory 符合 Stage 6 已验证的输出容量策略。
 
@@ -811,7 +966,7 @@ super-resolution 的 `low_res` 是否以及如何传给模型，由所选 Strate
   注册组件名，包括显式的 `process: null`；
 - 缺失扩展时报告模块、项目根目录与 `--project` 修复建议；
 - 文档覆盖项目创建、自定义 DataBuilder、structured batch、可选 Process、family Dynamics、
-  Sampler、SamplingBuilder、模型、Loss 和 TrainingStrategy；
+  Sampler、SamplingBuilder、模型、Objective、TrainingBuilder/Plan 和 TrainingStrategy；
 - 单独提供“复用内置 Process/Sampler 完成新任务”和“不使用 Process 的自定义 family”
   最小教程；
 - 记录破坏性变更、checkpoint 可移植性、capability compatibility 和 sampling 容量边界；
@@ -843,7 +998,8 @@ uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 | 新 guidance 或初始化方式 | SamplingBuilder | Process、Sampler、writer |
 | 新算法 family | 可选 family Process、Dynamics、Sampler、SamplingBuilder | Registry、config、checkpoint、sampling runtime |
 | 无 Process 的直接生成方法 | SamplingBuilder，及需要时的窄 Dynamics | Registry、config、checkpoint、sampling runtime |
-| 新训练任务或多 Loss | TrainingStrategy / 可选 Loss | DataBuilder、可选 Process、Trainer |
+| 新训练任务或多目标 | TrainingBuilder + TrainingStrategy / 可选 Objective | DataBuilder、可选 Process、Trainer |
+| teacher 或其他训练辅助模块 | TrainingBuilder 返回的具名 managed asset | Trainer、checkpoint、primary model |
 | 新 artifact | SamplingArtifactWriter | sampling runtime |
 
 若新增上述能力需要在 runner 中按组件名称添加 `if/elif`、给通用数据 schema 增加任务字段，
@@ -860,7 +1016,7 @@ uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 - 在 `GenerativeDynamics` 根类型上增加 universal `predict`、`step`、`drift`、`score` 或
   `denoise` 方法；
 - 多 optimizer、交替更新或 extension 接管完整 epoch 循环；
-- 由核心解释的通用 Loss graph、target adapter 或 condition adapter 配置系统；
+- 由核心解释的通用 Objective graph、target adapter 或 condition adapter 配置系统；
 - 在 Stage 6 没有容量证据前预建复杂的 streaming event/bus API；
 - 将用户扩展源码打包进 checkpoint；
 - 自动上传或分发用户项目；
@@ -872,7 +1028,7 @@ uv run sphinx-build -W --keep-going -b html docs docs/_build/html
   语义未验收前，不进入 Stage 4；
 - 每个 Stage 独立开发、测试和验收，未通过不进入下一 Stage；
 - 每个 Stage 形成一个或文档明确列出的少量逻辑提交，避免跨 Stage 修改；
-- Stage 4 的 TrainingStrategy/Loss/checkpoint/diagnostic 边界必须先于 Stage 5 项目模板，
+- Stage 4 的 TrainingBuilder/Plan/Strategy/Objective/checkpoint/diagnostic 边界必须先于 Stage 5 项目模板，
   模板不得引用未来 API；
 - Stage 6 的容量结论是 Stage 7 Physics AI 案例的入口条件；案例不得边做边修改通用
   sampling lifecycle；

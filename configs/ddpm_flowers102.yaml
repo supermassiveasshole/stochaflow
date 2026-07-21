@@ -53,8 +53,13 @@ process:
         beta_start: 1.0e-4
         beta_end: 2.0e-2
 
+training:
+  name: gaussian_denoising
+  params:
+    prediction_type: epsilon
+
 objective:
-  name: ddpm_epsilon
+  name: mse
   params:
     reduction: mean
 

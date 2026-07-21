@@ -13,11 +13,13 @@ from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.sampling import Sampler, SamplerResult, SamplingObservation
 from stochaflow.training import (
     FitStartEvent,
+    GaussianDenoisingTrainingStrategy,
+    MSEObjective,
+    ManagedTrainingModule,
     TrainBatchEndEvent,
     TrainEpochEndEvent,
     TrainStepOutput,
 )
-from stochaflow.training import GaussianEpsilonTrainingSystem
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
 
@@ -65,6 +67,32 @@ class TinyDenoiser(nn.Module):
     def forward(self, xt: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
         del timesteps
         return self.projection(xt)
+
+
+class GaussianTestAssets(nn.Module):
+    """Test-only asset holder for a Gaussian diagnostic runtime."""
+
+    def __init__(self, inference_model: nn.Module, process) -> None:
+        super().__init__()
+        self.inference_model = inference_model
+        self.process = process
+        self.objective = MSEObjective()
+        self.strategy = GaussianDenoisingTrainingStrategy(
+            inference_model,
+            process,
+            self.objective,
+        )
+
+    @property
+    def model(self) -> nn.Module:
+        return self
+
+    @property
+    def prediction_type(self):
+        return self.strategy.prediction_type
+
+    def forward(self, state: torch.Tensor, model_time: torch.Tensor) -> torch.Tensor:
+        return self.inference_model(state, model_time)
 
 
 class RecordingSampler(Sampler):
@@ -174,7 +202,7 @@ def gaussian_system(
     model: nn.Module | None = None,
     *,
     num_timesteps: int = 4,
-) -> GaussianEpsilonTrainingSystem:
+) -> GaussianTestAssets:
     process = DiscreteGaussianProcess(
         {
             "name": "linear_beta",
@@ -185,12 +213,19 @@ def gaussian_system(
             },
         }
     )
-    return GaussianEpsilonTrainingSystem(model or ZeroDenoiser(), process)
+    return GaussianTestAssets(model or ZeroDenoiser(), process)
 
 
-def trainer(model: GaussianEpsilonTrainingSystem, *, ema=None, global_step: int = 1):
+def trainer(model: GaussianTestAssets, *, ema=None, global_step: int = 1):
     return SimpleNamespace(
-        model=model,
+        model=model.inference_model,
+        process=model.process,
+        strategy=model.strategy,
+        managed_modules={
+            "primary_model": ManagedTrainingModule(model.inference_model),
+            "process": ManagedTrainingModule(model.process),
+            "objective": ManagedTrainingModule(model.objective),
+        },
         ema_model=model.inference_model,
         device=torch.device("cpu"),
         ema=ema,
@@ -241,6 +276,7 @@ def epoch_event(runtime, epoch_index: int = 1) -> TrainEpochEndEvent:
 
 __all__ = [
     "FailingSampler",
+    "GaussianTestAssets",
     "RecordingLogger",
     "RecordingSampler",
     "TinyDenoiser",
