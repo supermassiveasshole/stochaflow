@@ -4,7 +4,6 @@ from typing import Any
 
 import pytest
 
-from stochaflow.diffusion import DDPM, LinearBetaSchedule
 from stochaflow.training.diagnostics import DiffusionQualityDiagnostic
 from stochaflow.utils.registry import RegistryError
 
@@ -12,6 +11,7 @@ from .helpers import (
     RecordingLogger,
     ZeroDenoiser,
     fit_event,
+    gaussian_system,
     profiles,
     provider_config,
     trainer,
@@ -129,16 +129,13 @@ def test_unknown_sampler_fails_at_fit_start(tmp_path) -> None:
     params = _params(tmp_path)
     params["samplers"] = [{"id": "missing", "name": "missing"}]
     diagnostic = DiffusionQualityDiagnostic(**params)
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
 
-    with pytest.raises(RegistryError, match="unknown diffusion"):
+    with pytest.raises(RegistryError, match="unknown sampler"):
         diagnostic.on_fit_start(fit_event(trainer(model)))
 
 
-def test_missing_trajectory_capability_fails_at_fit_start(tmp_path) -> None:
+def test_all_registered_samplers_share_trajectory_observer_capability(tmp_path) -> None:
     params = _params(tmp_path)
     params["samplers"] = [
         {
@@ -149,10 +146,6 @@ def test_missing_trajectory_capability_fails_at_fit_start(tmp_path) -> None:
         }
     ]
     diagnostic = DiffusionQualityDiagnostic(**params)
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
 
-    with pytest.raises(TypeError, match="sample_trajectory_from_noise"):
-        diagnostic.on_fit_start(fit_event(trainer(model)))
+    diagnostic.on_fit_start(fit_event(trainer(model)))

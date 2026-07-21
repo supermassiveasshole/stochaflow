@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator, Sized
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog
@@ -20,9 +20,10 @@ class DataBuilderContext:
     seed: int
 
     def __post_init__(self) -> None:
-        if not isinstance(self.params, dict):
+        params = cast(object, self.params)
+        if not isinstance(params, dict):
             raise TypeError("data builder params must be a mapping")
-        object.__setattr__(self, "params", deepcopy(self.params))
+        object.__setattr__(self, "params", deepcopy(params))
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,10 +45,11 @@ class DataLoaders:
                     f"{role} loader must be re-iterable, not a one-shot iterator"
                 )
         if self.steps_per_epoch is not None:
+            steps_per_epoch = cast(object, self.steps_per_epoch)
             if (
-                not isinstance(self.steps_per_epoch, int)
-                or isinstance(self.steps_per_epoch, bool)
-                or self.steps_per_epoch <= 0
+                isinstance(steps_per_epoch, bool)
+                or not isinstance(steps_per_epoch, int)
+                or steps_per_epoch <= 0
             ):
                 raise ValueError("steps_per_epoch must be a positive integer")
         elif not isinstance(self.train, Sized):
@@ -89,20 +91,20 @@ def build_data_loaders(
 ) -> DataLoaders:
     """Construct and validate one registered data builder."""
 
-    builder = registries.data_builders.create(
-        config.name,
-        DataBuilderContext(params=config.params, seed=seed),
+    registries.data_builders.require_base(DataBuilder)
+    builder = cast(
+        DataBuilder,
+        registries.data_builders.create(
+            config.name,
+            DataBuilderContext(params=config.params, seed=seed),
+        ),
     )
-    if not isinstance(builder, DataBuilder):
-        raise TypeError(
-            f"registered data builder '{config.name}' did not produce DataBuilder"
-        )
-    loaders = builder.build()
-    if not isinstance(loaders, DataLoaders):
+    loaders_value = cast(object, builder.build())
+    if not isinstance(loaders_value, DataLoaders):
         raise TypeError(
             f"data builder '{config.name}' must return DataLoaders"
         )
-    return loaders
+    return loaders_value
 
 
 __all__ = [

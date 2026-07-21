@@ -106,6 +106,7 @@ data:
 `low_resolution.kind` 设为 `paired`。文件按相对路径和 stem 稳定匹配；LR/HR 共享几何
 变换并校验整数尺度。默认 batch 为 `(high_res, {"low_res": low_res})`。
 
+(multi-resolution-image-recipe)=
 ## `multi_resolution_image` recipe
 
 高级图像 recipe 保留多 source 权重、分辨率 bucket、同 bucket batch、动态像素预算和

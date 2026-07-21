@@ -4,15 +4,23 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 import hashlib
 import time
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
 
-from stochaflow.diffusion import GaussianDiffusion
-from stochaflow.sampling import SamplingTrace
+from stochaflow.processes import DiscreteGaussianDenoisingProcess
+from stochaflow.sampling import (
+    GaussianDenoisingDynamics,
+    GaussianModelDynamics,
+    Sampler,
+    SamplerResult,
+    SamplingObservation,
+)
+from stochaflow.training.gaussian import GaussianEpsilonTrainingSystem
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
     ReconstructionFrame,
@@ -82,6 +90,12 @@ def _synchronize(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
+def _cpu_tensor_snapshot(state: Any) -> torch.Tensor:
+    if not isinstance(state, torch.Tensor):
+        raise TypeError("diagnostic trajectory states must be tensors")
+    return state.detach().cpu().clone()
+
+
 class SeedPolicy:
     """Stable seed derivation and fixed terminal-noise generation."""
 
@@ -134,6 +148,7 @@ class EvaluationGuard:
         self.seed = seed
         self.use_ema = use_ema
         self.model = trainer.model
+        self.ema_model = getattr(trainer, "ema_model", self.model)
         self._stack = ExitStack()
         self._was_training = bool(self.model.training)
         self._ema = trainer.ema if use_ema else None
@@ -155,9 +170,9 @@ class EvaluationGuard:
             )
             _manual_seed(self.seed, self.trainer.device)
             if self._ema is not None:
-                self._ema.store(self.model)
+                self._ema.store(self.ema_model)
                 self._ema_stored = True
-                self._ema.copy_to(self.model)
+                self._ema.copy_to(self.ema_model)
             self.model.eval()
             for module, _ in self._evaluation_module_modes:
                 module.eval()
@@ -178,7 +193,7 @@ class EvaluationGuard:
     def _restore(self) -> None:
         try:
             if self._ema is not None and self._ema_stored:
-                self._ema.restore(self.model)
+                self._ema.restore(self.ema_model)
                 self._ema_stored = False
         finally:
             for module, was_training in self._evaluation_module_modes:
@@ -186,45 +201,43 @@ class EvaluationGuard:
             self.model.train(self._was_training)
 
 
+@dataclass(frozen=True, slots=True)
+class BoundSampler:
+    """A solver bound to model-aware Gaussian dynamics."""
+
+    sampler: Sampler
+    dynamics: GaussianDenoisingDynamics
+
+
 class SamplerPool:
     """Build and retain inference-only samplers sharing one training denoiser."""
 
     def __init__(
         self,
-        training_diffusion: GaussianDiffusion,
+        training_system: GaussianEpsilonTrainingSystem,
         profiles: Sequence[SamplerProfileConfig],
         *,
         device: torch.device,
     ) -> None:
-        self._samplers: dict[str, nn.Module] = {}
+        del device
+        self._samplers: dict[str, BoundSampler] = {}
+        process = training_system.process
+        dynamics = GaussianModelDynamics(
+            process,
+            lambda state, model_time: training_system.inference_model(
+                state, model_time
+            ),
+            prediction_type="epsilon",
+            clip_denoised=True,
+        )
         for profile in profiles:
-            sampler_cls = REGISTRIES.diffusions.resolve(profile.name)
-            if not callable(getattr(sampler_cls, "sample_from_noise", None)):
-                raise TypeError(
-                    f"sampler '{profile.name}' does not provide "
-                    "sample_from_noise(initial_noise)"
-                )
-            if profile.trajectory.enabled and not callable(
-                getattr(sampler_cls, "sample_trajectory_from_noise", None)
-            ):
-                raise TypeError(
-                    f"sampler '{profile.name}' does not provide "
-                    "sample_trajectory_from_noise()"
-                )
-            sampler = REGISTRIES.diffusions.create(
-                profile.name,
-                noise_schedule=training_diffusion.noise_schedule,
-                model=training_diffusion.model,
-                **profile.params,
+            sampler = cast(
+                Sampler,
+                REGISTRIES.samplers.create(profile.name, **profile.params),
             )
-            if not isinstance(sampler, nn.Module):
-                raise TypeError(
-                    f"diagnostic sampler '{profile.id}' did not produce an nn.Module"
-                )
-            sampler.to(device)
-            self._samplers[profile.id] = sampler
+            self._samplers[profile.id] = BoundSampler(sampler, dynamics)
 
-    def get(self, profile_id: str) -> nn.Module:
+    def get(self, profile_id: str) -> BoundSampler:
         """Return a previously validated sampler by profile ID."""
 
         try:
@@ -235,6 +248,94 @@ class SamplerPool:
             ) from exc
 
 
+class _DiagnosticSamplingObserver:
+    """Validate a diagnostic denoising lifecycle and optionally retain it."""
+
+    def __init__(
+        self,
+        *,
+        process: DiscreteGaussianDenoisingProcess,
+        expected_shape: torch.Size,
+        retain: bool,
+        every_steps: int,
+    ) -> None:
+        self._process = process
+        self._expected_shape = expected_shape
+        self._retain = retain
+        self._every_steps = every_steps
+        self._previous_step: int | None = None
+        self._final_seen = False
+        self._observations: list[SamplingObservation] = []
+
+    @property
+    def observations(self) -> tuple[SamplingObservation, ...] | None:
+        if not self._retain:
+            return None
+        return tuple(self._observations)
+
+    def observe(self, observation: object) -> None:
+        if not isinstance(observation, SamplingObservation):
+            raise TypeError("diagnostic sampler events must be SamplingObservation")
+        if self._final_seen:
+            raise ValueError("diagnostic sampler emitted an event after final")
+        step_index = cast(object, observation.step_index)
+        if isinstance(step_index, bool) or not isinstance(step_index, int):
+            raise TypeError("diagnostic observation step_index must be an integer")
+        if self._previous_step is None:
+            if step_index != 0:
+                raise ValueError("diagnostic sampler must start at step index 0")
+            if observation.coordinate != self._process.terminal_time:
+                raise ValueError(
+                    "diagnostic sampler must start at process terminal time"
+                )
+        elif step_index <= self._previous_step:
+            raise ValueError("diagnostic observation step indices must increase")
+        is_final = cast(object, observation.is_final)
+        if not isinstance(is_final, bool):
+            raise TypeError("diagnostic observation is_final must be boolean")
+        diagnostics = cast(object, observation.diagnostics)
+        if not isinstance(diagnostics, Mapping):
+            raise TypeError("diagnostic observation diagnostics must be a mapping")
+        state = observation.state
+        if not isinstance(state, torch.Tensor):
+            raise TypeError("diagnostic trajectory states must be tensors")
+        if state.shape != self._expected_shape:
+            raise ValueError(
+                "diagnostic observation state shape must match its initial noise"
+            )
+        if observation.is_final:
+            if observation.coordinate != self._process.clean_time:
+                raise ValueError(
+                    "diagnostic sampler must end at process clean time"
+                )
+            self._final_seen = True
+        self._previous_step = step_index
+        if self._retain and (
+            step_index == 0
+            or observation.is_final
+            or step_index % self._every_steps == 0
+        ):
+            self._observations.append(
+                SamplingObservation(
+                    step_index=step_index,
+                    coordinate=observation.coordinate,
+                    state=_cpu_tensor_snapshot(state),
+                    is_final=observation.is_final,
+                    diagnostics=dict(observation.diagnostics),
+                )
+            )
+
+    def validate_complete(self, result: SamplerResult) -> None:
+        if self._previous_step is None:
+            raise ValueError("diagnostic sampler emitted no observations")
+        if not self._final_seen:
+            raise ValueError("diagnostic sampler emitted no final observation")
+        if self._previous_step != result.num_steps:
+            raise ValueError(
+                "diagnostic final observation must match SamplerResult.num_steps"
+            )
+
+
 class SamplerRunner:
     """Execute batched sample or trajectory generation exactly once."""
 
@@ -243,45 +344,67 @@ class SamplerRunner:
 
     def run(
         self,
-        sampler: nn.Module,
+        sampler: BoundSampler,
         profile: SamplerProfileConfig,
         initial_noise: torch.Tensor,
     ) -> SamplingResult:
         """Generate a profile result while preserving trajectory batch alignment."""
 
         sample_parts: list[torch.Tensor] = []
-        frame_parts: dict[int, list[torch.Tensor]] = {}
-        expected_times: list[int] | None = None
+        frame_parts: list[list[torch.Tensor]] = []
+        expected_identity: tuple[tuple[int, int | float, bool], ...] | None = None
+        template_observations: tuple[SamplingObservation, ...] | None = None
         _synchronize(initial_noise.device)
         started_at = time.perf_counter()
         for start in range(0, initial_noise.shape[0], self.batch_size):
             noise_batch = initial_noise[start : start + self.batch_size]
-            if profile.trajectory.enabled:
-                trace_fn = getattr(sampler, "sample_trajectory_from_noise")
-                trace = trace_fn(noise_batch, **profile.trajectory.params)
-                if not isinstance(trace, SamplingTrace):
-                    raise TypeError(
-                        f"sampler '{profile.id}' trajectory must return SamplingTrace"
+            lifecycle = _DiagnosticSamplingObserver(
+                process=sampler.dynamics.process,
+                expected_shape=noise_batch.shape,
+                retain=profile.trajectory.enabled,
+                every_steps=profile.trajectory.every_steps,
+            )
+            result_value = cast(
+                object,
+                sampler.sampler.sample(
+                    sampler.dynamics,
+                    noise_batch,
+                    observer=lifecycle,
+                ),
+            )
+            if not isinstance(result_value, SamplerResult):
+                raise TypeError(
+                    f"sampler '{profile.id}' must return SamplerResult"
+                )
+            lifecycle.validate_complete(result_value)
+            sampled = result_value.final_state
+            observations = lifecycle.observations
+            if observations is not None:
+                identity = tuple(
+                    (
+                        observation.step_index,
+                        observation.coordinate,
+                        observation.is_final,
                     )
-                state_times = [frame.state_time for frame in trace.frames]
-                if expected_times is None:
-                    expected_times = state_times
-                elif state_times != expected_times:
+                    for observation in observations
+                )
+                if expected_identity is None:
+                    expected_identity = identity
+                    template_observations = observations
+                    frame_parts = [[] for _ in identity]
+                elif identity != expected_identity:
                     raise ValueError(
-                        f"sampler '{profile.id}' trajectory frame times changed "
+                        f"sampler '{profile.id}' trajectory lifecycle changed "
                         "between batches"
                     )
-                for frame in trace.frames:
-                    frame_parts.setdefault(frame.state_time, []).append(
-                        frame.samples.detach().cpu()
-                    )
-                sampled = trace.samples
-            else:
-                sample_fn = getattr(sampler, "sample_from_noise")
-                sampled = sample_fn(noise_batch)
+                for index, observation in enumerate(observations):
+                    state = observation.state
+                    if not isinstance(state, torch.Tensor):
+                        raise TypeError("diagnostic trajectory states must be tensors")
+                    frame_parts[index].append(state)
             if not isinstance(sampled, torch.Tensor):
                 raise TypeError(
-                    f"sampler '{profile.id}' sample_from_noise must return a Tensor"
+                    f"sampler '{profile.id}' must return a Tensor final_state"
                 )
             if sampled.shape != noise_batch.shape:
                 raise ValueError(
@@ -290,14 +413,20 @@ class SamplerRunner:
                 )
             sample_parts.append(sampled.detach().cpu())
         _synchronize(initial_noise.device)
-        trajectory = (
-            {
-                state_time: torch.cat(parts, dim=0)
-                for state_time, parts in frame_parts.items()
-            }
-            if frame_parts
-            else None
-        )
+        trajectory = None
+        if frame_parts and template_observations is not None:
+            trajectory = tuple(
+                SamplingObservation(
+                    step_index=template.step_index,
+                    coordinate=template.coordinate,
+                    state=torch.cat(parts, dim=0),
+                    is_final=template.is_final,
+                    diagnostics=dict(template.diagnostics),
+                )
+                for template, parts in zip(
+                    template_observations, frame_parts, strict=True
+                )
+            )
         return SamplingResult(
             samples=torch.cat(sample_parts, dim=0),
             trajectory=trajectory,
@@ -329,8 +458,17 @@ class ReconstructionEvaluator:
             seed=self.seed_policy.base_seed,
             use_ema=use_ema,
         ) as model:
-            if not isinstance(model, GaussianDiffusion):
-                raise TypeError("reconstruction requires a GaussianDiffusion model")
+            if not isinstance(model, GaussianEpsilonTrainingSystem):
+                raise TypeError(
+                    "reconstruction requires GaussianEpsilonTrainingSystem"
+                )
+            process = model.process
+            dynamics = GaussianModelDynamics(
+                process,
+                lambda state, model_time: model.inference_model(state, model_time),
+                prediction_type="epsilon",
+                clip_denoised=True,
+            )
             for timestep in timesteps:
                 times = torch.full(
                     (x0.shape[0],),
@@ -339,14 +477,8 @@ class ReconstructionEvaluator:
                     device=self.trainer.device,
                 )
                 noise = torch.randn_like(x0)
-                noisy, _ = model.add_noise(x0, times, noise=noise)
-                predicted_noise = model._predict_noise(noisy, times)
-                predicted_clean = model._estimate_x0_from_epsilon(
-                    noisy,
-                    times,
-                    predicted_noise=predicted_noise,
-                    clip_denoised=model.clip_denoised,
-                )
+                noisy, _ = process.sample_marginal(x0, times, noise=noise)
+                predicted_clean = dynamics.predict(noisy, times).clean
                 mse = (predicted_clean - x0).square().mean()
                 psnr = 10.0 * torch.log10(
                     torch.tensor(4.0, device=self.trainer.device)
@@ -367,6 +499,7 @@ class ReconstructionEvaluator:
 
 __all__ = [
     "EvaluationGuard",
+    "BoundSampler",
     "ReconstructionEvaluator",
     "SamplerPool",
     "SamplerRunner",

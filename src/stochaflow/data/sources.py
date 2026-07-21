@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from PIL import Image
 from torch.utils.data import Dataset
@@ -220,7 +220,7 @@ def _paired_folder_source(
 
 
 def build_image_source(
-    raw: dict[str, Any],
+    raw: object,
     *,
     partition_mode: str,
     path: str = "data.params.source",
@@ -230,6 +230,7 @@ def build_image_source(
 
     if not isinstance(raw, dict):
         raise ConfigError(f"{path} must be a mapping")
+    raw = cast(dict[str, Any], raw)
     kind = _required_string(raw, "kind", path=path).lower()
     official = partition_mode == "official"
     if kind == "torchvision" and not paired:

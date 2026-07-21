@@ -78,12 +78,13 @@ model:
     in_channels: 1
     out_channels: 1
 
-diffusion:
-  name: ddpm
-  noise_schedule:
-    name: linear_beta
-    params:
-      num_timesteps: 1000
+process:
+  name: discrete_gaussian
+  params:
+    schedule:
+      name: linear_beta
+      params:
+        num_timesteps: 1000
 
 objective:
   name: ddpm_epsilon
@@ -91,6 +92,14 @@ objective:
 
 sampling:
   shape: [1, 32, 32]
+  builder:
+    name: standard_denoising
+    params:
+      weights: auto
+      prediction_type: epsilon
+      clip_denoised: true
+      sampler: {name: ddim, params: {num_inference_steps: 100, eta: 0.0}}
+      trajectory: {enabled: false, every_steps: 1}
   writers:
     - {name: tensor, params: {}}
     - {name: image, params: {grid_nrow: 4}}
@@ -108,7 +117,7 @@ sampling:
 | `extensions` | 训练、采样和 checkpoint 重建前导入的 Registry 扩展模块 |
 | `data` | DataBuilder Registry 声明与 builder 专属参数 |
 | `model` | 去噪模型 Registry 声明 |
-| `diffusion` | 训练扩散过程和前向噪声 schedule |
+| `process` | 可选的 model-free probability process；`null` 表示所选算法不需要 |
 | `objective` | 训练损失 |
 | `optimizer` / `lr_scheduler` | 参数更新与学习率策略 |
 | `ema` | 模型参数指数移动平均 |

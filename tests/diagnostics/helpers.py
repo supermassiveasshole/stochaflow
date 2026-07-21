@@ -9,13 +9,15 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from stochaflow.diffusion import GaussianDiffusion
+from stochaflow.processes import DiscreteGaussianProcess
+from stochaflow.sampling import Sampler, SamplerResult, SamplingObservation
 from stochaflow.training import (
     FitStartEvent,
     TrainBatchEndEvent,
     TrainEpochEndEvent,
     TrainStepOutput,
 )
+from stochaflow.training import GaussianEpsilonTrainingSystem
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
 
@@ -65,28 +67,48 @@ class TinyDenoiser(nn.Module):
         return self.projection(xt)
 
 
-class RecordingSampler(GaussianDiffusion):
+class RecordingSampler(Sampler):
     records: dict[str, list[torch.Tensor]] = {}
 
-    def __init__(self, noise_schedule, model: nn.Module, *, marker: str) -> None:
-        super().__init__(noise_schedule=noise_schedule, model=model)
+    def __init__(self, *, marker: str) -> None:
         self.marker = marker
 
-    def sample_from_noise(self, initial_noise: torch.Tensor) -> torch.Tensor:
+    def sample(self, dynamics, initial_state, **kwargs) -> SamplerResult:
+        observer = kwargs.get("observer")
         self.records.setdefault(self.marker, []).append(
-            initial_noise.detach().cpu().clone()
+            initial_state.detach().cpu().clone()
         )
-        return initial_noise.clamp(-1.0, 1.0)
+        final = initial_state.clamp(-1.0, 1.0)
+        if observer is not None:
+            observer.observe(
+                SamplingObservation(
+                    0,
+                    dynamics.process.terminal_time,
+                    initial_state,
+                    False,
+                    {},
+                )
+            )
+            observer.observe(
+                SamplingObservation(
+                    1,
+                    dynamics.process.clean_time,
+                    final,
+                    True,
+                    {},
+                )
+            )
+        return SamplerResult(final, 1, {})
 
 
-class FailingSampler(GaussianDiffusion):
-    def sample_from_noise(self, initial_noise: torch.Tensor) -> torch.Tensor:
-        del initial_noise
+class FailingSampler(Sampler):
+    def sample(self, dynamics, initial_state, **kwargs) -> SamplerResult:
+        del dynamics, initial_state, kwargs
         raise RuntimeError("sampling failed")
 
 
-REGISTRIES.diffusions.add("test_recording_diagnostic", RecordingSampler)
-REGISTRIES.diffusions.add("test_failing_diagnostic", FailingSampler)
+REGISTRIES.samplers.add("test_recording_diagnostic", RecordingSampler)
+REGISTRIES.samplers.add("test_failing_diagnostic", FailingSampler)
 
 
 def profiles(*, trajectory: bool = False) -> list[dict[str, Any]]:
@@ -97,7 +119,7 @@ def profiles(*, trajectory: bool = False) -> list[dict[str, Any]]:
             "params": {},
             "trajectory": {
                 "enabled": trajectory,
-                "params": {"state_interval": 1} if trajectory else {},
+                "every_steps": 1,
                 "gif_fps": 4,
             },
         },
@@ -107,7 +129,7 @@ def profiles(*, trajectory: bool = False) -> list[dict[str, Any]]:
             "params": {"num_inference_steps": 2, "eta": 0.0},
             "trajectory": {
                 "enabled": trajectory,
-                "params": {"step_interval": 1} if trajectory else {},
+                "every_steps": 1,
                 "gif_fps": 4,
             },
         },
@@ -148,9 +170,28 @@ def provider_config(
     }
 
 
-def trainer(model: GaussianDiffusion, *, ema=None, global_step: int = 1):
+def gaussian_system(
+    model: nn.Module | None = None,
+    *,
+    num_timesteps: int = 4,
+) -> GaussianEpsilonTrainingSystem:
+    process = DiscreteGaussianProcess(
+        {
+            "name": "linear_beta",
+            "params": {
+                "num_timesteps": num_timesteps,
+                "beta_start": 0.0001,
+                "beta_end": 0.02,
+            },
+        }
+    )
+    return GaussianEpsilonTrainingSystem(model or ZeroDenoiser(), process)
+
+
+def trainer(model: GaussianEpsilonTrainingSystem, *, ema=None, global_step: int = 1):
     return SimpleNamespace(
         model=model,
+        ema_model=model.inference_model,
         device=torch.device("cpu"),
         ema=ema,
         global_step=global_step,
@@ -207,6 +248,7 @@ __all__ = [
     "batch_event",
     "epoch_event",
     "fit_event",
+    "gaussian_system",
     "profiles",
     "provider_config",
     "train_output",

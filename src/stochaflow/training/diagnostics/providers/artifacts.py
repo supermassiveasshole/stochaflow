@@ -26,7 +26,7 @@ from stochaflow.training.diagnostics.providers.denoiser import (
 from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 
 
-def _positive_int(value: int, *, path: str) -> int:
+def _positive_int(value: object, *, path: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{path} must be a positive integer")
     return value
@@ -154,10 +154,18 @@ class TrajectoryArtifactProvider(SamplerArtifactProvider):
         tensor_path = context.store.reserve(f"{context.profile_id}/trajectory.pt")
         grid_path = context.store.reserve(f"{context.profile_id}/trajectory.png")
         gif_path = context.store.reserve(f"{context.profile_id}/trajectory.gif")
-        torch.save(dict(trajectory), tensor_path)
-        save_trajectory_grid(trajectory, grid_path, denormalize=True)
+        states = tuple(snapshot.state for snapshot in trajectory)
+        torch.save(
+            {
+                "step_indices": [snapshot.step_index for snapshot in trajectory],
+                "coordinates": [snapshot.coordinate for snapshot in trajectory],
+                "states": torch.stack(states, dim=0),
+            },
+            tensor_path,
+        )
+        save_trajectory_grid(states, grid_path, denormalize=True)
         save_trajectory_gif(
-            trajectory,
+            states,
             gif_path,
             nrow=self.nrow,
             fps=context.trajectory_gif_fps,

@@ -43,16 +43,15 @@ model:
     attention_levels: [2, 3]
     attention_heads: 4
 
-diffusion:
-  name: ddpm
+process:
+  name: discrete_gaussian
   params:
-    clip_denoised: true
-  noise_schedule:
-    name: linear_beta
-    params:
-      num_timesteps: 1000
-      beta_start: 1.0e-4
-      beta_end: 2.0e-2
+    schedule:
+      name: linear_beta
+      params:
+        num_timesteps: 1000
+        beta_start: 1.0e-4
+        beta_end: 2.0e-2
 
 objective:
   name: ddpm_epsilon
@@ -83,20 +82,23 @@ ema:
   use_for_sampling: true
 
 sampling:
-  sampler: null
   shape: [3, 64, 64]
   num_samples: 64
   batch_size: 16
   seed: null
+  builder:
+    name: standard_denoising
+    params:
+      weights: auto
+      prediction_type: epsilon
+      clip_denoised: true
+      sampler: {name: ddpm, params: {}}
+      trajectory: {enabled: false, every_steps: 1}
   writers:
     - name: tensor
       params: {}
     - name: image
       params: {grid_nrow: 8, gif_fps: 8, denormalize: true}
-  debug:
-    trajectory:
-      enabled: false
-      params: {}
 
 diagnostics:
   - name: diffusion_quality
@@ -117,7 +119,7 @@ diagnostics:
           params: {}
           trajectory:
             enabled: true
-            params: {state_interval: 100}
+            every_steps: 100
             gif_fps: 8
         - id: ddim_50
           name: ddim
@@ -126,7 +128,7 @@ diagnostics:
             eta: 0.0
           trajectory:
             enabled: true
-            params: {step_interval: 5}
+            every_steps: 5
             gif_fps: 8
       providers:
         step_metrics:

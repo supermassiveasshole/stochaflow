@@ -4,7 +4,6 @@ import pytest
 import torch
 import yaml
 
-from stochaflow.diffusion import DDIM, DDPM, LinearBetaSchedule
 from stochaflow.training.diagnostics import DiffusionQualityDiagnostic
 from stochaflow.training.ema import ExponentialMovingAverage
 
@@ -16,6 +15,7 @@ from .helpers import (
     batch_event,
     epoch_event,
     fit_event,
+    gaussian_system,
     profiles,
     provider_config,
     trainer,
@@ -46,10 +46,7 @@ def test_step_pipeline_logs_all_denoiser_provider_metrics(tmp_path) -> None:
         samplers=profiles()[:1],
         cadence={"step_every": 1, "artifact_every_epochs": 5},
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=4),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=4)
     runtime = trainer(model)
     diagnostic.on_fit_start(fit_event(runtime))
 
@@ -62,18 +59,14 @@ def test_step_pipeline_logs_all_denoiser_provider_metrics(tmp_path) -> None:
     assert "diagnostics/denoiser/reconstruction_t_0001/mse" in metrics
 
 
-def test_ddim_training_model_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
+def test_training_system_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
     logger = RecordingLogger()
     diagnostic = _diagnostic(
         tmp_path,
         logger,
         samplers=profiles(trajectory=True),
     )
-    model = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=4),
-        model=ZeroDenoiser(),
-        num_inference_steps=2,
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=4)
     runtime = trainer(model)
     diagnostic.on_fit_start(fit_event(runtime))
     diagnostic.on_train_batch_end(batch_event(runtime))
@@ -121,11 +114,8 @@ def test_profiles_share_noise_and_restore_ema_model_and_rng(tmp_path) -> None:
         ],
         use_ema=True,
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=TinyDenoiser(),
-    )
-    ema = ExponentialMovingAverage(model, decay=0.5)
+    model = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    ema = ExponentialMovingAverage(model.inference_model, decay=0.5)
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.add_(1.0)
@@ -157,16 +147,13 @@ def test_fit_start_preserves_shared_denoiser_mode(tmp_path, training) -> None:
         RecordingLogger(),
         samplers=profiles()[:1],
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=TinyDenoiser(),
-    )
+    model = gaussian_system(TinyDenoiser(), num_timesteps=2)
     model.train(training)
 
     diagnostic.on_fit_start(fit_event(trainer(model)))
 
     assert model.training is training
-    assert model.model.training is training
+    assert model.inference_model.training is training
 
 
 def test_fixed_seed_repeats_stochastic_sampler_results(tmp_path) -> None:
@@ -175,10 +162,7 @@ def test_fixed_seed_repeats_stochastic_sampler_results(tmp_path) -> None:
         RecordingLogger(),
         samplers=[{"id": "ddpm_full", "name": "ddpm"}],
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
     runtime = trainer(model)
     diagnostic.on_fit_start(fit_event(runtime))
     diagnostic.on_train_batch_end(batch_event(runtime))
@@ -211,11 +195,8 @@ def test_warn_policy_isolates_profile_failure_and_records_manifest_error(tmp_pat
             "denoiser_artifacts": [],
         },
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=TinyDenoiser(),
-    )
-    ema = ExponentialMovingAverage(model, decay=0.5)
+    model = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    ema = ExponentialMovingAverage(model.inference_model, decay=0.5)
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.add_(1.0)

@@ -40,19 +40,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Checkpoint file or run directory. Optional when --config is provided.",
     )
     sample_parser.add_argument(
-        "--sampler",
-        type=str,
-        default=None,
-        help="Registered sampler name, for example ddpm or ddim.",
-    )
-    sample_parser.add_argument(
-        "--sampler-param",
-        action="append",
-        default=None,
-        metavar="KEY=VALUE",
-        help="Sampler constructor override. Repeat for multiple parameters.",
-    )
-    sample_parser.add_argument(
         "--device",
         type=str,
         default=None,
@@ -83,14 +70,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         checkpoint=args.checkpoint,
         output_dir=args.output_dir,
         device_name=args.device,
-        sampler_name=args.sampler,
-        sampler_param_values=args.sampler_param,
     )
     print(f"Checkpoint: {result.checkpoint_path}")
-    print(f"Sampler: {result.sampler_name}")
+    print(f"Builder: {result.builder_name}")
     print(f"Device: {result.device}")
     print(f"Seed: {result.seed}")
-    print(f"EMA weights: {'yes' if result.used_ema else 'no'}")
+    print(f"Weights: {result.metadata.get('weights', 'builder-defined')}")
     print(f"Output: {result.output_dir}")
     for name, path in result.artifacts.items():
         print(f"{name}: {path}")

@@ -1,8 +1,8 @@
 # 自定义代码扩展支持实施计划
 
-- 状态：Stage 2 完成，Stage 3 待实施
+- 状态：Stage 3 完成，Stage 4 待实施
 - 制定日期：2026-07-17
-- 最近修订：2026-07-19
+- 最近修订：2026-07-20
 - 目标分支：`feature/custom-code-extension-support`
 
 ## 目标
@@ -10,7 +10,7 @@
 将 Stochaflow 从包含内置实验能力的 Python 包扩展为“核心框架 + 可复用组件 +
 用户项目扩展”的训练与采样框架。用户安装 Stochaflow 后，可以：
 
-1. 直接组合内置数据 recipe、模型、概率过程、训练策略和采样器；
+1. 直接组合内置数据 recipe、模型、训练策略，以及算法需要的 Process 和 Sampler；
 2. 只替换任务特有的部分，例如条件模型、数据组织、guidance 或 sampling builder；
 3. 注册全新的过程、数值采样算法或训练方法，而无需修改核心分发逻辑；
 4. 继续通过统一 CLI 和 YAML 完成训练、恢复与采样。
@@ -22,7 +22,7 @@
 → stochaflow project create my_project
 → 编写并注册 extension
 → 在项目清单中声明 extension 模块
-→ 在 YAML 中选择或组合数据 builder、模型、Process、Strategy 和 Sampler
+→ 在 YAML 中选择数据 builder、模型、Strategy、Builder，以及算法需要的 Process/Sampler
 → stochaflow train / stochaflow sample
 ```
 
@@ -56,21 +56,29 @@ DataBuilder
   └─ directly assembles Dataset / split / transform / Sampler / DataLoader / collate
        └─ returns DataLoaders and arbitrary structured batches
 
-Process + model callable / prediction adapter
-  └─ produces GenerativeDynamics
-       └─ consumed by Sampler / numerical solver
-            └─ composed by SamplingBuilder for a concrete task
+Framework: Registry / config / checkpoint / train and sample lifecycle
+  └─ selects registered components without requiring one universal algorithm shape
+
+Algorithm family: optional Process + family Dynamics + optional compatible Sampler
+  └─ defines cohesive mathematics only within that family
+
+Task: SamplingBuilder + model callable + condition / guidance / initial state
+  └─ assembles and executes one compatible sampling workflow
 ```
 
 - **DataBuilder** 是唯一的核心数据扩展入口，拥有完整数据组织逻辑；核心 Trainer 只
   消费组装好的 loader 和原样 structured batch。
-- **Process** 描述 probability path、forward/noising law、marginal、必要的数学转换和
-  可构造的生成动力学，不拥有任务模型，也不执行采样循环。
-- **GenerativeDynamics** 是 Process 与模型预测组合后的运动规律，例如 reverse kernel、
-  vector field、reverse SDE 或 denoiser function。它首先是组件间的窄协议，不设全局
-  Registry。
+- **Process** 的公共根只负责 Registry、device 与 checkpoint 生命周期，不定义万能概率
+  API。它是可选的算法资产：Gaussian、flow matching 或 SDE family 可以为 model-free
+  probability path 定义内聚契约；没有这类路径的方法不得为了核心 dispatch 虚构 Process。
+  Process 不依赖模型 callable、prediction policy 或 Dynamics 类型，也不执行采样循环。
+- **GenerativeDynamics** 只是“已组装生成方向”的无行为语义根，不代表不同算法 family
+  数学兼容。reverse kernel、vector field、reverse SDE 或 denoiser function 应是各 family
+  的窄契约，不设全局 Registry，也不向根类型添加统一求值方法。
 - **Sampler** 是完整的数值执行算法，负责时间/噪声离散、solver state、随机增量、
   多步历史和循环。它不解释 condition，也不拥有业务模型。
+- 不需要数值求解循环的直接生成变换可以由 SamplingBuilder 执行，不为满足框架形状虚构
+  Sampler；统一 `Sampler.sample()` 只约束实际选择了 Sampler 的 workflow。
 - **TrainingStrategy** 和 **SamplingBuilder** 分别是训练与推理的任务组合层，负责解释
   batch、调用模型、条件注入、guidance、prediction semantics 以及兼容性检查。
 
@@ -78,7 +86,8 @@ Process + model callable / prediction adapter
 Gaussian math 集中在 `GaussianDiffusion`，但也合并了训练 Loss、模型输出解释和采样
 循环；Diffusers Scheduler 支持广泛的 DDPM、DDIM、SDE/ODE 与 flow-matching solver，
 但一个 Scheduler 通常同时承担部分 Process、推理时间表和 reverse step。Stochaflow
-将 model-free Process、完整 Sampler 和任务 Builder 分开，使三者可独立扩展和复用。
+统一扩展生命周期，同时让每个算法 family 自己定义 Process、Dynamics 与 Sampler 数学，
+优先保证 family 内复用，而不是制造跨 family 的伪兼容。
 
 首版默认边界：
 
@@ -89,6 +98,8 @@ Gaussian math 集中在 `GaussianDiffusion`，但也合并了训练 Loss、模�
 - 提供开箱即用的普通图像、多分辨率图像和 paired super-resolution recipe，但这些
   recipe 的参数不是核心数据契约；
 - 支持多模型、多 Loss，但首版只有一个优化器和一次反向传播；
+- 首版训练与采样仍要求一个 primary inference model；Process 则是可选组件，由具体
+  TrainingStrategy 或 SamplingBuilder 决定是否需要；
 - 核心 Trainer 管理训练循环、反传、调度、日志和 checkpoint；
 - 扩展相关 schema 直接使用新格式，不提供 legacy 迁移或兼容别名。
 
@@ -301,7 +312,7 @@ Hugging Face Dataset 和 WebDataset 留给自定义 DataBuilder 或后续真实�
 该提交是对已提交但未通过架构验收的 `Refactor modality-neutral data pipeline` 的替代性
 重构；不在新契约中保留其公共类型兼容层。
 
-## Stage 3：可注册 Process、Generative Dynamics 与 Sampler
+## Stage 3：可注册 Process、Generative Dynamics 与 Sampler（已完成）
 
 ### 目标
 
@@ -309,8 +320,10 @@ Hugging Face Dataset 和 WebDataset 留给自定义 DataBuilder 或后续真实�
 transition 和 sampling loop 的捆绑，并消除 `REGISTRIES.diffusions` 同时选择训练算法与
 采样器的语义重载。
 
-Stage 3 建立足以覆盖离散 Gaussian diffusion、score SDE、probability-flow ODE、
-sigma-space solver 和 flow matching 的组合边界，但首批只迁移并验证现有 DDPM/DDIM。
+Stage 3 建立 Registry、checkpoint、Builder 与完整 `Sampler.sample()` 的框架生命周期，
+并为 Gaussian diffusion 建立首个 family-specific Process/Dynamics/Sampler 契约。它不声称
+Gaussian、score SDE、probability-flow ODE、sigma-space solver 和 flow matching 共享
+同一数学接口；首批只迁移并验证现有 DDPM/DDIM。
 
 ### Registry 与配置
 
@@ -347,52 +360,80 @@ sampling:
       params: {}
 ```
 
-顶层 `process` 是训练与 checkpoint 的概率路径身份；`sampling.builder` 描述一次推理任务
-如何组合模型、Process 和 Sampler。用户可以覆盖 builder/sampler 的推理参数而不修改
-checkpoint 中的训练 Process，但 Builder 必须验证兼容性。
+顶层 `process` 是可选的概率路径身份：`ComponentConfig | None`。Gaussian diffusion 等
+需要 model-free probability path 的 Strategy/Builder 在自己的组合边界要求它；直接生成
+变换或其他不需要 Process 的 family 可以省略。`sampling.builder` 描述一次推理任务如何
+组合模型、可选 Process、Dynamics 和 Sampler。用户可以覆盖 builder/sampler 的推理参数
+而不修改 checkpoint 中已有的 Process，但 Builder 必须验证自己需要的 family capability。
 
 ### Process 契约
 
 `Process` 是可注册、可配置、可迁移到 device 且可进入 checkpoint 的最小基类。它不拥有
 模型、不读取 structured batch、不编码 condition，也不执行训练或采样循环。
 
-避免要求所有 Process 实现一套臃肿接口。实际数学能力使用窄协议表达，例如：
+避免要求所有 Process 实现一套臃肿接口。Stage 3 只公开一个内聚的
+`DiscreteGaussianDenoisingProcess`，描述离散 Gaussian 路径的 clean/terminal time、terminal
+prior、marginal、adjacent posterior 和 state-time validation。第三方只需实现这一个
+Process 接口即可复用现有 Gaussian 训练桥接与 DDPM/DDIM；其他数学范式由真实实现需求
+驱动新的 Process 类型，不预先拆出 marginal、posterior、prior 等细粒度公共 capability。
 
-- `MarginalProcess`：从 clean state 得到指定 time 的 marginal sample；
-- `GaussianPredictionProcess`：在 epsilon、x0、v、score 等参数化之间转换；
-- `ReverseKernelProcess`：由模型预测构造离散 reverse transition；
-- `SDEProcess`：提供 drift、diffusion 和 reverse-SDE 所需量；
-- `ProbabilityPath` / `VectorFieldProcess`：提供连续 path 或 velocity/score 转换。
-
-这些名称是设计方向，不要求 Stage 3 一次冻结全部公开协议。Stage 3 只公开现有内置实现和
-Sampler 真正依赖的最小 capability；新增算法时再以实际复用需求扩展协议。
+该名称刻意包含 `Discrete`：整数 state time 与 adjacent posterior 不是所有 Gaussian
+denoising process 的共同能力。连续 Gaussian SDE 或只消费 marginal 的第二种实现出现后，
+再由真实消费者驱动窄 capability 拆分；Stage 3 不让它们被迫实现 DDPM 专属 API。
 
 内置 `DiscreteGaussianProcess` 从当前实现中保留：
 
 - beta/alpha/noise schedule 与 timestep 定义；
 - `add_noise`、marginal 系数和 posterior math；
-- epsilon、x0、v、score 等必要预测转换；
-- 从 model output 构造 DDPM/DDIM dynamics 所需的数学量。
+- 为 DDPM/DDIM Dynamics 提供 marginal scales 与 posterior 数学量。
 
-它移除 model ownership、`model(xt, t)` 固定调用、Loss 和 sample loop。
+它不拥有 model、prediction parameterization、clipping、Loss 或 sample loop。
+epsilon、x0、v、score 转换以及 clipping 后 epsilon 重算属于
+`GaussianModelDynamics`。
+
+Gaussian noise schedule 是 `DiscreteGaussianProcess` 的私有注册化组合，不扩展为
+Flow Matching 的万能 schedule。契约分为三层：
+
+```text
+GaussianNoiseSchedule
+└── DiscreteVPSchedule                  数学 capability
+    └── TabulatedDiscreteVPSchedule     固定 coefficient table 实现
+        ├── LinearBetaSchedule
+        └── CosineAlphaBarSchedule
+```
+
+`DiscreteVPSchedule` 只产生与 `state_times` 同形的 `GaussianScales` 和
+`DiscreteVPCoefficients`；Process 负责按样本 rank broadcast。Stage 3 采用“构造期固定
+快照”语义：`DiscreteGaussianProcess` 在构造时从 schedule 生成唯一权威 coefficient
+table，并将 marginal 与 posterior 所需量作为自己的 buffer 保存；运行期数学不再查询或
+缓存一个可被独立修改的 schedule 子模块。第三方 schedule 可以用解析公式产生快照，但
+当前契约不支持训练中可变或可学习 schedule。未来 learned schedule 需要新的动态
+coefficient capability，不能静默复用该实现。
 
 ### Generative Dynamics 边界
 
 “forward process”与“reverse process”不足以覆盖全部算法。DDPM/DDIM 中生成方向表现为
-reverse transition；在 SDE/ODE 中可能是 reverse SDE 或 probability-flow vector field；
-flow matching 则直接学习生成方向的 velocity。因此统一概念使用
-`GenerativeDynamics`。
+Gaussian denoising prediction 与 reverse transition；在 SDE/ODE 中可能是 reverse SDE
+或 probability-flow vector field；flow matching 则直接学习 velocity。
+`GenerativeDynamics` 只作为这些对象的无行为语义根，不定义它们共同的数学操作。
 
-首版 Dynamics 是由 Process、模型 callable 和 prediction adapter 组合出的普通对象或
-Protocol，不设全局 Registry，也不出现在顶层 YAML。可出现的窄形态包括：
+首版 Dynamics 是由 Builder/diagnostic 将 Process、模型 callable 和 prediction adapter
+组合出的普通对象或 family-specific 抽象能力，不设全局 Registry，也不出现在顶层 YAML。
+Process 不提供 Dynamics 工厂方法。不同 family 可按真实实现需要定义：
 
 - `ReverseKernel`：给出离散 `x_t → x_s` 的分布或一步 sample；
 - `VectorField`：给出 `dx/dt`；
 - `ReverseSDE`：给出 reverse drift 与 diffusion；
 - `DenoiserFn`：在 sigma-space 返回 denoised state。
 
-Sampler 声明自己消费哪种 capability；SamplingBuilder 负责构造并校验。核心不维护
-`process × sampler` 名称兼容矩阵。
+这些名称是设计示例，不是首版公开类型或待实现空壳。Sampler 在调用边界声明并验证自己
+消费的 family capability；SamplingBuilder 负责构造兼容组合。核心不维护
+`process × sampler` 名称兼容矩阵，也不要求一种 capability 适配其他 family。
+
+Stage 3 的 Gaussian 实现将 `GaussianDenoisingDynamics` 定义为 Sampler 依赖的抽象能力，
+并以 `GaussianModelDynamics` 作为普通模型 callable 的具体 adapter。DDPM/DDIM 只依赖
+前者；standard builder、diagnostic 或用户 workflow 构造后者，也可以提供自定义
+Dynamics 实现或 wrapper 来表达 CFG、condition 与 physics guidance。
 
 ### Sampler 契约
 
@@ -413,7 +454,8 @@ Sampler 是一次采样调用内的完整数值执行器，而不是强制统一
 - 原有 DDPM/DDIM 数学结果、partial denoising 和 deterministic seed 行为保持一致。
 
 后续新增 Euler–Maruyama、Euler、Heun、LMS、DPM-Solver、UniPC 或 flow-matching solver
-时，应只新增 Sampler 和必要的窄 capability，不修改现有 Process 与核心 runtime。
+时，应在所属算法 family 内新增或复用 Process、Dynamics capability 与 Sampler，不修改
+现有 Gaussian 契约和核心 runtime。
 
 ### SamplingBuilder 契约
 
@@ -433,25 +475,88 @@ conditional super-resolution、inpainting 和 physics-guided reconstruction 通�
 
 ### Checkpoint 与 runtime
 
-- checkpoint 格式升级并保存 Process 注册名、配置及 state；
-- Process 是训练路径的 checkpoint-authoritative 组件；自定义 Process 可以包含 buffer 或
-  可学习状态；
+- checkpoint 格式升级到 v5，保存 `model_state_dict`、可选 `process_state_dict` 和可选
+  `ema_model_state_dict`，直接拒绝 v4；
+- 配置存在 Process 时，它是 checkpoint-authoritative 组件，可以包含 buffer 或可学习
+  状态；配置省略 Process 时，runtime 不构造、不保存也不恢复占位 Process；
 - sampler 和 SamplingBuilder 是可覆盖的推理配置，不保存一次运行的 solver history；
-- checkpoint-only sampling 先加载扩展，再构建 Process、推理模型、Builder 和 Sampler；
+- checkpoint-only sampling 先加载扩展，再构建推理模型、可选 Process、Builder 和 Sampler；
 - sampling runtime 不再假设 sampler 返回单一 Tensor，由 Builder 规范化结果后交给 writer；
 - `sampling.shape` 继续可选；固定 shape 的 Builder/Sampler 在运行时自行要求；
 - diagnostic 不依赖具体 DDPM/DDIM 类，只声明自己需要的 Process/Dynamics capability。
 
+### 已完成的核心实现
+
+- framework-level `Process` 与 `GenerativeDynamics` 根类型已保持无数学行为；Gaussian
+  Process 与 Dynamics 契约分别进入 family 模块，公开扩展导出不变；
+- Gaussian schedule 已拆分为 `GaussianNoiseSchedule`、`DiscreteVPSchedule` capability
+  与 `TabulatedDiscreteVPSchedule` 实现；Process 只消费具名 coefficient 对象，且明确
+  拒绝当前不支持的可学习 schedule；
+- `DiscreteGaussianProcess` 独立拥有构造期 coefficient snapshot、marginal 和 posterior
+  数学，不保留 schedule 子模块，不持有模型、prediction semantics，也不创建 Dynamics；
+- `DiscreteGaussianDenoisingProcess` 已形成单一离散 Gaussian 路径接口，训练 factory、
+  standard builder 和 diagnostic 不按 Process 注册名或具体实现分支；临时训练桥接自行
+  拥有 timestep sampling；
+- `DDPMAncestralSampler` 与 `DDIMSampler` 均只实现完整 `sample()` 生命周期，不要求
+  universal `step()`，solver 参数和求解区间留在各自构造配置；Builder/diagnostic 根据
+  实际 observation 验证 terminal-to-clean 生命周期，partial denoising 仍可由自定义
+  Builder 或 Sampler 直接调用；
+- `GaussianDenoisingDynamics` 是 sampling 层的抽象 capability，
+  `GaussianModelDynamics` 是由 Builder/diagnostic 显式构造的 model adapter；Process 层
+  不依赖任一具体 Dynamics；
+- `SamplingObserver`、`SamplingObservation` 和 `TrajectoryObserver` 统一 initial、
+  accepted step 与 final observation，删除额外 Snapshot 类型和旧的四套
+  sample/trajectory 方法；Sampler 直接创建并发送 observation，Observer 决定筛选、
+  复制与保存；
+- `standard_denoising` builder 负责 raw/EMA 选择、initial prior、model callable、
+  Dynamics、Sampler、batching 与 trajectory，核心 runtime 只调用一次 `run()` 并校验
+  `SamplingOutput`；
+- Gaussian epsilon 训练通过内部 capability bridge 继续工作，optimizer 覆盖 model 与
+  Process，EMA 只跟踪 inference model；
+- diagnostics、standalone sampling 和训练后 sampling 已迁移到同一 Sampler/observer
+  契约；trajectory writer 按 step index 与 coordinate 的声明顺序保存；
+- 显式 checkpoint 可搭配只含 `sampling` 与可选 `extensions` 的轻量覆盖文件；完整外部
+  配置仍会校验 model 与 Process 兼容性；
+- 移除 `REGISTRIES.diffusions`、旧 `stochaflow.diffusion` 路径、sampler-specific CLI
+  flags 和旧配置兼容层。
+- 测试私有 Flow family 已通过现有 Process/Sampler/SamplingBuilder Registry、checkpoint
+  与 sampling runtime 执行，不需要新增 Dynamics Registry、核心名称分支或通用数学方法。
+
+### 已完成的边界收口
+
+Stage 3 在保留既有数学分层的前提下完成以下收口：
+
+- `StochaflowConfig.process`、`SamplingBuilderContext.process` 和 sampling runtime 中的
+  Process 已改为可选；`standard_denoising` 在自己的构造边界要求离散 Gaussian capability，
+  通用 runtime 不再先验要求每种算法都有 Process；
+- 过宽的 Process 契约已重命名为 `DiscreteGaussianDenoisingProcess`，并同步公开导出、
+  错误信息和测试，不保留尚未发布的
+  旧名称兼容别名；
+- schedule 已明确为构造期 coefficient provider，由 `DiscreteGaussianProcess` 持有唯一
+  权威的固定 coefficient snapshot，消除“schedule buffer 已变化、posterior cache 未变化”
+  的双重状态；
+- checkpoint v5 与 resolved config 已支持 `process: null`，仅在存在 Process 时保存和恢复
+  `process_state_dict`；现有 Gaussian 训练桥接仍可明确拒绝缺少 Process 的配置，直到
+  Stage 4 由 TrainingStrategy 接管该校验；
+- 已增加不创建 Process 或 Sampler 的测试私有 direct transform Builder，证明用户无需伪造
+  算法角色即可经过 Registry/config/checkpoint-only sampling/runtime；
+- 首版继续要求 primary inference model。无模型解析生成不是本 Stage 承诺，未来出现真实
+  实现后再把 model provider 可选化。
+
 ### 验收条件
 
 - 新 Process、新 Sampler 和新 SamplingBuilder 均可通过“新增类 + 注册 + YAML”接入，
-  核心 runner 无名称分支；
+  核心 runner 无名称分支；不需要 Process 的 Builder 也可直接运行；
 - `DiscreteGaussianProcess` 不持有模型，DDPM/DDIM Sampler 不解释 batch 或 condition；
+- 离散 Gaussian 公共契约不暗示支持连续时间或无需 adjacent posterior 的实现；
+- schedule、marginal 与 posterior 从同一固定 coefficient snapshot 读取，不存在可观察的
+  缓存失配；
 - DDPM ancestral、DDIM、partial denoising、trajectory 和 checkpoint-only sampling 回归通过；
 - 同一个 Gaussian Process 可更换 DDPM/DDIM Sampler，同一个 Sampler 可使用用户模型
   adapter；
 - 自定义 condition/guidance Builder 可复用内置 Process 与 Sampler；
-- capability 不匹配在构建 sampling run 时给出包含组件名和缺失能力的错误；
+- capability 不匹配和必需 Process 缺失都在具体 Builder 边界给出包含组件名和缺失能力的
+  错误；
 - 配置、公开 API、扩展手册、sampling 文档与 reference 同步更新；
 - Pytest、Ruff 和 Pyright 全部通过。
 
@@ -459,11 +564,108 @@ conditional super-resolution、inpainting 和 physics-guided reconstruction 通�
 
 `Separate diffusion processes and samplers`
 
-## Stage 4：用户项目系统与 CLI 脚手架
+## Stage 4：TrainingStrategy、Loss 与训练资产边界
 
 ### 目标
 
-让用户无需操作 `PYTHONPATH`，即可创建和使用独立 Stochaflow 项目。
+移除当前 `Gaussian Process + objective.name == ddpm_epsilon → train_step_fn` 的临时硬编码，
+让训练层达到与 Stage 2 数据层、Stage 3 采样层相同的 OCP 水平。Stage 4 是项目脚手架和
+端到端自定义任务之前的必要依赖，不再后置。
+
+职责固定为：
+
+```text
+TrainingStrategy
+  └─ structured batch interpretation / model invocation / optional Process use
+     / target and condition semantics / Loss composition
+
+Trainer
+  └─ epoch lifecycle / backward / optimizer / scheduler / EMA / logging
+     / validation cadence / checkpoint cadence
+```
+
+### 配置与 Registry
+
+```yaml
+training:
+  strategy:
+    name: gaussian_denoising
+    params:
+      prediction_type: epsilon
+      loss:
+        name: mse
+        params: {}
+
+trainer:
+  num_epochs: 30
+  device: auto
+```
+
+- `training` 只选择一个 `TrainingStrategy`；具体 Loss 配置属于 strategy 的私有 params，
+  核心不定义一张适用于所有训练算法的 `losses` 图；
+- 移除顶层 `objective` 和 `REGISTRIES.objectives`，旧字段作为未知字段报错；
+- 新增 `REGISTRIES.training_strategies`；`REGISTRIES.losses` 是 Strategy 可选使用的低层
+  构造点，核心 Trainer 不查找、不调用也不组合 Loss；
+- Loss 不与 objective 并列表达同一 prediction/target 语义。Strategy 决定 model output、
+  target 和 reduction 的含义，再选择是否复用注册 Loss。
+
+### TrainingStrategy 契约
+
+公开 Strategy 提供：
+
+- `training_step(batch)` 与 `evaluation_step(batch)`；
+- `trainable_parameters()`；
+- `to(device)`、`train_mode()` 与 `eval_mode()`；
+- 明确的 primary inference model 访问能力；
+- 与主模型、可选 Process 分离的 strategy-owned auxiliary state 保存与恢复能力。
+
+`TrainStepOutput` 包含可反传总 `loss`、可序列化标量 metrics，以及 diagnostic 可选消费的
+窄中间结果。Strategy 接收 Stage 2 的 structured batch，自行解释 state、condition、
+target、mask 和模型签名；需要 probability path 的 Strategy 在构造边界要求 Stage 3 的
+family Process capability，不需要 Process 的 Strategy 直接省略。Strategy 不调用 Sampler。
+
+内置 Gaussian epsilon 路径迁移为正式 `gaussian_denoising` Strategy。现有
+`GaussianEpsilonTrainingSystem` 和 `ddpm_epsilon_train_step` 不再作为 factory 的特殊分支；
+super-resolution 的 `low_res` 是否以及如何传给模型，由所选 Strategy/model adapter 明确
+处理，不能被通用训练桥接静默丢弃。
+
+### Checkpoint、EMA 与 diagnostics
+
+- checkpoint 升级到 v6，明确区分 primary inference model、可选 Process、EMA model 与
+  strategy auxiliary state；strategy state 不重复主模型或 Process 权重；
+- EMA 首版只跟踪 primary inference model；Process 的可学习参数和 auxiliary model 是否
+  参与优化由 Strategy 的 `trainable_parameters()` 决定；
+- checkpoint-only sampling 只构建 primary model、可选 Process 与 SamplingBuilder，不
+  强制实例化 TrainingStrategy；
+- teacher、auxiliary model 或其他策略私有状态通过统一 strategy state 保存，不向 checkpoint
+  顶层不断追加 `teacher_state_dict`、`second_model_state_dict` 等任务字段；
+- diagnostic 依赖注入的 primary model、可选 Process、`TrainStepOutput` 或明确的窄
+  diagnostic capability，不再检查具体 `GaussianEpsilonTrainingSystem`；行为兼容的自定义
+  Gaussian Strategy 应能复用 diffusion-quality diagnostic。
+
+### 验收条件
+
+- 自定义非 Gaussian Strategy 通过注册和配置完成 train/eval，不修改 core factory 或
+  Trainer dispatch；
+- 内置 Gaussian epsilon 训练数值、optimizer、scheduler、EMA 和 resume 行为保持一致；
+- 自定义 conditional/SR Strategy 能消费 `(high_res, {"low_res": low_res})`，condition 不被
+  通用代码丢弃；
+- 单 Loss、多 Loss、教师模型和自定义 batch 解释均由 Strategy 组合；
+- v6 checkpoint 能恢复主模型、可选 Process、strategy auxiliary state 和训练进度，且
+  checkpoint-only sampling 不构建 Strategy；
+- diffusion-quality diagnostic 通过 capability/injection 复用于独立的兼容 Strategy；
+- 配置 reference、扩展手册、workflow 和 troubleshooting 同步更新。
+
+### 逻辑提交
+
+`Add extensible training strategies`
+
+## Stage 5：用户项目系统与 CLI 脚手架
+
+### 目标
+
+在数据、训练和采样公共 API 均已存在后，让用户无需操作 `PYTHONPATH` 即可创建和使用
+独立 Stochaflow 项目。模板不再引用尚未实现的扩展契约。
 
 ### 实施内容
 
@@ -511,108 +713,82 @@ conditional super-resolution、inpainting 和 physics-guided reconstruction 通�
 - CLI 加载 `source_roots` 后按清单顺序导入扩展；
 - 清单模块与配置中的 `extensions.modules` 按顺序合并并稳定去重；
 - 项目名中的连字符转换为 Python 包名下划线；非空目标目录拒绝覆盖；
-- 模板展示分别注册 DataBuilder、Process、Sampler、SamplingBuilder、Model、Loss 和
-  TrainingStrategy，但不要求项目一次实现所有扩展点。
+- 模板按独立小示例展示 DataBuilder、Model、TrainingStrategy、可选 Loss、可选 Process、
+  Sampler 和 SamplingBuilder 注册，不暗示每个项目必须实现全部角色。
 
 ### 验收条件
 
-- CLI 可以生成合法的 `src` 项目；
-- 自定义组件可以直接被 `train` 和 `sample` 使用；
-- checkpoint-only sampling 使用同一项目发现逻辑；
-- 临时合成数据完成端到端 CLI 测试，不依赖网络下载。
+- CLI 可以生成合法、可安装、可测试的 `src` 项目；
+- 自定义 DataBuilder/TrainingStrategy 可以直接被 `train` 使用，自定义 SamplingBuilder
+  可以直接被 `sample` 使用；
+- checkpoint-only sampling 使用同一项目发现和扩展导入逻辑；
+- 临时合成数据完成端到端 CLI 测试，不依赖网络下载；
+- 生成模板只使用 Stage 1–4 已稳定的公开入口。
 
 ### 逻辑提交
 
 `Add extension project scaffolding`
 
-## Stage 5：Loss 与 TrainingStrategy 扩展 API
+## Stage 6：大规模 Sampling artifact 容量验收门
 
 ### 目标
 
-移除 `diffusion + objective → train_step_fn` 的硬编码，将 batch 解释、模型调用、
-Process 使用和 Loss 组合提升为正式训练扩展点。
+在 Physics AI 案例前验证当前“SamplingBuilder 先将全部 CPU batch/trajectory 放入
+`SamplingOutput`，Writer 随后统一写出”的内存边界。该 Stage 先用真实规模证据决定是否
+需要 streaming，不为了理论完整性预建复杂事件系统。
 
-### 配置接口
+### 评估与决策
 
-```yaml
-training:
-  strategy:
-    name: diffusion_denoising
-    params: {}
-  losses:
-    primary:
-      name: epsilon_mse
-      params: {}
-
-trainer:
-  num_epochs: 30
-  device: auto
-```
-
-- `training` 描述训练算法与 Loss，`trainer` 描述通用循环；
-- 移除顶层 `objective`，旧字段作为未知字段报错；
-- 新增 `REGISTRIES.losses` 与 `REGISTRIES.training_strategies`，移除
-  `REGISTRIES.objectives`。
-
-### TrainingStrategy 契约
-
-公开策略提供：
-
-- `training_step(batch)` 与 `evaluation_step(batch)`；
-- `trainable_parameters()`；
-- `to(device)`、`train_mode()` 与 `eval_mode()`；
-- `state_dict()` 与 `load_state_dict()`；
-- 明确的 `primary_model` / `inference_model` 访问能力，使 EMA、checkpoint 和
-  checkpoint-only sampling 不依赖特定策略内部字段。
-
-`TrainStepOutput` 包含可反传总 `loss`、分项 `metrics` 与供 diagnostic 使用的中间结果。
-核心 Trainer 继续负责一次反向传播、单 optimizer step、scheduler、EMA、日志、验证、
-early stopping 和 checkpoint。
-
-TrainingStrategy 接收 Stage 2 的 structured batch，并自行解释 state、condition、target、
-mask 等字段；它通过 Stage 3 的 Process capability 完成 noising、target conversion 或
-其他训练数学，不调用 Sampler，也不要求 Process 拥有模型。
-
-### Checkpoint
-
-- checkpoint 加入可选策略 state，不重复保存主模型权重；
-- EMA/推理模型身份明确保存；
-- sampling 只加载推理所需模型与 Process，不强制实例化训练策略；
-- 新格式不承诺读取旧 checkpoint。
+- 为高分辨率图像、3D physics field、多 batch 和长 trajectory 建立可重复的峰值内存
+  基准，分别记录 accelerator state、CPU output 和 writer 编码开销；
+- 明确普通离线 `SamplingOutput` 的推荐规模和失败提示，避免大型运行无界累积后才 OOM；
+- 若 Physics AI 目标规模在可接受预算内，保留当前 API，并在文档记录容量边界；
+- 若证据表明必须增量输出，再设计最小的 batch lifecycle（例如 begin/write_batch/finish
+  或等价 sink），同时保持 Builder 负责任务组装、Writer 负责 artifact I/O；不得让 core
+  runtime 解释 field/image/trajectory 语义；
+- streaming 决策必须覆盖失败传播、临时文件清理、artifact key 唯一性和最终 manifest，
+  不能仅解决 Tensor 内存而破坏 writer contract。
 
 ### 验收条件
 
-- 内置 Gaussian epsilon denoising 训练结果保持不变；
-- 用户可由 YAML 构建自定义 Loss 和 TrainingStrategy；
-- 条件模型、多个 Loss、教师模型和自定义 batch 解释不修改核心 Trainer；
-- 分项 Loss、checkpoint、恢复训练、EMA 与采样测试通过。
+- 有一份可复现的容量报告和明确结论；
+- Stage 7 Physics AI 的预期 shape、sample 数与 trajectory 设置经过该结论验证；
+- 如无需新 API，文档明确安全工作集和用户自定义分批 Builder/Writer 的方式；
+- 如需要新 API，先更新本计划中的 sampling lifecycle，再实现并完成 tensor/image/custom
+  writer 回归，不在 Stage 7 案例中临时修改核心。
 
-### 逻辑提交
+### 交付
 
-`Add extensible training strategies`
+本 Stage 至少形成容量决策记录；只有实际修改 runtime/writer API 时才形成独立逻辑提交。
 
-## Stage 6：纵向扩展案例
+## Stage 7：纵向扩展案例
 
 ### 目标
 
-用彼此不同的真实任务验证扩展轴，而不是为单一案例修改核心抽象。
+用彼此不同的真实任务验证扩展轴，而不是为单一案例修改核心抽象。所有案例使用 Stage 5
+生成的标准项目结构，并受 Stage 6 的容量结论约束。
 
-### 6A：Physics AI super-resolution / reconstruction
+### 7A：Physics AI super-resolution / reconstruction
 
 - 以独立用户项目实现条件模型和 physics 数据处理；
 - 复用内置 `DiscreteGaussianProcess` 和 DDPM/DDIM Sampler；
 - 使用自定义 TrainingStrategy 解释 LR/HR 或时序场 batch；
 - 使用自定义 SamplingBuilder 实现条件输入、partial noising、physics guidance 或所需
   sampling state；
+- low-resolution、physics state 和模型签名由 Builder/model callable 拥有；若 physics
+  correction 能表达为 Gaussian prediction 或生成方向修正，则实现或包装
+  `GaussianDenoisingDynamics`，继续复用 DDPM/DDIM；
+- 若 correction 改变 reverse transition、accepted-step 更新或内部子步，则在用户扩展中
+  定义匹配的窄 Dynamics 与 Sampler，而不是向内置 DDPM/DDIM 塞入 physics callback；
 - 使用自定义 writer 输出场数据和指标；图像预览只是可选 artifact；
 - 案例不得向核心 Process/Sampler 添加 physics、PDE、super-resolution 专用参数。
 
-### 6B：知识蒸馏
+### 7B：知识蒸馏
 
 - 提供自定义蒸馏 Loss 与 `KnowledgeDistillationStrategy`；
 - 构建教师模型、加载 checkpoint、冻结并保持 eval；
 - 组合基础 Loss 和蒸馏 Loss，记录分项指标；
-- 验证策略状态与 checkpoint resume。
+- 验证 strategy auxiliary state 与 checkpoint resume。
 
 ### 验收条件
 
@@ -621,23 +797,24 @@ mask 等字段；它通过 Stage 3 的 Process capability 完成 noising、targe
 - 更换 DDPM/DDIM 只改变 sampling 配置或 Builder 参数；
 - 教师参数无梯度且保持不变，学生正常更新；
 - 两个案例共同证明数据、训练和采样三个扩展轴可以独立替换；
-- 所有示例使用项目脚手架生成的标准结构。
+- 大型样本和 trajectory 符合 Stage 6 已验证的输出容量策略。
 
 ### 逻辑提交
 
 `Add extension reference projects`
 
-## Stage 7：可复现性与文档收尾
+## Stage 8：可复现性与文档收尾
 
 ### 实施内容
 
 - resolved config 与 checkpoint metadata 记录项目、清单版本、扩展模块和所有已选择的
-  注册组件名；
+  注册组件名，包括显式的 `process: null`；
 - 缺失扩展时报告模块、项目根目录与 `--project` 修复建议；
-- 文档覆盖项目创建、自定义 DataBuilder、structured batch、自定义 Process、
-  Dynamics capability、Sampler、SamplingBuilder、模型、Loss 和 TrainingStrategy；
-- 单独提供“复用内置 Process/Sampler 完成新任务”的最小教程；
-- 记录破坏性变更、checkpoint 可移植性和 capability compatibility 错误；
+- 文档覆盖项目创建、自定义 DataBuilder、structured batch、可选 Process、family Dynamics、
+  Sampler、SamplingBuilder、模型、Loss 和 TrainingStrategy；
+- 单独提供“复用内置 Process/Sampler 完成新任务”和“不使用 Process 的自定义 family”
+  最小教程；
+- 记录破坏性变更、checkpoint 可移植性、capability compatibility 和 sampling 容量边界；
 - 更新 README、配置参考、故障排查与 API reference；
 - 完成构建与质量检查。
 
@@ -645,10 +822,12 @@ mask 等字段；它通过 Stage 3 的 Process capability 完成 noising、targe
 
 ```bash
 uv run python tools/generate_config_reference.py
+uv run python tools/generate_config_reference.py --check
 uv run pytest
 uv run ruff check .
 uv run pyright
 uv build
+uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 ```
 
 ## Open–Closed 验收矩阵
@@ -660,9 +839,11 @@ uv build
 | 新数据组织或 split | DataBuilder | Trainer、TrainingStrategy |
 | 新模型签名或 condition | model adapter / Strategy / Builder | Process、Sampler |
 | 新 probability path | Process | 模型、兼容 Sampler |
-| 新数值求解器 | Sampler | 兼容 Process/Dynamics、模型 |
+| 新数值求解器 | family Sampler | 同 family 的 Process/Dynamics、模型 |
 | 新 guidance 或初始化方式 | SamplingBuilder | Process、Sampler、writer |
-| 新训练任务或多 Loss | TrainingStrategy / Loss | DataBuilder、Process、Trainer |
+| 新算法 family | 可选 family Process、Dynamics、Sampler、SamplingBuilder | Registry、config、checkpoint、sampling runtime |
+| 无 Process 的直接生成方法 | SamplingBuilder，及需要时的窄 Dynamics | Registry、config、checkpoint、sampling runtime |
+| 新训练任务或多 Loss | TrainingStrategy / 可选 Loss | DataBuilder、可选 Process、Trainer |
 | 新 artifact | SamplingArtifactWriter | sampling runtime |
 
 若新增上述能力需要在 runner 中按组件名称添加 `if/elif`、给通用数据 schema 增加任务字段，
@@ -674,17 +855,26 @@ uv build
 - Python entry point 插件市场；
 - 全局 Dataset/Sampler/DataLoader/Split/Batching Registry 体系；
 - 为所有 Process 强制统一的巨大数学接口；
+- 要求所有生成或训练算法为了通用 dispatch 虚构 Process；
 - 全局 GenerativeDynamics Registry 或静态 process/sampler 名称兼容矩阵；
+- 在 `GenerativeDynamics` 根类型上增加 universal `predict`、`step`、`drift`、`score` 或
+  `denoise` 方法；
 - 多 optimizer、交替更新或 extension 接管完整 epoch 循环；
+- 由核心解释的通用 Loss graph、target adapter 或 condition adapter 配置系统；
+- 在 Stage 6 没有容量证据前预建复杂的 streaming event/bus API；
 - 将用户扩展源码打包进 checkpoint；
 - 自动上传或分发用户项目；
 - legacy YAML、Registry 别名或旧 checkpoint 迁移。
 
 ## 施工规则
 
-- 严格按 Stage 顺序实施；Stage 2 必须重新验收后才能进入 Stage 3；
+- 严格按 Stage 顺序实施；Stage 3 的可选 Process、离散 Gaussian 命名和 schedule 状态
+  语义未验收前，不进入 Stage 4；
 - 每个 Stage 独立开发、测试和验收，未通过不进入下一 Stage；
 - 每个 Stage 形成一个或文档明确列出的少量逻辑提交，避免跨 Stage 修改；
-- Stage 3 先冻结最小 Process/Sampler/Builder 边界，再迁移 DDPM/DDIM；
+- Stage 4 的 TrainingStrategy/Loss/checkpoint/diagnostic 边界必须先于 Stage 5 项目模板，
+  模板不得引用未来 API；
+- Stage 6 的容量结论是 Stage 7 Physics AI 案例的入口条件；案例不得边做边修改通用
+  sampling lifecycle；
 - 新 capability 只由真实的第二种实现驱动，不预先添加“可能有用”的通用方法；
 - 如实施中发现必须改变公开接口或 OCP 边界，先更新本计划并确认，再继续施工。

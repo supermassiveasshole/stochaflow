@@ -49,6 +49,11 @@ def test_context_copies_params() -> None:
     assert params == original
 
 
+def test_context_rejects_non_mapping_params() -> None:
+    with pytest.raises(TypeError, match="params must be a mapping"):
+        DataBuilderContext(params=[], seed=9)  # type: ignore[arg-type]
+
+
 def test_sized_and_streaming_loaders_validate_epoch_length() -> None:
     sized = DataLoaders(train=[1, 2])
     finite_iterable = DataLoaders(
@@ -76,6 +81,8 @@ def test_data_loaders_reject_invalid_values() -> None:
         DataLoaders(train=iter([1]), steps_per_epoch=1)
     with pytest.raises(ValueError, match="positive"):
         DataLoaders(train=[1], steps_per_epoch=0)
+    with pytest.raises(ValueError, match="positive integer"):
+        DataLoaders(train=[1, 2], steps_per_epoch=1.5)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="must not exceed"):
         DataLoaders(train=[1], steps_per_epoch=2)
 

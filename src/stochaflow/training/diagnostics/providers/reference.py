@@ -8,12 +8,12 @@ import time
 from typing import Any
 
 import torch
-import torch.nn as nn
 
 from stochaflow.training.diagnostics.config import ReferencePipelineConfig
 from stochaflow.training.diagnostics.contracts import ReferenceMetricProvider
 from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 from stochaflow.training.diagnostics.runtime import (
+    BoundSampler,
     SeedPolicy,
     first_tensor_from_batch,
     prepare_reference_images,
@@ -80,8 +80,8 @@ class KIDReferenceMetricProvider(ReferenceMetricProvider):
         device: torch.device,
         num_real: int,
         num_fake: int,
-        subsets: int = 100,
-        subset_size: int = 1000,
+        subsets: object = 100,
+        subset_size: object = 1000,
     ) -> None:
         if isinstance(subsets, bool) or not isinstance(subsets, int) or subsets <= 0:
             raise ValueError("kid subsets must be a positive integer")
@@ -191,7 +191,7 @@ class ReferenceMetricSuite:
         self,
         *,
         profile_id: str,
-        sampler: nn.Module,
+        sampler: BoundSampler,
         sample_shape: tuple[int, int, int],
         visual_samples: torch.Tensor | None,
     ) -> Mapping[str, float]:
@@ -228,10 +228,13 @@ class ReferenceMetricSuite:
                     generator=generator,
                     device="cpu",
                 ).to(self.device)
-                generated = getattr(sampler, "sample_from_noise")(noise)
+                generated = sampler.sampler.sample(
+                    sampler.dynamics,
+                    noise,
+                ).final_state
                 if not isinstance(generated, torch.Tensor):
                     raise TypeError(
-                        f"sampler '{profile_id}' sample_from_noise must return a Tensor"
+                        f"sampler '{profile_id}' must return a Tensor final_state"
                     )
                 if generated.shape != noise.shape:
                     raise ValueError(

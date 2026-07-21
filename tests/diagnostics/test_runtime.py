@@ -3,15 +3,20 @@
 import pytest
 import torch
 
-from stochaflow.diffusion import DDPM, LinearBetaSchedule
 from stochaflow.training.diagnostics.runtime import (
     EvaluationGuard,
+    SamplerPool,
+    SamplerRunner,
     SeedPolicy,
     prepare_reference_images,
 )
+from stochaflow.training.diagnostics.config import (
+    SamplerProfileConfig,
+    TrajectoryProviderConfig,
+)
 from stochaflow.training.ema import ExponentialMovingAverage
 
-from .helpers import TinyDenoiser, trainer
+from .helpers import TinyDenoiser, gaussian_system, trainer
 
 
 @pytest.mark.parametrize("device_name", ["cpu", "cuda"])
@@ -21,11 +26,8 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
     if device_name == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
     device = torch.device(device_name)
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=TinyDenoiser(),
-    ).to(device)
-    ema = ExponentialMovingAverage(model, decay=0.5)
+    model = gaussian_system(TinyDenoiser(), num_timesteps=2).to(device)
+    ema = ExponentialMovingAverage(model.inference_model, decay=0.5)
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.add_(1.0)
@@ -85,3 +87,45 @@ def test_prepare_reference_images_expands_grayscale_and_normalizes() -> None:
     assert prepared.shape == (1, 3, 2, 2)
     assert prepared.min() == 0.0
     assert prepared.max() == 1.0
+
+
+def test_diagnostic_sampler_rejects_nonterminal_start() -> None:
+    profile = SamplerProfileConfig(
+        id="partial",
+        name="ddpm",
+        params={"start_time": 2},
+        trajectory=TrajectoryProviderConfig(),
+    )
+
+    pool = SamplerPool(
+        gaussian_system(num_timesteps=4),
+        [profile],
+        device=torch.device("cpu"),
+    )
+    with pytest.raises(ValueError, match="start at process terminal time"):
+        SamplerRunner(batch_size=1).run(
+            pool.get("partial"),
+            profile,
+            torch.randn(1, 1, 4, 4),
+        )
+
+
+def test_diagnostic_sampler_rejects_nonclean_end() -> None:
+    profile = SamplerProfileConfig(
+        id="partial",
+        name="ddpm",
+        params={"end_time": 2},
+        trajectory=TrajectoryProviderConfig(),
+    )
+
+    pool = SamplerPool(
+        gaussian_system(num_timesteps=4),
+        [profile],
+        device=torch.device("cpu"),
+    )
+    with pytest.raises(ValueError, match="end at process clean time"):
+        SamplerRunner(batch_size=1).run(
+            pool.get("partial"),
+            profile,
+            torch.randn(1, 1, 4, 4),
+        )

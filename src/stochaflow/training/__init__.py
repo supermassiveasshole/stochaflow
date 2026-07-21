@@ -9,11 +9,16 @@ from .diagnostics import (
     TrainingDiagnostic,
 )
 from .ema import ExponentialMovingAverage
+from .gaussian import GaussianEpsilonTrainingOutput, GaussianEpsilonTrainingSystem
+from .objectives import DDPMEpsilonObjective
 from .reporting import FinalSummary, RichTrainingReporter, RunSummary
 from .trainer import Trainer, TrainStepOutput
 
 __all__ = [
     "ExponentialMovingAverage",
+    "DDPMEpsilonObjective",
+    "GaussianEpsilonTrainingOutput",
+    "GaussianEpsilonTrainingSystem",
     "ContextAwareDiagnostic",
     "DiagnosticBuildContext",
     "FitStartEvent",

@@ -3,7 +3,7 @@
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any, Union, cast, get_args, get_origin, get_type_hints
 
 import yaml
 
@@ -38,34 +38,10 @@ class ExperimentConfig:
 
 
 @dataclass(slots=True)
-class DiffusionConfig:
-    """Diffusion process selection and forward noise-path declaration."""
-
-    name: str
-    noise_schedule: ComponentConfig
-    params: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class TrajectoryDebugConfig:
-    """Optional sampler-specific reverse-trajectory diagnostics."""
-
-    enabled: bool = False
-    params: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class SamplingDebugConfig:
-    """Debug-only sampling artifact controls."""
-
-    trajectory: TrajectoryDebugConfig = field(default_factory=TrajectoryDebugConfig)
-
-
-@dataclass(slots=True)
 class SamplingConfig:
     """Standalone and post-training sampling configuration."""
 
-    sampler: ComponentConfig | None = None
+    builder: ComponentConfig | None = None
     shape: list[int] | None = None
     num_samples: int = 16
     batch_size: int = 16
@@ -73,7 +49,6 @@ class SamplingConfig:
     writers: list[ComponentConfig] = field(
         default_factory=lambda: [ComponentConfig(name="tensor")]
     )
-    debug: SamplingDebugConfig = field(default_factory=SamplingDebugConfig)
 
 
 @dataclass(slots=True)
@@ -158,8 +133,8 @@ class StochaflowConfig:
     experiment: ExperimentConfig
     data: ComponentConfig
     model: ComponentConfig
-    diffusion: DiffusionConfig
     objective: ComponentConfig
+    process: ComponentConfig | None = None
     extensions: ExtensionsConfig = field(default_factory=ExtensionsConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     lr_scheduler: LRSchedulerConfig = field(default_factory=LRSchedulerConfig)
@@ -173,11 +148,13 @@ class StochaflowConfig:
     def validate(self) -> None:
         """Validate cross-field invariants."""
 
-        if not isinstance(self.data.name, str) or not self.data.name.strip():
+        data_name = cast(object, self.data.name)
+        if not isinstance(data_name, str) or not data_name.strip():
             raise ConfigError("data.name must be a non-empty registry name")
-        if not isinstance(self.data.params, dict):
+        if not isinstance(cast(object, self.data.params), dict):
             raise ConfigError("data.params must be a mapping")
-        for index, module in enumerate(self.extensions.modules):
+        for index, declared_module in enumerate(self.extensions.modules):
+            module = cast(object, declared_module)
             if not isinstance(module, str) or not module.strip():
                 raise ConfigError(
                     f"extensions.modules[{index}] must be a non-empty string"
@@ -190,8 +167,18 @@ class StochaflowConfig:
             raise ConfigError("ema.update_after_step must be non-negative")
         if self.ema.update_every <= 0:
             raise ConfigError("ema.update_every must be positive")
-        if self.sampling.sampler is not None and not self.sampling.sampler.name:
-            raise ConfigError("sampling.sampler.name must be a non-empty string")
+        if self.process is not None:
+            process_name = cast(object, self.process.name)
+            if not isinstance(process_name, str) or not process_name.strip():
+                raise ConfigError("process.name must be a non-empty registry name")
+            if not isinstance(cast(object, self.process.params), dict):
+                raise ConfigError("process.params must be a mapping")
+        if self.sampling.builder is not None:
+            builder_name = cast(object, self.sampling.builder.name)
+            if not isinstance(builder_name, str) or not builder_name.strip():
+                raise ConfigError("sampling.builder.name must be a non-empty string")
+            if not isinstance(cast(object, self.sampling.builder.params), dict):
+                raise ConfigError("sampling.builder.params must be a mapping")
         if self.sampling.num_samples <= 0:
             raise ConfigError("sampling.num_samples must be positive")
         if self.sampling.batch_size <= 0:
@@ -199,7 +186,8 @@ class StochaflowConfig:
         if self.sampling.shape is not None:
             if not self.sampling.shape:
                 raise ConfigError("sampling.shape must not be empty when provided")
-            for index, dimension in enumerate(self.sampling.shape):
+            for index, declared_dimension in enumerate(self.sampling.shape):
+                dimension = cast(object, declared_dimension)
                 if not isinstance(dimension, int) or isinstance(dimension, bool):
                     raise ConfigError(f"sampling.shape[{index}] must be an integer")
                 if dimension <= 0:
@@ -207,16 +195,18 @@ class StochaflowConfig:
         if not self.sampling.writers:
             raise ConfigError("sampling.writers must declare at least one writer")
         for index, writer in enumerate(self.sampling.writers):
-            if not isinstance(writer.name, str) or not writer.name.strip():
+            writer_name = cast(object, writer.name)
+            if not isinstance(writer_name, str) or not writer_name.strip():
                 raise ConfigError(
                     f"sampling.writers[{index}].name must be a non-empty string"
                 )
-            if not isinstance(writer.params, dict):
+            if not isinstance(cast(object, writer.params), dict):
                 raise ConfigError(
                     f"sampling.writers[{index}].params must be a mapping"
                 )
         if self.lr_scheduler.name is not None:
-            if not isinstance(self.lr_scheduler.name, str) or not self.lr_scheduler.name:
+            scheduler_name = cast(object, self.lr_scheduler.name)
+            if not isinstance(scheduler_name, str) or not scheduler_name:
                 raise ConfigError("lr_scheduler.name must be a non-empty string or null")
             if self.lr_scheduler.interval not in {"step", "epoch"}:
                 raise ConfigError("lr_scheduler.interval must be 'step' or 'epoch'")
@@ -261,10 +251,6 @@ class StochaflowConfig:
             raise ConfigError("logging.backends must declare at least one backend")
         if self.artifacts.checkpoint_every <= 0:
             raise ConfigError("artifacts.checkpoint_every must be positive")
-        if "num_timesteps" not in self.diffusion.noise_schedule.params:
-            raise ConfigError(
-                "diffusion.noise_schedule.params must include num_timesteps"
-            )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the config object back into a plain dictionary."""
@@ -363,37 +349,6 @@ def coerce_config_section(cls: type[Any], raw: Any, path: str) -> Any:
     return _coerce_dataclass(cls, deepcopy(raw), path)
 
 
-def _migrate_legacy_noise_schedule_config(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize pre-refactor diffusion scheduler declarations.
-
-    Older checkpoints and YAML files used ``diffusion.scheduler`` with names
-    that combined the noise-path parameterization and DDPM algorithm. New
-    configurations use ``diffusion.noise_schedule`` and parameterization-native
-    names. The input mapping is copied so callers do not observe mutation.
-    """
-
-    migrated = deepcopy(raw)
-    diffusion = migrated.get("diffusion")
-    if not isinstance(diffusion, dict) or "scheduler" not in diffusion:
-        return migrated
-    if "noise_schedule" in diffusion:
-        raise ConfigError(
-            "config.diffusion must not define both scheduler and noise_schedule"
-        )
-
-    schedule = diffusion.pop("scheduler")
-    if isinstance(schedule, dict):
-        legacy_names = {
-            "linear_ddpm": "linear_beta",
-            "cosine_ddpm": "cosine_alpha_bar",
-        }
-        name = schedule.get("name")
-        if name in legacy_names:
-            schedule["name"] = legacy_names[name]
-    diffusion["noise_schedule"] = schedule
-    return migrated
-
-
 def _validate_module_declarations(value: Any, *, path: str) -> list[str]:
     if not isinstance(value, list):
         raise ConfigError(f"{path} must be a list")
@@ -430,7 +385,6 @@ def load_config(path: str | Path) -> StochaflowConfig:
     if not isinstance(raw, dict):
         raise ConfigError(f"{config_path} must contain a top-level mapping")
 
-    raw = _migrate_legacy_noise_schedule_config(raw)
     config = _coerce_dataclass(StochaflowConfig, raw, "config")
     _load_configured_modules(config)
     config.validate()
@@ -440,7 +394,6 @@ def load_config(path: str | Path) -> StochaflowConfig:
 def load_config_dict(raw: dict[str, Any]) -> StochaflowConfig:
     """Load and validate a configuration from a plain dictionary."""
 
-    raw = _migrate_legacy_noise_schedule_config(raw)
     config = _coerce_dataclass(StochaflowConfig, raw, "config")
     _load_configured_modules(config)
     config.validate()

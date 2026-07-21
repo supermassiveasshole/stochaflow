@@ -15,7 +15,7 @@ else:
     ExponentialMovingAverage = Any
 
 
-CHECKPOINT_FORMAT_VERSION = 4
+CHECKPOINT_FORMAT_VERSION = 5
 
 
 class CheckpointState(TypedDict, total=False):
@@ -25,8 +25,8 @@ class CheckpointState(TypedDict, total=False):
     epoch: int
     global_step: int
     model_state_dict: dict[str, torch.Tensor]
-    denoiser_state_dict: dict[str, torch.Tensor]
-    ema_denoiser_state_dict: dict[str, torch.Tensor]
+    process_state_dict: dict[str, torch.Tensor]
+    ema_model_state_dict: dict[str, torch.Tensor]
     optimizer_state_dict: dict[str, Any]
     lr_scheduler_state_dict: dict[str, Any]
     ema_state_dict: EMAStateDict
@@ -57,7 +57,7 @@ class CheckpointManager:
     """
 
     model: nn.Module
-    denoiser: nn.Module | None = None
+    process: nn.Module | None = None
     optimizer: Optimizer | None = None
     lr_scheduler: Any | None = None
     ema: ExponentialMovingAverage | None = None
@@ -89,17 +89,15 @@ class CheckpointManager:
             "format_version": CHECKPOINT_FORMAT_VERSION,
             "model_state_dict": _clone_module_state(self.model),
         }
-        if self.denoiser is not None:
-            state["denoiser_state_dict"] = _clone_module_state(self.denoiser)
-            if self.ema is not None:
-                self.ema.store(self.model)
-                try:
-                    self.ema.copy_to(self.model)
-                    state["ema_denoiser_state_dict"] = _clone_module_state(
-                        self.denoiser
-                    )
-                finally:
-                    self.ema.restore(self.model)
+        if self.process is not None:
+            state["process_state_dict"] = _clone_module_state(self.process)
+        if self.ema is not None:
+            self.ema.store(self.model)
+            try:
+                self.ema.copy_to(self.model)
+                state["ema_model_state_dict"] = _clone_module_state(self.model)
+            finally:
+                self.ema.restore(self.model)
         if self.optimizer is not None:
             state["optimizer_state_dict"] = self.optimizer.state_dict()
         if self.lr_scheduler is not None:
@@ -158,12 +156,30 @@ class CheckpointManager:
                 f"checkpoint format version {version!r} is unsupported; "
                 f"expected version {CHECKPOINT_FORMAT_VERSION}"
             )
-        model_state_dict = state.get("model_state_dict")
+        model_state_dict = cast(object, state.get("model_state_dict"))
         if not isinstance(model_state_dict, dict):
             raise TypeError("checkpoint is missing a valid model_state_dict")
-        self.model.load_state_dict(model_state_dict)
+        has_process_state = "process_state_dict" in state
+        process_state_dict = cast(object, state.get("process_state_dict"))
+        validated_process_state: dict[str, Any] | None = None
+        if self.process is None:
+            if has_process_state:
+                raise ValueError(
+                    "checkpoint contains process_state_dict but runtime has no process"
+                )
+        else:
+            if not has_process_state:
+                raise TypeError("checkpoint is missing process_state_dict")
+            if not isinstance(process_state_dict, dict):
+                raise TypeError("process_state_dict must be a dictionary")
+            validated_process_state = process_state_dict
 
-        optimizer_state_dict = state.get("optimizer_state_dict")
+        self.model.load_state_dict(model_state_dict)
+        if self.process is not None:
+            assert validated_process_state is not None
+            self.process.load_state_dict(validated_process_state)
+
+        optimizer_state_dict = cast(object, state.get("optimizer_state_dict"))
         if self.optimizer is not None:
             if optimizer_state_dict is None:
                 raise TypeError("checkpoint is missing optimizer_state_dict")
@@ -171,7 +187,7 @@ class CheckpointManager:
                 raise TypeError("optimizer_state_dict must be a dictionary when provided")
             self.optimizer.load_state_dict(optimizer_state_dict)
 
-        lr_scheduler_state_dict = state.get("lr_scheduler_state_dict")
+        lr_scheduler_state_dict = cast(object, state.get("lr_scheduler_state_dict"))
         if self.lr_scheduler is not None:
             if lr_scheduler_state_dict is None:
                 raise TypeError("checkpoint is missing lr_scheduler_state_dict")
@@ -181,7 +197,7 @@ class CheckpointManager:
                 )
             self.lr_scheduler.load_state_dict(lr_scheduler_state_dict)
 
-        ema_state_dict = state.get("ema_state_dict")
+        ema_state_dict = cast(object, state.get("ema_state_dict"))
         if self.ema is not None:
             if ema_state_dict is None:
                 raise TypeError("checkpoint is missing ema_state_dict")
@@ -189,22 +205,22 @@ class CheckpointManager:
                 raise TypeError("ema_state_dict must be a dictionary when provided")
             self.ema.load_state_dict(cast(EMAStateDict, ema_state_dict))
 
-        epoch = state.get("epoch")
+        epoch = cast(object, state.get("epoch"))
         if epoch is not None and not isinstance(epoch, int):
             raise TypeError("epoch must be an int when provided")
-        global_step = state.get("global_step")
+        global_step = cast(object, state.get("global_step"))
         if global_step is not None and not isinstance(global_step, int):
             raise TypeError("global_step must be an int when provided")
 
-        config = state.get("config")
+        config = cast(object, state.get("config"))
         if config is not None and not isinstance(config, dict):
             raise TypeError("config must be a dictionary when provided")
-        metrics = state.get("metrics")
+        metrics = cast(object, state.get("metrics"))
         if metrics is None:
             metrics = {}
         elif not isinstance(metrics, dict):
             raise TypeError("metrics must be a dictionary when provided")
-        metadata = state.get("metadata")
+        metadata = cast(object, state.get("metadata"))
         if metadata is None:
             metadata = {}
         elif not isinstance(metadata, dict):

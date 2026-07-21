@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 import torch
 import torch.nn.functional as F
 
-from stochaflow.diffusion import GaussianDiffusion
+from stochaflow.processes import DiscreteGaussianDenoisingProcess
 from stochaflow.training.diagnostics.contracts import (
     ProviderValidationContext,
     StepMetricContext,
@@ -16,7 +16,7 @@ from stochaflow.training.diagnostics.contracts import (
 from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 
 
-def parse_timesteps(raw: Sequence[int], *, provider: str) -> tuple[int, ...]:
+def parse_timesteps(raw: object, *, provider: str) -> tuple[int, ...]:
     """Validate one provider's ordered fixed-timestep list."""
 
     if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
@@ -41,15 +41,21 @@ def validate_timesteps(
 ) -> None:
     """Validate fixed timesteps against the training diffusion schedule."""
 
-    diffusion = context.diffusion
-    if not isinstance(diffusion, GaussianDiffusion):
-        raise TypeError(f"{provider} requires a GaussianDiffusion")
-    invalid = [value for value in timesteps if value > diffusion.num_timesteps]
+    process = context.process
+    if not isinstance(process, DiscreteGaussianDenoisingProcess):
+        raise TypeError(
+            f"{provider} requires a DiscreteGaussianDenoisingProcess"
+        )
+    invalid = [
+        value
+        for value in timesteps
+        if not process.clean_time < value <= process.terminal_time
+    ]
     if invalid:
         rendered = ", ".join(str(value) for value in invalid)
         raise ValueError(
             f"{provider} timesteps exceed the training schedule "
-            f"({diffusion.num_timesteps}): {rendered}"
+            f"({process.clean_time}, {process.terminal_time}]: {rendered}"
         )
 
 
@@ -57,10 +63,10 @@ def validate_timesteps(
 class TimestepBucketLossProvider(StepMetricProvider):
     """Aggregate per-sample denoising loss into timestep buckets."""
 
-    def __init__(self, *, buckets: int = 10) -> None:
+    def __init__(self, *, buckets: object = 10) -> None:
         if isinstance(buckets, bool) or not isinstance(buckets, int) or buckets <= 0:
             raise ValueError("timestep_bucket_loss buckets must be a positive integer")
-        self.buckets = buckets
+        self.buckets: int = buckets
 
     def collect(self, context: StepMetricContext) -> Mapping[str, float]:
         timesteps = context.diagnostics.get("timesteps")
@@ -78,13 +84,14 @@ class TimestepBucketLossProvider(StepMetricProvider):
             raise ValueError(
                 "timestep_bucket_loss timesteps and per_sample_loss must align"
             )
-        num_timesteps = context.diffusion.num_timesteps
+        process = context.process
+        num_timesteps = process.terminal_time - process.clean_time
         width = max(1, (num_timesteps + self.buckets - 1) // self.buckets)
-        digits = max(3, len(str(num_timesteps)))
+        digits = max(3, len(str(process.terminal_time)))
         metrics: dict[str, float] = {}
         for bucket_index in range(self.buckets):
-            start = 1 + bucket_index * width
-            end = min(num_timesteps, start + width - 1)
+            start = process.clean_time + 1 + bucket_index * width
+            end = min(process.terminal_time, start + width - 1)
             if start > end:
                 break
             mask = (timesteps >= start) & (timesteps <= end)

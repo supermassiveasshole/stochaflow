@@ -1,7 +1,7 @@
 """Exponential moving average utilities for model parameters."""
 
 from collections import OrderedDict
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import torch
 import torch.nn as nn
@@ -210,24 +210,28 @@ class ExponentialMovingAverage:
             ),
         }
 
-    def load_state_dict(self, state_dict: EMAStateDict) -> None:
+    def load_state_dict(self, state_dict: object) -> None:
         """Load an EMA state produced by ``state_dict``."""
 
+        if not isinstance(state_dict, dict):
+            raise TypeError("EMA state must be a dictionary")
         self.decay = float(state_dict["decay"])
         self.update_after_step = int(state_dict["update_after_step"])
         self.update_every = int(state_dict["update_every"])
         self.num_updates = int(state_dict["num_updates"])
 
-        shadow_params = state_dict["shadow_params"]
+        shadow_params = cast(object, state_dict["shadow_params"])
         if not isinstance(shadow_params, OrderedDict):
             raise TypeError("shadow_params must be an OrderedDict")
-        shadow_buffers = state_dict["shadow_buffers"]
+        shadow_buffers = cast(object, state_dict["shadow_buffers"])
         if not isinstance(shadow_buffers, OrderedDict):
             raise TypeError("shadow_buffers must be an OrderedDict")
 
+        typed_params = cast(OrderedDict[str, torch.Tensor], shadow_params)
+        typed_buffers = cast(OrderedDict[str, torch.Tensor], shadow_buffers)
         self.shadow_params = OrderedDict(
-            (name, tensor.detach().clone()) for name, tensor in shadow_params.items()
+            (name, tensor.detach().clone()) for name, tensor in typed_params.items()
         )
         self.shadow_buffers = OrderedDict(
-            (name, tensor.detach().clone()) for name, tensor in shadow_buffers.items()
+            (name, tensor.detach().clone()) for name, tensor in typed_buffers.items()
         )

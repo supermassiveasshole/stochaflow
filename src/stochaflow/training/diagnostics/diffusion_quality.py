@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
-from stochaflow.diffusion import GaussianDiffusion
+from stochaflow.training.gaussian import GaussianEpsilonTrainingSystem
 from stochaflow.training.diagnostics.config import (
     ProviderSpec,
     SamplerProfileConfig,
@@ -77,11 +77,12 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
             raise ValueError(
                 "diffusion_quality requires sampling.shape with C, H, W"
             )
-        if len(sample_shape) != 3 or any(
+        raw_shape = cast(tuple[object, ...], sample_shape)
+        if len(raw_shape) != 3 or any(
             isinstance(value, bool)
             or not isinstance(value, int)
             or value <= 0
-            for value in sample_shape
+            for value in raw_shape
         ):
             raise ValueError(
                 "diffusion_quality sample_shape must contain positive C, H, W"
@@ -144,15 +145,15 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
     def on_fit_start(self, event: FitStartEvent) -> None:
         """Validate providers, construct samplers, and cache real features."""
 
-        diffusion = self._training_diffusion(event.trainer)
+        system = self._training_system(event.trainer)
         with self.seed_policy.fork_rng(event.trainer.device):
             self._sampler_pool = SamplerPool(
-                diffusion,
+                system,
                 self.config.samplers,
                 device=event.trainer.device,
             )
             validation = ProviderValidationContext(
-                diffusion=diffusion,
+                process=system.process,
                 sample_shape=self.sample_shape,
             )
             for _, provider in self._named_non_reference_providers():
@@ -218,7 +219,7 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
             )
             return
         context = StepMetricContext(
-            diffusion=self._training_diffusion(event.trainer),
+            process=self._training_system(event.trainer).process,
             diagnostics=diagnostics,
             clean_samples=self._last_clean_batch,
             sample_num=self.config.sampling.sample_num,
@@ -384,7 +385,7 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
             event.trainer,
             seed=self.seed_policy.profile_seed(profile.id),
             use_ema=self.config.use_ema,
-            evaluation_modules=(sampler,),
+            evaluation_modules=(),
         ):
             if artifact_due:
                 assert initial_noise is not None
@@ -507,7 +508,7 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
     def _merge_metrics(
         self,
         target: dict[str, float],
-        incoming: Mapping[str, float],
+        incoming: object,
         *,
         provider: str,
     ) -> None:
@@ -539,11 +540,11 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
             for spec, provider in zip(specs, providers, strict=True):
                 yield spec.name, provider
 
-    def _training_diffusion(self, trainer: Any) -> GaussianDiffusion:
+    def _training_system(self, trainer: Any) -> GaussianEpsilonTrainingSystem:
         model = getattr(trainer, "model", None)
-        if not isinstance(model, GaussianDiffusion):
+        if not isinstance(model, GaussianEpsilonTrainingSystem):
             raise TypeError(
-                "diffusion_quality requires trainer.model to be a GaussianDiffusion"
+                "diffusion_quality requires GaussianEpsilonTrainingSystem"
             )
         return model
 

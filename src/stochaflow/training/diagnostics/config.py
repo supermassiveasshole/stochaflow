@@ -47,7 +47,7 @@ class TrajectoryProviderConfig:
     """Trajectory settings for one sampler profile."""
 
     enabled: bool = False
-    params: dict[str, Any] = field(default_factory=dict)
+    every_steps: int = 1
     gif_fps: int = 8
 
 
@@ -212,14 +212,15 @@ def _parse_sampling(raw: Any) -> DiagnosticSamplingConfig:
 
 def _parse_trajectory(raw: Any, *, path: str) -> TrajectoryProviderConfig:
     value = _mapping({} if raw is None else raw, path=path)
-    _check_fields(value, {"enabled", "params", "gif_fps"}, path=path)
+    _check_fields(value, {"enabled", "every_steps", "gif_fps"}, path=path)
     enabled = value.get("enabled", False)
     if not isinstance(enabled, bool):
         raise TypeError(f"{path}.enabled must be a boolean")
-    params = _mapping(value.get("params", {}), path=f"{path}.params")
     return TrajectoryProviderConfig(
         enabled=enabled,
-        params=dict(params),
+        every_steps=_positive_int(
+            value.get("every_steps", 1), path=f"{path}.every_steps"
+        ),
         gif_fps=_positive_int(value.get("gif_fps", 8), path=f"{path}.gif_fps"),
     )
 
@@ -371,7 +372,7 @@ def parse_diffusion_quality_config(
     samplers: Sequence[Mapping[str, Any]],
     providers: Mapping[str, Any] | None,
     reference: Mapping[str, Any] | None,
-    use_ema: bool,
+    use_ema: object,
     failure_policy: str,
 ) -> DiffusionQualityConfig:
     """Parse the public constructor arguments into an immutable configuration."""

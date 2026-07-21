@@ -1,272 +1,467 @@
-"""Shape tests for DDPM process outputs."""
+"""Tests for the discrete Gaussian process and ancestral sampler."""
+
+from typing import Any, cast
 
 import pytest
 import torch
-import torch.nn as nn
 
-from stochaflow.diffusion import DDPM, LinearBetaSchedule
-
-
-class ToyDenoiser(nn.Module):
-    """Minimal denoiser used to verify DDPM tensor plumbing."""
-
-    def forward(self, xt: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
-        assert timesteps.shape == (xt.shape[0],)
-        return torch.zeros_like(xt)
-
-
-class RecordingDenoiser(ToyDenoiser):
-    """Denoiser that records the zero-based model conditioning indices."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.timesteps: torch.Tensor | None = None
-
-    def forward(self, xt: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
-        self.timesteps = timesteps.detach().clone()
-        return super().forward(xt, timesteps)
+from stochaflow.processes import (
+    DiscreteGaussianDenoisingProcess,
+    DiscreteGaussianProcess,
+)
+from stochaflow.sampling import (
+    DDIMSampler,
+    DDPMAncestralSampler,
+    GaussianDenoisingDynamics,
+    GaussianModelDynamics,
+    GaussianPrediction,
+    GenerativeDynamics,
+    PredictionType,
+    Sampler,
+    SamplerResult,
+    SamplingObservation,
+    TrajectoryObserver,
+)
 
 
-class LoudNoiseDDPM(DDPM):
-    """DDPM variant with obvious reverse noise for the final-step mask test."""
-
-    def _sample_noise(self, reference: torch.Tensor) -> torch.Tensor:
-        return torch.full_like(reference, 999.0)
-
-
-class RecordingReverseDDPM(DDPM):
-    """DDPM variant that records public source-state times."""
-
-    def __init__(self, noise_schedule: LinearBetaSchedule, model: nn.Module) -> None:
-        super().__init__(noise_schedule=noise_schedule, model=model)
-        self.reverse_step_indices: list[int] = []
-
-    def reverse_step(
-        self,
-        xt: torch.Tensor,
-        timesteps: torch.Tensor,
-        *,
-        clip_denoised: bool | None = None,
-    ) -> torch.Tensor:
-        self.reverse_step_indices.append(int(timesteps[0]))
-        return super().reverse_step(xt, timesteps, clip_denoised=clip_denoised)
-
-
-def test_ddpm_forward_returns_predicted_noise() -> None:
-    noise_schedule = LinearBetaSchedule(num_timesteps=10)
-    denoiser = RecordingDenoiser()
-    ddpm = DDPM(noise_schedule=noise_schedule, model=denoiser)
-    x0 = torch.randn(4, 1, 8, 8)
-    timesteps = torch.tensor([1, 2, 3, 4], dtype=torch.long)
-
-    output = ddpm(x0, timesteps=timesteps)
-
-    assert output.timesteps.shape == (4,)
-    assert output.xt.shape == x0.shape
-    assert output.noise.shape == x0.shape
-    assert output.predicted_noise.shape == x0.shape
-    assert torch.equal(output.timesteps, timesteps)
-    assert denoiser.timesteps is not None
-    assert torch.equal(denoiser.timesteps, torch.tensor([0, 1, 2, 3]))
-
-
-def test_ddpm_add_noise_exposes_clean_state_time_zero() -> None:
-    ddpm = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-    )
-    x0 = torch.randn(2, 1, 8, 8)
-    noise = torch.randn_like(x0)
-
-    xt, returned_noise = ddpm.add_noise(
-        x0,
-        torch.zeros(2, dtype=torch.long),
-        noise=noise,
+def _process(steps: int = 8) -> DiscreteGaussianProcess:
+    return DiscreteGaussianProcess(
+        {
+            "name": "linear_beta",
+            "params": {
+                "num_timesteps": steps,
+                "beta_start": 1e-4,
+                "beta_end": 2e-2,
+            },
+        }
     )
 
-    assert torch.equal(xt, x0)
+
+def test_process_marginal_and_posterior_use_public_state_time() -> None:
+    process = _process(4)
+    clean = torch.randn(3, 2)
+    noise = torch.randn_like(clean)
+    times = torch.tensor([0, 1, 4])
+
+    noisy, returned_noise = process.sample_marginal(clean, times, noise=noise)
+
     assert torch.equal(returned_noise, noise)
+    assert torch.equal(noisy[0], clean[0])
+    scales = process.marginal_scales(times, clean.size())
+    assert torch.allclose(noisy, scales.signal * clean + scales.noise * noise)
+    assert not hasattr(process, "denoising_dynamics")
 
 
-def test_ddpm_estimate_x0_clips_denoised_reconstruction() -> None:
-    noise_schedule = LinearBetaSchedule(num_timesteps=10)
-    ddpm = DDPM(
-        noise_schedule=noise_schedule,
-        model=ToyDenoiser(),
-        clip_denoised=True,
-    )
-    xt = torch.full((2, 1, 8, 8), 10.0)
-    timesteps = torch.tensor([1, 2], dtype=torch.long)
-
-    x0_hat = ddpm._estimate_x0_from_epsilon(
-        xt,
-        timesteps,
-        predicted_noise=torch.zeros_like(xt),
-        clip_denoised=True,
+def test_gaussian_model_dynamics_owns_prediction_configuration() -> None:
+    process = _process()
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state),
+        prediction_type="v",
+        clip_denoised=False,
     )
 
-    assert x0_hat.shape == xt.shape
-    assert torch.all(x0_hat <= 1.0)
-    assert torch.all(x0_hat >= -1.0)
+    assert dynamics.process is process
+    assert dynamics.prediction_type == "v"
+    assert dynamics.clip_denoised is False
+    assert not hasattr(process, "convert_prediction")
 
 
-def test_ddpm_reverse_step_at_state_time_one_masks_noise_term() -> None:
-    noise_schedule = LinearBetaSchedule(num_timesteps=10)
-    ddpm = LoudNoiseDDPM(noise_schedule=noise_schedule, model=ToyDenoiser())
-    xt = torch.randn(2, 1, 8, 8)
-    timesteps = torch.ones(2, dtype=torch.long)
+def test_gaussian_model_dynamics_validates_constructor_contract() -> None:
+    process = _process()
 
-    x_prev = ddpm.reverse_step(xt, timesteps)
-    predicted_noise = ddpm._predict_noise(xt, timesteps)
-    x0 = ddpm._estimate_x0_from_epsilon(
-        xt,
-        timesteps,
-        predicted_noise=predicted_noise,
-        clip_denoised=True,
-    )
-    posterior_mean_coef1 = ddpm._posterior_coefficients_at(
-        ddpm.posterior_mean_coef1, timesteps, xt.size()
-    )
-    posterior_mean_coef2 = ddpm._posterior_coefficients_at(
-        ddpm.posterior_mean_coef2, timesteps, xt.size()
-    )
-    expected = posterior_mean_coef1 * x0 + posterior_mean_coef2 * xt
+    def predict(state: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
+        del time
+        return torch.zeros_like(state)
 
-    assert torch.allclose(x_prev, expected)
-
-
-def test_ddpm_reverse_uses_all_transitions_to_reach_clean_time_zero() -> None:
-    ddpm = RecordingReverseDDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-    )
-
-    result = ddpm.reverse(torch.randn(2, 1, 8, 8), timestep_from=10)
-
-    assert result.shape == (2, 1, 8, 8)
-    assert ddpm.reverse_step_indices == list(range(10, 0, -1))
-
-
-def test_ddpm_public_reverse_uses_zero_as_the_clean_endpoint() -> None:
-    ddpm = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-    )
-    x0 = torch.randn(2, 1, 8, 8)
-
-    assert ddpm.reverse(x0, timestep_from=0) is x0
-
-
-def test_ddpm_public_reverse_rejects_negative_state_times() -> None:
-    ddpm = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-    )
-
-    with pytest.raises(ValueError, match="0 <= timestep_to"):
-        ddpm.reverse(torch.randn(2, 1, 8, 8), timestep_from=10, timestep_to=-1)
-
-
-def test_ddpm_can_sample() -> None:
-    noise_schedule = LinearBetaSchedule(num_timesteps=10)
-    ddpm = DDPM(noise_schedule=noise_schedule, model=ToyDenoiser())
-
-    samples = ddpm.sample(torch.Size((2, 1, 8, 8)), device=torch.device("cpu"))
-
-    assert samples.shape == (2, 1, 8, 8)
-
-
-def test_ddpm_samples_and_traces_from_caller_provided_noise() -> None:
-    ddpm = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=4),
-        model=ToyDenoiser(),
-    )
-    initial_noise = torch.randn(2, 1, 8, 8)
-
-    torch.manual_seed(123)
-    samples = ddpm.sample_from_noise(initial_noise)
-    torch.manual_seed(123)
-    expected = ddpm.reverse(initial_noise, timestep_from=4)
-    trace = ddpm.sample_trajectory_from_noise(initial_noise, state_interval=2)
-
-    assert torch.equal(samples, expected)
-    assert torch.equal(trace.frames[0].samples, initial_noise)
-    assert [frame.state_time for frame in trace.frames] == [4, 2, 0]
-
-
-def test_ddpm_reverse_step_clips_x0_before_posterior_mean() -> None:
-    noise_schedule = LinearBetaSchedule(num_timesteps=10)
-    ddpm = DDPM(
-        noise_schedule=noise_schedule,
-        model=ToyDenoiser(),
-        clip_denoised=True,
-    )
-    xt = torch.full((2, 1, 8, 8), 10.0)
-    timesteps = torch.ones(2, dtype=torch.long)
-
-    x_prev = ddpm.reverse_step(xt, timesteps)
-    x0_hat = ddpm._estimate_x0_from_epsilon(
-        xt,
-        timesteps,
-        predicted_noise=torch.zeros_like(xt),
-        clip_denoised=True,
-    )
-    expected = (
-        ddpm._posterior_coefficients_at(
-            ddpm.posterior_mean_coef1, timesteps, xt.size()
+    with pytest.raises(ValueError, match="prediction_type"):
+        GaussianModelDynamics(
+            process,
+            predict,
+            prediction_type=cast(Any, "invalid"),
         )
-        * x0_hat
-        + ddpm._posterior_coefficients_at(
-            ddpm.posterior_mean_coef2, timesteps, xt.size()
+    with pytest.raises(TypeError, match="clip_denoised"):
+        GaussianModelDynamics(
+            process,
+            predict,
+            clip_denoised=cast(Any, "true"),
         )
-        * xt
+    with pytest.raises(TypeError, match="predict_fn"):
+        GaussianModelDynamics(process, cast(Any, object()))
+    with pytest.raises(TypeError, match="DiscreteGaussianDenoisingProcess"):
+        GaussianModelDynamics(cast(Any, object()), predict)
+
+
+@pytest.mark.parametrize(
+    ("model_output", "error", "message"),
+    [
+        (object(), TypeError, "must return a Tensor"),
+        (torch.zeros(1), ValueError, "must match the state shape"),
+    ],
+)
+def test_gaussian_model_dynamics_validates_untrusted_model_output(
+    model_output: object,
+    error: type[Exception],
+    message: str,
+) -> None:
+    process = _process()
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: model_output,
     )
 
-    assert torch.allclose(x_prev, expected)
+    with pytest.raises(error, match=message):
+        dynamics.predict(torch.randn(2, 3), torch.tensor([1, 2]))
 
 
-def test_ddpm_loads_legacy_scheduler_owned_buffers() -> None:
-    original = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
+def test_physics_guided_dynamics_wrapper_reuses_builtin_samplers() -> None:
+    process = _process(2)
+
+    class PhysicsGuidedDynamics(GaussianDenoisingDynamics):
+        def __init__(self) -> None:
+            self.calls = 0
+            self.delegate = GaussianModelDynamics(
+                process,
+                lambda state, time: torch.zeros_like(state),
+                clip_denoised=False,
+            )
+
+        @property
+        def process(self) -> DiscreteGaussianProcess:
+            return process
+
+        def predict(
+            self,
+            state: torch.Tensor,
+            state_times: torch.Tensor,
+        ) -> GaussianPrediction:
+            self.calls += 1
+            prediction = self.delegate.predict(state, state_times)
+            corrected_clean = prediction.clean - 0.01 * state.tanh()
+            scales = process.marginal_scales(state_times, state.size())
+            corrected_epsilon = (
+                state - scales.signal * corrected_clean
+            ) / scales.noise
+            return GaussianPrediction(
+                corrected_clean,
+                corrected_epsilon,
+                prediction.model_output,
+            )
+
+    initial = torch.randn(1, 3)
+    ddpm_dynamics = PhysicsGuidedDynamics()
+    ddim_dynamics = PhysicsGuidedDynamics()
+    ddpm = DDPMAncestralSampler().sample(ddpm_dynamics, initial)
+    ddim = DDIMSampler(num_inference_steps=2).sample(ddim_dynamics, initial)
+
+    assert ddpm.final_state.shape == initial.shape
+    assert ddim.final_state.shape == initial.shape
+    assert ddpm.num_steps == 2
+    assert ddim.num_steps == 2
+    assert ddpm_dynamics.calls == 2
+    assert ddim_dynamics.calls == 2
+
+
+def test_one_custom_gaussian_process_interface_reuses_builtin_samplers() -> None:
+    class DelegatingGaussianProcess(DiscreteGaussianDenoisingProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.delegate = _process(4)
+
+        @property
+        def clean_time(self) -> int:
+            return self.delegate.clean_time
+
+        @property
+        def terminal_time(self) -> int:
+            return self.delegate.terminal_time
+
+        def sample_terminal_prior(self, shape, *, device, dtype=torch.float32, generator=None):
+            return self.delegate.sample_terminal_prior(
+                shape,
+                device=device,
+                dtype=dtype,
+                generator=generator,
+            )
+
+        def sample_marginal(self, clean, state_times, *, noise=None, generator=None):
+            return self.delegate.sample_marginal(
+                clean,
+                state_times,
+                noise=noise,
+                generator=generator,
+            )
+
+        def marginal_scales(self, state_times, broadcast_shape):
+            return self.delegate.marginal_scales(state_times, broadcast_shape)
+
+        def validate_noisy_state_times(self, state_times):
+            return self.delegate.validate_noisy_state_times(state_times)
+
+        def posterior_mean(self, state, state_times, clean_prediction):
+            return self.delegate.posterior_mean(
+                state,
+                state_times,
+                clean_prediction,
+            )
+
+        def posterior_standard_deviation(self, state_times, broadcast_shape):
+            return self.delegate.posterior_standard_deviation(
+                state_times,
+                broadcast_shape,
+            )
+
+    process = DelegatingGaussianProcess()
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state),
+        clip_denoised=False,
     )
-    posterior_names = {
-        "sqrt_posterior_variance_t",
-        "posterior_mean_coef1",
-        "posterior_mean_coef2",
+    initial = torch.randn(2, 3)
+
+    ddpm = DDPMAncestralSampler().sample(
+        dynamics,
+        initial,
+        generator=torch.Generator().manual_seed(5),
+    )
+    ddim = DDIMSampler(num_inference_steps=2).sample(dynamics, initial)
+
+    assert ddpm.final_state.shape == initial.shape
+    assert ddim.final_state.shape == initial.shape
+
+
+@pytest.mark.parametrize("prediction_type", ["epsilon", "x0", "v", "score"])
+def test_prediction_parameterizations_convert_to_same_clean_and_epsilon(
+    prediction_type: PredictionType,
+) -> None:
+    process = _process()
+    clean = torch.empty(2, 3).uniform_(-0.8, 0.8)
+    epsilon = torch.randn_like(clean)
+    times = torch.tensor([2, 7])
+    scales = process.marginal_scales(times, clean.size())
+    state = scales.signal * clean + scales.noise * epsilon
+    outputs = {
+        "epsilon": epsilon,
+        "x0": clean,
+        "v": scales.signal * epsilon - scales.noise * clean,
+        "score": -epsilon / scales.noise,
     }
-    legacy_state: dict[str, torch.Tensor] = {}
-    for name, value in original.state_dict().items():
-        if name.startswith("noise_schedule."):
-            legacy_state[f"scheduler.{name.removeprefix('noise_schedule.')}"] = value
-        elif name in posterior_names:
-            legacy_state[f"scheduler.{name}"] = value
-        else:
-            legacy_state[name] = value
-    legacy_state["scheduler.sqrt_recip_alpha_t"] = torch.ones(10)
 
-    restored = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
+    prediction = GaussianModelDynamics(
+        process,
+        lambda _state, _time: outputs[prediction_type],
+        prediction_type=prediction_type,
+        clip_denoised=False,
+    ).predict(state, times)
+
+    assert torch.allclose(prediction.clean, clean, atol=1e-5)
+    assert torch.allclose(prediction.epsilon, epsilon, atol=1e-5)
+
+
+def test_clipping_recomputes_epsilon_from_clipped_clean_prediction() -> None:
+    process = _process()
+    state = torch.randn(2, 4)
+    times = torch.tensor([2, 5])
+    prediction = GaussianModelDynamics(
+        process,
+        lambda _state, _time: torch.full_like(state, 4.0),
+        prediction_type="x0",
+        clip_denoised=True,
+    ).predict(state, times)
+    scales = process.marginal_scales(times, state.size())
+
+    assert prediction.clean.max() == 1
+    assert torch.allclose(
+        state,
+        scales.signal * prediction.clean + scales.noise * prediction.epsilon,
     )
-    restored.load_state_dict(legacy_state)
-
-    assert torch.equal(restored.noise_schedule.beta_t, original.noise_schedule.beta_t)
-    assert torch.equal(restored.posterior_mean_coef1, original.posterior_mean_coef1)
 
 
-def test_ddpm_trajectory_captures_initial_intermediate_and_final() -> None:
-    noise_schedule = LinearBetaSchedule(num_timesteps=10)
-    ddpm = DDPM(noise_schedule=noise_schedule, model=ToyDenoiser())
-    sample_shape = torch.Size((2, 1, 8, 8))
+def test_ddpm_unified_sample_emits_initial_accepted_and_unique_final() -> None:
+    process = _process(5)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state),
+        clip_denoised=False,
+    )
+    observer = TrajectoryObserver(every_steps=1)
 
-    trace = ddpm.sample_trajectory(
-        sample_shape,
-        device=torch.device("cpu"),
-        state_interval=3,
+    initial = torch.randn(2, 3)
+
+    result = DDPMAncestralSampler().sample(
+        dynamics,
+        initial,
+        generator=torch.Generator().manual_seed(4),
+        observer=observer,
     )
 
-    assert [frame.state_time for frame in trace.frames] == [10, 7, 4, 1, 0]
-    for frame in trace.frames:
-        assert frame.samples.shape == sample_shape
-        assert frame.samples.device == torch.device("cpu")
+    assert result.final_state.shape == initial.shape
+    assert result.num_steps == 5
+    assert result.diagnostics == {"num_model_evaluations": 5}
+    assert [item.step_index for item in observer.observations] == list(range(6))
+    assert [item.coordinate for item in observer.observations] == [5, 4, 3, 2, 1, 0]
+    assert [item.is_final for item in observer.observations].count(True) == 1
+    assert observer.observations[-1].is_final
+
+
+def test_trajectory_observer_copies_state_at_observation_time() -> None:
+    observer = TrajectoryObserver()
+    state = torch.zeros(1, requires_grad=True)
+
+    observer.observe(SamplingObservation(0, 1, state, False, {}))
+    with torch.no_grad():
+        state.add_(1)
+    observer.observe(SamplingObservation(1, 0, state, True, {}))
+
+    assert [item.state.item() for item in observer.observations] == [0.0, 1.0]
+    assert observer.observations[0].state is not state
+    assert not observer.observations[0].state.requires_grad
+
+
+def test_trajectory_observer_copies_structured_nonleaf_tensors() -> None:
+    observer = TrajectoryObserver()
+    state = {"primary": torch.ones(1, requires_grad=True) * 2, "history": []}
+
+    observer.observe(SamplingObservation(0, 1, state, True, {}))
+    with torch.no_grad():
+        state["primary"].add_(3)
+
+    retained = observer.observations[0].state
+    assert retained["primary"].item() == 2
+    assert retained["primary"].is_leaf
+    assert not retained["primary"].requires_grad
+
+
+def test_observer_exception_propagates_from_sampler() -> None:
+    process = _process(2)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state),
+    )
+
+    class FailingObserver:
+        def observe(self, observation: SamplingObservation) -> None:
+            del observation
+            raise RuntimeError("stop")
+
+    with pytest.raises(RuntimeError, match="stop"):
+        DDPMAncestralSampler().sample(
+            dynamics,
+            torch.randn(1, 2),
+            observer=FailingObserver(),
+        )
+
+
+def test_ddpm_final_clean_transition_does_not_consume_rng() -> None:
+    process = _process(5)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state), clip_denoised=False
+    )
+    initial = torch.randn(2, 3)
+    actual_generator = torch.Generator().manual_seed(13)
+    expected_generator = torch.Generator().manual_seed(13)
+
+    DDPMAncestralSampler().sample(
+        dynamics,
+        initial,
+        generator=actual_generator,
+    )
+    for _ in range(process.num_timesteps - 1):
+        torch.randn(initial.shape, generator=expected_generator)
+
+    assert torch.equal(
+        torch.randn(4, generator=actual_generator),
+        torch.randn(4, generator=expected_generator),
+    )
+
+
+def test_ddpm_partial_path_and_generator_are_deterministic() -> None:
+    process = _process(8)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state), clip_denoised=False
+    )
+    initial = torch.randn(2, 3)
+    sampler = DDPMAncestralSampler(start_time=6, end_time=2)
+
+    first = sampler.sample(
+        dynamics, initial, generator=torch.Generator().manual_seed(19)
+    )
+    second = sampler.sample(
+        dynamics, initial, generator=torch.Generator().manual_seed(19)
+    )
+
+    assert first.num_steps == 4
+    assert torch.equal(first.final_state, second.final_state)
+
+
+def test_sampler_rejects_incompatible_dynamics() -> None:
+    with pytest.raises(TypeError, match="GaussianDenoisingDynamics"):
+        DDPMAncestralSampler().sample(GenerativeDynamics(), torch.randn(1, 2))
+
+
+def test_unified_sampler_allows_multiple_dynamics_evaluations_per_outer_step() -> None:
+    class CountingDynamics(GenerativeDynamics):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def evaluate(self, state: torch.Tensor) -> torch.Tensor:
+            self.calls += 1
+            return state * 0
+
+    class HeunLikeSampler(Sampler):
+        def sample(self, dynamics, initial_state, **kwargs) -> SamplerResult:
+            del kwargs
+            assert isinstance(dynamics, CountingDynamics)
+            state = initial_state
+            for _ in range(3):
+                first = dynamics.evaluate(state)
+                second = dynamics.evaluate(state + first)
+                state = state + (first + second) * 0.5
+            return SamplerResult(
+                state,
+                3,
+                {"num_model_evaluations": dynamics.calls},
+            )
+
+    dynamics = CountingDynamics()
+    sampler = HeunLikeSampler()
+    result = sampler.sample(dynamics, torch.ones(2))
+
+    assert result.num_steps == 3
+    assert result.diagnostics["num_model_evaluations"] == 6
+    assert not hasattr(sampler, "step")
+
+
+def test_unified_sampler_can_own_history_and_rejected_internal_attempts() -> None:
+    class HistorySampler(Sampler):
+        def sample(self, dynamics, initial_state, **kwargs) -> SamplerResult:
+            del dynamics, kwargs
+            history = [initial_state]
+            rejected = 0
+            for attempt in range(3):
+                candidate = history[-1] + 1
+                if attempt == 1:
+                    rejected += 1
+                    continue
+                history.append(candidate)
+            return SamplerResult(
+                history[-1],
+                len(history) - 1,
+                {
+                    "history_length": len(history),
+                    "num_rejected_steps": rejected,
+                },
+            )
+
+    sampler = HistorySampler()
+    result = sampler.sample(GenerativeDynamics(), torch.zeros(1))
+
+    assert result.num_steps == 2
+    assert result.diagnostics == {
+        "history_length": 3,
+        "num_rejected_steps": 1,
+    }
+    assert torch.equal(result.final_state, torch.tensor([2.0]))
+    assert not hasattr(sampler, "step")

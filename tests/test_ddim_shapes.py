@@ -1,414 +1,210 @@
-"""Contract and formula tests for DDIM."""
-
-import inspect
-from typing import cast
+"""Tests for DDIM on the unified complete-sampler interface."""
 
 import pytest
 import torch
-import torch.nn as nn
 
-from stochaflow.diffusion import (
-    DDIM,
-    DDPM,
-    DDPMEpsilonObjective,
-    DiffusionForwardOutput,
-    LinearBetaSchedule,
+from stochaflow.processes import DiscreteGaussianProcess, GaussianScales
+from stochaflow.sampling import (
+    DDIMSampler,
+    DDPMAncestralSampler,
+    GaussianModelDynamics,
+    TrajectoryObserver,
 )
-from stochaflow.training.losses import ddpm_epsilon_train_step
-from stochaflow.utils.registry import REGISTRIES
 
 
-class ToyDenoiser(nn.Module):
-    """Minimal denoiser used to verify shared training tensor plumbing."""
-
-    def forward(self, xt: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
-        assert timesteps.shape == (xt.shape[0],)
-        return torch.zeros_like(xt)
-
-
-class RecordingZeroDenoiser(ToyDenoiser):
-    """Zero-epsilon denoiser that records received model-conditioning indices."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.timesteps: torch.Tensor | None = None
-        self.all_timesteps: list[torch.Tensor] = []
-
-    def forward(self, xt: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
-        recorded_timesteps = timesteps.detach().clone()
-        self.timesteps = recorded_timesteps
-        self.all_timesteps.append(recorded_timesteps)
-        return super().forward(xt, timesteps)
-
-
-def test_ddim_reuses_ddpm_forward_training_contract() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-        num_inference_steps=4,
-    )
-    x0 = torch.randn(3, 1, 8, 8)
-    timesteps = torch.tensor([1, 5, 10], dtype=torch.long)
-
-    output = ddim(x0, timesteps=timesteps)
-
-    assert isinstance(output, DiffusionForwardOutput)
-    assert output.xt.shape == x0.shape
-    assert output.noise.shape == x0.shape
-    assert output.predicted_noise.shape == x0.shape
-
-
-def test_ddim_resolves_uniform_descending_sampling_timesteps() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-        num_inference_steps=4,
+def _process(steps: int = 10) -> DiscreteGaussianProcess:
+    return DiscreteGaussianProcess(
+        {
+            "name": "linear_beta",
+            "params": {
+                "num_timesteps": steps,
+                "beta_start": 1e-4,
+                "beta_end": 2e-2,
+            },
+        }
     )
 
-    timesteps = ddim.sampling_timesteps(device=torch.device("cpu"))
 
-    assert torch.equal(timesteps, torch.tensor([10, 8, 5, 2, 0]))
-    assert timesteps.dtype == torch.long
+def test_ddim_supports_nonuniform_explicit_schedule() -> None:
+    process = _process(10)
+    model_times: list[torch.Tensor] = []
 
+    def predict(state: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
+        model_times.append(time.detach().clone())
+        return torch.zeros_like(state)
 
-def test_ddim_one_step_schedule_contains_both_state_endpoints() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-        num_inference_steps=1,
+    result = DDIMSampler(schedule=[10, 8, 3, 0]).sample(
+        GaussianModelDynamics(process, predict, clip_denoised=False),
+        torch.randn(2, 4),
     )
 
-    timesteps = ddim.sampling_timesteps()
+    assert result.num_steps == 3
+    assert [int(time[0]) for time in model_times] == [9, 7, 2]
 
-    assert torch.equal(timesteps, torch.tensor([10, 0]))
 
+def test_ddim_explicit_schedule_supports_partial_denoising() -> None:
+    process = _process(10)
+    observer = TrajectoryObserver()
 
-def test_ddim_accepts_an_explicit_non_uniform_sampling_schedule() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
+    result = DDIMSampler(schedule=[7, 4, 2]).sample(
+        GaussianModelDynamics(
+            process,
+            lambda state, time: torch.zeros_like(state),
+            clip_denoised=False,
+        ),
+        torch.randn(2, 4),
+        observer=observer,
     )
 
-    timesteps = ddim.sampling_timesteps(timesteps=[10, 7, 2, 0])
-
-    assert torch.equal(timesteps, torch.tensor([10, 7, 2, 0]))
-    assert timesteps.dtype == torch.long
-
-
-def test_ddim_rejects_competing_sampling_schedule_inputs() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-    )
-
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        ddim.sampling_timesteps(num_inference_steps=4, timesteps=[10, 7, 3, 0])
+    assert result.num_steps == 2
+    assert [item.coordinate for item in observer.observations] == [7, 4, 2]
 
 
 @pytest.mark.parametrize(
-    ("timesteps", "exception", "match"),
-    [
-        ([], ValueError, "at least two"),
-        ([10, 10, 0], ValueError, "strictly descending"),
-        ([10, 11, 0], ValueError, "state times in \\[0, T\\]"),
-        ([10, -1], ValueError, "state times in \\[0, T\\]"),
-        ([10.0, 0.0], TypeError, "integer values"),
-        ([10, 7, 2], ValueError, "start at T and end at 0"),
-        ([9, 0], ValueError, "start at T and end at 0"),
-    ],
+    "schedule",
+    [[10, 4, 4, 0], [10, 11, 0], [7, 4, -1], [3, 4, 0]],
 )
-def test_ddim_rejects_invalid_explicit_sampling_timesteps(
-    timesteps: list[int] | list[float],
-    exception: type[Exception],
-    match: str,
-) -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
+def test_ddim_rejects_invalid_explicit_schedules(schedule: list[int]) -> None:
+    process = _process(10)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state)
+    )
+    with pytest.raises(ValueError):
+        DDIMSampler(schedule=schedule).sample(dynamics, torch.randn(1, 2))
+
+
+def test_eta_zero_does_not_consume_transition_generator() -> None:
+    process = _process(6)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state), clip_denoised=False
+    )
+    generator = torch.Generator().manual_seed(27)
+    expected = torch.Generator().manual_seed(27)
+
+    DDIMSampler(num_inference_steps=3, eta=0).sample(
+        dynamics, torch.randn(2, 3), generator=generator
     )
 
-    with pytest.raises(exception, match=match):
-        ddim.sampling_timesteps(timesteps=cast(list[int], timesteps))
+    assert torch.equal(torch.randn(4, generator=generator), torch.randn(4, generator=expected))
 
 
-def test_ddim_is_registered_and_uses_epsilon_training_contract() -> None:
-    assert REGISTRIES.diffusions.resolve("ddim") is DDIM
-
-    diffusion = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-        num_inference_steps=5,
-        eta=0.25,
-    )
-    train_output = ddpm_epsilon_train_step(
-        diffusion,
-        DDPMEpsilonObjective(),
-        torch.randn(2, 1, 8, 8),
-        torch.device("cpu"),
-    )
-
-    assert diffusion.num_inference_steps == 5
-    assert diffusion.eta == 0.25
-    assert not hasattr(diffusion, "posterior_mean_coef1")
-    assert train_output.loss.ndim == 0
-
-
-@pytest.mark.parametrize("num_inference_steps", [0, 11])
-def test_ddim_rejects_invalid_num_inference_steps(num_inference_steps: int) -> None:
-    with pytest.raises(ValueError, match="num_inference_steps"):
-        DDIM(
-            noise_schedule=LinearBetaSchedule(num_timesteps=10),
-            model=ToyDenoiser(),
-            num_inference_steps=num_inference_steps,
-        )
-
-
-@pytest.mark.parametrize("eta", [-0.1, 1.1])
-def test_ddim_rejects_eta_outside_the_standard_range(eta: float) -> None:
-    with pytest.raises(ValueError, match="eta"):
-        DDIM(
-            noise_schedule=LinearBetaSchedule(num_timesteps=10),
-            model=ToyDenoiser(),
-            eta=eta,
-        )
-
-
-def test_ddim_reverse_step_requires_a_previous_timestep() -> None:
-    parameter = inspect.signature(DDIM.reverse_step).parameters["previous_timesteps"]
-
-    assert parameter.default is inspect.Parameter.empty
-    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
-
-
-def test_ddim_reverse_step_supports_non_uniform_batch_transitions() -> None:
-    denoiser = RecordingZeroDenoiser()
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=denoiser,
+def test_eta_positive_clean_transition_does_not_consume_generator() -> None:
+    process = _process(6)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state),
         clip_denoised=False,
     )
-    xt = torch.randn(2, 1, 4, 4)
+    generator = torch.Generator().manual_seed(31)
+    expected = torch.Generator().manual_seed(31)
 
-    xs = ddim.reverse_step(
-        xt,
-        torch.tensor([10, 6]),
-        previous_timesteps=torch.tensor([7, 2]),
-        eta=0.0,
+    DDIMSampler(schedule=[6, 0], eta=0.5).sample(
+        dynamics,
+        torch.randn(2, 3),
+        generator=generator,
     )
 
-    assert xs.shape == xt.shape
-    assert denoiser.timesteps is not None
-    assert torch.equal(denoiser.timesteps, torch.tensor([9, 5]))
+    assert torch.equal(
+        torch.randn(4, generator=generator),
+        torch.randn(4, generator=expected),
+    )
 
 
-def test_ddim_reverse_step_at_clean_target_returns_x0_hat() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
+def test_eta_positive_zero_variance_transition_does_not_consume_generator() -> None:
+    class PlateauProcess(DiscreteGaussianProcess):
+        def marginal_scales(
+            self,
+            state_times: torch.Tensor,
+            broadcast_shape: torch.Size,
+        ) -> GaussianScales:
+            shape = (state_times.shape[0],) + (1,) * (len(broadcast_shape) - 1)
+            return GaussianScales(
+                torch.full(shape, 0.8, device=state_times.device),
+                torch.full(shape, 0.6, device=state_times.device),
+            )
+
+    process = PlateauProcess(
+        {
+            "name": "linear_beta",
+            "params": {
+                "num_timesteps": 3,
+                "beta_start": 1e-4,
+                "beta_end": 2e-2,
+            },
+        }
+    )
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state),
         clip_denoised=False,
     )
-    xt = torch.randn(2, 1, 4, 4)
-    timesteps = torch.tensor([10, 5])
-    expected = ddim._estimate_x0_from_epsilon(
-        xt,
-        timesteps,
-        predicted_noise=torch.zeros_like(xt),
-        clip_denoised=False,
+    generator = torch.Generator().manual_seed(37)
+    expected = torch.Generator().manual_seed(37)
+
+    DDIMSampler(schedule=[3, 2], eta=0.5).sample(
+        dynamics,
+        torch.randn(2, 3),
+        generator=generator,
     )
 
-    xs = ddim.reverse_step(
-        xt,
-        timesteps,
-        previous_timesteps=torch.zeros_like(timesteps),
-        eta=0.0,
-        clip_denoised=False,
+    assert torch.equal(
+        torch.randn(4, generator=generator),
+        torch.randn(4, generator=expected),
     )
 
-    assert torch.allclose(xs, expected)
 
-
-def test_ddim_deterministic_step_does_not_advance_rng_state() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
+def test_adjacent_eta_one_matches_ddpm_with_shared_generator() -> None:
+    process = _process(5)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state), clip_denoised=False
     )
-    xt = torch.randn(2, 1, 4, 4)
-    timesteps = torch.tensor([10, 5])
+    initial = torch.randn(2, 3)
 
-    torch.manual_seed(123)
-    rng_state_before = torch.random.get_rng_state()
-    ddim.reverse_step(
-        xt,
-        timesteps,
-        previous_timesteps=timesteps - 1,
-        eta=0.0,
+    ddpm = DDPMAncestralSampler().sample(
+        dynamics, initial, generator=torch.Generator().manual_seed(3)
+    )
+    ddim = DDIMSampler(num_inference_steps=5, eta=1).sample(
+        dynamics, initial, generator=torch.Generator().manual_seed(3)
     )
 
-    assert torch.equal(torch.random.get_rng_state(), rng_state_before)
+    assert torch.allclose(ddpm.final_state, ddim.final_state, atol=1e-5)
 
 
-def test_ddim_eta_one_adjacent_step_matches_clipped_ddpm() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-        eta=1.0,
-        clip_denoised=True,
-    )
-    ddpm = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-        clip_denoised=True,
-    )
-    xt = torch.full((2, 1, 4, 4), 10.0)
-    timesteps = torch.tensor([10, 5])
+def test_condition_is_captured_by_dynamics_not_sampler_interface() -> None:
+    process = _process(4)
+    condition = torch.full((2, 3), 0.25)
+    calls = 0
 
-    torch.manual_seed(456)
-    xs_ddim = ddim.reverse_step(
-        xt,
-        timesteps,
-        previous_timesteps=timesteps - 1,
-        eta=1.0,
-    )
-    torch.manual_seed(456)
-    xs_ddpm = ddpm.reverse_step(xt, timesteps)
+    def conditioned(state: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
+        nonlocal calls
+        calls += 1
+        return condition.to(state) + time[:, None].to(state) * 0
 
-    assert torch.allclose(xs_ddim, xs_ddpm)
-
-
-def test_ddim_recomputes_direction_residual_after_clipping() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-        clip_denoised=True,
-    )
-    xt = torch.full((2, 1, 4, 4), 10.0)
-    timesteps = torch.tensor([10, 5])
-    previous_timesteps = torch.tensor([7, 2])
-    x0_hat = ddim._estimate_x0_from_epsilon(
-        xt,
-        timesteps,
-        predicted_noise=torch.zeros_like(xt),
-        clip_denoised=True,
-    )
-    signal_scale_t, noise_scale_t = ddim.noise_schedule.marginal_scales(
-        timesteps,
-        xt.size(),
-    )
-    signal_scale_s, noise_scale_s = ddim.noise_schedule.marginal_scales(
-        previous_timesteps,
-        xt.size(),
-    )
-    corrected_eps = (xt - signal_scale_t * x0_hat) / noise_scale_t
-    expected = signal_scale_s * x0_hat + noise_scale_s * corrected_eps
-
-    xs = ddim.reverse_step(
-        xt,
-        timesteps,
-        previous_timesteps=previous_timesteps,
-        eta=0.0,
+    result = DDIMSampler(num_inference_steps=2).sample(
+        GaussianModelDynamics(process, conditioned, clip_denoised=False),
+        torch.randn(2, 3),
     )
 
-    assert torch.allclose(xs, expected)
+    assert result.final_state.shape == condition.shape
+    assert calls == 2
 
 
-@pytest.mark.parametrize(
-    ("eta", "exception"),
-    [
-        (-0.1, ValueError),
-        (1.1, ValueError),
-        (True, TypeError),
-        ("invalid", TypeError),
-    ],
-)
-def test_ddim_reverse_step_rejects_invalid_eta(
-    eta: float | bool | str,
-    exception: type[Exception],
-) -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
+def test_trajectory_observer_does_not_change_sampling_math() -> None:
+    process = _process(8)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state), clip_denoised=False
     )
+    initial = torch.randn(2, 3)
+    observer = TrajectoryObserver(every_steps=2)
+    sampler = DDIMSampler(num_inference_steps=4, eta=0)
 
-    with pytest.raises(exception, match="eta"):
-        ddim.reverse_step(
-            torch.randn(2, 1, 4, 4),
-            torch.tensor([10, 5]),
-            previous_timesteps=torch.tensor([7, 2]),
-            eta=cast(float | None, eta),
-        )
+    with_observer = sampler.sample(dynamics, initial, observer=observer)
+    without_observer = sampler.sample(dynamics, initial)
 
-
-def test_ddim_reverse_step_rejects_non_descending_state_pairs() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-    )
-
-    with pytest.raises(ValueError, match="smaller"):
-        ddim.reverse_step(
-            torch.randn(2, 1, 4, 4),
-            torch.tensor([10, 5]),
-            previous_timesteps=torch.tensor([10, 2]),
-        )
-
-
-def test_ddim_reverse_rejects_competing_schedule_inputs() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-    )
-
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        ddim.reverse(
-            torch.randn(2, 1, 8, 8),
-            num_inference_steps=4,
-            timesteps=[10, 7, 2, 0],
-        )
-
-
-def test_ddim_sample_uses_k_transitions_and_returns_clean_shape() -> None:
-    denoiser = RecordingZeroDenoiser()
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=denoiser,
-        num_inference_steps=4,
-    )
-
-    samples = ddim.sample(torch.Size((2, 1, 8, 8)))
-
-    assert samples.shape == (2, 1, 8, 8)
-    assert [int(timestep[0]) for timestep in denoiser.all_timesteps] == [9, 7, 4, 1]
-
-
-def test_ddim_samples_and_traces_from_caller_provided_noise() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-        num_inference_steps=4,
-    )
-    initial_noise = torch.randn(2, 1, 8, 8)
-
-    samples = ddim.sample_from_noise(initial_noise)
-    expected = ddim.reverse(initial_noise)
-    trace = ddim.sample_trajectory_from_noise(initial_noise, step_interval=2)
-
-    assert torch.equal(samples, expected)
-    assert torch.equal(trace.frames[0].samples, initial_noise)
-    assert [frame.state_time for frame in trace.frames] == [10, 5, 0]
-
-
-def test_ddim_trajectory_uses_inference_transition_interval() -> None:
-    ddim = DDIM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=10),
-        model=ToyDenoiser(),
-        num_inference_steps=4,
-    )
-
-    trace = ddim.sample_trajectory(
-        torch.Size((2, 1, 8, 8)),
-        device=torch.device("cpu"),
-        step_interval=2,
-    )
-
-    assert [frame.state_time for frame in trace.frames] == [10, 5, 0]
-    assert trace.samples.shape == (2, 1, 8, 8)
+    assert torch.equal(with_observer.final_state, without_observer.final_state)
+    assert [item.step_index for item in observer.observations] == [0, 2, 4]
+    assert observer.observations[-1].coordinate == 0

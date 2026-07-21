@@ -27,11 +27,11 @@ def test_save_image_grid_writes_png(tmp_path) -> None:
 
 
 def test_save_trajectory_grid_writes_png(tmp_path) -> None:
-    trajectory = {
-        9: torch.randn(2, 1, 8, 8),
-        5: torch.randn(2, 1, 8, 8),
-        0: torch.randn(2, 1, 8, 8),
-    }
+    trajectory = (
+        torch.randn(2, 1, 8, 8),
+        torch.randn(2, 1, 8, 8),
+        torch.randn(2, 1, 8, 8),
+    )
     output_path = tmp_path / "trajectory.png"
 
     saved_path = save_trajectory_grid(trajectory, output_path)

@@ -475,14 +475,14 @@ def test_checkpoint_saves_and_restores_lr_scheduler_state(tmp_path) -> None:
     assert scheduler.count == 1
 
 
-def test_checkpoint_manager_rejects_v3(tmp_path) -> None:
+def test_checkpoint_manager_rejects_v4(tmp_path) -> None:
     trainer = _make_trainer(tmp_path)
     checkpoint_manager = trainer.checkpoint_manager
     assert checkpoint_manager is not None
-    checkpoint = tmp_path / "v3.pt"
+    checkpoint = tmp_path / "v4.pt"
     payload = checkpoint_manager.build_state()
-    payload["format_version"] = 3
+    payload["format_version"] = 4
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="expected version 4"):
+    with pytest.raises(ValueError, match="expected version 5"):
         checkpoint_manager.load(checkpoint)

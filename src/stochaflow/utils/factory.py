@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 import math
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -17,10 +17,17 @@ from torch.optim.lr_scheduler import (
     StepLR,
 )
 
-from stochaflow.diffusion import NoiseSchedule
+from stochaflow.processes import (
+    DiscreteGaussianDenoisingProcess,
+    GaussianNoiseSchedule,
+    Process,
+)
 from stochaflow.training import DiagnosticBuildContext, Trainer, TrainingDiagnostic
 from stochaflow.training.ema import ExponentialMovingAverage
-from stochaflow.training.losses import ddpm_epsilon_train_step
+from stochaflow.training.gaussian import (
+    GaussianEpsilonTrainingSystem,
+    ddpm_epsilon_train_step,
+)
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
     ComponentConfig,
@@ -37,8 +44,8 @@ from stochaflow.utils.registry import REGISTRIES, Registry, RegistryError
 
 BUILTIN_COMPONENT_MODULES = (
     "stochaflow.data",
-    "stochaflow.diffusion",
     "stochaflow.models",
+    "stochaflow.processes",
     "stochaflow.sampling",
     "stochaflow.training.diagnostics",
 )
@@ -52,8 +59,8 @@ def load_builtin_components() -> None:
 
 load_builtin_components()
 REGISTRIES.models.require_base(nn.Module)
-REGISTRIES.noise_schedules.require_base(NoiseSchedule)
-REGISTRIES.diffusions.require_base(nn.Module)
+REGISTRIES.noise_schedules.require_base(GaussianNoiseSchedule)
+REGISTRIES.processes.require_base(Process)
 REGISTRIES.objectives.require_base(nn.Module)
 REGISTRIES.optimizers.require_base(Optimizer)
 REGISTRIES.loggers.require_base(ExperimentLogger)
@@ -72,8 +79,8 @@ class TrainingComponents:
     """Fully built training components for an experiment."""
 
     model: nn.Module
-    noise_schedule: NoiseSchedule
-    diffusion: nn.Module
+    process: Process
+    training_system: nn.Module
     objective: nn.Module
     optimizer: Optimizer
     lr_scheduler: Any | None
@@ -99,62 +106,25 @@ def _build_from_registry(
 def build_model(component: ComponentConfig) -> nn.Module:
     """Instantiate a model from the model registry."""
 
-    model = _build_from_registry(REGISTRIES.models, component)
-    if not isinstance(model, nn.Module):
-        raise RegistryError(f"registered model '{component.name}' did not produce nn.Module")
-    return model
+    return cast(nn.Module, _build_from_registry(REGISTRIES.models, component))
 
 
-def build_noise_schedule(component: ComponentConfig) -> NoiseSchedule:
-    """Instantiate a forward noise path from the noise-schedule registry."""
+def build_process(component: ComponentConfig) -> Process:
+    """Instantiate a model-free probability process."""
 
-    schedule = _build_from_registry(
-        REGISTRIES.noise_schedules,
-        component,
-    )
-    if not isinstance(schedule, NoiseSchedule):
-        raise RegistryError(
-            f"registered noise schedule '{component.name}' did not produce "
-            "NoiseSchedule"
-        )
-    return schedule
-
-
-def build_diffusion(
-    diffusion_name: str,
-    *,
-    model: nn.Module,
-    noise_schedule: NoiseSchedule,
-    params: dict[str, Any] | None = None,
-) -> nn.Module:
-    """Instantiate a diffusion/process object."""
-
-    params = params or {}
-    component = ComponentConfig(name=diffusion_name, params=params)
-    diffusion = _build_from_registry(
-        REGISTRIES.diffusions,
-        component,
-        extra_kwargs={"model": model, "noise_schedule": noise_schedule},
-    )
-    if not isinstance(diffusion, nn.Module):
-        raise RegistryError(
-            f"registered diffusion '{diffusion_name}' did not produce nn.Module"
-        )
-    return diffusion
+    return cast(Process, _build_from_registry(REGISTRIES.processes, component))
 
 
 def build_objective(component: ComponentConfig) -> nn.Module:
     """Instantiate a training objective from the objective registry."""
 
-    objective = _build_from_registry(
-        REGISTRIES.objectives,
-        component,
+    return cast(
+        nn.Module,
+        _build_from_registry(
+            REGISTRIES.objectives,
+            component,
+        ),
     )
-    if not isinstance(objective, nn.Module):
-        raise RegistryError(
-            f"registered objective '{component.name}' did not produce nn.Module"
-        )
-    return objective
 
 
 def build_logger(
@@ -168,18 +138,17 @@ def build_logger(
     configure_torch_logging(config.torch_logs)
     backends: list[ExperimentLogger] = []
     for backend_config in config.backends:
-        backend = _build_from_registry(
-            REGISTRIES.loggers,
-            backend_config,
-            extra_kwargs={
-                "output_dir": experiment.output_dir,
-                "run_name": experiment.name,
-            },
+        backend = cast(
+            ExperimentLogger,
+            _build_from_registry(
+                REGISTRIES.loggers,
+                backend_config,
+                extra_kwargs={
+                    "output_dir": experiment.output_dir,
+                    "run_name": experiment.name,
+                },
+            ),
         )
-        if not isinstance(backend, ExperimentLogger):
-            raise RegistryError(
-                f"registered logger '{backend_config.name}' did not produce ExperimentLogger"
-            )
         backends.append(backend)
 
     logger: ExperimentLogger
@@ -235,15 +204,13 @@ def build_diagnostics(
             **diagnostic_config.params,
             **runtime_params,
         }
-        diagnostic = REGISTRIES.diagnostics.create(
-            diagnostic_config.name,
-            **constructor_params,
+        diagnostic = cast(
+            TrainingDiagnostic,
+            REGISTRIES.diagnostics.create(
+                diagnostic_config.name,
+                **constructor_params,
+            ),
         )
-        if not isinstance(diagnostic, TrainingDiagnostic):
-            raise RegistryError(
-                f"registered diagnostic '{diagnostic_config.name}' did not produce "
-                "TrainingDiagnostic"
-            )
         diagnostics.append(diagnostic)
     return diagnostics
 
@@ -393,10 +360,10 @@ def build_ema(config: EMAConfig, model: nn.Module) -> ExponentialMovingAverage |
     )
 
 
-def resolve_train_step_fn(diffusion_name: str, objective_name: str):
-    """Resolve an algorithm-specific train step function when needed."""
+def resolve_train_step_fn(objective_name: str):
+    """Resolve the Stage 3 Gaussian training bridge by capability."""
 
-    if diffusion_name in {"ddpm", "ddim"} and objective_name == "ddpm_epsilon":
+    if objective_name == "ddpm_epsilon":
         return ddpm_epsilon_train_step
     return None
 
@@ -422,25 +389,31 @@ def build_training_components(
     """Build model-side training components without dataset I/O side effects."""
 
     model = build_model(config.model)
-    noise_schedule = build_noise_schedule(config.diffusion.noise_schedule)
-    diffusion = build_diffusion(
-        config.diffusion.name,
-        model=model,
-        noise_schedule=noise_schedule,
-        params=config.diffusion.params,
-    )
+    process_declaration = config.process
+    if process_declaration is None:
+        raise TypeError(
+            "Stage 3 Gaussian epsilon training requires "
+            "DiscreteGaussianDenoisingProcess, but process is not configured"
+        )
+    process = build_process(process_declaration)
+    if not isinstance(process, DiscreteGaussianDenoisingProcess):
+        raise TypeError(
+            "Stage 3 Gaussian epsilon training requires a compatible "
+            "DiscreteGaussianDenoisingProcess"
+        )
+    training_system = GaussianEpsilonTrainingSystem(model, process)
     objective = build_objective(config.objective)
-    optimizer = build_optimizer(config.optimizer, diffusion.parameters())
+    optimizer = build_optimizer(config.optimizer, training_system.parameters())
     lr_scheduler = build_lr_scheduler(
         config.lr_scheduler,
         optimizer,
         steps_per_epoch=steps_per_epoch,
         num_epochs=num_epochs or config.trainer.num_epochs,
     )
-    ema = build_ema(config.ema, diffusion)
+    ema = build_ema(config.ema, model)
     checkpoint_manager = CheckpointManager(
-        model=diffusion,
-        denoiser=model,
+        model=model,
+        process=process,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
         ema=ema,
@@ -461,9 +434,9 @@ def build_training_components(
             else None
         ),
     )
-    train_step_fn = resolve_train_step_fn(config.diffusion.name, config.objective.name)
+    train_step_fn = resolve_train_step_fn(config.objective.name)
     trainer = Trainer(
-        model=diffusion,
+        model=training_system,
         optimizer=optimizer,
         criterion=objective,
         device=device,
@@ -473,6 +446,7 @@ def build_training_components(
             config.lr_scheduler.interval if lr_scheduler is not None else "step"
         ),
         ema=ema,
+        ema_model=model,
         max_grad_norm=config.trainer.max_grad_norm,
         logger=logger,
         diagnostics=diagnostics,
@@ -484,8 +458,8 @@ def build_training_components(
     )
     return TrainingComponents(
         model=model,
-        noise_schedule=noise_schedule,
-        diffusion=diffusion,
+        process=process,
+        training_system=training_system,
         objective=objective,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,

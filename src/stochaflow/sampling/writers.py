@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -15,6 +15,7 @@ from stochaflow.sampling.grid import (
     save_trajectory_gif,
     save_trajectory_grid,
 )
+from stochaflow.sampling.sampler import SamplingObservation
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog
 
@@ -24,7 +25,7 @@ class SamplingBatch:
     """One generated batch and its optional reverse trajectory."""
 
     samples: Any
-    trajectory: Mapping[int, Any] | None = None
+    trajectory: tuple[SamplingObservation, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class SamplingArtifactContext:
 
     output_dir: Path
     batches: tuple[SamplingBatch, ...]
+    metadata: Mapping[str, Any]
 
     def __post_init__(self) -> None:
         if not self.batches:
@@ -69,38 +71,47 @@ def _tensor_samples(batches: Sequence[SamplingBatch]) -> torch.Tensor:
 
 def _tensor_trajectory(
     batches: Sequence[SamplingBatch],
-) -> dict[int, torch.Tensor] | None:
+) -> dict[str, Any] | None:
     if all(batch.trajectory is None for batch in batches):
         return None
     if any(batch.trajectory is None for batch in batches):
         raise ValueError("every sampling batch must provide the same trajectory")
-    state_times = tuple(cast_trajectory(batches[0]).keys())
-    parts: dict[int, list[torch.Tensor]] = {state_time: [] for state_time in state_times}
+    first = batches[0].trajectory
+    if first is None:
+        raise ValueError("every sampling batch must provide the same trajectory")
+    identity = tuple(
+        (observation.step_index, observation.coordinate, observation.is_final)
+        for observation in first
+    )
+    parts: list[list[torch.Tensor]] = [[] for _ in identity]
     for batch_index, batch in enumerate(batches):
-        trajectory = cast_trajectory(batch)
-        if tuple(trajectory.keys()) != state_times:
-            raise ValueError("trajectory state times changed between sampling batches")
-        for state_time, samples in trajectory.items():
-            if not isinstance(samples, torch.Tensor):
+        trajectory = batch.trajectory
+        if trajectory is None:
+            raise ValueError("every sampling batch must provide the same trajectory")
+        current_identity = tuple(
+            (observation.step_index, observation.coordinate, observation.is_final)
+            for observation in trajectory
+        )
+        if current_identity != identity:
+            raise ValueError(
+                "trajectory lifecycle changed between batches"
+            )
+        for observation_index, observation in enumerate(trajectory):
+            if not isinstance(observation.state, torch.Tensor):
                 raise TypeError(
-                    f"trajectory batch {batch_index} state {state_time} is not a tensor"
+                    f"trajectory batch {batch_index} observation {observation_index} "
+                    "is not a tensor"
                 )
-            parts[state_time].append(samples.detach().cpu())
+            parts[observation_index].append(observation.state.detach().cpu())
     try:
+        merged = [torch.cat(state_parts, dim=0) for state_parts in parts]
         return {
-            state_time: torch.cat(state_parts, dim=0)
-            for state_time, state_parts in parts.items()
+            "step_indices": [step for step, _, _ in identity],
+            "coordinates": [coordinate for _, coordinate, _ in identity],
+            "states": torch.stack(merged, dim=0),
         }
     except RuntimeError as exc:
         raise ValueError("trajectory batches must share compatible shapes") from exc
-
-
-def cast_trajectory(batch: SamplingBatch) -> Mapping[int, Any]:
-    """Return a trajectory after its non-null state is established."""
-
-    assert batch.trajectory is not None
-    return batch.trajectory
-
 
 @REGISTRIES.sampling_artifact_writers.register("tensor")
 class TensorSamplingArtifactWriter(SamplingArtifactWriter):
@@ -157,15 +168,16 @@ class ImageSamplingArtifactWriter(SamplingArtifactWriter):
         trajectory = _tensor_trajectory(context.batches)
         if trajectory is None:
             return artifacts
-        for state_time, snapshot in trajectory.items():
-            self._validate_images(snapshot, label=f"trajectory[{state_time}]")
+        states: torch.Tensor = trajectory["states"]
+        for snapshot_index, snapshot in enumerate(states):
+            self._validate_images(snapshot, label=f"trajectory[{snapshot_index}]")
         grid_path = save_trajectory_grid(
-            trajectory,
+            tuple(states),
             context.output_dir / "trajectory.png",
             denormalize=self.denormalize,
         )
         gif_path = save_trajectory_gif(
-            trajectory,
+            tuple(states),
             context.output_dir / "trajectory.gif",
             nrow=self.grid_nrow,
             fps=self.gif_fps,
@@ -188,19 +200,18 @@ def write_sampling_artifacts(
 ) -> dict[str, Path]:
     """Run declared writers and enforce their artifact-result contract."""
 
+    registries.sampling_artifact_writers.require_base(SamplingArtifactWriter)
     context.output_dir.mkdir(parents=True, exist_ok=True)
     artifacts: dict[str, Path] = {}
     for config in configs:
-        writer = registries.sampling_artifact_writers.create(
-            config.name,
-            **config.params,
+        writer = cast(
+            SamplingArtifactWriter,
+            registries.sampling_artifact_writers.create(
+                config.name,
+                **config.params,
+            ),
         )
-        if not isinstance(writer, SamplingArtifactWriter):
-            raise TypeError(
-                f"registered sampling artifact writer '{config.name}' did not "
-                "produce SamplingArtifactWriter"
-            )
-        result = writer.write(context)
+        result = cast(object, writer.write(context))
         if not isinstance(result, Mapping) or not result:
             raise ValueError(
                 f"sampling artifact writer '{config.name}' must return artifacts"

@@ -1,6 +1,6 @@
 """Utilities for dumping generated sample grids."""
 
-from collections.abc import Mapping
+from collections.abc import Sequence
 from pathlib import Path
 
 import torch
@@ -49,7 +49,7 @@ def save_image_grid(
 
 
 def save_trajectory_grid(
-    trajectory: Mapping[int, torch.Tensor],
+    trajectory: Sequence[torch.Tensor],
     path: str | Path,
     *,
     denormalize: bool = True,
@@ -64,8 +64,7 @@ def save_trajectory_grid(
     if not trajectory:
         raise ValueError("trajectory must contain at least one timestep snapshot")
 
-    ordered_timesteps = sorted(trajectory, reverse=True)
-    snapshots = [trajectory[timestep] for timestep in ordered_timesteps]
+    snapshots = list(trajectory)
     first_shape = snapshots[0].shape
     if len(first_shape) != 4:
         raise ValueError(
@@ -90,7 +89,7 @@ def save_trajectory_grid(
 
 
 def save_trajectory_gif(
-    trajectory: Mapping[int, torch.Tensor],
+    trajectory: Sequence[torch.Tensor],
     path: str | Path,
     *,
     nrow: int = 8,
@@ -107,8 +106,7 @@ def save_trajectory_gif(
         raise ValueError("fps must be positive")
 
     frames: list[Image.Image] = []
-    for timestep in sorted(trajectory, reverse=True):
-        snapshot = trajectory[timestep]
+    for snapshot in trajectory:
         if snapshot.ndim != 4:
             raise ValueError(
                 "save_trajectory_gif expects snapshots shaped as "

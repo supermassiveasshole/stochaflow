@@ -1,17 +1,24 @@
 """Config-driven checkpoint sampling orchestration."""
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import json
 from pathlib import Path
-import re
-from typing import Any
+from typing import Any, cast
 
 import torch
-import torch.nn as nn
 import yaml
 
-from stochaflow.sampling.sampler import SamplingTrace
+from stochaflow.processes import Process
+from stochaflow.sampling.builder import (
+    InferenceModelProvider,
+    SamplingBuilder,
+    SamplingBuilderContext,
+    SamplingOutput,
+)
+from stochaflow.sampling.sampler import SamplingObservation
 from stochaflow.sampling.writers import (
     SamplingArtifactContext,
     SamplingBatch,
@@ -23,21 +30,15 @@ from stochaflow.utils.checkpoint import (
     CheckpointState,
 )
 from stochaflow.utils.config import (
-    ComponentConfig,
+    ConfigError,
+    ExtensionsConfig,
     StochaflowConfig,
-    load_config,
+    coerce_config_section,
     load_config_dict,
 )
-from stochaflow.utils.factory import (
-    build_diffusion,
-    build_model,
-    build_noise_schedule,
-    resolve_device,
-)
+from stochaflow.utils.factory import build_model, build_process, resolve_device
+from stochaflow.utils.registry import REGISTRIES
 from stochaflow.utils.seed import set_seed
-
-
-_PARAMETER_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +48,6 @@ class ResolvedSamplingInputs:
     config: StochaflowConfig
     checkpoint_path: Path
     checkpoint: CheckpointState
-    sampler: ComponentConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,113 +56,118 @@ class SamplingRunResult:
 
     checkpoint_path: Path
     output_dir: Path
-    sampler_name: str
+    builder_name: str
     device: torch.device
     seed: int
-    used_ema: bool
+    metadata: dict[str, Any]
     artifacts: dict[str, Path]
-
-
-def parse_sampler_params(values: list[str] | None) -> dict[str, Any]:
-    """Parse repeatable ``KEY=VALUE`` sampler overrides."""
-
-    parsed: dict[str, Any] = {}
-    for item in values or []:
-        if "=" not in item:
-            raise ValueError(
-                f"invalid --sampler-param '{item}'; expected KEY=VALUE"
-            )
-        key, raw_value = item.split("=", 1)
-        if not _PARAMETER_NAME.fullmatch(key):
-            raise ValueError(
-                f"invalid sampler parameter name '{key}'; expected a Python identifier"
-            )
-        try:
-            value = yaml.safe_load(raw_value)
-        except yaml.YAMLError as exc:
-            raise ValueError(
-                f"invalid YAML value for sampler parameter '{key}': {exc}"
-            ) from exc
-        if isinstance(value, dict):
-            raise ValueError(
-                f"sampler parameter '{key}' must be a scalar or list, not a mapping"
-            )
-        parsed[key] = value
-    return parsed
-
-
-def sample_shape(config: StochaflowConfig, num_samples: int) -> torch.Size:
-    """Build a batch-first shape from the modality-neutral sampling config."""
-
-    if num_samples <= 0:
-        raise ValueError("num_samples must be positive")
-    if config.sampling.shape is None:
-        raise ValueError(
-            "sampling.shape is required by the configured tensor sampler"
-        )
-    return torch.Size((num_samples, *config.sampling.shape))
 
 
 def resolve_sampling_inputs(
     *,
     config_path: str | Path | None,
     checkpoint: str | Path | None,
-    sampler_name: str | None = None,
-    sampler_params: dict[str, Any] | None = None,
 ) -> ResolvedSamplingInputs:
-    """Resolve checkpoint config, optional external config, and CLI overrides."""
+    """Resolve checkpoint config and an optional sampling-section override."""
 
     if config_path is None and checkpoint is None:
         raise ValueError("sample requires --config, --checkpoint, or both")
-
-    external_config = load_config(config_path) if config_path is not None else None
-    checkpoint_path = _resolve_checkpoint_path(checkpoint, external_config)
+    external: StochaflowConfig | None = None
+    sampling_overlay: dict[str, Any] | None = None
+    if config_path is not None:
+        raw_external = _load_yaml_mapping(config_path)
+        keys = set(raw_external)
+        if "sampling" in keys and keys <= {"sampling", "extensions"}:
+            if checkpoint is None:
+                raise ConfigError(
+                    "a sampling-only config requires an explicit --checkpoint"
+                )
+            sampling_overlay = raw_external
+        elif {"experiment", "data", "model", "objective"} <= keys:
+            external = load_config_dict(raw_external)
+        else:
+            raise ConfigError(
+                "sampling config must be either a complete Stochaflow config or "
+                "contain only 'sampling' and optional 'extensions'"
+            )
+    checkpoint_path = _resolve_checkpoint_path(checkpoint, external)
     payload = CheckpointManager.load_payload(checkpoint_path, map_location="cpu")
     checkpoint_config = _load_checkpoint_config(payload)
-
-    if external_config is not None:
-        validate_sampling_compatibility(external_config, checkpoint_config)
-        config = deepcopy(checkpoint_config)
-        config.sampling = deepcopy(external_config.sampling)
+    if sampling_overlay is not None:
+        config = _apply_sampling_overlay(checkpoint_config, sampling_overlay)
+    elif external is not None:
+        validate_sampling_compatibility(external, checkpoint_config)
+        config = _merge_external_config(checkpoint_config, external)
     else:
         config = checkpoint_config
+    return ResolvedSamplingInputs(config, checkpoint_path, payload)
 
-    resolved_config = deepcopy(config)
-    configured_sampler = resolved_config.sampling.sampler
-    if configured_sampler is None:
-        configured_sampler = ComponentConfig(
-            name=resolved_config.diffusion.name,
-            params=dict(resolved_config.diffusion.params),
-        )
-    else:
-        configured_sampler = deepcopy(configured_sampler)
 
-    if sampler_name is not None and sampler_name != configured_sampler.name:
-        configured_sampler = ComponentConfig(name=sampler_name)
-    elif sampler_name is not None:
-        configured_sampler.name = sampler_name
-    configured_sampler.params.update(sampler_params or {})
-    resolved_config.sampling.sampler = deepcopy(configured_sampler)
+def _load_yaml_mapping(path: str | Path) -> dict[str, Any]:
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(f"config does not exist: {source}")
+    with source.open(encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    if not isinstance(raw, dict):
+        raise ConfigError("config root must be a mapping")
+    return raw
 
-    return ResolvedSamplingInputs(
-        config=resolved_config,
-        checkpoint_path=checkpoint_path,
-        checkpoint=payload,
-        sampler=configured_sampler,
+
+def _apply_sampling_overlay(
+    checkpoint: StochaflowConfig,
+    overlay: dict[str, Any],
+) -> StochaflowConfig:
+    extensions = coerce_config_section(
+        ExtensionsConfig,
+        overlay.get("extensions", {}),
+        "config.extensions",
     )
+    merged = checkpoint.to_dict()
+    merged["sampling"] = deepcopy(overlay["sampling"])
+    merged["extensions"] = {
+        "modules": list(
+            dict.fromkeys(
+                [
+                    *checkpoint.extensions.modules,
+                    *extensions.modules,
+                ]
+            )
+        )
+    }
+    return load_config_dict(merged)
+
+
+def _merge_external_config(
+    checkpoint: StochaflowConfig,
+    external: StochaflowConfig,
+) -> StochaflowConfig:
+    merged = checkpoint.to_dict()
+    merged["sampling"] = deepcopy(external.to_dict()["sampling"])
+    merged["extensions"] = {
+        "modules": list(
+            dict.fromkeys(
+                [
+                    *checkpoint.extensions.modules,
+                    *external.extensions.modules,
+                ]
+            )
+        )
+    }
+    return load_config_dict(merged)
 
 
 def validate_sampling_compatibility(
     external: StochaflowConfig,
     checkpoint: StochaflowConfig,
 ) -> None:
-    """Reject external configs that do not describe the trained denoiser."""
+    """Reject external configs that do not describe the trained model/process."""
 
     mismatches: list[str] = []
     if external.model != checkpoint.model:
         mismatches.append("model")
-    if external.diffusion != checkpoint.diffusion:
-        mismatches.append("diffusion")
+    if external.process != checkpoint.process:
+        mismatches.append("process")
     if mismatches:
         raise ValueError(
             "external config is incompatible with checkpoint training config: "
@@ -176,36 +181,36 @@ def run_sampling(
     checkpoint: str | Path | None = None,
     output_dir: str | Path | None = None,
     device_name: str | None = None,
-    sampler_name: str | None = None,
-    sampler_param_values: list[str] | None = None,
 ) -> SamplingRunResult:
-    """Run standalone or post-training sampling and write all artifacts."""
+    """Run one configured SamplingBuilder and materialize its output."""
 
-    inputs = resolve_sampling_inputs(
-        config_path=config_path,
-        checkpoint=checkpoint,
-        sampler_name=sampler_name,
-        sampler_params=parse_sampler_params(sampler_param_values),
-    )
+    inputs = resolve_sampling_inputs(config_path=config_path, checkpoint=checkpoint)
     config = inputs.config
-    sampling = config.sampling
-    seed = config.experiment.seed if sampling.seed is None else sampling.seed
+    declaration = config.sampling.builder
+    if declaration is None:
+        raise ValueError("sample requires sampling.builder to be configured")
+    seed = config.experiment.seed if config.sampling.seed is None else config.sampling.seed
     set_seed(seed)
     device = resolve_device(device_name or config.trainer.device)
-    denoiser, used_ema = _build_checkpointed_denoiser(
-        config,
-        inputs.checkpoint,
+    process = _build_checkpointed_process(config, inputs.checkpoint, device=device)
+    provider = _build_model_provider(config, inputs.checkpoint, device=device)
+    context = SamplingBuilderContext(
+        params=declaration.params,
+        process=process,
+        model_provider=provider,
         device=device,
+        seed=seed,
+        shape=(tuple(config.sampling.shape) if config.sampling.shape is not None else None),
+        num_samples=config.sampling.num_samples,
+        batch_size=config.sampling.batch_size,
     )
-    noise_schedule = build_noise_schedule(config.diffusion.noise_schedule)
-    sampler = build_diffusion(
-        inputs.sampler.name,
-        model=denoiser,
-        noise_schedule=noise_schedule,
-        params=inputs.sampler.params,
+    builder = cast(
+        SamplingBuilder,
+        REGISTRIES.sampling_builders.create(declaration.name, context),
     )
-    sampler.to(device)
-    sampler.eval()
+    with torch.no_grad():
+        output_value = cast(object, builder.run())
+    output = validate_sampling_output(output_value)
 
     target_dir = (
         Path(output_dir)
@@ -213,43 +218,78 @@ def run_sampling(
         else _default_sampling_output_dir(inputs.checkpoint_path)
     )
     target_dir.mkdir(parents=True, exist_ok=True)
-    batch_size = sampling.batch_size
-
-    with torch.no_grad():
-        batches = _sample_batches(
-            sampler,
-            config,
-            device=device,
-            batch_size=batch_size,
-        )
     artifacts = write_sampling_artifacts(
-        sampling.writers,
-        SamplingArtifactContext(output_dir=target_dir, batches=batches),
+        config.sampling.writers,
+        SamplingArtifactContext(target_dir, output.batches, dict(output.metadata)),
     )
     manifest_path = target_dir / "resolved_sampling.yaml"
     manifest = {
         "checkpoint": str(inputs.checkpoint_path),
         "checkpoint_format_version": inputs.checkpoint.get("format_version"),
-        "sampler": asdict(inputs.sampler),
-        "sampling": asdict(sampling),
+        "process": asdict(config.process) if config.process is not None else None,
+        "builder": asdict(declaration),
+        "sampling": asdict(config.sampling),
         "seed": seed,
         "device": str(device),
-        "weights": "ema" if used_ema else "raw",
+        "metadata": dict(output.metadata),
         "artifacts": {name: str(path) for name, path in artifacts.items()},
     }
-    with manifest_path.open("w", encoding="utf-8") as stream:
-        yaml.safe_dump(manifest, stream, sort_keys=False)
-    artifacts["config"] = manifest_path
-
-    return SamplingRunResult(
-        checkpoint_path=inputs.checkpoint_path,
-        output_dir=target_dir,
-        sampler_name=inputs.sampler.name,
-        device=device,
-        seed=seed,
-        used_ema=used_ema,
-        artifacts=artifacts,
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
     )
+    artifacts["config"] = manifest_path
+    return SamplingRunResult(
+        inputs.checkpoint_path,
+        target_dir,
+        declaration.name,
+        device,
+        seed,
+        dict(output.metadata),
+        artifacts,
+    )
+
+
+def validate_sampling_output(output: object) -> SamplingOutput:
+    """Validate the modality-neutral result contract owned by core runtime."""
+
+    if not isinstance(output, SamplingOutput):
+        raise TypeError("SamplingBuilder.run() must return SamplingOutput")
+    if not output.batches:
+        raise ValueError("SamplingOutput.batches must not be empty")
+    for batch_index, declared_batch in enumerate(output.batches):
+        batch_value = cast(object, declared_batch)
+        if not isinstance(batch_value, SamplingBatch):
+            raise TypeError(
+                f"SamplingOutput.batches[{batch_index}] must be SamplingBatch"
+            )
+        batch = batch_value
+        if batch.trajectory is not None:
+            previous = -1
+            for observation_index, declared_observation in enumerate(
+                batch.trajectory
+            ):
+                observation_value = cast(object, declared_observation)
+                if not isinstance(observation_value, SamplingObservation):
+                    raise TypeError(
+                        f"trajectory[{observation_index}] must be "
+                        "SamplingObservation"
+                    )
+                observation = observation_value
+                if observation.step_index <= previous:
+                    raise ValueError(
+                        "trajectory observation step indices must increase"
+                    )
+                previous = observation.step_index
+    metadata = cast(object, output.metadata)
+    if not isinstance(metadata, Mapping):
+        raise TypeError("SamplingOutput.metadata must be a mapping")
+    if any(not isinstance(key, str) for key in metadata):
+        raise TypeError("SamplingOutput.metadata keys must be strings")
+    try:
+        json.dumps(metadata)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("SamplingOutput.metadata must be JSON serializable") from exc
+    return output
 
 
 def _resolve_checkpoint_path(
@@ -259,12 +299,12 @@ def _resolve_checkpoint_path(
     if checkpoint is None:
         assert external_config is not None
         return CheckpointManager.find_best(external_config.experiment.output_dir)
-    checkpoint_path = Path(checkpoint)
-    if checkpoint_path.is_dir():
-        return CheckpointManager.find_best(checkpoint_path)
-    if not checkpoint_path.is_file():
-        raise FileNotFoundError(f"checkpoint does not exist: {checkpoint_path}")
-    return checkpoint_path
+    path = Path(checkpoint)
+    if path.is_dir():
+        return CheckpointManager.find_best(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"checkpoint does not exist: {path}")
+    return path
 
 
 def _load_checkpoint_config(payload: CheckpointState) -> StochaflowConfig:
@@ -274,120 +314,74 @@ def _load_checkpoint_config(payload: CheckpointState) -> StochaflowConfig:
             f"checkpoint format version {version!r} is unsupported; "
             f"expected version {CHECKPOINT_FORMAT_VERSION}"
         )
-    raw_config = payload.get("config")
-    if not isinstance(raw_config, dict):
+    raw = payload.get("config")
+    if not isinstance(raw, dict):
         raise ValueError("checkpoint does not contain a Stochaflow config")
-    return load_config_dict(raw_config)
+    return load_config_dict(raw)
 
 
-def _build_checkpointed_denoiser(
+def _build_checkpointed_process(
     config: StochaflowConfig,
     payload: CheckpointState,
     *,
     device: torch.device,
-) -> tuple[nn.Module, bool]:
-    version = payload.get("format_version")
-    if version != CHECKPOINT_FORMAT_VERSION:
-        raise ValueError(
-            "checkpoint does not contain portable denoiser weights from format "
-            f"version {CHECKPOINT_FORMAT_VERSION}"
-        )
-    use_ema = config.ema.enabled and config.ema.use_for_sampling
-    state_key = "ema_denoiser_state_dict" if use_ema else "denoiser_state_dict"
-    state = payload.get(state_key)
+) -> Process | None:
+    has_state = "process_state_dict" in payload
+    if config.process is None:
+        if has_state:
+            raise ValueError(
+                "checkpoint contains 'process_state_dict' but config.process is null"
+            )
+        return None
+    if not has_state:
+        raise ValueError("checkpoint is missing required 'process_state_dict'")
+    state = payload.get("process_state_dict")
     if not isinstance(state, dict):
-        raise ValueError(f"checkpoint is missing required '{state_key}'")
+        raise TypeError("checkpoint process_state_dict must be a mapping")
+    process = build_process(config.process)
+    process.load_state_dict(state)
+    process.to(device)
+    process.eval()
+    return process
 
-    denoiser = build_model(config.model)
-    denoiser.load_state_dict(state)
-    denoiser.to(device)
-    denoiser.eval()
-    return denoiser, use_ema
 
-
-def _sample_batches(
-    sampler: nn.Module,
+def _build_model_provider(
     config: StochaflowConfig,
+    payload: CheckpointState,
     *,
     device: torch.device,
-    batch_size: int,
-) -> tuple[SamplingBatch, ...]:
-    sampling = config.sampling
-    counts = _batched_sample_counts(sampling.num_samples, batch_size)
-    trajectory_config = sampling.debug.trajectory
-    batches: list[SamplingBatch] = []
-    expected_state_times: list[int] | None = None
-
-    for count in counts:
-        shape = sample_shape(config, count)
-        if trajectory_config.enabled:
-            trajectory_fn = getattr(sampler, "sample_trajectory", None)
-            if not callable(trajectory_fn):
-                raise TypeError(
-                    f"sampler '{type(sampler).__name__}' does not support "
-                    "trajectory debug"
-                )
-            trace = trajectory_fn(
-                shape,
-                device=device,
-                **trajectory_config.params,
-            )
-            if not isinstance(trace, SamplingTrace):
-                raise TypeError("sample_trajectory must return SamplingTrace")
-            state_times = [frame.state_time for frame in trace.frames]
-            if expected_state_times is None:
-                expected_state_times = state_times
-            elif state_times != expected_state_times:
-                raise ValueError("trajectory frame times changed between sample batches")
-            batches.append(
-                SamplingBatch(
-                    samples=trace.samples.detach().cpu(),
-                    trajectory={
-                        frame.state_time: frame.samples.detach().cpu()
-                        for frame in trace.frames
-                    },
-                )
-            )
-        else:
-            sample_fn = getattr(sampler, "sample", None)
-            if not callable(sample_fn):
-                raise TypeError("configured sampler does not provide sample()")
-            sampled = sample_fn(shape, device=device)
-            if not isinstance(sampled, torch.Tensor):
-                raise TypeError("sample() must return a torch.Tensor")
-            batches.append(SamplingBatch(samples=sampled.detach().cpu()))
-
-    return tuple(batches)
-
-
-def _batched_sample_counts(num_samples: int, batch_size: int) -> list[int]:
-    if num_samples <= 0:
-        raise ValueError("sampling.num_samples must be positive")
-    if batch_size <= 0:
-        raise ValueError("sampling batch size must be positive")
-    return [
-        min(batch_size, num_samples - offset)
-        for offset in range(0, num_samples, batch_size)
-    ]
+) -> InferenceModelProvider:
+    raw = cast(object, payload.get("model_state_dict"))
+    if not isinstance(raw, dict):
+        raise ValueError("checkpoint is missing required 'model_state_dict'")
+    ema = cast(object, payload.get("ema_model_state_dict"))
+    if ema is not None and not isinstance(ema, dict):
+        raise TypeError("checkpoint ema_model_state_dict must be a mapping")
+    return InferenceModelProvider(
+        model_factory=lambda: build_model(config.model),
+        raw_state_dict=raw,
+        ema_state_dict=ema,
+        device=device,
+        prefer_ema=config.ema.enabled and config.ema.use_for_sampling,
+    )
 
 
 def _default_sampling_output_dir(checkpoint_path: Path) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     root = checkpoint_path.parent.parent / "samples"
-    output_dir = root / timestamp
+    result = root / timestamp
     suffix = 1
-    while output_dir.exists():
-        output_dir = root / f"{timestamp}_{suffix:02d}"
+    while result.exists():
+        result = root / f"{timestamp}_{suffix:02d}"
         suffix += 1
-    return output_dir
+    return result
 
 
 __all__ = [
     "ResolvedSamplingInputs",
     "SamplingRunResult",
-    "sample_shape",
-    "parse_sampler_params",
     "resolve_sampling_inputs",
     "run_sampling",
     "validate_sampling_compatibility",
+    "validate_sampling_output",
 ]

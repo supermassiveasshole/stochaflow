@@ -143,7 +143,7 @@ def _set_dataloader_epoch(dataloader: Iterable[Batch], epoch: int) -> None:
             set_epoch(epoch)
 
 
-def _normalize_train_step_result(result: TrainStepResult) -> TrainStepOutput:
+def _normalize_train_step_result(result: object) -> TrainStepOutput:
     if isinstance(result, TrainStepOutput):
         return result
     if isinstance(result, torch.Tensor):
@@ -176,6 +176,7 @@ class Trainer:
         lr_scheduler: Any | None = None,
         lr_scheduler_interval: str = "step",
         ema: ExponentialMovingAverage | None = None,
+        ema_model: nn.Module | None = None,
         diagnostics: Iterable[TrainingDiagnostic] | None = None,
         max_grad_norm: float | None = None,
         logger: ExperimentLogger | None = None,
@@ -194,6 +195,7 @@ class Trainer:
         self.lr_scheduler = lr_scheduler
         self.lr_scheduler_interval = lr_scheduler_interval
         self.ema = ema
+        self.ema_model = ema_model or model
         self.diagnostics = list(diagnostics or [])
         self.max_grad_norm = max_grad_norm
         self.logger = logger or NullLogger()
@@ -296,7 +298,7 @@ class Trainer:
 
         self.optimizer.step()
         if self.ema is not None:
-            self.ema.update(self.model)
+            self.ema.update(self.ema_model)
         self._step_lr_scheduler("step")
 
         self._last_train_step_output = output

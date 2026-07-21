@@ -6,7 +6,6 @@ from typing import Any, cast
 import pytest
 import torch
 
-from stochaflow.diffusion import DDPM, LinearBetaSchedule
 from stochaflow.training.diagnostics import (
     DIAGNOSTIC_PROVIDERS,
     DiffusionQualityDiagnostic,
@@ -19,6 +18,7 @@ from .helpers import (
     batch_event,
     epoch_event,
     fit_event,
+    gaussian_system,
     trainer,
 )
 
@@ -128,10 +128,7 @@ def test_external_module_registers_every_provider_type_without_orchestrator_chan
             "metrics": [{"name": "ocp_custom_reference"}],
         },
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
     runtime = trainer(model)
     diagnostic.on_fit_start(
         fit_event(runtime, validation=[torch.zeros(2, 1, 4, 4)])
@@ -170,10 +167,7 @@ def test_provider_metric_collision_isolated_by_warn_policy(monkeypatch, tmp_path
         },
         failure_policy="warn",
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
     runtime = trainer(model)
     diagnostic.on_fit_start(fit_event(runtime))
 

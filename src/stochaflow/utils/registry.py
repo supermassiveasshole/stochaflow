@@ -78,7 +78,8 @@ class Registry(Mapping[str, T], Generic[T]):
     def add(self, name: str, component: T) -> T:
         """Register a component imperatively and return it unchanged."""
 
-        if not isinstance(name, str) or not name.strip():
+        name_value = cast(object, name)
+        if not isinstance(name_value, str) or not name_value.strip():
             raise RegistryError(f"{self.kind} registry name must be non-empty")
         self._validate(component)
         existing = self._components.get(name)
@@ -137,7 +138,8 @@ class Registry(Mapping[str, T], Generic[T]):
     def load_modules(self, modules: Sequence[str]) -> None:
         """Import extension modules once so their decorators can register."""
 
-        for module_name in modules:
+        for declared_module_name in modules:
+            module_name = cast(object, declared_module_name)
             if not isinstance(module_name, str) or not module_name.strip():
                 raise RegistryError("registry module names must be non-empty strings")
             if module_name in self._loaded_modules:
@@ -161,7 +163,9 @@ class RegistryCatalog:
             "sampling artifact writer"
         )
         self.noise_schedules: Registry[type[Any]] = Registry("noise schedule")
-        self.diffusions: Registry[type[Any]] = Registry("diffusion")
+        self.processes: Registry[type[Any]] = Registry("process")
+        self.samplers: Registry[type[Any]] = Registry("sampler")
+        self.sampling_builders: Registry[type[Any]] = Registry("sampling builder")
         self.objectives: Registry[type[Any]] = Registry("objective")
         self.optimizers: Registry[type[Any]] = Registry("optimizer")
         self.lr_schedulers: Registry[Callable[..., Any]] = Registry("lr scheduler")
@@ -172,7 +176,8 @@ class RegistryCatalog:
     def load_modules(self, modules: Sequence[str]) -> None:
         """Import component modules once for the entire catalog."""
 
-        for module_name in modules:
+        for declared_module_name in modules:
+            module_name = cast(object, declared_module_name)
             if not isinstance(module_name, str) or not module_name.strip():
                 raise RegistryError("registry module names must be non-empty strings")
             if module_name in self._loaded_modules:

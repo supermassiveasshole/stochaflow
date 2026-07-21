@@ -40,13 +40,22 @@ dotted path。schema 不忽略未知字段。
 ### `registrations must inherit ...`
 
 注册类继承了错误基类。数据入口继承 `DataBuilder`，采样输出继承
-`SamplingArtifactWriter`；模型/扩散/目标继承 `torch.nn.Module`，logger 继承
-`ExperimentLogger`。
+`SamplingArtifactWriter`，概率过程继承 `Process`，求解器继承 `Sampler`，任务采样器
+继承 `SamplingBuilder`；模型/目标继承 `torch.nn.Module`，logger 继承
+`ExperimentLogger`。复用内置 Gaussian 训练或采样还需分别实现
+`DiscreteGaussianDenoisingProcess` 能力。
+
+### `... sampler requires ... Dynamics`
+
+SamplingBuilder 组合了不兼容的算法 family。内置 DDPM/DDIM 只消费
+`GaussianDenoisingDynamics`；自定义 flow、SDE 或其他 Sampler 应检查自己所属 family 的
+窄 Dynamics 契约。修复 Builder 的组合，不要在核心添加 Process/Sampler 名称兼容表，
+也不要给 `GenerativeDynamics` 根类型补万能方法。
 
 ### `config cannot override runtime parameter(s)`
 
 从组件 `params` 删除运行时注入参数，例如 diagnostic 的 `logger`、`output_dir`、
-`sample_shape`。完整列表见[扩展手册](extensions.md#其他组件的构造约定)。
+`sample_shape`。完整列表见[扩展手册](extensions.md#其他构造约定)。
 
 ## 数据与 partition
 
@@ -87,7 +96,7 @@ holdout 样本数为 0 或占满 train。浮点比例必须位于 0 与 1 之间
 
 图像 recipe 的 `data.params.loader.batch_size` 只对应 `base_bucket`。启用
 `dynamic_batch_size` 后，其他 bucket 按像素预算缩放；公式见
-[数据构建](data-pipeline.md#multi-resolution-image-recipe)。
+{ref}`数据构建 <multi-resolution-image-recipe>`。
 
 ### `persistent_workers requires num_workers > 0`
 
@@ -114,25 +123,28 @@ TrainingStrategy/当前 tensor train step、模型输入输出契约彼此一致
 
 ### checkpoint 配置与外部采样配置不兼容
 
-同时传 `--config` 与 `--checkpoint` 时，外部配置只能覆盖 sampling 语义，不能改变
-权重依赖的模型结构、训练 diffusion 或 noise schedule。使用训练 checkpoint
-对应配置，或只通过 `--sampler`/`--sampler-param` 改变反向采样算法。
+同时传 `--config` 与 `--checkpoint` 时，外部文件可以只包含 `sampling` 和可选
+`extensions`，不能改变权重依赖的模型结构或可选训练 Process。若传入完整 Stochaflow
+配置，model 和 Process（包括是否为 `null`）会与 checkpoint 配置做兼容性校验。只需切换
+采样行为时，优先使用轻量 YAML，在 `sampling` 段改变 Builder、Sampler 和 solver 参数。
 
-### 预期 EMA 采样但显示 `EMA weights: no`
+### 预期 EMA 采样但 manifest 显示 raw
 
 同时检查 `ema.enabled`、`ema.use_for_sampling` 和 checkpoint 是否包含 EMA state。
 旧 checkpoint 或训练期间禁用 EMA 时不能事后恢复 EMA 权重。
 
 ### trajectory 不生成
 
-设置 `sampling.debug.trajectory.enabled: true`，并确认所选 diffusion 实现 trajectory
-接口。还需声明能保存 trajectory 的 writer，例如 `tensor` 或 `image`。
+对 `standard_denoising` 设置
+`sampling.builder.params.trajectory.enabled: true` 和正整数 `every_steps`。所有 Sampler
+共用 observer 契约，不再提供 sampler-specific trajectory 方法。还需声明能保存
+trajectory 的 writer，例如 `tensor` 或 `image`。
 
 ### `sampling.shape is required`
 
-当前 DDPM/DDIM tensor sampler 需要固定 shape。把单样本形状（不含 batch 维）写入
-`sampling.shape`。该值与 DataBuilder 独立，外部 sampling 配置可以覆盖它。训练配置未
-声明 shape 时会跳过默认的训练后采样；显式运行 sampling CLI 仍会报告此错误。
+`standard_denoising` 需要固定 shape。把单样本形状（不含 batch 维）写入
+`sampling.shape`。该值与 DataBuilder 独立，外部 sampling 配置可以覆盖它。自定义
+SamplingBuilder 可以在 shape 为 null 时构造自己的 initial state。
 
 ### image writer 报 NCHW 或通道错误
 
@@ -141,7 +153,8 @@ Tensor 只声明 `tensor` writer，或注册领域 writer。
 
 ### `checkpoint format version ... is unsupported`
 
-Stage 2 checkpoint 格式为 v4。训练恢复和 checkpoint-only sampling 不读取 v3；
+Stage 3 checkpoint 格式为 v5，分别保存 model、Process 和可选 EMA model state。训练
+恢复和 checkpoint-only sampling 不读取 v4；
 请用当前代码重新训练或重新生成 checkpoint。
 
 ## 文档生成与 CI

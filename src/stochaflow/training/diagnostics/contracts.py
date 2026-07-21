@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 import torch
 
+from stochaflow.sampling import SamplingObservation
 from stochaflow.utils.logging import ExperimentLogger
 
 
@@ -88,7 +89,7 @@ class TrainingDiagnostic(ABC):
 class ProviderValidationContext:
     """Stable runtime capabilities available to provider validation."""
 
-    diffusion: Any
+    process: Any
     sample_shape: tuple[int, ...] | None
 
 
@@ -131,7 +132,7 @@ class ReconstructionCallable(Protocol):
 class StepMetricContext:
     """Inputs shared by step-level metric providers."""
 
-    diffusion: Any
+    process: Any
     diagnostics: Mapping[str, Any]
     clean_samples: torch.Tensor | None
     sample_num: int
@@ -144,7 +145,7 @@ class SamplingResult:
     """One sampler profile result shared across downstream providers."""
 
     samples: torch.Tensor
-    trajectory: Mapping[int, torch.Tensor] | None
+    trajectory: tuple[SamplingObservation, ...] | None
     duration_seconds: float
 
 

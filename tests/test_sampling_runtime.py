@@ -1,388 +1,853 @@
-"""Tests for config-driven checkpoint sampling."""
+"""Tests for SamplingBuilder orchestration and checkpoint-only sampling."""
 
-from argparse import Namespace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import torch
+import torch.nn as nn
 import yaml
 
-from stochaflow.sampling import runtime
-from stochaflow.scripts import cli
-from stochaflow.training.ema import ExponentialMovingAverage
-from stochaflow.utils.checkpoint import CheckpointManager
-from stochaflow.utils.config import ComponentConfig, load_config_dict
-from stochaflow.utils.factory import build_diffusion, build_model, build_noise_schedule
-from stochaflow.utils.registry import REGISTRIES
-
-
-def _image_data_config(*, image_size: int = 8, channels: int = 1) -> dict:
-    return {
-        "name": "image",
-        "params": {
-            "source": {
-                "kind": "torchvision",
-                "dataset": "MNIST",
-                "root": "./data",
-                "download": False,
-            },
-            "image": {
-                "size": [image_size, image_size],
-                "channels": channels,
-                "normalize": True,
-            },
-            "loader": {
-                "batch_size": 2,
-                "num_workers": 0,
-                "shuffle": True,
-                "drop_last": True,
-                "pin_memory": False,
-                "persistent_workers": False,
-                "steps_per_epoch": "auto",
-            },
-            "partition": {"mode": "none"},
-        },
-    }
-
-
-def _raw_config(*, ema: bool = False, trajectory: bool = False) -> dict:
-    return {
-        "experiment": {"name": "tiny", "seed": 7},
-        "extensions": {"modules": []},
-        "data": _image_data_config(),
-        "model": {
-            "name": "unet",
-            "params": {
-                "in_channels": 1,
-                "out_channels": 1,
-                "base_channels": 8,
-                "channel_multipliers": [1],
-                "num_res_blocks": 1,
-                "time_embedding_dim": 8,
-                "dropout": 0.0,
-            },
-        },
-        "diffusion": {
-            "name": "ddpm",
-            "noise_schedule": {
-                "name": "linear_beta",
-                "params": {"num_timesteps": 2},
-            },
-        },
-        "objective": {"name": "ddpm_epsilon", "params": {}},
-        "ema": {"enabled": ema, "use_for_sampling": ema},
-        "sampling": {
-            "shape": [1, 8, 8],
-            "num_samples": 3,
-            "batch_size": 2,
-            "writers": [
-                {"name": "tensor", "params": {}},
-                {
-                    "name": "image",
-                    "params": {
-                        "grid_nrow": 2,
-                        "gif_fps": 4,
-                        "denormalize": True,
-                    },
-                },
-            ],
-            "debug": {
-                "trajectory": {
-                    "enabled": trajectory,
-                    "params": {"state_interval": 1} if trajectory else {},
-                }
-            },
-        },
-    }
-
-
-def _save_checkpoint(path: Path, *, ema: bool = False, trajectory: bool = False):
-    config = load_config_dict(_raw_config(ema=ema, trajectory=trajectory))
-    model = build_model(config.model)
-    schedule = build_noise_schedule(config.diffusion.noise_schedule)
-    diffusion = build_diffusion(
-        config.diffusion.name,
-        model=model,
-        noise_schedule=schedule,
-        params=config.diffusion.params,
-    )
-    tracker = ExponentialMovingAverage(diffusion) if ema else None
-    if tracker is not None:
-        for shadow in tracker.shadow_params.values():
-            shadow.fill_(0.25)
-    CheckpointManager(
-        model=diffusion,
-        denoiser=model,
-        ema=tracker,
-    ).save(path, config=config.to_dict())
-    return config
-
-
-@pytest.mark.parametrize(
-    ("values", "expected"),
-    [
-        (["steps=10", "eta=0.5", "enabled=true"], {"steps": 10, "eta": 0.5, "enabled": True}),
-        (["items=[1, 2]", "text=a=b"], {"items": [1, 2], "text": "a=b"}),
-        (["value=1", "value=2"], {"value": 2}),
-        (["value=null"], {"value": None}),
-    ],
+from stochaflow.processes import DiscreteGaussianProcess, Process
+from stochaflow.sampling import (
+    DDPMAncestralSampler,
+    GaussianModelDynamics,
+    GenerativeDynamics,
+    Sampler,
+    SamplerResult,
+    SamplingBatch,
+    SamplingBuilder,
+    SamplingBuilderContext,
+    SamplingObservation,
+    SamplingObserver,
+    SamplingOutput,
 )
-def test_parse_sampler_params(values, expected) -> None:
-    assert runtime.parse_sampler_params(values) == expected
-
-
-@pytest.mark.parametrize("value", ["missing", "bad-name=1", "nested={a: 1}"])
-def test_parse_sampler_params_rejects_invalid_values(value) -> None:
-    with pytest.raises(ValueError):
-        runtime.parse_sampler_params([value])
-
-
-def test_checkpoint_only_sampler_override_discards_old_params(tmp_path) -> None:
-    checkpoint = tmp_path / "best.pt"
-    _save_checkpoint(checkpoint)
-
-    resolved = runtime.resolve_sampling_inputs(
-        config_path=None,
-        checkpoint=checkpoint,
-        sampler_name="ddim",
-        sampler_params={"num_inference_steps": 1, "eta": 0.0},
-    )
-
-    assert resolved.sampler.name == "ddim"
-    assert resolved.sampler.params == {"num_inference_steps": 1, "eta": 0.0}
-
-
-def test_checkpoint_only_sampling_loads_custom_modules(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "checkpoint_sampling_extension.py"
-    module_path.write_text(
-        """
-from pathlib import Path
-
-from stochaflow.sampling import SamplingArtifactWriter
+from stochaflow.sampling.runtime import run_sampling, validate_sampling_output
+from stochaflow.scripts.cli import build_argument_parser
+from stochaflow.utils.checkpoint import CHECKPOINT_FORMAT_VERSION
+from stochaflow.utils.config import load_config_dict
 from stochaflow.utils.registry import REGISTRIES
 
 
-@REGISTRIES.sampling_artifact_writers.register("checkpoint_sampling_writer")
-class CheckpointSamplingWriter(SamplingArtifactWriter):
-    def write(self, context):
-        path = context.output_dir / "custom.txt"
-        path.write_text("ok")
-        return {"custom": Path(path)}
-""",
-        encoding="utf-8",
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    checkpoint = tmp_path / "best.pt"
-    _save_checkpoint(checkpoint)
-    payload = CheckpointManager.load_payload(checkpoint)
-    checkpoint_config = payload.get("config")
-    assert isinstance(checkpoint_config, dict)
-    checkpoint_config["extensions"]["modules"] = [
-        "checkpoint_sampling_extension"
-    ]
-    checkpoint_config["sampling"]["writers"] = [
-        {"name": "checkpoint_sampling_writer", "params": {}}
-    ]
-    torch.save(payload, checkpoint)
+class TinyDenoiser(nn.Module):
+    """Parameter-bearing model with the built-in denoiser signature."""
 
-    resolved = runtime.resolve_sampling_inputs(
-        config_path=None,
-        checkpoint=checkpoint,
-    )
+    def __init__(self) -> None:
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(0.0))
 
-    assert resolved.config.sampling.writers[0].name == "checkpoint_sampling_writer"
-    assert resolved.config.extensions.modules == [
-        "checkpoint_sampling_extension"
-    ]
-    assert (
-        REGISTRIES.sampling_artifact_writers.resolve(
-            "checkpoint_sampling_writer"
-        ).__name__
-        == "CheckpointSamplingWriter"
-    )
+    def forward(self, state: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
+        del time
+        return torch.zeros_like(state) + self.scale
 
 
-def test_checkpoint_config_persists_global_extensions(tmp_path: Path) -> None:
-    checkpoint = tmp_path / "best.pt"
-    _save_checkpoint(checkpoint)
-
-    payload = CheckpointManager.load_payload(checkpoint)
-    checkpoint_config = payload.get("config")
-
-    assert isinstance(checkpoint_config, dict)
-    assert payload.get("format_version") == 4
-    assert checkpoint_config["extensions"] == {"modules": []}
-    assert checkpoint_config["data"] == _image_data_config()
-    assert "modules" not in checkpoint_config["data"]
+REGISTRIES.models.add("stage3_tiny_model", TinyDenoiser)
 
 
-def test_config_only_finds_best_checkpoint(tmp_path) -> None:
-    checkpoint = tmp_path / "run" / "checkpoints" / "best.pt"
-    checkpoint.parent.mkdir(parents=True)
-    config = _save_checkpoint(checkpoint)
-    config.experiment.output_dir = str(tmp_path)
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(config.to_dict()), encoding="utf-8")
+class NoShapeBuilder(SamplingBuilder):
+    calls = 0
 
-    resolved = runtime.resolve_sampling_inputs(
-        config_path=config_path,
-        checkpoint=None,
-    )
-
-    assert resolved.checkpoint_path == checkpoint
-
-
-def test_external_config_overrides_sampling_section(tmp_path) -> None:
-    checkpoint = tmp_path / "best.pt"
-    config = _save_checkpoint(checkpoint)
-    config.experiment.seed = 99
-    config.data = ComponentConfig(name="external_data", params={"anything": True})
-    config.sampling.sampler = ComponentConfig(
-        name="ddim",
-        params={"num_inference_steps": 1, "eta": 0.0},
-    )
-    config.sampling.num_samples = 5
-    config.sampling.shape = [1, 12, 12]
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(config.to_dict()), encoding="utf-8")
-
-    resolved = runtime.resolve_sampling_inputs(
-        config_path=config_path,
-        checkpoint=checkpoint,
-    )
-
-    assert resolved.sampler.name == "ddim"
-    assert resolved.config.sampling.num_samples == 5
-    assert resolved.config.experiment.seed == 7
-    assert runtime.sample_shape(resolved.config, 1) == (1, 1, 12, 12)
-    assert resolved.config.data.name == "image"
-
-
-def test_external_config_rejects_incompatible_model(tmp_path) -> None:
-    checkpoint = tmp_path / "best.pt"
-    config = _save_checkpoint(checkpoint)
-    config.model.params["base_channels"] = 16
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(config.to_dict()), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="model"):
-        runtime.resolve_sampling_inputs(
-            config_path=config_path,
-            checkpoint=checkpoint,
+    def run(self) -> SamplingOutput:
+        type(self).calls += 1
+        assert self.context.shape is None
+        return SamplingOutput(
+            (SamplingBatch(torch.tensor([[self.context.seed]], dtype=torch.float32)),),
+            {"kind": "custom"},
         )
 
 
-def test_same_sampler_override_preserves_config_params(tmp_path) -> None:
-    checkpoint = tmp_path / "best.pt"
-    config = _save_checkpoint(checkpoint)
-    config.sampling.sampler = ComponentConfig(
-        name="ddpm",
-        params={"clip_denoised": False},
-    )
-    payload = CheckpointManager.load_payload(checkpoint)
-    payload["config"] = config.to_dict()
-    torch.save(payload, checkpoint)
+REGISTRIES.sampling_builders.add("stage3_no_shape", NoShapeBuilder)
 
-    resolved = runtime.resolve_sampling_inputs(
-        config_path=None,
+
+@REGISTRIES.sampling_builders.register("stage3_direct_transform")
+class DirectTransformBuilder(SamplingBuilder):
+    """Direct model transform with no Process, Dynamics, or Sampler."""
+
+    calls = 0
+
+    def run(self) -> SamplingOutput:
+        type(self).calls += 1
+        if self.context.process is not None:
+            raise TypeError("direct transform requires no Process")
+        model = self.context.model_provider.get("raw")
+        state = torch.ones(
+            (self.context.num_samples, 1), device=self.context.device
+        )
+        times = torch.zeros(
+            self.context.num_samples,
+            device=self.context.device,
+            dtype=torch.long,
+        )
+        transformed = model(state, times) + float(self.context.params["offset"])
+        return SamplingOutput(
+            (SamplingBatch(transformed.detach().cpu()),),
+            {"kind": "direct_transform"},
+        )
+
+
+@REGISTRIES.processes.register("stage3_toy_flow")
+class ToyFlowProcess(Process):
+    """Test-only probability path for a second algorithm family."""
+
+    rate: torch.Tensor
+
+    def __init__(self, *, rate: float = 1.0) -> None:
+        super().__init__()
+        self.register_buffer("rate", torch.tensor(float(rate)))
+
+
+class ToyVectorFieldDynamics(GenerativeDynamics):
+    """Test-only vector-field capability with no Gaussian API."""
+
+    def __init__(self, process: ToyFlowProcess, predict: Any) -> None:
+        self.process = process
+        self._predict = predict
+
+    def velocity(self, state: torch.Tensor, coordinate: float) -> torch.Tensor:
+        times = torch.full(
+            (state.shape[0],), coordinate, device=state.device, dtype=state.dtype
+        )
+        model_output = self._predict(state, times)
+        if not isinstance(model_output, torch.Tensor):
+            raise TypeError("toy vector field model must return a Tensor")
+        return model_output + self.process.rate.to(state)
+
+
+@REGISTRIES.samplers.register("stage3_toy_euler")
+class ToyEulerSampler(Sampler):
+    """Test-only solver for ToyVectorFieldDynamics."""
+
+    def __init__(self, *, num_steps: int = 2) -> None:
+        self.num_steps = num_steps
+
+    def sample(
+        self,
+        dynamics: GenerativeDynamics,
+        initial_state: Any,
+        *,
+        generator: torch.Generator | None = None,
+        observer: SamplingObserver | None = None,
+    ) -> SamplerResult:
+        del generator
+        if not isinstance(dynamics, ToyVectorFieldDynamics):
+            raise TypeError("toy Euler sampler requires ToyVectorFieldDynamics")
+        if not isinstance(initial_state, torch.Tensor):
+            raise TypeError("toy Euler initial state must be a Tensor")
+        state = initial_state
+        if observer is not None:
+            observer.observe(SamplingObservation(0, 1.0, state, False, {}))
+        step_size = 1.0 / self.num_steps
+        for step_index in range(1, self.num_steps + 1):
+            coordinate = 1.0 - (step_index - 1) * step_size
+            state = state - step_size * dynamics.velocity(state, coordinate)
+            if observer is not None:
+                observer.observe(
+                    SamplingObservation(
+                        step_index,
+                        1.0 - step_index * step_size,
+                        state,
+                        step_index == self.num_steps,
+                        {},
+                    )
+                )
+        return SamplerResult(state, self.num_steps, {"family": "toy_flow"})
+
+
+@REGISTRIES.sampling_builders.register("stage3_toy_flow")
+class ToyFlowSamplingBuilder(SamplingBuilder):
+    """Test-only task composition for the toy flow family."""
+
+    def run(self) -> SamplingOutput:
+        process = self.context.process
+        if not isinstance(process, ToyFlowProcess):
+            raise TypeError("toy flow builder requires ToyFlowProcess")
+        sampler_config = self.context.params["sampler"]
+        assert isinstance(sampler_config, dict)
+        sampler = cast(
+            Sampler,
+            REGISTRIES.samplers.create(
+                sampler_config["name"], **sampler_config.get("params", {})
+            ),
+        )
+        model = self.context.model_provider.get("raw")
+        dynamics = ToyVectorFieldDynamics(
+            process,
+            lambda state, time: model(state, time),
+        )
+        initial = torch.zeros(
+            (self.context.num_samples, 1), device=self.context.device
+        )
+        result = sampler.sample(dynamics, initial)
+        return SamplingOutput(
+            (SamplingBatch(result.final_state.detach().cpu()),),
+            {"family": "toy_flow", "solver": sampler_config["name"]},
+        )
+
+
+class BadResultSampler(Sampler):
+    def sample(self, dynamics, initial_state, **kwargs):
+        observer = kwargs.get("observer")
+        if observer is not None:
+            observer.observe(
+                SamplingObservation(
+                    0, dynamics.process.terminal_time, initial_state, False, {}
+                )
+            )
+            observer.observe(
+                SamplingObservation(
+                    1, dynamics.process.clean_time, initial_state, True, {}
+                )
+            )
+        return initial_state
+
+
+REGISTRIES.samplers.add("stage3_bad_result", BadResultSampler)
+
+
+class WrongShapeSampler(Sampler):
+    def sample(self, dynamics, initial_state, **kwargs):
+        observer = kwargs.get("observer")
+        if observer is not None:
+            observer.observe(
+                SamplingObservation(
+                    0, dynamics.process.terminal_time, initial_state, False, {}
+                )
+            )
+            observer.observe(
+                SamplingObservation(
+                    1, dynamics.process.clean_time, initial_state, True, {}
+                )
+            )
+        return SamplerResult(initial_state[:1], 1, {})
+
+
+REGISTRIES.samplers.add("stage3_wrong_shape", WrongShapeSampler)
+
+
+class WrongTrajectoryShapeSampler(Sampler):
+    def sample(self, dynamics, initial_state, **kwargs):
+        observer = kwargs.get("observer")
+        if observer is not None:
+            observer.observe(
+                SamplingObservation(
+                    0, dynamics.process.terminal_time, initial_state, False, {}
+                )
+            )
+            observer.observe(
+                SamplingObservation(
+                    1,
+                    dynamics.process.clean_time,
+                    initial_state[..., :1],
+                    True,
+                    {},
+                )
+            )
+        return SamplerResult(initial_state, 1, {})
+
+
+REGISTRIES.samplers.add(
+    "stage3_wrong_trajectory_shape", WrongTrajectoryShapeSampler
+)
+
+
+class MalformedLifecycleSampler(Sampler):
+    def __init__(self, *, mode: str) -> None:
+        self.mode = mode
+
+    def sample(self, dynamics, initial_state, **kwargs):
+        observer = kwargs.get("observer")
+        assert observer is not None
+        observer.observe(
+            SamplingObservation(
+                0, dynamics.process.terminal_time, initial_state, False, {}
+            )
+        )
+        if self.mode == "missing_final":
+            return SamplerResult(initial_state, 0, {})
+        if self.mode == "non_increasing":
+            observer.observe(
+                SamplingObservation(
+                    0, dynamics.process.clean_time, initial_state, True, {}
+                )
+            )
+        else:
+            observer.observe(
+                SamplingObservation(
+                    1, dynamics.process.clean_time, initial_state, True, {}
+                )
+            )
+            observer.observe(
+                SamplingObservation(
+                    2, dynamics.process.clean_time, initial_state, True, {}
+                )
+            )
+        return SamplerResult(initial_state, 1, {})
+
+
+REGISTRIES.samplers.add("stage3_malformed_lifecycle", MalformedLifecycleSampler)
+
+
+def _raw_config(*, builder: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "experiment": {"name": "test", "output_dir": "unused", "seed": 7},
+        "extensions": {"modules": []},
+        "data": {"name": "image", "params": {}},
+        "model": {"name": "stage3_tiny_model", "params": {}},
+        "process": {
+            "name": "discrete_gaussian",
+            "params": {
+                "schedule": {
+                    "name": "linear_beta",
+                    "params": {
+                        "num_timesteps": 4,
+                        "beta_start": 0.0001,
+                        "beta_end": 0.02,
+                    },
+                }
+            },
+        },
+        "objective": {"name": "ddpm_epsilon", "params": {}},
+        "sampling": {
+            "builder": builder,
+            "shape": None,
+            "num_samples": 3,
+            "batch_size": 2,
+            "seed": 11,
+            "writers": [{"name": "tensor", "params": {}}],
+        },
+    }
+
+
+def _checkpoint(path: Path, raw: dict[str, Any], *, version: int = 5) -> Path:
+    model = TinyDenoiser()
+    payload: dict[str, Any] = {
+        "format_version": version,
+        "model_state_dict": model.state_dict(),
+        "config": raw,
+    }
+    process_config = raw.get("process")
+    if process_config is not None:
+        assert isinstance(process_config, dict)
+        process = cast(
+            Process,
+            REGISTRIES.processes.create(
+                process_config["name"], **process_config["params"]
+            ),
+        )
+        payload["process_state_dict"] = process.state_dict()
+    torch.save(payload, path)
+    return path
+
+
+def test_custom_builder_runs_once_without_shape(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    NoShapeBuilder.calls = 0
+
+    result = run_sampling(
         checkpoint=checkpoint,
-        sampler_name="ddpm",
-        sampler_params={"clip_denoised": True},
-    )
-
-    assert resolved.sampler.params == {"clip_denoised": True}
-
-
-def test_checkpoint_contains_raw_and_ema_denoiser_weights(tmp_path) -> None:
-    checkpoint = tmp_path / "best.pt"
-    _save_checkpoint(checkpoint, ema=True)
-
-    payload = CheckpointManager.load_payload(checkpoint)
-
-    assert "denoiser_state_dict" in payload
-    assert "ema_denoiser_state_dict" in payload
-    first = next(iter(payload["ema_denoiser_state_dict"].values()))
-    assert torch.allclose(first, torch.full_like(first, 0.25))
-
-
-def test_run_sampling_writes_samples_trajectory_gif_and_manifest(tmp_path) -> None:
-    checkpoint = tmp_path / "run" / "checkpoints" / "best.pt"
-    checkpoint.parent.mkdir(parents=True)
-    _save_checkpoint(checkpoint, trajectory=True)
-    output_dir = tmp_path / "samples"
-
-    result = runtime.run_sampling(
-        checkpoint=checkpoint,
-        output_dir=output_dir,
+        output_dir=tmp_path / "samples",
         device_name="cpu",
     )
 
-    assert torch.load(output_dir / "samples.pt", weights_only=False).shape == (
-        3,
-        1,
-        8,
-        8,
+    assert NoShapeBuilder.calls == 1
+    assert result.builder_name == "stage3_no_shape"
+    assert result.metadata == {"kind": "custom"}
+    assert torch.equal(torch.load(result.artifacts["samples"]), torch.tensor([[11.0]]))
+
+
+def test_direct_transform_runs_without_process_or_sampler(tmp_path: Path) -> None:
+    raw = _raw_config(
+        builder={"name": "stage3_direct_transform", "params": {"offset": 3.0}}
     )
-    for name in (
-        "samples.png",
-        "trajectory.pt",
-        "trajectory.png",
-        "trajectory.gif",
-        "resolved_sampling.yaml",
-    ):
-        assert (output_dir / name).is_file()
-    manifest = yaml.safe_load((output_dir / "resolved_sampling.yaml").read_text())
-    assert manifest["sampler"]["name"] == "ddpm"
-    assert manifest["seed"] == 7
-    assert result.artifacts["trajectory_gif"] == output_dir / "trajectory.gif"
+    raw.pop("process")
+    checkpoint = _checkpoint(tmp_path / "direct.pt", raw)
+    DirectTransformBuilder.calls = 0
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        output_dir=tmp_path / "direct-samples",
+        device_name="cpu",
+    )
+
+    manifest = yaml.safe_load(result.artifacts["config"].read_text())
+    assert DirectTransformBuilder.calls == 1
+    assert result.metadata == {"kind": "direct_transform"}
+    assert manifest["process"] is None
+    assert torch.equal(
+        torch.load(result.artifacts["samples"]),
+        torch.full((3, 1), 3.0),
+    )
 
 
-def test_old_checkpoint_is_rejected_for_sampling(tmp_path) -> None:
-    checkpoint = tmp_path / "old.pt"
-    torch.save(
+def test_complete_external_sampling_config_can_omit_process(tmp_path: Path) -> None:
+    raw = _raw_config(
+        builder={"name": "stage3_direct_transform", "params": {"offset": 2.0}}
+    )
+    raw.pop("process")
+    checkpoint = _checkpoint(tmp_path / "direct.pt", raw)
+    config_path = tmp_path / "direct.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        config_path=config_path,
+        output_dir=tmp_path / "direct-samples",
+    )
+
+    assert result.metadata == {"kind": "direct_transform"}
+
+
+def test_standard_builder_rejects_missing_process_at_its_boundary(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(
+        builder={
+            "name": "standard_denoising",
+            "params": {
+                "sampler": {"name": "ddim", "params": {"num_inference_steps": 2}}
+            },
+        }
+    )
+    raw["process"] = None
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "missing-process.pt", raw)
+
+    with pytest.raises(TypeError, match="DiscreteGaussianDenoisingProcess"):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+def test_second_algorithm_family_runs_without_core_dispatch_changes(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(
+        builder={
+            "name": "stage3_toy_flow",
+            "params": {
+                "sampler": {
+                    "name": "stage3_toy_euler",
+                    "params": {"num_steps": 2},
+                }
+            },
+        }
+    )
+    raw["process"] = {"name": "stage3_toy_flow", "params": {"rate": 2.0}}
+    checkpoint = _checkpoint(tmp_path / "flow.pt", raw)
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        output_dir=tmp_path / "flow-samples",
+        device_name="cpu",
+    )
+
+    assert result.metadata == {
+        "family": "toy_flow",
+        "solver": "stage3_toy_euler",
+    }
+    assert torch.equal(
+        torch.load(result.artifacts["samples"]),
+        torch.full((3, 1), -2.0),
+    )
+
+
+def test_family_samplers_reject_cross_family_dynamics() -> None:
+    flow_process = ToyFlowProcess()
+    flow_dynamics = ToyVectorFieldDynamics(
+        flow_process, lambda state, time: torch.zeros_like(state)
+    )
+    gaussian_process = DiscreteGaussianProcess(
         {
-            "format_version": 3,
-            "model_state_dict": {},
-            "config": _raw_config(),
+            "name": "linear_beta",
+            "params": {"num_timesteps": 2},
+        }
+    )
+    gaussian_dynamics = GaussianModelDynamics(
+        gaussian_process,
+        lambda state, time: torch.zeros_like(state),
+    )
+
+    with pytest.raises(TypeError, match="GaussianDenoisingDynamics"):
+        DDPMAncestralSampler().sample(flow_dynamics, torch.zeros(1, 1))
+    with pytest.raises(TypeError, match="ToyVectorFieldDynamics"):
+        ToyEulerSampler().sample(gaussian_dynamics, torch.zeros(1, 1))
+
+
+def test_standard_builder_batches_and_records_resolved_metadata(tmp_path: Path) -> None:
+    builder = {
+        "name": "standard_denoising",
+        "params": {
+            "weights": "raw",
+            "prediction_type": "epsilon",
+            "clip_denoised": False,
+            "sampler": {
+                "name": "ddim",
+                "params": {"num_inference_steps": 2, "eta": 0.0},
+            },
+            "trajectory": {"enabled": True, "every_steps": 1},
         },
-        checkpoint,
+    }
+    raw = _raw_config(builder=builder)
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        output_dir=tmp_path / "samples",
+        device_name="cpu",
     )
 
-    with pytest.raises(ValueError, match="expected version 4"):
-        runtime.run_sampling(checkpoint=checkpoint, device_name="cpu")
+    samples = torch.load(result.artifacts["samples"])
+    trajectory = torch.load(result.artifacts["trajectory"])
+    manifest = yaml.safe_load(result.artifacts["config"].read_text())
+    assert samples.shape == (3, 2)
+    assert trajectory["step_indices"] == [0, 1, 2]
+    assert trajectory["coordinates"] == [4, 2, 0]
+    assert trajectory["states"].shape == (3, 3, 2)
+    assert manifest["metadata"]["sampler"]["name"] == "ddim"
+    assert result.metadata["weights"] == "raw"
 
 
-def test_cli_requires_config_or_checkpoint() -> None:
+def test_standard_builder_rejects_invalid_sampler_result(tmp_path: Path) -> None:
+    raw = _raw_config(
+        builder={
+            "name": "standard_denoising",
+            "params": {
+                "sampler": {"name": "stage3_bad_result", "params": {}},
+            },
+        }
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    with pytest.raises(TypeError, match="must return SamplerResult"):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+def test_standard_builder_rejects_wrong_sampler_shape(tmp_path: Path) -> None:
+    raw = _raw_config(
+        builder={
+            "name": "standard_denoising",
+            "params": {
+                "sampler": {"name": "stage3_wrong_shape", "params": {}},
+            },
+        }
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    with pytest.raises(ValueError, match="final state has shape"):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+def test_standard_builder_rejects_wrong_trajectory_shape(tmp_path: Path) -> None:
+    raw = _raw_config(
+        builder={
+            "name": "standard_denoising",
+            "params": {
+                "sampler": {
+                    "name": "stage3_wrong_trajectory_shape",
+                    "params": {},
+                },
+                "trajectory": {"enabled": True},
+            },
+        }
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    with pytest.raises(ValueError, match="trajectory step 1 has shape"):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    [
+        ("missing_final", "did not emit a final observation"),
+        ("non_increasing", "step indices must increase"),
+        ("duplicate_final", "after its final state"),
+    ],
+)
+def test_standard_builder_validates_actual_sampler_lifecycle(
+    tmp_path: Path,
+    mode: str,
+    message: str,
+) -> None:
+    raw = _raw_config(
+        builder={
+            "name": "standard_denoising",
+            "params": {
+                "sampler": {
+                    "name": "stage3_malformed_lifecycle",
+                    "params": {"mode": mode},
+                }
+            },
+        }
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    with pytest.raises(ValueError, match=message):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value", "message"),
+    [
+        ("prediction_type", "invalid", "prediction_type"),
+        ("clip_denoised", "yes", "clip_denoised"),
+    ],
+)
+def test_standard_builder_validates_external_dynamics_configuration_once(
+    tmp_path: Path,
+    parameter: str,
+    value: object,
+    message: str,
+) -> None:
+    params = {
+        "sampler": {"name": "ddim", "params": {"num_inference_steps": 2}},
+        parameter: value,
+    }
+    raw = _raw_config(
+        builder={"name": "standard_denoising", "params": params}
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+@pytest.mark.parametrize(
+    "sampler",
+    [
+        {"name": "ddpm", "params": {"start_time": 2}},
+        {"name": "ddim", "params": {"schedule": [2, 0]}},
+    ],
+)
+def test_standard_builder_rejects_nonterminal_sampler_start(
+    tmp_path: Path,
+    sampler: dict[str, Any],
+) -> None:
+    raw = _raw_config(
+        builder={
+            "name": "standard_denoising",
+            "params": {"sampler": sampler},
+        }
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    with pytest.raises(ValueError, match="initial observation at terminal time"):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+@pytest.mark.parametrize(
+    "sampler",
+    [
+        {"name": "ddpm", "params": {"end_time": 2}},
+        {"name": "ddim", "params": {"schedule": [4, 2]}},
+    ],
+)
+def test_standard_builder_rejects_nonclean_sampler_end(
+    tmp_path: Path,
+    sampler: dict[str, Any],
+) -> None:
+    raw = _raw_config(
+        builder={
+            "name": "standard_denoising",
+            "params": {"sampler": sampler},
+        }
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    with pytest.raises(ValueError, match="final observation at clean time"):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+def test_full_external_config_can_override_sampling(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    external = _raw_config(
+        builder={"name": "stage3_no_shape", "params": {"external": True}}
+    )
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(yaml.safe_dump(external), encoding="utf-8")
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        config_path=config_path,
+        output_dir=tmp_path / "samples",
+    )
+
+    assert result.builder_name == "stage3_no_shape"
+
+
+def test_full_external_config_must_match_checkpoint_model(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    external = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    external["model"]["params"] = {"incompatible": True}
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(external), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="incompatible.*model"):
+        run_sampling(checkpoint=checkpoint, config_path=config_path)
+
+
+def test_full_external_config_must_match_optional_process(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    raw["process"] = None
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    external = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(external), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="incompatible.*process"):
+        run_sampling(checkpoint=checkpoint, config_path=config_path)
+
+
+def test_sampling_only_config_can_override_checkpoint(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    sampling = _raw_config(
+        builder={"name": "stage3_no_shape", "params": {"external": True}}
+    )["sampling"]
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"sampling": sampling}),
+        encoding="utf-8",
+    )
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        config_path=config_path,
+        output_dir=tmp_path / "samples",
+    )
+
+    manifest = yaml.safe_load(result.artifacts["config"].read_text())
+    assert result.builder_name == "stage3_no_shape"
+    assert manifest["builder"]["params"] == {"external": True}
+
+
+def test_complete_config_can_locate_checkpoint(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    output_root = tmp_path / "outputs"
+    raw["experiment"]["output_dir"] = str(output_root)
+    checkpoint = output_root / "run" / "checkpoints" / "best.pt"
+    checkpoint.parent.mkdir(parents=True)
+    _checkpoint(checkpoint, raw)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    result = run_sampling(
+        config_path=config_path,
+        output_dir=tmp_path / "samples",
+    )
+
+    assert result.checkpoint_path == checkpoint
+
+
+def test_sampling_only_config_requires_explicit_checkpoint(tmp_path: Path) -> None:
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"sampling": _raw_config(builder=None)["sampling"]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires an explicit --checkpoint"):
+        run_sampling(config_path=config_path)
+
+
+def test_checkpoint_v4_is_rejected(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=4)
+
+    with pytest.raises(ValueError, match="expected version 5"):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+def test_sampling_rejects_missing_configured_process_state(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=False)
+    payload.pop("process_state_dict")
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(ValueError, match="missing required 'process_state_dict'"):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+def test_sampling_rejects_process_state_when_config_is_null(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    raw["process"] = None
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=False)
+    payload["process_state_dict"] = {}
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(ValueError, match="config.process is null"):
+        run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
+
+
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        (object(), "must return SamplingOutput"),
+        (SamplingOutput((), {}), "must not be empty"),
+        (
+            SamplingOutput(cast(tuple[SamplingBatch, ...], (object(),)), {}),
+            "must be SamplingBatch",
+        ),
+        (
+            SamplingOutput((SamplingBatch(torch.zeros(1)),), cast(Any, [])),
+            "metadata must be a mapping",
+        ),
+        (
+            SamplingOutput((SamplingBatch(torch.zeros(1)),), cast(Any, {1: "bad"})),
+            "metadata keys must be strings",
+        ),
+        (SamplingOutput((SamplingBatch(torch.zeros(1)),), {"bad": object()}), "JSON"),
+    ],
+)
+def test_sampling_output_contract_errors(output: Any, message: str) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        validate_sampling_output(output)
+
+
+def test_sampling_output_rejects_non_increasing_observations() -> None:
+    observations = (
+        SamplingObservation(0, 4, torch.zeros(1), False, {}),
+        SamplingObservation(0, 0, torch.zeros(1), True, {}),
+    )
+    with pytest.raises(ValueError, match="must increase"):
+        validate_sampling_output(
+            SamplingOutput((SamplingBatch(torch.zeros(1), observations),), {})
+        )
+
+
+def test_cli_has_no_sampler_specific_flags() -> None:
+    parser = build_argument_parser()
     with pytest.raises(SystemExit):
-        cli.main(["sample"])
+        parser.parse_args(["sample", "--checkpoint", "x.pt", "--sampler", "ddim"])
 
 
-def test_cli_parses_sampler_switch(monkeypatch, tmp_path) -> None:
-    observed = {}
-    monkeypatch.setattr(cli, "run_sampling", lambda **kwargs: observed.update(kwargs) or Namespace(
-        checkpoint_path=tmp_path / "best.pt",
-        sampler_name="ddim",
-        device="cpu",
-        seed=1,
-        used_ema=False,
-        output_dir=tmp_path,
-        artifacts={},
-    ))
-
-    cli.main(
-        [
-            "sample",
-            "--checkpoint",
-            str(tmp_path / "best.pt"),
-            "--sampler",
-            "ddim",
-            "--sampler-param",
-            "eta=0.0",
-        ]
+def test_sampling_builder_context_copies_params() -> None:
+    raw = {"nested": {"value": 1}}
+    config = load_config_dict(
+        _raw_config(builder={"name": "stage3_no_shape", "params": {}})
     )
-
-    assert observed["sampler_name"] == "ddim"
-    assert observed["sampler_param_values"] == ["eta=0.0"]
+    assert config.process is not None
+    context = SamplingBuilderContext(
+        raw,
+        DiscreteGaussianProcess(config.process.params["schedule"]),
+        object(),  # type: ignore[arg-type]
+        torch.device("cpu"),
+        1,
+        None,
+        1,
+        1,
+    )
+    context.params["nested"]["value"] = 2
+    assert raw == {"nested": {"value": 1}}
+    assert CHECKPOINT_FORMAT_VERSION == 5

@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from stochaflow.diffusion import DDPM, LinearBetaSchedule
+from stochaflow.sampling import SamplingObservation
 from stochaflow.training.diagnostics.contracts import (
     DenoiserArtifactContext,
     ProviderValidationContext,
@@ -30,7 +30,7 @@ from stochaflow.training.diagnostics.providers.sampler import (
     SamplingPerformanceProvider,
 )
 
-from .helpers import ZeroDenoiser
+from .helpers import ZeroDenoiser, gaussian_system
 
 
 def _reconstruct(**kwargs) -> ReconstructionResult:
@@ -50,12 +50,9 @@ def _reconstruct(**kwargs) -> ReconstructionResult:
 
 
 def _step_context() -> StepMetricContext:
-    diffusion = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=4),
-        model=ZeroDenoiser(),
-    )
+    process = gaussian_system(ZeroDenoiser(), num_timesteps=4).process
     return StepMetricContext(
-        diffusion=diffusion,
+        process=process,
         diagnostics={
             "timesteps": torch.tensor([1, 4]),
             "per_sample_loss": torch.tensor([1.0, 3.0]),
@@ -76,7 +73,7 @@ def test_step_metric_providers_produce_disjoint_namespaced_metrics() -> None:
     reconstruction = X0ReconstructionMetricProvider(timesteps=[1, 4])
     reconstruction.validate(
         ProviderValidationContext(
-            diffusion=context.diffusion,
+            process=context.process,
             sample_shape=(1, 2, 2),
         )
     )
@@ -101,7 +98,7 @@ def test_x0_reconstruction_uses_configured_ema_setting() -> None:
 
     context = _step_context()
     context = StepMetricContext(
-        diffusion=context.diffusion,
+        process=context.process,
         diagnostics=context.diagnostics,
         clean_samples=context.clean_samples,
         sample_num=context.sample_num,
@@ -151,7 +148,14 @@ def test_artifact_providers_write_expected_layout_and_detect_collisions(tmp_path
     )
     result = SamplingResult(
         samples=torch.zeros(2, 1, 4, 4),
-        trajectory={2: torch.ones(2, 1, 4, 4), 0: torch.zeros(2, 1, 4, 4)},
+        trajectory=(
+            SamplingObservation(
+                0, 2, torch.ones(2, 1, 4, 4), False, {}
+            ),
+            SamplingObservation(
+                1, 0, torch.zeros(2, 1, 4, 4), True, {}
+            ),
+        ),
         duration_seconds=0.1,
     )
     context = SamplerArtifactContext(

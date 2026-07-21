@@ -66,7 +66,7 @@ def _to_float_tensor(image: Any, *, normalize: bool) -> torch.Tensor:
     return tensor
 
 
-def validate_size(value: list[int], *, path: str) -> tuple[int, int]:
+def validate_size(value: object, *, path: str) -> tuple[int, int]:
     if not isinstance(value, list) or len(value) != 2:
         raise ValueError(f"{path} must contain [height, width]")
     if any(
@@ -76,7 +76,7 @@ def validate_size(value: list[int], *, path: str) -> tuple[int, int]:
         for dimension in value
     ):
         raise ValueError(f"{path} dimensions must be positive integers")
-    return value[0], value[1]
+    return int(value[0]), int(value[1])
 
 
 class ImageTransform:

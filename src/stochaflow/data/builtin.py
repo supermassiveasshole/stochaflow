@@ -48,16 +48,18 @@ def _seed_worker(worker_id: int) -> None:
 
 
 def _validate_loader(config: LoaderRecipeConfig, *, path: str) -> None:
+    batch_size = cast(object, config.batch_size)
     if (
-        not isinstance(config.batch_size, int)
-        or isinstance(config.batch_size, bool)
-        or config.batch_size <= 0
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or batch_size <= 0
     ):
         raise ConfigError(f"{path}.batch_size must be positive")
+    num_workers = cast(object, config.num_workers)
     if (
-        not isinstance(config.num_workers, int)
-        or isinstance(config.num_workers, bool)
-        or config.num_workers < 0
+        not isinstance(num_workers, int)
+        or isinstance(num_workers, bool)
+        or num_workers < 0
     ):
         raise ConfigError(f"{path}.num_workers must be non-negative")
     for name in (
@@ -71,10 +73,11 @@ def _validate_loader(config: LoaderRecipeConfig, *, path: str) -> None:
     if config.persistent_workers and config.num_workers == 0:
         raise ConfigError(f"{path}.persistent_workers requires num_workers > 0")
     if config.prefetch_factor is not None:
+        prefetch_factor = cast(object, config.prefetch_factor)
         if (
-            not isinstance(config.prefetch_factor, int)
-            or isinstance(config.prefetch_factor, bool)
-            or config.prefetch_factor <= 0
+            not isinstance(prefetch_factor, int)
+            or isinstance(prefetch_factor, bool)
+            or prefetch_factor <= 0
         ):
             raise ConfigError(f"{path}.prefetch_factor must be positive")
         if config.num_workers == 0:
@@ -469,20 +472,22 @@ class MultiResolutionImageDataBuilder(DataBuilder):
         source_ids: set[str] = set()
         weights: list[float | None] = []
         for index, source in enumerate(self.config.sources):
+            source_id = cast(object, source.id)
             if (
-                not isinstance(source.id, str)
-                or not source.id.strip()
-                or source.id in source_ids
+                not isinstance(source_id, str)
+                or not source_id.strip()
+                or source_id in source_ids
             ):
                 raise ConfigError(
                     f"data.params.sources[{index}].id must be non-empty and unique"
                 )
             source_ids.add(source.id)
             if source.sampling_weight is not None:
+                sampling_weight = cast(object, source.sampling_weight)
                 if (
-                    not isinstance(source.sampling_weight, (int, float))
-                    or isinstance(source.sampling_weight, bool)
-                    or source.sampling_weight <= 0
+                    not isinstance(sampling_weight, (int, float))
+                    or isinstance(sampling_weight, bool)
+                    or sampling_weight <= 0
                 ):
                     raise ConfigError(
                         f"data.params.sources[{index}].sampling_weight must be positive"
@@ -498,10 +503,11 @@ class MultiResolutionImageDataBuilder(DataBuilder):
             raise ConfigError("data.params.batching.buckets must not be empty")
         bucket_names: set[str] = set()
         for index, bucket in enumerate(self.config.batching.buckets):
+            bucket_name = cast(object, bucket.name)
             if (
-                not isinstance(bucket.name, str)
-                or not bucket.name.strip()
-                or bucket.name in bucket_names
+                not isinstance(bucket_name, str)
+                or not bucket_name.strip()
+                or bucket_name in bucket_names
             ):
                 raise ConfigError(
                     f"data.params.batching.buckets[{index}].name must be unique"
@@ -511,19 +517,21 @@ class MultiResolutionImageDataBuilder(DataBuilder):
                 not isinstance(value, int)
                 or isinstance(value, bool)
                 or value <= 0
-                for value in (bucket.height, bucket.width)
+                for value in cast(
+                    tuple[object, object], (bucket.height, bucket.width)
+                )
             ):
                 raise ConfigError(
                     f"data.params.batching.buckets[{index}] dimensions must be positive"
                 )
-        if (
-            not isinstance(self.config.batching.base_bucket, str)
-            or self.config.batching.base_bucket not in bucket_names
-        ):
+        base_bucket = cast(object, self.config.batching.base_bucket)
+        if not isinstance(base_bucket, str) or base_bucket not in bucket_names:
             raise ConfigError(
                 "data.params.batching.base_bucket must name a configured bucket"
             )
-        if not isinstance(self.config.batching.dynamic_batch_size, bool):
+        if not isinstance(
+            cast(object, self.config.batching.dynamic_batch_size), bool
+        ):
             raise ConfigError(
                 "data.params.batching.dynamic_batch_size must be boolean"
             )

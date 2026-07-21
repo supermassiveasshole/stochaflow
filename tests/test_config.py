@@ -18,15 +18,16 @@ from stochaflow.utils.registry import REGISTRIES, RegistryError
 def test_load_ddpm_mnist_config() -> None:
     config = load_config(Path("configs/ddpm_mnist.yaml"))
     assert isinstance(config, StochaflowConfig)
+    assert config.process is not None
     assert config.model.name == "unet"
     assert config.data.name == "image"
     assert config.data.params["source"]["dataset"] == "MNIST"
     assert config.data.params["image"]["channels"] == 1
     assert config.data.params["image"]["size"] == [32, 32]
     assert config.data.params["partition"]["mode"] == "holdout"
-    assert config.diffusion.name == "ddpm"
+    assert config.process.name == "discrete_gaussian"
     assert len(config.logging.backends) >= 1
-    assert config.diffusion.noise_schedule.params["num_timesteps"] == 1000
+    assert config.process.params["schedule"]["params"]["num_timesteps"] == 1000
     assert config.data.params["loader"]["num_workers"] == 0
     assert config.lr_scheduler.name == "cosine"
     assert config.lr_scheduler.interval == "epoch"
@@ -34,9 +35,10 @@ def test_load_ddpm_mnist_config() -> None:
         "T_max": "auto",
         "eta_min": 0.00002,
     }
-    assert config.sampling.sampler is not None
-    assert config.sampling.sampler.name == "ddim"
-    assert config.sampling.sampler.params == {
+    assert config.sampling.builder is not None
+    sampler = config.sampling.builder.params["sampler"]
+    assert sampler["name"] == "ddim"
+    assert sampler["params"] == {
         "num_inference_steps": 100,
         "eta": 0.0,
     }
@@ -51,8 +53,10 @@ def test_load_ddpm_mnist_config() -> None:
         "tensor",
         "image",
     ]
-    assert config.sampling.debug.trajectory.enabled
-    assert config.sampling.debug.trajectory.params == {"step_interval": 5}
+    assert config.sampling.builder.params["trajectory"] == {
+        "enabled": True,
+        "every_steps": 5,
+    }
     assert config.trainer.num_epochs == 30
     assert config.trainer.early_stopping.patience == 7
     assert config.trainer.early_stopping.min_delta == 0.00001
@@ -71,7 +75,12 @@ import torch.nn as nn
 from stochaflow.extensions import (
     DataBuilder,
     DataLoaders,
+    Process,
     REGISTRIES,
+    Sampler,
+    SamplerResult,
+    SamplingBuilder,
+    SamplingOutput,
     SamplingArtifactWriter,
 )
 
@@ -82,12 +91,21 @@ class ConfigExtensionModel(nn.Module):
         return inputs
 
 
-@REGISTRIES.diffusions.register("config_extension_diffusion")
-class ConfigExtensionDiffusion(nn.Module):
-    def __init__(self, model, noise_schedule):
-        super().__init__()
-        self.model = model
-        self.noise_schedule = noise_schedule
+@REGISTRIES.processes.register("config_extension_process")
+class ConfigExtensionProcess(Process):
+    pass
+
+
+@REGISTRIES.samplers.register("config_extension_sampler")
+class ConfigExtensionSampler(Sampler):
+    def sample(self, dynamics, initial_state, **kwargs):
+        return SamplerResult(initial_state, 0, {})
+
+
+@REGISTRIES.sampling_builders.register("config_extension_sampling_builder")
+class ConfigExtensionSamplingBuilder(SamplingBuilder):
+    def run(self):
+        return SamplingOutput((), {})
 
 
 @REGISTRIES.data_builders.register("config_extension_builder")
@@ -117,9 +135,15 @@ class ConfigExtensionWriter(SamplingArtifactWriter):
     assert REGISTRIES.models.resolve("config_extension_model").__name__ == (
         "ConfigExtensionModel"
     )
-    assert REGISTRIES.diffusions.resolve(
-        "config_extension_diffusion"
-    ).__name__ == "ConfigExtensionDiffusion"
+    assert REGISTRIES.processes.resolve(
+        "config_extension_process"
+    ).__name__ == "ConfigExtensionProcess"
+    assert REGISTRIES.samplers.resolve(
+        "config_extension_sampler"
+    ).__name__ == "ConfigExtensionSampler"
+    assert REGISTRIES.sampling_builders.resolve(
+        "config_extension_sampling_builder"
+    ).__name__ == "ConfigExtensionSamplingBuilder"
     assert (
         REGISTRIES.data_builders.resolve("config_extension_builder").__name__
         == "ConfigExtensionBuilder"
@@ -168,15 +192,15 @@ def test_config_rejects_empty_data_builder_name() -> None:
 def test_load_ddpm_flowers102_config() -> None:
     config = load_config(Path("configs/ddpm_flowers102.yaml"))
     assert isinstance(config, StochaflowConfig)
+    assert config.process is not None
     assert config.model.name == "unet"
     assert config.data.params["source"]["dataset"] == "Flowers102"
     assert config.data.params["image"]["size"] == [64, 64]
     assert config.data.params["partition"]["mode"] == "official"
     assert config.data.params["loader"]["batch_size"] == 64
-    assert config.diffusion.name == "ddpm"
-    assert config.diffusion.params["clip_denoised"] is True
-    assert config.diffusion.noise_schedule.name == "linear_beta"
-    assert config.diffusion.noise_schedule.params["num_timesteps"] == 1000
+    assert config.process.name == "discrete_gaussian"
+    assert config.process.params["schedule"]["name"] == "linear_beta"
+    assert config.process.params["schedule"]["params"]["num_timesteps"] == 1000
     assert config.optimizer.params["lr"] == 0.0001
     assert config.lr_scheduler.name == "warmup_cosine"
     assert config.lr_scheduler.interval == "step"
@@ -198,32 +222,53 @@ def test_load_ddpm_flowers102_config() -> None:
 def test_load_ddim_cifar10_config() -> None:
     config = load_config(Path("configs/ddim_cifar10.yaml"))
 
-    assert config.diffusion.name == "ddim"
-    assert config.diffusion.noise_schedule.name == "linear_beta"
-    assert config.diffusion.params["num_inference_steps"] == 100
-    assert config.diffusion.params["eta"] == 0.0
+    assert config.process is not None
+    assert config.process.name == "discrete_gaussian"
+    assert config.process.params["schedule"]["name"] == "linear_beta"
+    assert config.sampling.builder is not None
+    assert config.sampling.builder.params["sampler"]["name"] == "ddim"
+    assert config.sampling.builder.params["sampler"]["params"]["eta"] == 0.0
     assert config.objective.name == "ddpm_epsilon"
 
 
-def test_legacy_ddpm_scheduler_config_migrates_to_noise_schedule() -> None:
+def test_legacy_diffusion_config_is_rejected() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    diffusion = raw["diffusion"]
-    diffusion["scheduler"] = diffusion.pop("noise_schedule")
-    diffusion["scheduler"]["name"] = "linear_ddpm"
+    raw["diffusion"] = raw.pop("process")
+
+    with pytest.raises(ConfigError, match=r"config\.diffusion"):
+        load_config_dict(raw)
+
+
+@pytest.mark.parametrize("declaration", [None, "missing"])
+def test_process_is_optional_and_resolves_to_null(declaration: object) -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    if declaration == "missing":
+        raw.pop("process")
+    else:
+        raw["process"] = None
 
     config = load_config_dict(raw)
 
-    assert config.diffusion.noise_schedule.name == "linear_beta"
+    assert config.process is None
+    assert config.to_dict()["process"] is None
 
 
-def test_config_rejects_legacy_and_current_schedule_keys_together() -> None:
+@pytest.mark.parametrize("declaration", [[], "discrete_gaussian", 3])
+def test_optional_process_rejects_non_mapping_declarations(
+    declaration: object,
+) -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["diffusion"]["scheduler"] = {
-        "name": "linear_ddpm",
-        "params": {"num_timesteps": 1000},
-    }
+    raw["process"] = declaration
 
-    with pytest.raises(ConfigError, match="both scheduler and noise_schedule"):
+    with pytest.raises(ConfigError, match=r"config\.process must be a mapping"):
+        load_config_dict(raw)
+
+
+def test_config_rejects_empty_process_name_when_present() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["process"]["name"] = ""
+
+    with pytest.raises(ConfigError, match="process.name"):
         load_config_dict(raw)
 
 
@@ -332,12 +377,11 @@ def test_sampling_section_is_optional() -> None:
 
     config = load_config_dict(raw)
 
-    assert config.sampling.sampler is None
+    assert config.sampling.builder is None
     assert config.sampling.shape is None
     assert config.sampling.num_samples == 16
     assert config.sampling.batch_size == 16
     assert [writer.name for writer in config.sampling.writers] == ["tensor"]
-    assert not config.sampling.debug.trajectory.enabled
 
 
 @pytest.mark.parametrize(

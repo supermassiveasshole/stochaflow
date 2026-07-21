@@ -1,19 +1,58 @@
 # Stochaflow
 
-Stochaflow is a research-oriented Python project for stochastic flows. The
-current implementation includes config-driven DDPM and DDIM training and
-sampling paths for MNIST, CIFAR-10, and Oxford Flowers 102.
+Stochaflow is a research-oriented Python framework for generative modeling
+through probability paths, generative dynamics, and numerical samplers. The
+current implementation focuses on config-driven DDPM and DDIM training and
+sampling for MNIST, CIFAR-10, and Oxford Flowers 102.
 
 The codebase is organized around registries and config-driven components: thin
-data builders, sampling artifact writers, models, diffusion processes,
-objectives, optimizers, diagnostics, and loggers are selected from YAML.
+data builders, models, optional probability processes, complete samplers, task sampling
+builders, artifact writers, objectives, optimizers, diagnostics, and loggers
+are selected from YAML.
+
+## Scope
+
+Stochaflow is intended to cover the probability-transport family of generative
+methods. Its first-class scope includes diffusion and score-based models,
+probability-flow ODEs, flow matching, rectified flows, stochastic interpolants,
+continuous flows, and their ODE/SDE/discrete samplers. These methods may use
+stochastic or deterministic trajectories, but all transport samples from a
+simple reference distribution toward a data distribution.
+
+The project is not intended to define one universal abstraction for every
+generative model. Autoregressive models, GANs, VAEs, energy-based models, and
+discrete invertible flows may be integrated through compatible extension
+lifecycles, but the core runtime will not acquire task-specific branches or
+artificial Process/Sampler requirements solely to encompass them.
+
+The architectural boundary is deliberately compositional, but it is not one
+universal mathematical interface. The framework standardizes registration,
+configuration, checkpointing, and the complete Sampler lifecycle. Each
+algorithm family defines the Process and Dynamics capabilities it needs, while a
+SamplingBuilder assembles compatible family components with task-specific
+models, conditions, guidance, and initial states. Not every method is required
+to use every role.
+
+| Layer | Shared responsibility | Deliberately not shared |
+| --- | --- | --- |
+| Framework | Registry, config, checkpoint, `Sampler.sample()` lifecycle | Mathematical compatibility |
+| Algorithm family | Cohesive optional Process, Dynamics, and Sampler contracts | A universal `predict`, `drift`, or `step` API |
+| Task | Model adaptation, condition, guidance, initialization, artifacts | Core runner branches |
+
+The implemented Gaussian family uses `DiscreteGaussianDenoisingProcess`,
+`GaussianDenoisingDynamics`, and DDPM/DDIM. A future flow-matching or score-SDE
+family may define a vector field or reverse SDE with its own compatible solver;
+it does not need to implement Gaussian behavior or change the core runtime.
 
 ## Status
 
 Implemented:
 
 - DDPM/DDIM epsilon-prediction training
-- DDPM and DDIM reverse sampling with sampler-specific debug trajectories
+- model-free discrete Gaussian Process with marginal and posterior mathematics
+- Gaussian model Dynamics with epsilon/x0/v/score prediction conversion
+- registered DDPM and DDIM Samplers with one complete `sample()` interface
+- registered SamplingBuilder composition and observer-based trajectories
 - beta-native linear and alpha-bar-native cosine noise schedules
 - a thin, modality-neutral `DataBuilder -> DataLoaders` extension contract
 - built-in image, super-resolution, and multi-resolution image recipes
@@ -31,7 +70,9 @@ Implemented:
 Still evolving:
 
 - faster samplers and broader learned/perceptual evaluation metrics
-- broader stochastic-flow abstractions beyond diffusion
+- registered TrainingStrategy and Loss contracts
+- probability-flow ODE, flow-matching, rectified-flow, and continuous-flow
+  implementations beyond the current diffusion baseline
 
 ## Installation
 
@@ -209,27 +250,28 @@ uv run stochaflow sample \
   --checkpoint outputs/<run>/checkpoints/best.pt
 ```
 
-Switch a DDPM-trained denoiser to DDIM sampling without writing another config:
+Switch a DDPM-trained denoiser to DDIM by supplying an external sampling YAML:
 
 ```bash
 uv run stochaflow sample \
   --checkpoint outputs/<run>/checkpoints/best.pt \
-  --sampler ddim \
-  --sampler-param num_inference_steps=100 \
-  --sampler-param eta=0.0
+  --config path/to/sampling.yaml
 ```
 
-`--sampler-param KEY=VALUE` is repeatable and parses YAML scalar/list values.
-When `--sampler` changes the configured sampler name, its previous constructor
-parameters are discarded before the CLI parameters are applied.
+Sampler selection and solver parameters belong to `sampling.builder.params`;
+the CLI intentionally has no sampler-specific flags. A custom SamplingBuilder
+may instead construct conditions, guidance, multiple Samplers, or an initial
+state without requiring `sampling.shape`.
 
 You can alternatively pass only `--config`; Stochaflow then finds the newest
 `best.pt` under `experiment.output_dir`. With both inputs, the checkpoint
-provides weights while the external config supplies the complete sampling section
-after model, training diffusion, and noise-schedule compatibility checks.
+provides weights while a lightweight external file supplies the complete
+`sampling` section and optional `extensions`. A complete external config is also
+accepted, with model and Process compatibility checks. Checkpoint and external
+`extensions.modules` are merged in stable order before Builder construction.
 
-EMA denoiser weights are used when `ema.enabled` and `ema.use_for_sampling` are
-both true. Declared `sampling.writers` decide the outputs: `tensor` writes PT
+The standard builder uses EMA model weights when `ema.enabled` and
+`ema.use_for_sampling` are both true. Declared `sampling.writers` decide the outputs: `tensor` writes PT
 files, `image` validates NCHW data and writes PNG/GIF artifacts, and extensions
 can write domain formats such as NetCDF. Every run also writes
 `resolved_sampling.yaml`.
@@ -252,12 +294,12 @@ Important sections:
 - `experiment`: run name, seed, and output directory
 - `data`: registered builder name plus builder-owned parameters
 - `model`: registered model name and constructor parameters
-- `diffusion`: process type, forward noise schedule, and sampler parameters
+- `process`: optional registered model-free probability process and its parameters
 - `objective`: training objective
 - `optimizer`: optimizer name and hyperparameters
 - `lr_scheduler`: optional optimizer learning-rate scheduler
 - `ema`: optional exponential moving average tracking and sampling policy
-- `sampling`: sample shape/batching, sampler selection, writers, and debug trajectory
+- `sampling`: optional task Builder, shape/batching, and artifact writers
 - `diagnostics`: optional denoiser and multi-sampler training diagnostics
 - `trainer`: loop, device, gradient, and early stopping policy
 - `logging`: metric logging backends
@@ -288,16 +330,17 @@ posterior DDPM sampling, and a warmup-cosine optimizer LR schedule.
 `src/stochaflow/models/`
 : UNet, residual blocks, attention blocks, and timestep embeddings.
 
-`src/stochaflow/diffusion/`
-: diffusion processes, objectives, and the class-based `noise_schedules/`
-  package. Noise-path abstractions, discrete VP storage, and concrete
-  parameterizations are kept in separate modules.
+`src/stochaflow/processes/`
+: model-free Process roots, Gaussian probability-path capabilities, concrete
+  processes, and class-based `noise_schedules/` parameterizations.
 
 `src/stochaflow/training/`
-: trainer, train-step adapters, diagnostics, reporting, and EMA.
+: trainer, the temporary Gaussian training bridge, objectives, diagnostics,
+  reporting, and EMA.
 
 `src/stochaflow/sampling/`
-: checkpoint sampling runtime and registered tensor/image artifact writers.
+: unified Samplers and observers, task SamplingBuilders, checkpoint sampling
+  runtime, and registered tensor/image artifact writers.
 
 `src/stochaflow/utils/`
 : config loading, registries, factories, checkpointing, logging, and seeding.
@@ -328,7 +371,7 @@ stochaflow/
   configs/
   src/stochaflow/
     data/
-    diffusion/
+    processes/
     models/
     sampling/
     scripts/

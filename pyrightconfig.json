@@ -49,5 +49,6 @@
   "useLibraryCodeForTypes": true,
   "reportMissingTypeStubs": "none",
   "reportPrivateImportUsage": "none",
+  "reportUnnecessaryIsInstance": "error",
   "reportUnsupportedDunderAll": "none"
 }

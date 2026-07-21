@@ -418,7 +418,7 @@ def _run_single_run(
         artifact_paths: dict[str, Path] | None = None
         if (
             options.sample_after_training
-            and config.sampling.shape is not None
+            and config.sampling.builder is not None
         ):
             if result.best_checkpoint is None:
                 raise RuntimeError(

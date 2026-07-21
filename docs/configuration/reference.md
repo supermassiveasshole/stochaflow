@@ -107,58 +107,6 @@ models Registry 名称。
 - 必填：否
 - 默认值：`{}`
 
-## `diffusion`
-
-(config-field-path-diffusion)=
-### `diffusion`
-
-训练扩散过程及其前向噪声路径。
-
-- 类型：`mapping`
-- 必填：是
-
-(config-field-path-diffusion-name)=
-### `diffusion.name`
-
-diffusions Registry 名称；也决定默认训练后采样器。
-
-- 类型：`str`
-- 必填：是
-
-(config-field-path-diffusion-noise-schedule)=
-### `diffusion.noise_schedule`
-
-前向噪声 schedule 的 Registry 声明。
-
-- 类型：`mapping`
-- 必填：是
-
-(config-field-path-diffusion-noise-schedule-name)=
-### `diffusion.noise_schedule.name`
-
-noise_schedules Registry 名称。
-
-- 类型：`str`
-- 必填：是
-
-(config-field-path-diffusion-noise-schedule-params)=
-### `diffusion.noise_schedule.params`
-
-噪声 schedule 构造参数。
-
-- 类型：`mapping[str, any]`
-- 必填：否
-- 默认值：`{}`
-
-(config-field-path-diffusion-params)=
-### `diffusion.params`
-
-扩散过程构造参数；model 与 noise_schedule 由运行时注入。
-
-- 类型：`mapping[str, any]`
-- 必填：否
-- 默认值：`{}`
-
 ## `objective`
 
 (config-field-path-objective)=
@@ -181,6 +129,34 @@ objectives Registry 名称。
 ### `objective.params`
 
 目标函数构造参数。
+
+- 类型：`mapping[str, any]`
+- 必填：否
+- 默认值：`{}`
+
+## `process`
+
+(config-field-path-process)=
+### `process`
+
+可选的 model-free、可迁移且可 checkpoint 的 probability process 声明；null 表示算法不需要 Process。
+
+- 类型：`mapping | null`
+- 必填：否
+- 默认值：`null`
+
+(config-field-path-process-name)=
+### `process.name`
+
+processes Registry 名称。
+
+- 类型：`str`
+- 必填：是
+
+(config-field-path-process-params)=
+### `process.params`
+
+Process 构造参数；模型、condition 和 sampler 不进入此处。
 
 - 类型：`mapping[str, any]`
 - 必填：否
@@ -343,35 +319,33 @@ lr_schedulers Registry 名称；null 禁用调度器。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{batch_size: 16, debug: {trajectory: {enabled: false, params: {}}}, num_samples: 16, sampler: null, seed: null, shape: null, writers: [{name: tensor, params: {}}]}`
+- 默认值：`{batch_size: 16, builder: null, num_samples: 16, seed: null, shape: null, writers: [{name: tensor, params: {}}]}`
 
-(config-field-path-sampling-sampler)=
-### `sampling.sampler`
+(config-field-path-sampling-builder)=
+### `sampling.builder`
 
-可选采样器覆盖；null 时使用 diffusion.name 与 diffusion.params。
+完整拥有采样装配和执行的 sampling_builders Registry 声明；null 禁用默认训练后采样。
 
 - 类型：`mapping | null`
 - 必填：否
 - 默认值：`null`
 
-(config-field-path-sampling-sampler-name)=
-### `sampling.sampler.name`
+(config-field-path-sampling-builder-name)=
+### `sampling.builder.name`
 
-作为采样器使用的 diffusions Registry 名称。
+sampling_builders Registry 名称。
 
 - 类型：`str`
 - 必填：是
-- CLI 覆盖：`sample --sampler`
 
-(config-field-path-sampling-sampler-params)=
-### `sampling.sampler.params`
+(config-field-path-sampling-builder-params)=
+### `sampling.builder.params`
 
-采样器构造参数；CLI --sampler-param 在其后覆盖。
+Builder 独占参数；standard_denoising 在其中声明权重、prediction type、sampler 和 trajectory。
 
 - 类型：`mapping[str, any]`
 - 必填：否
 - 默认值：`{}`
-- CLI 覆盖：`sample --sampler-param`
 
 (config-field-path-sampling-shape)=
 ### `sampling.shape`
@@ -434,42 +408,6 @@ sampling_artifact_writers Registry 名称。
 ### `sampling.writers[].params`
 
 writer 构造参数；图像网格与 GIF 参数属于 image writer。
-
-- 类型：`mapping[str, any]`
-- 必填：否
-- 默认值：`{}`
-
-(config-field-path-sampling-debug)=
-### `sampling.debug`
-
-仅用于调试的采样 artifact 设置。
-
-- 类型：`mapping`
-- 必填：否
-- 默认值：`{trajectory: {enabled: false, params: {}}}`
-
-(config-field-path-sampling-debug-trajectory)=
-### `sampling.debug.trajectory`
-
-反向过程 trajectory 的输出设置。
-
-- 类型：`mapping`
-- 必填：否
-- 默认值：`{enabled: false, params: {}}`
-
-(config-field-path-sampling-debug-trajectory-enabled)=
-### `sampling.debug.trajectory.enabled`
-
-是否保存原始 trajectory、静态网格和 GIF。
-
-- 类型：`bool`
-- 必填：否
-- 默认值：`false`
-
-(config-field-path-sampling-debug-trajectory-params)=
-### `sampling.debug.trajectory.params`
-
-透传给采样器 trajectory 方法的参数。
 
 - 类型：`mapping[str, any]`
 - 必填：否
@@ -783,8 +721,8 @@ logger 构造参数；output_dir 与 run_name 由运行时注入。
 
 定义前向噪声路径以及离散 VP 系数。
 
-- 基类/契约：`stochaflow.diffusion.NoiseSchedule`
-- 配置位置：`diffusion.noise_schedule.name / diffusion.noise_schedule.params`
+- 基类/契约：`stochaflow.processes.GaussianNoiseSchedule`
+- 配置位置：`process.params.schedule`
 
 (config-component-noise_schedules-cosine-alpha-bar)=
 #### `cosine_alpha_bar`
@@ -810,37 +748,68 @@ logger 构造参数；output_dir 与 run_name 由运行时注入。
 | `beta_end` | 最后一步 beta；默认 0.02。 |
 | `dtype` | 系数 Tensor dtype；仅建议在 Python 配置中使用，YAML 保持默认。 |
 
-(config-registry-name-diffusions)=
-### `diffusions`
+(config-registry-name-processes)=
+### `processes`
 
-构建训练/采样扩散过程；同一 Registry 也供 sampling.sampler 选择。
+按算法需要构建不持有模型且不执行采样循环的 probability process。
 
-- 基类/契约：`torch.nn.Module`
-- 配置位置：`diffusion.name / diffusion.params 或 sampling.sampler`
+- 基类/契约：`stochaflow.processes.Process`
+- 配置位置：`process.name / process.params`
 
-(config-component-diffusions-ddim)=
+(config-component-processes-discrete-gaussian)=
+#### `discrete_gaussian`
+
+从构造期 schedule 固定 coefficient snapshot，并提供 marginal 与 adjacent posterior 的离散 Gaussian process。
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `schedule` | noise_schedules Registry 的组件声明。 |
+
+(config-registry-name-samplers)=
+### `samplers`
+
+在与算法 family 兼容的 Dynamics 和 initial state 上执行完整 solver 生命周期。
+
+- 基类/契约：`stochaflow.sampling.Sampler`
+- 配置位置：`sampling.builder.params.sampler 或自定义 SamplingBuilder 参数`
+
+(config-component-samplers-ddim)=
 #### `ddim`
 
-支持步数压缩和 eta 随机性的 DDIM 反向过程。
-
-运行时注入（不得在 YAML 中覆盖）：`model`, `noise_schedule`。
+支持非均匀 state schedule 与 eta 随机性的 DDIM solver。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `num_inference_steps` | 推理反向步数；null 使用完整 schedule。 |
-| `eta` | 随机性系数；0 为确定性 DDIM。 |
-| `clip_denoised` | 是否将预测的 x0 裁剪到负一到一。 |
+| `num_inference_steps` | 自动生成 schedule 时的外层 transition 数。 |
+| `schedule` | 可选、位于零到 T 且严格递减的显式 state schedule；可表达局部降噪。 |
+| `eta` | 随机性系数；0 不消费 transition RNG。 |
 
-(config-component-diffusions-ddpm)=
+(config-component-samplers-ddpm)=
 #### `ddpm`
 
-标准随机 DDPM 反向过程。
-
-运行时注入（不得在 YAML 中覆盖）：`model`, `noise_schedule`。
+在离散 Gaussian dynamics 上执行 adjacent ancestral transition。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `clip_denoised` | 是否将预测的 x0 裁剪到负一到一。 |
+| `start_time` | 可选起始 state time；null 使用 process terminal time。 |
+| `end_time` | 结束 state time；默认 0。 |
+
+(config-registry-name-sampling-builders)=
+### `sampling_builders`
+
+装配 initial state、模型、Dynamics、Sampler、observer 和 writer-ready batch。
+
+- 基类/契约：`stochaflow.sampling.SamplingBuilder`
+- 配置位置：`sampling.builder.name / sampling.builder.params`
+
+(config-component-sampling_builders-standard-denoising)=
+#### `standard_denoising`
+
+固定 Tensor shape 的标准 Gaussian denoising sampling recipe。
+
+运行时注入（不得在 YAML 中覆盖）：`context`。
+
+无组件级配置参数。
 
 (config-registry-name-objectives)=
 ### `objectives`
@@ -1107,7 +1076,5 @@ PyTorch StepLR。
 | --- | --- | --- | --- |
 | `--config` | 否 | `—` | 可选外部配置；其 sampling 设置覆盖 checkpoint 中的采样设置。 |
 | `--checkpoint` | 否 | `—` | checkpoint 文件或运行目录；仅给 config 时自动查找最新 best.pt。 |
-| `--sampler` | 否 | `—` | 覆盖采样器 Registry 名称。 |
-| `--sampler-param` | 否 | `—` | KEY=VALUE 形式的可重复采样器参数覆盖，值按 YAML 解析。 |
 | `--device` | 否 | `—` | 覆盖采样设备。 |
 | `--output-dir` | 否 | `—` | 覆盖生成 artifact 的目录。 |

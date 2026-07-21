@@ -21,6 +21,14 @@ research-notes/part-2-ddpm
 research-notes/part-3-ddim
 ```
 
+```{toctree}
+:maxdepth: 1
+:caption: 设计与开发
+
+custom-code-extension-support-plan
+development/extension-refactor-decisions
+```
+
 ## 快速入口
 
 - [配置手册](configuration/index.md)：从最小 YAML 到多源数据、K-fold、自定义组件、

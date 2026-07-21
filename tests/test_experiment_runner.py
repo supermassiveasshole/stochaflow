@@ -11,7 +11,6 @@ from torch.utils.data import DataLoader, TensorDataset
 import yaml
 
 from stochaflow.data import DataLoaders
-from stochaflow.sampling.runtime import sample_shape
 from stochaflow.scripts import experiment_runner
 from stochaflow.utils.config import load_config
 
@@ -90,16 +89,8 @@ def _training_components(trainer: RecordingTrainer, logger: RecordingLogger):
         trainer=trainer,
         logger=logger,
         checkpoint_manager=SimpleNamespace(load=lambda *args, **kwargs: None),
-        diffusion=SimpleNamespace(),
+        process=SimpleNamespace(),
     )
-
-
-def test_sample_shape_uses_sampling_config_independent_of_data() -> None:
-    config = load_config(Path("configs/ddpm_mnist_flowers102.yaml"))
-
-    shape = sample_shape(config, 5)
-
-    assert shape == torch.Size((5, 3, 64, 64))
 
 
 def test_runner_uses_valid_loss_when_validation_is_available(monkeypatch, tmp_path):
@@ -232,11 +223,11 @@ def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):
     assert logger.closed
 
 
-def test_runner_skips_default_final_sample_without_shape(monkeypatch, tmp_path):
+def test_runner_skips_default_final_sample_without_builder(monkeypatch, tmp_path):
     config = load_config(Path("configs/ddpm_mnist.yaml"))
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
-    config.sampling.shape = None
+    config.sampling.builder = None
     trainer = RecordingTrainer()
     trainer.best_checkpoint_path = tmp_path / "checkpoints" / "best.pt"
     logger = RecordingLogger()
@@ -248,7 +239,7 @@ def test_runner_skips_default_final_sample_without_shape(monkeypatch, tmp_path):
 
     def unexpected_sampling(**kwargs):
         del kwargs
-        raise AssertionError("final sampling must be skipped without a shape")
+        raise AssertionError("final sampling must be skipped without a builder")
 
     monkeypatch.setattr(experiment_runner, "run_sampling", unexpected_sampling)
     args = _args()

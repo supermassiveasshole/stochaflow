@@ -2,16 +2,16 @@
 
 import sys
 from types import ModuleType
+from typing import cast
 
 import pytest
 import torch
 
-from stochaflow.diffusion import DDPM, LinearBetaSchedule
 from stochaflow.training.diagnostics import DiffusionQualityDiagnostic
 from stochaflow.training.diagnostics.config import ReferencePipelineConfig
 from stochaflow.training.diagnostics.contracts import ReferenceMetricProvider
 from stochaflow.training.diagnostics.providers.reference import ReferenceMetricSuite
-from stochaflow.training.diagnostics.runtime import SeedPolicy
+from stochaflow.training.diagnostics.runtime import BoundSampler, SeedPolicy
 
 from .helpers import (
     RecordingLogger,
@@ -19,6 +19,7 @@ from .helpers import (
     ZeroDenoiser,
     epoch_event,
     fit_event,
+    gaussian_system,
     provider_config,
     trainer,
 )
@@ -115,10 +116,7 @@ def test_reference_metrics_require_validation_data(monkeypatch, tmp_path) -> Non
         RecordingLogger(),
         reference=_reference_config(),
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
 
     with pytest.raises(ValueError, match="validation dataloader"):
         diagnostic.on_fit_start(fit_event(trainer(model)))
@@ -136,10 +134,7 @@ def test_reference_providers_cache_multibatch_real_features_and_score_profiles(
         logger,
         reference=_reference_config(),
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
     runtime = trainer(model)
     torch.manual_seed(654)
     rng_before = torch.random.get_rng_state().clone()
@@ -182,10 +177,7 @@ def test_enabled_reference_reports_missing_optional_dependencies(
         RecordingLogger(),
         reference=_reference_config(),
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
 
     with pytest.raises(RuntimeError, match="quality"):
         diagnostic.on_fit_start(
@@ -204,10 +196,7 @@ def test_disabled_reference_does_not_import_torchmetrics(monkeypatch, tmp_path) 
         RecordingLogger(),
         reference={"enabled": False},
     )
-    model = DDPM(
-        noise_schedule=LinearBetaSchedule(num_timesteps=2),
-        model=ZeroDenoiser(),
-    )
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
 
     diagnostic.on_fit_start(fit_event(trainer(model)))
 
@@ -269,7 +258,7 @@ def test_real_cache_warn_failure_disables_only_the_failing_provider() -> None:
     )
     metrics = suite.evaluate(
         profile_id="profile",
-        sampler=torch.nn.Identity(),
+        sampler=cast(BoundSampler, torch.nn.Identity()),
         sample_shape=(1, 4, 4),
         visual_samples=torch.zeros(2, 1, 4, 4),
     )

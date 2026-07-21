@@ -22,11 +22,11 @@ class PartitionedDatasets:
 
 
 def validate_partition(config: PartitionRecipeConfig, *, path: str) -> None:
-    if not isinstance(config.mode, str):
+    if not isinstance(cast(object, config.mode), str):
         raise ConfigError(f"{path}.mode must be a string")
     if config.mode not in {"none", "official", "holdout", "kfold"}:
         raise ConfigError(f"{path}.mode must be none, official, holdout, or kfold")
-    requested = config.validation_size
+    requested = cast(object, config.validation_size)
     if requested is not None:
         if isinstance(requested, bool) or not isinstance(requested, (int, float)):
             raise ConfigError(f"{path}.validation_size must be numeric or null")

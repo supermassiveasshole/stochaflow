@@ -9,6 +9,7 @@ from stochaflow.sampling import (
     SamplingArtifactContext,
     SamplingArtifactWriter,
     SamplingBatch,
+    SamplingObservation,
     write_sampling_artifacts,
 )
 from stochaflow.utils.config import ComponentConfig
@@ -23,9 +24,17 @@ def _context(tmp_path: Path, *, rank: int = 4, trajectory: bool = False):
         batches=(
             SamplingBatch(
                 samples=samples,
-                trajectory={2: samples + 1, 0: samples} if trajectory else None,
+                trajectory=(
+                    (
+                        SamplingObservation(0, 2, samples + 1, False, {}),
+                        SamplingObservation(1, 0, samples, True, {}),
+                    )
+                    if trajectory
+                    else None
+                ),
             ),
         ),
+        metadata={"domain": "physics"},
     )
 
 
@@ -84,6 +93,23 @@ class DuplicateWriter(SamplingArtifactWriter):
 class MissingWriter(SamplingArtifactWriter):
     def write(self, context: SamplingArtifactContext):
         return {"missing": context.output_dir / "missing.txt"}
+
+
+@REGISTRIES.sampling_artifact_writers.register("stage3_metadata_writer")
+class MetadataWriter(SamplingArtifactWriter):
+    def write(self, context: SamplingArtifactContext):
+        path = context.output_dir / "metadata.txt"
+        path.write_text(str(context.metadata["domain"]), encoding="utf-8")
+        return {"metadata": path}
+
+
+def test_custom_writer_receives_sampling_output_metadata(tmp_path: Path) -> None:
+    artifacts = write_sampling_artifacts(
+        [ComponentConfig(name="stage3_metadata_writer")],
+        _context(tmp_path),
+    )
+
+    assert artifacts["metadata"].read_text(encoding="utf-8") == "physics"
 
 
 def test_writer_contract_rejects_duplicate_keys_and_missing_paths(

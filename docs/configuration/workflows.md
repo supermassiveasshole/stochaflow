@@ -25,8 +25,8 @@ uv run stochaflow train \
 ```
 
 `--limit-*` 只截断本次运行，不修改 YAML。若想测试最终采样，移除
-`--skip-final-sample`；若 `sampling.shape` 为 null，训练后默认不执行固定 shape
-采样。
+`--skip-final-sample`；若 `sampling.builder` 为 null，训练后不执行默认采样。
+`shape` 是否必需由具体 Builder 决定。
 
 ### CLI 覆盖优先级
 
@@ -88,8 +88,9 @@ uv run stochaflow train \
   --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt
 ```
 
-checkpoint 保存模型、optimizer、scheduler、EMA、训练进度和 resolved 配置。v4 只保存
-`data: {name, params}`，不保存 Dataset、Sampler、DataLoader 或 partition 运行时状态。
+checkpoint v5 分别保存 inference model、Process、可选 EMA model、optimizer、scheduler、
+EMA、训练进度和 resolved 配置。它只保存 `data: {name, params}`，不保存 Dataset、
+PyTorch Sampler、DataLoader、partition 或数值 solver 的运行时状态。
 恢复时配置与 checkpoint 必须兼容；旧格式会收到明确错误，不自动转换。
 
 ## K-fold
@@ -121,7 +122,7 @@ data:
 `diffusion_quality` 在相同 EMA 权重、初始噪声和固定 seed 下并排运行多个 sampler。
 轻量 denoiser 指标、sampler 指标、图片和参考质量算法都是独立 provider；配置可以
 替换或禁用任一类别，而无需修改 diagnostic orchestrator。每个 sampler profile 必须
-提供稳定且唯一的 `id`，`name` 对应 diffusions Registry。
+提供稳定且唯一的 `id`，`name` 对应 samplers Registry。
 
 ```yaml
 diagnostics:
@@ -143,14 +144,14 @@ diagnostics:
           params: {}
           trajectory:
             enabled: true
-            params: {state_interval: 100}
+            every_steps: 100
             gif_fps: 8
         - id: ddim_50
           name: ddim
           params: {num_inference_steps: 50, eta: 0.0}
           trajectory:
             enabled: true
-            params: {step_interval: 5}
+            every_steps: 5
             gif_fps: 8
       providers:
         step_metrics:
@@ -210,18 +211,36 @@ uv run stochaflow sample \
   --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt
 ```
 
-切换为 DDIM 并覆盖参数：
+切换 Sampler 或修改 solver 参数时，提供一份外部 YAML，修改其中完整的 sampling 段：
+
+```yaml
+sampling:
+  shape: [1, 32, 32]
+  num_samples: 64
+  batch_size: 16
+  builder:
+    name: standard_denoising
+    params:
+      weights: auto
+      prediction_type: epsilon
+      clip_denoised: true
+      sampler:
+        name: ddim
+        params: {num_inference_steps: 100, eta: 0.0}
+      trajectory: {enabled: true, every_steps: 5}
+  writers:
+    - {name: tensor, params: {}}
+    - {name: image, params: {grid_nrow: 8, gif_fps: 8}}
+```
 
 ```bash
 uv run stochaflow sample \
   --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt \
-  --sampler ddim \
-  --sampler-param num_inference_steps=100 \
-  --sampler-param eta=0.0
+  --config path/to/sampling.yaml
 ```
 
-`--sampler-param KEY=VALUE` 可重复，value 按 YAML 标量/列表规则解析。若
-`--sampler` 改变名称，原采样器构造参数会先清空，再应用 CLI 参数。
+CLI 不提供 sampler-specific flags；Sampler 参数完全属于 Builder。这样自定义 Builder
+可以组合 condition、多个 Sampler 或非固定 shape initial state，而无需扩充核心 CLI。
 
 也可以只给外部配置，让 runner 在 `experiment.output_dir` 下寻找最新 `best.pt`：
 
@@ -229,20 +248,31 @@ uv run stochaflow sample \
 uv run stochaflow sample --config configs/ddpm_mnist.yaml
 ```
 
-同时给出两者时：checkpoint 提供权重与基础训练结构；外部配置提供 sampling 段，
-但模型、训练 diffusion 和 noise schedule 必须兼容；最后应用 sample CLI
-覆盖。配置和 checkpoint 中的 `extensions.modules` 都会在解析自定义组件前加载。
+同时给出两者时：checkpoint 提供权重与基础训练结构；外部文件可以只包含完整的
+`sampling` 段和可选 `extensions`。也可以传完整 Stochaflow 配置，此时模型和可选训练
+Process 必须与 checkpoint 兼容，包括 `null` 与非 `null` 的差异。配置和 checkpoint 中的
+`extensions.modules` 会稳定
+合并，并在解析自定义 Builder/Sampler 前加载。
 
 ## 采样形状与 EMA
 
-独立采样、训练后验收、trajectory 和 diffusion quality diagnostic 使用
-`sampling.shape`，它不含 batch 维且与 DataBuilder 独立。`ema.enabled` 与
+`standard_denoising` 与 image diagnostic 使用 `sampling.shape`，它不含 batch 维且与
+DataBuilder 独立；自定义 Builder 可以在 shape 为 null 时运行。`ema.enabled` 与
 `ema.use_for_sampling` 同时为 true 且 checkpoint 含 EMA 时，
 采样优先使用 EMA 权重。
 
-每次采样都写 `resolved_sampling.yaml`。`sampling.writers` 决定其他输出：`tensor`
+每次采样都写 `resolved_sampling.yaml`，其中记录实际 Process 声明或 `process: null`。
+`sampling.writers` 决定其他输出：`tensor`
 写 PT，`image` 写 PNG/GIF；开启 trajectory 后，两者会写各自支持的 trajectory
 artifact。
+
+所有注册 Sampler 通过相同的完整 `sample(dynamics, initial_state, ...)` 生命周期执行，但
+不共享万能数学接口。内置 DDPM/DDIM 要求 Gaussian Dynamics；其他算法 family 可定义
+自己的 Dynamics capability，并由所属 Builder 与 Sampler 在调用边界验证。
+trajectory 是 observer 对 initial、accepted step 和唯一 final observation 的抽样，不会
+改变 solver 循环。保留的 state 在 observation 到达时复制，内置 Tensor 路径会立即转存到
+CPU，避免后续原地更新污染历史或让显存随 trajectory 长度增长。`trajectory.pt` 按声明
+顺序保存 step index、coordinate 和 state。
 
 ## 本地文档
 
