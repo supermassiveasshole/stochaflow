@@ -27,6 +27,7 @@ research-notes/part-3-ddim
 
 custom-code-extension-support-plan
 development/extension-refactor-decisions
+development/sampling-capacity
 ```
 
 ## 快速入口
@@ -35,4 +36,6 @@ development/extension-refactor-decisions
   训练恢复与排错。
 - [完整字段参考](configuration/reference.md)：由 dataclass、Registry 和 CLI 自动生成。
 - [DDPM 学习笔记](ddpm-notes.md)：结合代码理解训练与采样实现。
+- [Sampling artifact 容量边界](development/sampling-capacity.md)：整体物化
+  lifecycle、DFSR 保守 profile 和 trajectory preview 限制。
 - [macOS 环境指南](macos-terminal-setup.md)：Intel/Apple Silicon 环境准备。

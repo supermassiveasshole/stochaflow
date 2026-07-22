@@ -195,7 +195,7 @@ class _StandardDenoisingObserver:
                 SamplingObservation(
                     step_index=step_index,
                     coordinate=observation.coordinate,
-                    state=state.detach().cpu().clone(),
+                    state=state.detach().to(device="cpu", copy=True),
                     is_final=observation.is_final,
                     diagnostics=dict(observation.diagnostics),
                 )
@@ -286,7 +286,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
             _validate_shape(final_state, initial.shape, label="sampler final state")
             batches.append(
                 SamplingBatch(
-                    samples=final_state.detach().cpu(),
+                    samples=final_state.detach().to(device="cpu", copy=True),
                     trajectory=lifecycle.observations,
                 )
             )

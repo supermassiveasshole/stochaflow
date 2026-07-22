@@ -366,6 +366,56 @@ trajectory 是 observer 对 initial、accepted step 和唯一 final observation 
 CPU，避免后续原地更新污染历史或让显存随 trajectory 长度增长。`trajectory.pt` 按声明
 顺序保存 step index、coordinate 和 state。
 
+## 大规模 sampling 容量
+
+当前 runtime 在 writer 开始前物化完整 `SamplingOutput`：所有 sample batch
+和已保留 trajectory 都已整体存在。内置 Standard Builder 会将 writer-ready
+Tensor 转存到 CPU；公共 contract 不强制自定义 Builder 的设备。对该内置路径，
+调小 `batch_size` 可以减少单次 accelerator 工作集，但在 `num_samples` 不变时
+不会减少 writer 前的全量 CPU output。当前 writer contract 也不是 streaming
+contract。
+
+Physics AI reconstruction 参考项目的主配置必须遵守：
+
+- 1272 个 float32 state，生成 state shape 为 `[3, 256, 256]`；
+- DFSR 用 batch 8、partial-noise time 240 和 30 个 accepted step；
+- physics-guided DFSR 用 batch 1、partial-noise time 320 和 40 个 accepted
+  step；
+- 主运行必须关闭 trajectory；
+- Builder 在每个 batch 上完成场指标计算后，可只把中心物理帧作为
+  writer-ready sample；领域 writer 输出场数据和指标，不必保存只为
+  PDE 中心差分服务的两个边界帧。
+
+下面是用户扩展中主采样 Builder 的配置轮廓；`physics_reconstruction`、
+`physics_field` 及其 params 属于该扩展，不是核心内置 schema：
+
+```yaml
+sampling:
+  shape: [3, 256, 256]
+  num_samples: 1272
+  batch_size: 8  # physics-guided profile 使用 1
+  builder:
+    name: physics_reconstruction
+    params:
+      partial_noise_time: 240  # physics-guided profile 使用 320
+      num_inference_steps: 30  # physics-guided profile 使用 40
+      trajectory: {enabled: false, every_steps: 10}
+  writers:
+    - {name: physics_field, params: {field: center}}
+```
+
+trajectory 只能在与主重建分开的 preview 调用中开启。preview 必须满足
+`num_samples <= 8`、`every_steps >= 10` 和 accepted steps 不超过 40，可以另外
+声明 tensor/image writer。
+不要在 1272-sample 主配置中临时开启 trajectory：30/40 步 dense
+trajectory 的 raw artifact 已约为 29.8/39.1 GiB，而当前 `tensor` writer
+还需要更大的拼接/stack 临时工作集。
+
+完整公式、preview 的 8-sample 上限和验收证据分级见
+[Sampling artifact 容量边界](../development/sampling-capacity.md)。其中 RSS、
+accelerator peak、编码开销和耗时只是指定参考主机的证据，不是
+跨平台容量保证。
+
 ## 本地文档
 
 安装并构建文档站点：

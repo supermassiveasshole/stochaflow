@@ -376,6 +376,20 @@ files, `image` validates NCHW data and writes PNG/GIF artifacts, and extensions
 can write domain formats such as NetCDF. Every run also writes
 `resolved_sampling.yaml`.
 
+Sampling artifacts currently use a materialized lifecycle: a Builder returns all
+batches and retained trajectory states before any writer runs. The built-in
+Standard Builder moves writer-ready tensors to CPU; the public contract does not
+force custom outputs onto a particular device. This is not a streaming contract.
+The conservative Physics AI profile is 1,272 float32 states
+shaped `[3, 256, 256]` with trajectory disabled; a domain writer may persist only
+the center field after per-batch metrics are computed. Full dense trajectories at
+that scale are unsupported. Trajectory visualization must use a separate preview
+run with at most 8 samples, no more than 40 accepted steps, and
+`every_steps >= 10`. See the
+[sampling capacity boundary](docs/development/sampling-capacity.md) for the exact
+payload formulas and the distinction between analytical bounds and host-specific
+RSS measurements.
+
 ## Configuration
 
 Experiment configuration lives under `configs/`.

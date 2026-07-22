@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 import torch
 import yaml
@@ -54,13 +54,24 @@ from stochaflow.utils.run_manifest import (
 from stochaflow.utils.seed import set_seed
 
 
+class _SamplingCheckpointView(TypedDict, total=False):
+    """Validated inference-only state retained from a complete checkpoint."""
+
+    format_version: int
+    config: dict[str, Any]
+    metadata: dict[str, Any]
+    model_state_dict: dict[str, Any]
+    ema_model_state_dict: dict[str, Any]
+    process_state_dict: dict[str, Any]
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedSamplingInputs:
-    """Merged configuration and checkpoint payload for one sampling run."""
+    """Merged config and validated inference-only state for one sampling run."""
 
     config: StochaflowConfig
     checkpoint_path: Path
-    checkpoint: CheckpointState
+    checkpoint: _SamplingCheckpointView
     config_source: str
     extension_plan: ExtensionActivationPlan
 
@@ -133,10 +144,11 @@ def resolve_sampling_inputs(
         expected_provenance=expected_provenance,
         selection_policy=selection_policy,
     )
+    inference_payload = _sampling_checkpoint_view(payload)
     return ResolvedSamplingInputs(
         extension_plan.config,
         checkpoint_path,
-        payload,
+        inference_payload,
         config_source,
         extension_plan,
     )
@@ -361,9 +373,27 @@ def _load_checkpoint_config(payload: CheckpointState) -> StochaflowConfig:
     return load_config_dict(raw)
 
 
+def _sampling_checkpoint_view(payload: CheckpointState) -> _SamplingCheckpointView:
+    """Drop training-only state before generated outputs begin to accumulate."""
+
+    retained_keys = (
+        "format_version",
+        "config",
+        "metadata",
+        "model_state_dict",
+        "ema_model_state_dict",
+        "process_state_dict",
+    )
+    raw_payload = cast(dict[str, Any], payload)
+    return cast(
+        _SamplingCheckpointView,
+        {key: raw_payload[key] for key in retained_keys if key in raw_payload},
+    )
+
+
 def _build_checkpointed_process(
     config: StochaflowConfig,
-    payload: CheckpointState,
+    payload: _SamplingCheckpointView,
     *,
     device: torch.device,
     allow_unused_state: bool = False,
@@ -389,7 +419,7 @@ def _build_checkpointed_process(
 
 def _build_model_provider(
     config: StochaflowConfig,
-    payload: CheckpointState,
+    payload: _SamplingCheckpointView,
     *,
     device: torch.device,
 ) -> InferenceModelProvider:

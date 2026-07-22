@@ -1,6 +1,6 @@
 # 自定义代码扩展支持实施计划
 
-- 状态：Stage 5 完成，Stage 6 待实施
+- 状态：Stage 6 完成，Stage 7 待实施
 - 制定日期：2026-07-17
 - 最近修订：2026-07-22
 - 目标分支：`feature/custom-code-extension-support`
@@ -1509,35 +1509,120 @@ Stage loop 的只读独立审查发现并修复了以下实现边界问题：
 
 ## Stage 6：大规模 Sampling artifact 容量验收门
 
-### 目标
+### Summary
 
-在 Physics AI 案例前验证当前“SamplingBuilder 先将全部 CPU batch/trajectory 放入
-`SamplingOutput`，Writer 随后统一写出”的内存边界。该 Stage 先用真实规模证据决定是否
-需要 streaming，不为了理论完整性预建复杂事件系统。
+在 Physics AI 案例前验证当前“SamplingBuilder 先将全部 batch/trajectory 物化到
+`SamplingOutput`，Writer 随后统一写出”的容量边界。内置 Standard Builder 会将
+writer-ready Tensor 转存到 CPU；公共 contract 不强制自定义 Builder 的设备。本 Stage
+是证据门，不是预防性 streaming 重构。
 
-### 评估与决策
+已批准的架构决策是：
 
-- 为高分辨率图像、3D physics field、多 batch 和长 trajectory 建立可重复的峰值内存
-  基准，分别记录 accelerator state、CPU output 和 writer 编码开销；
-- 明确普通离线 `SamplingOutput` 的推荐规模和失败提示，避免大型运行无界累积后才 OOM；
-- 若 Physics AI 目标规模在可接受预算内，保留当前 API，并在文档记录容量边界；
-- 若证据表明必须增量输出，再设计最小的 batch lifecycle（例如 begin/write_batch/finish
-  或等价 sink），同时保持 Builder 负责任务组装、Writer 负责 artifact I/O；不得让 core
-  runtime 解释 field/image/trajectory 语义；
-- streaming 决策必须覆盖失败传播、临时文件清理、artifact key 唯一性和最终 manifest，
-  不能仅解决 Tensor 内存而破坏 writer contract。
+- Stage 6 保留现有 `SamplingBuilder.run() -> SamplingOutput` 和 Writer `write()` API；
+- Stage 7 DFSR 生产验收使用 final-only 输出，完整 reverse trajectory 不是必需 artifact；
+- trajectory 首先定位为有界的 diagnostic/preview，不默认对全数据集保存所有 solver state；
+- 只有“单 batch 可容纳，但真实总输出仍超过主机预算”的可重复证据才触发最小
+  batch streaming lifecycle 设计；
+- 不增加通用 `max_output_bytes`、模态专属限制或 event bus，也不声称当前 Builder/Writer
+  contract 已支持用户自行分流。
 
-### 验收条件
+### 真实容量 Profile
 
-- 有一份可复现的容量报告和明确结论；
-- Stage 7 Physics AI 的预期 shape、sample 数与 trajectory 设置经过该结论验证；
-- 如无需新 API，文档明确安全工作集和用户自定义分批 Builder/Writer 的方式；
-- 如需要新 API，先更新本计划中的 sampling lifecycle，再实现并完成 tensor/image/custom
-  writer 回归，不在 Stage 7 案例中临时修改核心。
+DFSR 首个纵向案例的必须验收负载固定为：
 
-### 交付
+- 1272 个 `float32 [3, 256, 256]` 样本；
+- sampling batch size 为 8（conditional 变体可为 1）；
+- 生产输出只保留 final state，声明 tensor/domain writer；
+- reverse trajectory 关闭；另用 8 个样本、4 个 observation 建立 sparse preview
+  profile，并以独立 31-observation stress profile 测量 dense trajectory 放大。
 
-本 Stage 至少形成容量决策记录；只有实际修改 runtime/writer API 时才形成独立逻辑提交。
+该 final-only Tensor 的逻辑大小为 `1272 * 3 * 256 * 256 * 4 =
+1,000,341,504 bytes`（约 954 MiB）。31 个 observation 的全量 trajectory 单是状态就约
+28.9 GiB，不属于该生产 profile。
+
+同时保留下列容量投影，用于区分真实边界而不在开发机上强行分配所有 Tensor：
+
+- 1024² 高分辨率图像；
+- `float32 [4, 128, 128, 128]` 三维 field；
+- 多 batch final-only 与长 trajectory；
+- tensor writer 聚合、image grid/GIF 编码与 checkpoint 常驻对峰值的影响。
+
+### Benchmark 实现
+
+- 新增 `tools/benchmark_sampling_capacity.py`，从受版本控制的 profile 文件构建真实
+  `SamplingOutput` 并调用内置 Writer，不复制一套伪 writer 逻辑；
+- 每个 profile/repeat 使用 fresh subprocess，分别记录 import 后 baseline、output 物化后和
+  writer 完成后的 peak RSS，artifact bytes 与 wall time；
+- CPU 高水位使用 Python `resource.getrusage()` 并根据 macOS/Linux 单位归一；
+  CUDA 可用时另记录 peak allocated/reserved，MPS 不伪造缺失的 allocator 指标；
+- 每个实测 Tensor 都要触及实际页，避免把 lazy/untouched allocation 误当容量证据；
+- image preview 使用固定 seed 的空间变化 Tensor，真实执行 sample grid、trajectory
+  grid 和 GIF writer，不用全常数图像的压缩特例代表编码容量；
+- 大 profile 默认 1 次不进入统计的 discarded fresh-process run 和 5 个独立
+  measured repeat；结果保存环境、profile、
+  原始 repeat、median/max、变异系数和 artifact 大小；
+- coordinator 在分配前使用投影内存和临时文件系统空间做保守 preflight，每个
+  worker 有显式 timeout；超出时只能通过专用 `--allow-over-budget` 表达知情风险接受；
+- 机器结果记录 tool/profile SHA-256 和 execution override；测试不重跑大基准，但会拒绝
+  与当前工具、profile 或统计不一致的过期结果；
+- 容量报告使用有效主机内存的 70% 作为当前机器的保守参考线，该标准不进入
+  通用 runtime schema；CUDA 可用时工具只记录 allocated/reserved 证据，真实模型与
+  target VRAM 预算在 Stage 7 目标环境验收；
+- CI 只运行 tiny smoke/profile schema/formula 测试，不用共享 runner 的绝对 RSS 做不稳定门禁。
+
+### 无公开 API 变化的容量收缩
+
+- sampling input 解析完 config/provenance 后，只保留 inference 所需 checkpoint view：format、
+  config/metadata、model/EMA 和可选 Process state；不让 optimizer、scheduler、Objective、
+  training assets、RNG 和训练进度与全量 sampling output 重叠常驻；
+- Standard Builder 保留的 CPU state 使用一次 owning copy，避免 accelerator-to-CPU 后紧接
+  `clone()` 的双重瞬时分配；
+- 不改变 `SamplingOutput`、`SamplingBatch`、Writer 或 manifest contract，不升级 checkpoint
+  format。
+
+### 决策门
+
+实测结果按以下原因分流，不把所有 OOM 都解释为需要 artifact streaming：
+
+- accelerator 失败、CPU final-only 通过：调整 sampling batch/solver，不改 Writer contract；
+- Writer 临时复制失败：先优化或分块该 Writer；
+- 全量 trajectory 失败、真实目标不需要：保持默认关闭并限制为 preview；
+- 单 batch 可容纳，但真实 final artifact 仍超过主机预算：下一 Stage 前设计同步、
+  有背压的 `begin/write_batch/finish/abort` 或等价最小 lifecycle；
+- 连单 batch trajectory 都无法容纳：调整 batch/snapshot interval，只有仍不足时才评估
+  observation-level streaming。
+
+若未来证据触发 streaming，新 lifecycle 必须同时覆盖失败传播、临时文件清理、
+artifact key 唯一性、同步 backpressure 和 manifest 最后发布；不在 Stage 7 案例内边做边改。
+
+### Test Plan
+
+- profile schema 拒绝非法 dtype/shape/batch/trajectory/writer 声明；
+- 字节公式覆盖 image、3D field、final-only 和 trajectory；
+- tiny subprocess smoke 真实调用 tensor writer，产出机器可读 JSON 且清理临时 artifact；
+- DFSR final-only 执行 1 次 discarded run + 5 次 measured repeat，最大 peak RSS 低于当前
+  effective host memory 的 70%；
+- DFSR trajectory preview 验证 trajectory 路径与报告放大系数；
+- high-entropy image preview 真实输出 PNG/grid/GIF，单独报告编码峰值与产物大小；
+- inference checkpoint view 不保留 training-only state，但 Process/raw/EMA 恢复与 manifest
+  保持原行为；
+- 常规验证：
+
+  ```bash
+  uv run pytest tests/test_sampling_capacity_benchmark.py tests/test_sampling_runtime.py \
+    tests/test_sampling_writers.py
+  uv run ruff check .
+  uv run pyright
+  ```
+
+### 交付与逻辑提交
+
+- 可重复 benchmark tool 与受版本控制的 profile；
+- 机器可读实测结果和人类可读容量决策报告；
+- README、workflow、troubleshooting 和扩展计划中的容量边界；
+- 完成后标记“Stage 6 完成，Stage 7 待实施”；
+- 无论是否修改公开 API，本 Stage 都形成独立逻辑提交：
+  `Stage 6: Validate sampling artifact capacity`。
 
 ## Stage 7：纵向扩展案例
 

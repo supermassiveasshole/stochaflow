@@ -240,6 +240,32 @@ overlay。`extensions: {}` 保留 checkpoint selection；只有明确写出 `ext
 共用 observer 契约，不再提供 sampler-specific trajectory 方法。还需声明能保存
 trajectory 的 writer，例如 `tensor` 或 `image`。
 
+### 大样本或 trajectory 采样时 CPU OOM
+
+当前 SamplingBuilder 必须先返回完整 `SamplingOutput`，runtime 才会调用
+writer。因此所有 sample batch 和已保留 trajectory 会在 writer 开始前同时存在。
+内置 Standard Builder 将 writer-ready Tensor 转存到 CPU；自定义 Builder 若返回
+device Tensor，则还会持续占用 accelerator。对内置路径，减小 `batch_size` 只能
+减少单次 accelerator 工作集，不会减少固定 `num_samples` 对应的最终 CPU
+output。
+
+在当前受支持的 lifecycle 内，可以：
+
+- 降低 `num_samples`；
+- 对主运行关闭 trajectory，另建小样本 preview；
+- 增大 `every_steps`，减少保留的 observation；
+- 让任务 Builder 先完成指标计算，再只把 writer 真正需要的场或通道
+  放入 `SamplingOutput`；
+- 对 Physics AI 预览使用独立配置，限制 `num_samples <= 8`、
+  `every_steps >= 10` 且 accepted steps 不超过 40。
+
+仅注册一个新 writer 不会把当前 lifecycle 变成 streaming；writer 看到数据时，
+Builder 的全部 output 已经物化。全量 dense trajectory 不在当前容量支持
+边界内。若任务确实要求该能力，需要先设计新的增量 sampling/writer
+lifecycle，不要让 Builder 绕过 writer 直接写 artifact。详细公式和 DFSR
+边界见 [Sampling artifact 容量边界](../development/sampling-capacity.md)。文档中的
+RSS 和编码峰值只能视为对应主机/backend 的证据，不是跨平台保证。
+
 ### `sampling.shape is required`
 
 `standard_denoising` 需要固定 shape。把单样本形状（不含 batch 维）写入

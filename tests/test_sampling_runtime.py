@@ -22,7 +22,11 @@ from stochaflow.sampling import (
     SamplingObserver,
     SamplingOutput,
 )
-from stochaflow.sampling.runtime import run_sampling, validate_sampling_output
+from stochaflow.sampling.runtime import (
+    resolve_sampling_inputs,
+    run_sampling,
+    validate_sampling_output,
+)
 from stochaflow.scripts.cli import build_argument_parser
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
@@ -60,6 +64,19 @@ class NoShapeBuilder(SamplingBuilder):
 
 
 REGISTRIES.sampling_builders.add("stage3_no_shape", NoShapeBuilder)
+
+
+@REGISTRIES.sampling_builders.register("stage6_auto_weights")
+class AutoWeightsBuilder(SamplingBuilder):
+    """Expose the provider's automatic raw/EMA choice as a tiny sample."""
+
+    def run(self) -> SamplingOutput:
+        model, label = self.context.model_provider.resolve("auto")
+        assert isinstance(model, TinyDenoiser)
+        return SamplingOutput(
+            (SamplingBatch(model.scale.detach().cpu().reshape(1, 1)),),
+            {"weights": label},
+        )
 
 
 @REGISTRIES.sampling_builders.register("stage3_direct_transform")
@@ -251,6 +268,37 @@ class WrongTrajectoryShapeSampler(Sampler):
 REGISTRIES.samplers.add(
     "stage3_wrong_trajectory_shape", WrongTrajectoryShapeSampler
 )
+
+
+class ReusingFinalBufferSampler(Sampler):
+    """Test sampler that mutates one final-state buffer across batch calls."""
+
+    def __init__(self) -> None:
+        self.buffer: torch.Tensor | None = None
+
+    def sample(self, dynamics, initial_state, **kwargs):
+        assert isinstance(initial_state, torch.Tensor)
+        observer = kwargs.get("observer")
+        if observer is not None:
+            observer.observe(
+                SamplingObservation(
+                    0, dynamics.process.terminal_time, initial_state, False, {}
+                )
+            )
+        if self.buffer is None:
+            self.buffer = torch.zeros_like(initial_state)
+        else:
+            self.buffer.add_(1)
+        if observer is not None:
+            observer.observe(
+                SamplingObservation(
+                    1, dynamics.process.clean_time, self.buffer, True, {}
+                )
+            )
+        return SamplerResult(self.buffer, 1, {})
+
+
+REGISTRIES.samplers.add("stage6_reusing_final_buffer", ReusingFinalBufferSampler)
 
 
 class MalformedLifecycleSampler(Sampler):
@@ -516,6 +564,33 @@ def test_standard_builder_batches_and_records_resolved_metadata(tmp_path: Path) 
     assert trajectory["states"].shape == (3, 3, 2)
     assert manifest["metadata"]["sampler"]["name"] == "ddim"
     assert result.metadata["weights"] == "raw"
+
+
+def test_standard_builder_owns_each_writer_ready_batch(tmp_path: Path) -> None:
+    raw = _raw_config(
+        builder={
+            "name": "standard_denoising",
+            "params": {
+                "sampler": {"name": "stage6_reusing_final_buffer", "params": {}},
+                "trajectory": {"enabled": True, "every_steps": 1},
+            },
+        }
+    )
+    raw["sampling"].update({"shape": [2], "num_samples": 4, "batch_size": 2})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        output_dir=tmp_path / "samples",
+        device_name="cpu",
+    )
+
+    samples = torch.load(result.artifacts["samples"], weights_only=True)
+    trajectory = torch.load(result.artifacts["trajectory"], weights_only=True)
+    assert torch.equal(samples[:2], torch.zeros(2, 2))
+    assert torch.equal(samples[2:], torch.ones(2, 2))
+    assert torch.equal(trajectory["states"][1, :2], torch.zeros(2, 2))
+    assert torch.equal(trajectory["states"][1, 2:], torch.ones(2, 2))
 
 
 def test_standard_builder_rejects_invalid_sampler_result(tmp_path: Path) -> None:
@@ -830,6 +905,62 @@ def test_checkpoint_only_sampling_does_not_build_training_assets(
     )
 
     assert result.builder_name == "stage3_no_shape"
+
+
+def test_sampling_inputs_drop_training_only_checkpoint_state(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=True)
+    payload.update(
+        {
+            "ema_model_state_dict": TinyDenoiser().state_dict(),
+            "objective_state_dict": {"scale": torch.ones(1)},
+            "training_assets_state_dict": {"teacher": {"weight": torch.ones(1)}},
+            "optimizer_state_dict": {"state": {0: {"moment": torch.ones(1)}}},
+            "lr_scheduler_state_dict": {"last_epoch": 2},
+            "ema_state_dict": {"shadow": [torch.ones(1)]},
+            "rng_state": capture_rng_state(),
+            "epoch": 2,
+            "global_step": 4,
+        }
+    )
+    torch.save(payload, checkpoint)
+
+    inputs = resolve_sampling_inputs(config_path=None, checkpoint=checkpoint)
+
+    assert set(inputs.checkpoint) == {
+        "format_version",
+        "config",
+        "metadata",
+        "model_state_dict",
+        "ema_model_state_dict",
+        "process_state_dict",
+    }
+    persisted = torch.load(checkpoint, weights_only=True)
+    assert "optimizer_state_dict" in persisted
+    assert "training_assets_state_dict" in persisted
+
+
+def test_checkpoint_sampling_view_retains_and_uses_ema_weights(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage6_auto_weights", "params": {}})
+    raw["ema"] = {"enabled": True, "use_for_sampling": True}
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=True)
+    ema_model = TinyDenoiser()
+    with torch.no_grad():
+        ema_model.scale.fill_(5.0)
+    payload["ema_model_state_dict"] = ema_model.state_dict()
+    torch.save(payload, checkpoint)
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        output_dir=tmp_path / "samples",
+        device_name="cpu",
+    )
+
+    samples = torch.load(result.artifacts["samples"], weights_only=True)
+    assert result.metadata == {"weights": "ema"}
+    assert torch.equal(samples, torch.tensor([[5.0]]))
 
 
 def test_sampling_only_config_requires_explicit_checkpoint(tmp_path: Path) -> None:

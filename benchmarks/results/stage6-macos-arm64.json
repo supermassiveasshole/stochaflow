@@ -1,0 +1,999 @@
+{
+  "budgets": {
+    "host_fraction": 0.7
+  },
+  "created_at": "2026-07-22T09:45:12.029498+00:00",
+  "environment": {
+    "available_host_memory_bytes": null,
+    "cuda_available": false,
+    "device": "cpu",
+    "effective_host_memory_bytes": 17179869184,
+    "machine": "arm64",
+    "mps_available": true,
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.3",
+    "temporary_filesystem_free_bytes": 218486796288,
+    "torch": "2.11.0"
+  },
+  "format_version": 1,
+  "profiles": [
+    {
+      "configuration": {
+        "batch_size": 8,
+        "description": "Conservative full DFSR writer-ready three-channel final states.",
+        "dtype": "float32",
+        "execute": true,
+        "measured_runs": 5,
+        "name": "dfsr_final",
+        "num_samples": 1272,
+        "pattern": "uniform",
+        "seed": 2026,
+        "shape": [
+          3,
+          256,
+          256
+        ],
+        "timeout_seconds": 1800,
+        "trajectory_observations": 0,
+        "warmup_runs": 1,
+        "writers": [
+          {
+            "name": "tensor",
+            "params": {}
+          }
+        ]
+      },
+      "description": "Conservative full DFSR writer-ready three-channel final states.",
+      "executed": true,
+      "measured_runs": [
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 1319010304,
+          "artifact_bytes": 1000343081,
+          "baseline_lifetime_peak_rss_bytes": 308510720,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 1933869056,
+          "wall_seconds": 1.3097994169802405,
+          "writers": [
+            {
+              "artifact_bytes": 1000343081,
+              "artifact_keys": [
+                "samples"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 1933869056,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 1.2485204999684356
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 1318731776,
+          "artifact_bytes": 1000343081,
+          "baseline_lifetime_peak_rss_bytes": 308232192,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 2078031872,
+          "wall_seconds": 1.3056230830261484,
+          "writers": [
+            {
+              "artifact_bytes": 1000343081,
+              "artifact_keys": [
+                "samples"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 2078031872,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 1.241622917004861
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 1318928384,
+          "artifact_bytes": 1000343081,
+          "baseline_lifetime_peak_rss_bytes": 308445184,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 1912799232,
+          "wall_seconds": 1.4905440419679508,
+          "writers": [
+            {
+              "artifact_bytes": 1000343081,
+              "artifact_keys": [
+                "samples"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 1912750080,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 1.4296657500090078
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 1318830080,
+          "artifact_bytes": 1000343081,
+          "baseline_lifetime_peak_rss_bytes": 308346880,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 2319695872,
+          "wall_seconds": 1.1493381659965962,
+          "writers": [
+            {
+              "artifact_bytes": 1000343081,
+              "artifact_keys": [
+                "samples"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 2319695872,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 1.091294125013519
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 1318223872,
+          "artifact_bytes": 1000343081,
+          "baseline_lifetime_peak_rss_bytes": 307707904,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 2319106048,
+          "wall_seconds": 1.1665642079897225,
+          "writers": [
+            {
+              "artifact_bytes": 1000343081,
+              "artifact_keys": [
+                "samples"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 2319106048,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 1.1101921669906005
+            }
+          ]
+        }
+      ],
+      "name": "dfsr_final",
+      "projection": {
+        "final_state_bytes": 1000341504,
+        "one_sample_bytes": 786432,
+        "raw_artifact_payload_bytes": 1000341504,
+        "sampling_output_live_bytes": 1000341504,
+        "tensor_writer_structural_peak_lower_bound_bytes": 2000683008,
+        "trajectory_state_bytes": 0
+      },
+      "summary": {
+        "max_cuda_reserved_bytes": null,
+        "max_peak_rss_bytes": 2319695872,
+        "max_peak_rss_host_fraction": 0.1350240707397461,
+        "median_peak_rss_bytes": 2078031872,
+        "passes_host_budget": true,
+        "peak_rss_coefficient_of_variation": 0.08429847223587236
+      },
+      "warmup_runs": 1
+    },
+    {
+      "configuration": {
+        "batch_size": 8,
+        "description": "Stage 7 sparse trajectory preview with eight samples.",
+        "dtype": "float32",
+        "execute": true,
+        "measured_runs": 5,
+        "name": "dfsr_trajectory_preview",
+        "num_samples": 8,
+        "pattern": "uniform",
+        "seed": 2026,
+        "shape": [
+          3,
+          256,
+          256
+        ],
+        "timeout_seconds": 1800,
+        "trajectory_observations": 4,
+        "warmup_runs": 1,
+        "writers": [
+          {
+            "name": "tensor",
+            "params": {}
+          }
+        ]
+      },
+      "description": "Stage 7 sparse trajectory preview with eight samples.",
+      "executed": true,
+      "measured_runs": [
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 347160576,
+          "artifact_bytes": 31460583,
+          "baseline_lifetime_peak_rss_bytes": 308150272,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 391905280,
+          "wall_seconds": 0.03522125002928078,
+          "writers": [
+            {
+              "artifact_bytes": 31460583,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 391905280,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.03280091698979959
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 346865664,
+          "artifact_bytes": 31460583,
+          "baseline_lifetime_peak_rss_bytes": 307871744,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 391659520,
+          "wall_seconds": 0.03630808397429064,
+          "writers": [
+            {
+              "artifact_bytes": 31460583,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 391659520,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.033676000020932406
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 347176960,
+          "artifact_bytes": 31460583,
+          "baseline_lifetime_peak_rss_bytes": 308117504,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 391970816,
+          "wall_seconds": 0.03794399998150766,
+          "writers": [
+            {
+              "artifact_bytes": 31460583,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 391970816,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.03504208300728351
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 347144192,
+          "artifact_bytes": 31460583,
+          "baseline_lifetime_peak_rss_bytes": 308101120,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 391938048,
+          "wall_seconds": 0.03798712498974055,
+          "writers": [
+            {
+              "artifact_bytes": 31460583,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 391938048,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.03467170899966732
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 346849280,
+          "artifact_bytes": 31460583,
+          "baseline_lifetime_peak_rss_bytes": 307806208,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 391610368,
+          "wall_seconds": 0.0393646250013262,
+          "writers": [
+            {
+              "artifact_bytes": 31460583,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 391610368,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.037001583026722074
+            }
+          ]
+        }
+      ],
+      "name": "dfsr_trajectory_preview",
+      "projection": {
+        "final_state_bytes": 6291456,
+        "one_sample_bytes": 786432,
+        "raw_artifact_payload_bytes": 31457280,
+        "sampling_output_live_bytes": 31457280,
+        "tensor_writer_structural_peak_lower_bound_bytes": 81788928,
+        "trajectory_state_bytes": 25165824
+      },
+      "summary": {
+        "max_cuda_reserved_bytes": null,
+        "max_peak_rss_bytes": 391970816,
+        "max_peak_rss_host_fraction": 0.022815704345703125,
+        "median_peak_rss_bytes": 391905280,
+        "passes_host_budget": true,
+        "peak_rss_coefficient_of_variation": 0.00038470223210925543
+      },
+      "warmup_runs": 1
+    },
+    {
+      "configuration": {
+        "batch_size": 8,
+        "description": "Stage 7 sparse image-grid and GIF preview with eight samples.",
+        "dtype": "float32",
+        "execute": true,
+        "measured_runs": 5,
+        "name": "dfsr_image_preview",
+        "num_samples": 8,
+        "pattern": "random",
+        "seed": 2026,
+        "shape": [
+          3,
+          256,
+          256
+        ],
+        "timeout_seconds": 300,
+        "trajectory_observations": 4,
+        "warmup_runs": 1,
+        "writers": [
+          {
+            "name": "image",
+            "params": {
+              "denormalize": true,
+              "gif_fps": 8,
+              "grid_nrow": 4
+            }
+          }
+        ]
+      },
+      "description": "Stage 7 sparse image-grid and GIF preview with eight samples.",
+      "executed": true,
+      "measured_runs": [
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 347570176,
+          "artifact_bytes": 10784911,
+          "baseline_lifetime_peak_rss_bytes": 308543488,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 570064896,
+          "wall_seconds": 0.5892350829672068,
+          "writers": [
+            {
+              "artifact_bytes": 10784911,
+              "artifact_keys": [
+                "image_grid",
+                "trajectory_gif",
+                "trajectory_grid"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 570064896,
+              "name": "image",
+              "params": {
+                "denormalize": true,
+                "gif_fps": 8,
+                "grid_nrow": 4
+              },
+              "wall_seconds": 0.57712591602467
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 347242496,
+          "artifact_bytes": 10784911,
+          "baseline_lifetime_peak_rss_bytes": 308215808,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 569278464,
+          "wall_seconds": 0.55939158401452,
+          "writers": [
+            {
+              "artifact_bytes": 10784911,
+              "artifact_keys": [
+                "image_grid",
+                "trajectory_gif",
+                "trajectory_grid"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 569278464,
+              "name": "image",
+              "params": {
+                "denormalize": true,
+                "gif_fps": 8,
+                "grid_nrow": 4
+              },
+              "wall_seconds": 0.5495658749714494
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 347406336,
+          "artifact_bytes": 10784911,
+          "baseline_lifetime_peak_rss_bytes": 308396032,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 569999360,
+          "wall_seconds": 0.5936238339636475,
+          "writers": [
+            {
+              "artifact_bytes": 10784911,
+              "artifact_keys": [
+                "image_grid",
+                "trajectory_gif",
+                "trajectory_grid"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 569999360,
+              "name": "image",
+              "params": {
+                "denormalize": true,
+                "gif_fps": 8,
+                "grid_nrow": 4
+              },
+              "wall_seconds": 0.5830074169789441
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 346767360,
+          "artifact_bytes": 10784911,
+          "baseline_lifetime_peak_rss_bytes": 307724288,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 569344000,
+          "wall_seconds": 0.6069386669551022,
+          "writers": [
+            {
+              "artifact_bytes": 10784911,
+              "artifact_keys": [
+                "image_grid",
+                "trajectory_gif",
+                "trajectory_grid"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 569344000,
+              "name": "image",
+              "params": {
+                "denormalize": true,
+                "gif_fps": 8,
+                "grid_nrow": 4
+              },
+              "wall_seconds": 0.5951679999707267
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 346669056,
+          "artifact_bytes": 10784911,
+          "baseline_lifetime_peak_rss_bytes": 307658752,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 569278464,
+          "wall_seconds": 0.5933550000190735,
+          "writers": [
+            {
+              "artifact_bytes": 10784911,
+              "artifact_keys": [
+                "image_grid",
+                "trajectory_gif",
+                "trajectory_grid"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 569278464,
+              "name": "image",
+              "params": {
+                "denormalize": true,
+                "gif_fps": 8,
+                "grid_nrow": 4
+              },
+              "wall_seconds": 0.5816783329937607
+            }
+          ]
+        }
+      ],
+      "name": "dfsr_image_preview",
+      "projection": {
+        "final_state_bytes": 6291456,
+        "one_sample_bytes": 786432,
+        "raw_artifact_payload_bytes": 31457280,
+        "sampling_output_live_bytes": 31457280,
+        "tensor_writer_structural_peak_lower_bound_bytes": 81788928,
+        "trajectory_state_bytes": 25165824
+      },
+      "summary": {
+        "max_cuda_reserved_bytes": null,
+        "max_peak_rss_bytes": 570064896,
+        "max_peak_rss_host_fraction": 0.03318214416503906,
+        "median_peak_rss_bytes": 569344000,
+        "passes_host_budget": true,
+        "peak_rss_coefficient_of_variation": 0.0006318746432752745
+      },
+      "warmup_runs": 1
+    },
+    {
+      "configuration": {
+        "batch_size": 8,
+        "description": "Small-sample stress case retaining all 31 reverse observations.",
+        "dtype": "float32",
+        "execute": true,
+        "measured_runs": 5,
+        "name": "dfsr_dense_trajectory_stress",
+        "num_samples": 8,
+        "pattern": "uniform",
+        "seed": 2026,
+        "shape": [
+          3,
+          256,
+          256
+        ],
+        "timeout_seconds": 1800,
+        "trajectory_observations": 31,
+        "warmup_runs": 1,
+        "writers": [
+          {
+            "name": "tensor",
+            "params": {}
+          }
+        ]
+      },
+      "description": "Small-sample stress case retaining all 31 reverse observations.",
+      "executed": true,
+      "measured_runs": [
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 517636096,
+          "artifact_bytes": 201329959,
+          "baseline_lifetime_peak_rss_bytes": 308297728,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 902643712,
+          "wall_seconds": 0.23545220796950161,
+          "writers": [
+            {
+              "artifact_bytes": 201329959,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 902643712,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.22163954202551395
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 517505024,
+          "artifact_bytes": 201329959,
+          "baseline_lifetime_peak_rss_bytes": 308166656,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 902447104,
+          "wall_seconds": 0.24577375000808388,
+          "writers": [
+            {
+              "artifact_bytes": 201329959,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 902447104,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.23189333296613768
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 517144576,
+          "artifact_bytes": 201329959,
+          "baseline_lifetime_peak_rss_bytes": 307773440,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 902103040,
+          "wall_seconds": 0.23584379197563976,
+          "writers": [
+            {
+              "artifact_bytes": 201329959,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 902103040,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.22347254201304168
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 517390336,
+          "artifact_bytes": 201329959,
+          "baseline_lifetime_peak_rss_bytes": 308019200,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 902316032,
+          "wall_seconds": 0.2551450419705361,
+          "writers": [
+            {
+              "artifact_bytes": 201329959,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 902316032,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.24111337499925867
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 517652480,
+          "artifact_bytes": 201329959,
+          "baseline_lifetime_peak_rss_bytes": 308314112,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 902627328,
+          "wall_seconds": 0.2305978749645874,
+          "writers": [
+            {
+              "artifact_bytes": 201329959,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 902627328,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.21706912497757003
+            }
+          ]
+        }
+      ],
+      "name": "dfsr_dense_trajectory_stress",
+      "projection": {
+        "final_state_bytes": 6291456,
+        "one_sample_bytes": 786432,
+        "raw_artifact_payload_bytes": 201326592,
+        "sampling_output_live_bytes": 201326592,
+        "tensor_writer_structural_peak_lower_bound_bytes": 591396864,
+        "trajectory_state_bytes": 195035136
+      },
+      "summary": {
+        "max_cuda_reserved_bytes": null,
+        "max_peak_rss_bytes": 902643712,
+        "max_peak_rss_host_fraction": 0.05254077911376953,
+        "median_peak_rss_bytes": 902447104,
+        "passes_host_budget": true,
+        "peak_rss_coefficient_of_variation": 0.00022424769380636111
+      },
+      "warmup_runs": 1
+    },
+    {
+      "configuration": {
+        "batch_size": 1,
+        "description": "Executable small 3D field and trajectory workload.",
+        "dtype": "float32",
+        "execute": true,
+        "measured_runs": 5,
+        "name": "field3d_preview",
+        "num_samples": 2,
+        "pattern": "uniform",
+        "seed": 2026,
+        "shape": [
+          4,
+          64,
+          64,
+          64
+        ],
+        "timeout_seconds": 1800,
+        "trajectory_observations": 5,
+        "warmup_runs": 1,
+        "writers": [
+          {
+            "name": "tensor",
+            "params": {}
+          }
+        ]
+      },
+      "description": "Executable small 3D field and trajectory workload.",
+      "executed": true,
+      "measured_runs": [
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 363692032,
+          "artifact_bytes": 50334951,
+          "baseline_lifetime_peak_rss_bytes": 307789824,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 448315392,
+          "wall_seconds": 0.05370624997885898,
+          "writers": [
+            {
+              "artifact_bytes": 50334951,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 448315392,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.0501172500080429
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 364199936,
+          "artifact_bytes": 50334951,
+          "baseline_lifetime_peak_rss_bytes": 308281344,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 448823296,
+          "wall_seconds": 0.05613283300772309,
+          "writers": [
+            {
+              "artifact_bytes": 50334951,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 448823296,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.05245904199546203
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 363560960,
+          "artifact_bytes": 50334951,
+          "baseline_lifetime_peak_rss_bytes": 307625984,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 448217088,
+          "wall_seconds": 0.06259454099927098,
+          "writers": [
+            {
+              "artifact_bytes": 50334951,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 448217088,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.05707620800239965
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 364249088,
+          "artifact_bytes": 50334951,
+          "baseline_lifetime_peak_rss_bytes": 308314112,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 448888832,
+          "wall_seconds": 0.057075582968536764,
+          "writers": [
+            {
+              "artifact_bytes": 50334951,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 448888832,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.05340016703121364
+            }
+          ]
+        },
+        {
+          "after_output_cuda_peak": null,
+          "after_output_lifetime_peak_rss_bytes": 363724800,
+          "artifact_bytes": 50334951,
+          "baseline_lifetime_peak_rss_bytes": 307806208,
+          "final_cuda_peak": null,
+          "final_lifetime_peak_rss_bytes": 448380928,
+          "wall_seconds": 0.05894729099236429,
+          "writers": [
+            {
+              "artifact_bytes": 50334951,
+              "artifact_keys": [
+                "samples",
+                "trajectory"
+              ],
+              "cuda_peak": null,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 448380928,
+              "name": "tensor",
+              "params": {},
+              "wall_seconds": 0.05482104100519791
+            }
+          ]
+        }
+      ],
+      "name": "field3d_preview",
+      "projection": {
+        "final_state_bytes": 8388608,
+        "one_sample_bytes": 4194304,
+        "raw_artifact_payload_bytes": 50331648,
+        "sampling_output_live_bytes": 50331648,
+        "tensor_writer_structural_peak_lower_bound_bytes": 134217728,
+        "trajectory_state_bytes": 41943040
+      },
+      "summary": {
+        "max_cuda_reserved_bytes": null,
+        "max_peak_rss_bytes": 448888832,
+        "max_peak_rss_host_fraction": 0.026128768920898438,
+        "median_peak_rss_bytes": 448380928,
+        "passes_host_budget": true,
+        "peak_rss_coefficient_of_variation": 0.0006153309620685588
+      },
+      "warmup_runs": 1
+    },
+    {
+      "configuration": {
+        "batch_size": 1,
+        "description": "Projection for sixteen 1024-square RGB samples and 51 states.",
+        "dtype": "float32",
+        "execute": false,
+        "measured_runs": 1,
+        "name": "high_resolution_1024_projection",
+        "num_samples": 16,
+        "pattern": "uniform",
+        "seed": 2026,
+        "shape": [
+          3,
+          1024,
+          1024
+        ],
+        "timeout_seconds": 1800,
+        "trajectory_observations": 51,
+        "warmup_runs": 0,
+        "writers": [
+          {
+            "name": "tensor",
+            "params": {}
+          }
+        ]
+      },
+      "description": "Projection for sixteen 1024-square RGB samples and 51 states.",
+      "executed": false,
+      "name": "high_resolution_1024_projection",
+      "projection": {
+        "final_state_bytes": 201326592,
+        "one_sample_bytes": 12582912,
+        "raw_artifact_payload_bytes": 10468982784,
+        "sampling_output_live_bytes": 10468982784,
+        "tensor_writer_structural_peak_lower_bound_bytes": 31004295168,
+        "trajectory_state_bytes": 10267656192
+      }
+    },
+    {
+      "configuration": {
+        "batch_size": 1,
+        "description": "Projection for eight large 3D fields and 51 retained states.",
+        "dtype": "float32",
+        "execute": false,
+        "measured_runs": 1,
+        "name": "field3d_dense_projection",
+        "num_samples": 8,
+        "pattern": "uniform",
+        "seed": 2026,
+        "shape": [
+          4,
+          128,
+          128,
+          128
+        ],
+        "timeout_seconds": 1800,
+        "trajectory_observations": 51,
+        "warmup_runs": 0,
+        "writers": [
+          {
+            "name": "tensor",
+            "params": {}
+          }
+        ]
+      },
+      "description": "Projection for eight large 3D fields and 51 retained states.",
+      "executed": false,
+      "name": "field3d_dense_projection",
+      "projection": {
+        "final_state_bytes": 268435456,
+        "one_sample_bytes": 33554432,
+        "raw_artifact_payload_bytes": 13958643712,
+        "sampling_output_live_bytes": 13958643712,
+        "tensor_writer_structural_peak_lower_bound_bytes": 41339060224,
+        "trajectory_state_bytes": 13690208256
+      }
+    },
+    {
+      "configuration": {
+        "batch_size": 8,
+        "description": "Unsupported full DFSR output retaining all 31 observations.",
+        "dtype": "float32",
+        "execute": false,
+        "measured_runs": 1,
+        "name": "dfsr_full_trajectory_projection",
+        "num_samples": 1272,
+        "pattern": "uniform",
+        "seed": 2026,
+        "shape": [
+          3,
+          256,
+          256
+        ],
+        "timeout_seconds": 1800,
+        "trajectory_observations": 31,
+        "warmup_runs": 0,
+        "writers": [
+          {
+            "name": "tensor",
+            "params": {}
+          }
+        ]
+      },
+      "description": "Unsupported full DFSR output retaining all 31 observations.",
+      "executed": false,
+      "name": "dfsr_full_trajectory_projection",
+      "projection": {
+        "final_state_bytes": 1000341504,
+        "one_sample_bytes": 786432,
+        "raw_artifact_payload_bytes": 32010928128,
+        "sampling_output_live_bytes": 32010928128,
+        "tensor_writer_structural_peak_lower_bound_bytes": 94032101376,
+        "trajectory_state_bytes": 31010586624
+      }
+    }
+  ],
+  "source": {
+    "allow_over_budget": false,
+    "device": "cpu",
+    "profiles_sha256": "4a133dabef2732347938704e72902556e8a25e6e8c4816931064bdc70e5ac40b",
+    "repeats_override": null,
+    "selected_profiles": [
+      "dfsr_final",
+      "dfsr_trajectory_preview",
+      "dfsr_image_preview",
+      "dfsr_dense_trajectory_stress",
+      "field3d_preview",
+      "high_resolution_1024_projection",
+      "field3d_dense_projection",
+      "dfsr_full_trajectory_projection"
+    ],
+    "tool_sha256": "52fe973aac9eaeb835f562dcd8ee2be03c8b554606ad8f524be027d35843bc97",
+    "warmup_override": null
+  }
+}

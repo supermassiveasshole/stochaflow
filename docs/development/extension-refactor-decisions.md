@@ -62,7 +62,9 @@ family 不需要共享 `predict()`、`drift()`、`score()`、`denoise()` 或 `st
   checkpoint 契约。
 - diffusion-quality diagnostic 仍是 Gaussian/image 专用能力，不代表通用 diagnostic 必须
   理解 Process 或 Sampler。
-- `SamplingOutput` 仍整体驻留内存；streaming/chunked artifact 边界留给容量 Stage。
+- `SamplingOutput` 仍整体驻留内存；Stage 6 已验证 final-only DFSR 容量并将
+  dense trajectory 限定为小样本 preview，真实总输出超过预算时再设计增量
+  artifact lifecycle。
 
 ## Stage 4 检查点
 
@@ -501,3 +503,47 @@ wheel、短训练、连续恢复和 checkpoint-only sampling 的端到端路径�
 Stage 的日常收口声明。
 
 逻辑提交主题：`Stage 5: Add entry-point extension projects`。
+
+## Stage 6 检查点
+
+状态：实现、参考主机基准、针对性验证和独立审查均已完成。
+
+### 容量决策
+
+- 保留现有 `SamplingBuilder.run() -> SamplingOutput` 和 Writer `write()` 公共
+  lifecycle，不为理论上的大输出预建 streaming/event bus；
+- 内置 Standard Builder 会将 writer-ready Tensor 转存到 owning CPU state；
+  `SamplingBatch.samples: Any` 公共 contract 不强制自定义 Builder 的设备；
+- DFSR 真实主 profile 是 1272 个 `float32 [3,256,256]` final state、trajectory
+  关闭。在 16 GiB macOS arm64 参考主机上，5 个 fresh measured repeat 的最大
+  peak RSS 为 2.160 GiB（13.50%），不触发 70% 容量门；
+- 全量 1272-sample/31-state dense trajectory 的 raw `SamplingOutput` 为 29.81 GiB，
+  当前 Tensor writer 结构性峰值下界为 87.57 GiB，明确不在当前支持边界；
+- trajectory 只作为独立 preview：`num_samples <= 8`、`every_steps >= 10`、
+  accepted steps 不超过 40。Tensor preview 与 high-entropy PNG/grid/GIF preview 均已
+  使用 5 个 fresh repeat 实测；
+- 只有单 batch 可容纳而真实 final artifact 仍超过主机预算的证据，才触发
+  同步、有背压且具备 abort/cleanup/最终发布语义的最小 batch lifecycle 设计。
+
+### 工具与生产收缩
+
+`tools/benchmark_sampling_capacity.py` 使用受版本控制的 profile，每个 repeat 在
+fresh subprocess 中调用真实 `SamplingOutput` 验证和内置 Writer。工具记录
+lifetime RSS high-water、CUDA allocated/reserved（可用时）、artifact bytes、wall
+time、host/disk 环境和 tool/profile SHA-256；默认容量/磁盘 preflight 与 worker
+timeout 防止误执行超大 profile。CI 只跑 tiny contract，已提交的主机结果由
+hash/statistics 测试防止静默过期。
+
+sampling input 在验证完整 v8 checkpoint 后只保留私有 inference view：raw/EMA
+model、可选 Process、config/metadata 和 format。optimizer、scheduler、Objective、
+training assets、resume EMA shadow、RNG 与训练进度不再与全量 sampling output
+重叠常驻。这个窄 view 不是可传给通用 checkpoint restore 的完整 payload。
+
+### 验证与逻辑提交
+
+聚焦验证覆盖 profile/schema/formula、fresh worker/cleanup、preflight、结果哈希与统计、
+Tensor/image Writer、checkpoint inference view、raw/EMA/Process 恢复和跨 batch owning
+state。常规门禁为 Ruff、Pyright 和聚焦 Pytest；文档以 Sphinx `-W` 构建。
+完整分支验收留到 feature merge 前的最终循环。
+
+逻辑提交主题：`Stage 6: Validate sampling artifact capacity`。
