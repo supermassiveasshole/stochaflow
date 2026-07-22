@@ -35,6 +35,8 @@ development/sampling-capacity
 - [配置手册](configuration/index.md)：从最小 YAML 到多源数据、K-fold、自定义组件、
   训练恢复与排错。
 - [完整字段参考](configuration/reference.md)：由 dataclass、Registry 和 CLI 自动生成。
+- [纵向扩展参考项目](configuration/reference-projects.md)：Physics reconstruction 与
+  frozen-teacher distillation 的独立可安装实现。
 - [DDPM 学习笔记](ddpm-notes.md)：结合代码理解训练与采样实现。
 - [Sampling artifact 容量边界](development/sampling-capacity.md)：整体物化
   lifecycle、DFSR 保守 profile 和 trajectory preview 限制。

@@ -3,7 +3,8 @@
     "src",
     "tests",
     "tools",
-    "docs/conf.py"
+    "docs/conf.py",
+    "examples/extension-projects"
   ],
   "exclude": [
     "**/node_modules",
@@ -42,6 +43,20 @@
       "root": "docs",
       "extraPaths": [
         "src"
+      ]
+    },
+    {
+      "root": "examples/extension-projects/physics-reconstruction",
+      "extraPaths": [
+        "src",
+        "examples/extension-projects/physics-reconstruction/src"
+      ]
+    },
+    {
+      "root": "examples/extension-projects/knowledge-distillation",
+      "extraPaths": [
+        "src",
+        "examples/extension-projects/knowledge-distillation/src"
       ]
     }
   ],

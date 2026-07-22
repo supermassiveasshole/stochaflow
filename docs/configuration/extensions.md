@@ -196,6 +196,11 @@ stochaflow train --config experiments/example/train.yaml
 `DataBuilderContext` 和 `DataLoaders`；内置 recipe 的 source、partition、transform、bucket
 与 sampler helper 均为私有实现。
 
+需要查看跨 data/training/sampling 三条扩展轴的完整实现时，参考两个彼此独立、可安装的
+[纵向扩展项目](reference-projects.md)。它们分别展示 Physics reconstruction 对离散
+Gaussian primitive 的复用与扩展，以及 frozen-teacher distillation 的多资产 checkpoint
+组合；两者都只使用这里公开的稳定入口，不依赖 checkout 源码路径。
+
 ## 自定义 Process、Sampler 与 SamplingBuilder
 
 生成扩展分成三层，层间共享的是生命周期，不是万能数学接口：

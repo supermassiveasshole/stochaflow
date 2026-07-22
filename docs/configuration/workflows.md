@@ -32,6 +32,10 @@ environment。默认配置含相对 `data/` 和 `outputs/` 路径，应从项目
 在提供安全 descriptor-relative 文件系统原语的平台，`init` 可写入已存在的空真实目录；
 其他平台需删除该空目录，让 `init` 自行创建目标目录。
 
+仓库中的 [纵向扩展参考项目](reference-projects.md) 进一步展示一个领域任务如何在自己的
+distribution 内组合 DataBuilder、TrainingBuilder/Strategy、SamplingBuilder、Sampler 和
+Writer，以及 frozen-teacher 资产如何严格 resume。它们是普通示例包，不是新的核心模板。
+
 ### Smoke run
 
 快速验证 schema、数据下载、模型 forward、反向传播与 checkpoint 路径：

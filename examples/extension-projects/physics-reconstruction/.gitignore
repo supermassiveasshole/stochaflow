@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+outputs/
+data/**/*.npy
+data/**/*.npz
+data/**/*.json
+capacity-report.json

@@ -1,6 +1,6 @@
 # 自定义代码扩展支持实施计划
 
-- 状态：Stage 6 与 Stage 3.1 完成，Stage 7 待实施
+- 状态：Stage 7 完成，Stage 8 待实施
 - 制定日期：2026-07-17
 - 最近修订：2026-07-22
 - 目标分支：`feature/custom-code-extension-support`
@@ -1690,7 +1690,7 @@ artifact key 唯一性、同步 backpressure 和 manifest 最后发布；不在 
 - 无论是否修改公开 API，本 Stage 都形成独立逻辑提交：
   `Stage 6: Validate sampling artifact capacity`。
 
-## Stage 7：纵向扩展案例（设计待确认）
+## Stage 7：纵向扩展案例（已完成）
 
 ### 目标
 
@@ -1826,8 +1826,11 @@ uv 或任何特定包管理器。根仓库不会把 reference project 源目录�
   Objective，加载项目定义的普通 PyTorch model `state_dict`，调用
   `requires_grad_(False)` 并声明为 `ManagedTrainingModule(mode="eval")`；
 - teacher 初始化文件只是 fresh-run 输入格式，不读取 Stochaflow 私有 checkpoint payload。
-  核心开始 resume 后，checkpoint 中同名 `training_assets_state_dict` 是 teacher 与额外
-  Objective runtime state 的最终权威；测试运行时生成初始化 state，不提交二进制；
+  Builder 在 fresh/resume 两条训练路径中都必须先用该构造资源实例化结构兼容的 teacher；
+  核心随后执行 resume 时，checkpoint 中同名 `training_assets_state_dict` 是 teacher 与额外
+  Objective runtime state 的最终权威。测试会在 resume 前改变 bootstrap 文件内容并验证
+  checkpoint 覆盖，同时在 sampling-only 前删除该文件并验证 sampling 不构造训练资产；
+  测试运行时生成初始化 state，不提交二进制；
 - 项目私有 `KnowledgeDistillationStrategy` 只执行 teacher/student forward、task loss、
   distillation loss 组合和分项 metrics，返回一个 scalar total loss；它不移动、冻结、保存
   module，也不选择 optimizer 参数；

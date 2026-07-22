@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stochaflow-knowledge-distillation"
+version = "0.1.0"
+description = "Frozen-teacher knowledge-distillation reference extension for Stochaflow."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "stochaflow==0.1.0",
+    "torch>=2.2,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.3"]
+vision = ["torchvision>=0.17,<1"]
+
+[project.entry-points."stochaflow.extensions"]
+stochaflow-knowledge-distillation = "stochaflow_knowledge_distillation.stochaflow_ext"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

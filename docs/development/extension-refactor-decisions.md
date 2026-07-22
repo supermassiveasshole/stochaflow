@@ -548,9 +548,11 @@ state。常规门禁为 Ruff、Pyright 和聚焦 Pytest；文档以 Sphinx `-W` 
 
 逻辑提交主题：`Stage 6: Validate sampling artifact capacity`。
 
-## Stage 7 设计检查点（待维护者确认）
+## Stage 7 实施检查点（已完成）
 
-状态：完成现有计划、参考 DFSR 实现和当前公共扩展 API 的只读审计；尚未开始实现。
+状态：两个独立 reference distribution、聚焦验证、wheel/entry-point CLI 验收、真实
+Physics batch 容量验证、独立审查与问题修复均已完成；`src/stochaflow/**` no-change gate
+通过，Stage 8 待实施。
 
 ### 发现的架构冲突
 
@@ -594,9 +596,19 @@ PDE residual gradient 产生，但它被施加的位置属于 solver transition�
 - Stage 6 只证明 final artifact 容量，Stage 7 必须单独记录真实 model、condition、residual
   autograd 与 input 共存时的单 batch host/accelerator peak。
 
-完整拟议实施范围、测试矩阵和 rejected alternatives 已写入
-[实施计划的 Stage 7](../custom-code-extension-support-plan.md)。维护者确认推荐边界后才进入
-Implementation。
+完整实施范围、测试矩阵和 rejected alternatives 已写入
+[实施计划的 Stage 7](../custom-code-extension-support-plan.md)。实施结果证明 baseline
+DDPM/DDIM、项目级 guided DDIM、frozen-teacher resume 和 student-only sampling 均可只用
+公开扩展契约完成；任何新的核心契约需求仍必须退回 Design。
+
+真实容量验收在 2026-07-22 使用本地 PhysicsNeMo mmap 数据
+`[40, 320, 256, 256] float32`、PyTorch 2.11.0、Apple-silicon MPS、batch
+`[1, 3, 256, 256]` 和生产时间域 `T=1000, t=240`。一次 train
+forward/backward、两步 baseline DDIM 和两步 guided DDIM 均成功；进程累计 RSS 高水位为
+392,019,968 bytes，MPS current allocation 在训练后为 16,060,416 bytes、两条采样后均为
+6,086,400 bytes，MPS driver allocation 约 1.15 GB。MPS 没有该工具可重置的 peak API，
+因此这些 MPS 数字是同步后的 current/driver allocation，不冒充峰值；两步 smoke 也不
+代表完整 30/40-step latency 或论文精度。
 
 ## Stage 3.1 离散 Gaussian primitive 修正（已完成）
 

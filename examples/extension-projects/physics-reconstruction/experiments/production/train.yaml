@@ -1,0 +1,127 @@
+experiment:
+  name: kolmogorov-flow-reconstruction
+  seed: 42
+  output_dir: outputs/production
+
+extensions:
+  plugins: [physics-reconstruction]
+
+data:
+  name: physics-reconstruction.kolmogorov-trajectories
+  params:
+    path: data/kolmogorov.npy
+    train_trajectories: [0, 36]
+    validation_trajectories: null
+    test_trajectories: [36, 40]
+    loader:
+      batch_size: 4
+      num_workers: 4
+      shuffle: true
+      drop_last: true
+      pin_memory: true
+      persistent_workers: true
+      prefetch_factor: 2
+      steps_per_epoch: auto
+
+model:
+  name: physics-reconstruction.conditional-denoiser
+  params:
+    channels: 3
+    hidden_channels: 64
+    num_blocks: 6
+    time_embedding_dim: 128
+    normalization_mean: -2.27e-8
+    normalization_scale: 4.78695
+    reynolds_number: 1000.0
+    time_delta: 0.03125
+    linear_damping: 0.1
+    forcing_wavenumber: 4
+    forcing_amplitude: -4.0
+
+training:
+  name: physics-reconstruction.gaussian-denoising
+  params:
+    prediction_type: epsilon
+    conditioning_strength: 1.0
+
+objective:
+  name: mse
+  params: {reduction: mean}
+
+process:
+  name: discrete_gaussian
+  params:
+    schedule:
+      name: linear_beta
+      params:
+        num_timesteps: 1000
+        beta_start: 0.0001
+        beta_end: 0.02
+
+optimizer:
+  name: torch.optim.Adam
+  params:
+    lr: 0.0002
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+lr_scheduler:
+  name: torch.optim.lr_scheduler.CosineAnnealingLR
+  interval: epoch
+  params: {T_max: 50, eta_min: 0.00002}
+
+ema:
+  enabled: true
+  decay: 0.9995
+  update_after_step: 100
+  update_every: 1
+  use_for_sampling: true
+
+sampling:
+  shape: [3, 256, 256]
+  num_samples: 1272
+  batch_size: 4
+  seed: 42
+  builder:
+    name: physics-reconstruction.reconstruction
+    params:
+      weights: auto
+      prediction_type: epsilon
+      clip_denoised: false
+      partial_noise_time: 240
+      conditioning_strength: 1.0
+      correction_strength: 0.0
+      source:
+        path: data/kolmogorov_observations.npy
+        trajectories: [0, 4]
+      reference:
+        path: data/kolmogorov.npy
+        trajectories: [36, 40]
+      alignment: data/kolmogorov-alignment.json
+      sampler:
+        name: ddim
+        params:
+          schedule: [240, 232, 224, 216, 208, 200, 192, 184, 176, 168, 160, 152, 144, 136, 128, 120, 112, 104, 96, 88, 80, 72, 64, 56, 48, 40, 32, 24, 16, 8, 0]
+          eta: 0.0
+      trajectory: {enabled: false, every_steps: 1}
+  writers:
+    - name: physics-reconstruction.reconstruction-artifacts
+      params: {}
+
+diagnostics: []
+
+trainer:
+  num_epochs: 50
+  device: auto
+  max_grad_norm: 1.0
+  show_progress: true
+
+logging:
+  log_every: 100
+  backends:
+    - name: local
+      params: {console: false}
+  torch_logs: {}
+
+artifacts:
+  checkpoint_every: 5

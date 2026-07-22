@@ -284,6 +284,21 @@ EMA model、带 concrete class identity 的 optimizer/scheduler，以及按稳�
 training assets。训练恢复和 checkpoint-only sampling 不读取 v7 及更早格式；
 请用当前代码重新训练或重新生成 checkpoint。
 
+### 蒸馏 resume 找不到 teacher bootstrap state
+
+TrainingBuilder 在核心加载 checkpoint 之前必须先构造结构兼容的完整 TrainingPlan。因此
+strict resume 仍要求项目配置中的 teacher bootstrap 文件可读取；它只是构造资源，文件中
+的值随后会被 checkpoint 的同名 `training_assets_state_dict` 覆盖。不要根据 output path
+或文件是否存在猜测 fresh/resume。checkpoint-only sampling 不构造 TrainingBuilder；若它
+仍读取 teacher 文件，说明项目 SamplingBuilder 错误地依赖了训练资产。
+
+### Physics reconstruction 的 DDIM 首坐标不匹配
+
+partial-noised initial state 使用 public state time `t` 时，显式 DDIM schedule 的第一个
+坐标也必须是 `t`，最后一个坐标必须是 clean time `0`。例如 `t=240, r=30` 使用
+`[240, 232, ..., 8, 0]`，而不是先在 `alpha_bar[239]` 加噪后从较小 source state 开始。
+参考项目的 lifecycle observer 会在写 artifact 前拒绝这种错位。
+
 ### checkpoint state 不是 weights-only 安全值
 
 v8 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor subclass 和

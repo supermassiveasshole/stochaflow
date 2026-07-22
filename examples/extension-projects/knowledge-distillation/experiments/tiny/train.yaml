@@ -1,0 +1,100 @@
+experiment:
+  name: knowledge-distillation-tiny
+  seed: 42
+  output_dir: outputs/tiny
+
+extensions:
+  plugins:
+    - stochaflow-knowledge-distillation
+
+data:
+  name: stochaflow-knowledge-distillation.classification
+  params:
+    source:
+      kind: synthetic
+      input_features: 8
+      num_classes: 4
+      train_samples: 64
+      validation_samples: 16
+      test_samples: 16
+      noise_std: 0.25
+    loader:
+      batch_size: 8
+      num_workers: 0
+      shuffle: true
+      drop_last: false
+      pin_memory: false
+      persistent_workers: false
+
+model:
+  name: stochaflow-knowledge-distillation.student
+  params:
+    input_features: 8
+    hidden_features: 12
+    num_classes: 4
+
+training:
+  name: stochaflow-knowledge-distillation.training
+  params:
+    teacher:
+      name: stochaflow-knowledge-distillation.teacher
+      params:
+        input_features: 8
+        hidden_features: 24
+        num_classes: 4
+    teacher_bootstrap: data/teacher.pt
+    distillation_objective:
+      name: stochaflow-knowledge-distillation.temperature-kl
+      params:
+        temperature: 2.0
+    distillation_weight: 0.5
+
+objective:
+  name: stochaflow-knowledge-distillation.cross-entropy
+  params: {}
+
+process: null
+
+optimizer:
+  name: torch.optim.Adam
+  params:
+    lr: 0.02
+
+lr_scheduler: null
+
+ema:
+  enabled: false
+
+sampling:
+  shape: null
+  num_samples: 8
+  batch_size: 4
+  builder:
+    name: stochaflow-knowledge-distillation.predictions
+    params:
+      weights: raw
+      input_features: 8
+      mean: 0.0
+      std: 1.0
+  writers:
+    - name: tensor
+      params: {}
+
+diagnostics: []
+
+trainer:
+  num_epochs: 2
+  device: cpu
+  max_grad_norm: null
+  show_progress: true
+
+logging:
+  log_every: 1
+  backends:
+    - name: local
+      params:
+        console: true
+  torch_logs: {}
+
+artifacts:
+  checkpoint_every: 1

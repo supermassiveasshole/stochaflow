@@ -231,6 +231,13 @@ Custom data builders are registered as classes and exposed through an installed
 `stochaflow.extensions` entry point. A config activates them by plugin name; see
 [Extensions and registries](docs/configuration/extensions.md).
 
+Two installable vertical reference projects live under
+`examples/extension-projects/`: a discrete-Gaussian Physics reconstruction
+workflow and a frozen-teacher knowledge-distillation workflow. They exercise
+data, training, checkpoint, and sampling extension boundaries without being
+packaged into Stochaflow or adding task-specific runner branches. See the
+[reference-project guide](docs/configuration/reference-projects.md).
+
 For the complete YAML schema, framework-owned component parameters,
 multi-source mixing, buckets, K-fold, logging, and CLI overrides, see the
 [Configuration handbook](docs/configuration/index.md). Native optimizer and LR

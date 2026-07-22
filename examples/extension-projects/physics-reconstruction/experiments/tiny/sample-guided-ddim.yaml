@@ -1,0 +1,30 @@
+extensions:
+  plugins: [physics-reconstruction]
+sampling:
+  shape: [3, 8, 8]
+  num_samples: 4
+  batch_size: 2
+  seed: 7
+  builder:
+    name: physics-reconstruction.reconstruction
+    params:
+      weights: raw
+      prediction_type: epsilon
+      clip_denoised: false
+      partial_noise_time: 4
+      conditioning_strength: 0.0001
+      correction_strength: 0.0001
+      source:
+        path: data/tiny/observations.npy
+        trajectories: [0, 1]
+      reference:
+        path: data/tiny/references.npy
+        trajectories: [0, 1]
+      alignment: data/tiny/alignment.json
+      sampler:
+        name: physics-reconstruction.guided-ddim
+        params: {schedule: [4, 2, 0], eta: 0.0}
+      trajectory: {enabled: false, every_steps: 1}
+  writers:
+    - name: physics-reconstruction.reconstruction-artifacts
+      params: {}
