@@ -319,7 +319,12 @@ def _raw_config(*, builder: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _checkpoint(path: Path, raw: dict[str, Any], *, version: int = 6) -> Path:
+def _checkpoint(
+    path: Path,
+    raw: dict[str, Any],
+    *,
+    version: int = CHECKPOINT_FORMAT_VERSION,
+) -> Path:
     model = TinyDenoiser()
     payload: dict[str, Any] = {
         "format_version": version,
@@ -776,11 +781,11 @@ def test_sampling_only_config_requires_explicit_checkpoint(tmp_path: Path) -> No
         run_sampling(config_path=config_path)
 
 
-def test_checkpoint_v5_is_rejected(tmp_path: Path) -> None:
+def test_checkpoint_v6_is_rejected(tmp_path: Path) -> None:
     raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=5)
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=6)
 
-    with pytest.raises(ValueError, match="expected version 6"):
+    with pytest.raises(ValueError, match="expected version 7"):
         run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
 
 
@@ -867,4 +872,4 @@ def test_sampling_builder_context_copies_params() -> None:
     )
     context.params["nested"]["value"] = 2
     assert raw == {"nested": {"value": 1}}
-    assert CHECKPOINT_FORMAT_VERSION == 6
+    assert CHECKPOINT_FORMAT_VERSION == 7

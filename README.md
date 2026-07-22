@@ -5,10 +5,11 @@ through probability paths, generative dynamics, and numerical samplers. The
 current implementation focuses on config-driven DDPM and DDIM training and
 sampling for MNIST, CIFAR-10, and Oxford Flowers 102.
 
-The codebase is organized around registries and config-driven components: thin
-data builders, models, optional probability processes, complete samplers, task sampling
-builders, training builders, artifact writers, objectives, optimizers, diagnostics, and loggers
-are selected from YAML.
+The codebase is organized around registries and config-driven components. Thin
+data builders, models, optional probability processes, complete samplers, task
+sampling builders, training builders, artifact writers, objectives, diagnostics,
+and loggers are selected through registries. Standard PyTorch optimizers and LR
+schedulers use allowlisted native target paths instead of copied Registry aliases.
 
 ## Scope
 
@@ -60,10 +61,12 @@ Implemented:
 - recipe-local holdout/K-fold, multi-source mixtures, and dynamic pixel batches
 - registered tensor, image, and user-defined sampling artifact writers
 - registered TrainingBuilder composition with thin task-specific TrainingStrategy
-- reusable scalar Objectives and managed auxiliary modules for frozen-teacher distillation
+- reusable scalar Objectives and managed auxiliary modules for online/offline and
+  multi-teacher distillation under a single-optimizer lifecycle
 - UNet backbone with optional attention blocks
 - EMA tracking and EMA sampling
-- warmup-cosine and common PyTorch optimizer LR schedulers
+- a project-owned warmup-cosine scheduler and direct native PyTorch optimizer/LR
+  scheduler construction
 - multi-sampler diffusion diagnostics with denoiser metrics and visual artifacts
 - Rich terminal reporting, checkpointing, and local/TensorBoard/W&B logging
 - one `stochaflow` CLI with `train` and `sample` subcommands
@@ -166,9 +169,10 @@ uv run stochaflow train \
 Custom data builders are registered as classes and imported through
 `extensions.modules`; see [Extensions and registries](docs/configuration/extensions.md).
 
-For the complete YAML schema, defaults, validation rules, built-in component
-parameters, multi-source mixing, buckets, K-fold, logging, and CLI overrides,
-see [Configuration handbook](docs/configuration/index.md).
+For the complete YAML schema, framework-owned component parameters,
+multi-source mixing, buckets, K-fold, logging, and CLI overrides, see the
+[Configuration handbook](docs/configuration/index.md). Native optimizer and LR
+scheduler constructor parameters follow the installed PyTorch version.
 
 If `--epochs` is omitted, the runner uses `trainer.num_epochs` from the YAML
 config. Passing `--epochs` is an explicit run-time override.
@@ -299,8 +303,11 @@ Important sections:
 - `training`: registered TrainingBuilder and builder-owned task parameters
 - `process`: optional registered model-free probability process and its parameters
 - `objective`: optional reusable scalar training objective
-- `optimizer`: optimizer name and hyperparameters
-- `lr_scheduler`: optional optimizer learning-rate scheduler
+- `optimizer`: an allowlisted `torch.optim.<Class>` target or extension name,
+  plus constructor keyword arguments
+- `lr_scheduler`: an optional allowlisted
+  `torch.optim.lr_scheduler.<Class>` target or extension name, its constructor
+  keyword arguments, and the Stochaflow step/epoch lifecycle interval
 - `ema`: optional exponential moving average tracking and sampling policy
 - `sampling`: optional task Builder, shape/batching, and artifact writers
 - `diagnostics`: optional denoiser and multi-sampler training diagnostics
@@ -322,7 +329,8 @@ a project script or sweep.
 The Flowers102 config trains on the official `train` split, validates on `val`,
 and reserves `test` for final evaluation. It uses train-time random crops,
 evaluation center crops, EMA sampling, a linear DDPM beta schedule, clipped
-posterior DDPM sampling, and a warmup-cosine optimizer LR schedule.
+posterior DDPM sampling, and a project-owned warmup-cosine LR scheduler with an
+explicit total step count.
 
 ## Architecture
 
@@ -339,7 +347,9 @@ posterior DDPM sampling, and a warmup-cosine optimizer LR schedule.
 
 `src/stochaflow/training/`
 : TrainingBuilder/Plan/Strategy contracts, built-in supervised and Gaussian
-  training composition, objectives, trainer lifecycle, diagnostics, reporting, and EMA.
+  training composition, objectives, managed auxiliary assets, trainer lifecycle,
+  diagnostics, reporting, and EMA. Builders own dependency composition; Strategies
+  own only batch-to-loss/metrics computation.
 
 `src/stochaflow/sampling/`
 : unified Samplers and observers, task SamplingBuilders, checkpoint sampling

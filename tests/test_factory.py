@@ -1,11 +1,12 @@
 """Tests for registry and builder utilities."""
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 import torch
 from torch.optim import Optimizer, SGD
-from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR, StepLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler, StepLR
 
 from stochaflow.processes import (
     DiscreteGaussianProcess,
@@ -17,6 +18,7 @@ from stochaflow.training import (
     MSEObjective,
     Trainer,
     TrainingDiagnostic,
+    WarmupCosineLR,
 )
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
@@ -28,6 +30,7 @@ from stochaflow.utils.config import (
 from stochaflow.utils.factory import (
     build_diagnostics,
     build_lr_scheduler,
+    build_optimizer,
     build_training_components,
     resolve_device,
 )
@@ -51,6 +54,93 @@ class MinimalDiagnostic(TrainingDiagnostic):
 
 
 REGISTRIES.diagnostics.add("test_minimal", MinimalDiagnostic)
+
+
+class RegisteredOptimizer(Optimizer):
+    """Test extension optimizer using the native constructor convention."""
+
+    def __init__(
+        self,
+        params,
+        *,
+        lr: float,
+        options: dict[str, object] | None = None,
+    ) -> None:
+        if options is not None:
+            options["constructed"] = True
+        super().__init__(params, {"lr": lr})
+
+    def step(self, closure=None):
+        loss = closure() if closure is not None else None
+        return loss
+
+
+class RegisteredScheduler(LRScheduler):
+    """Test extension scheduler using the native constructor convention."""
+
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        *,
+        factor: float,
+        options: dict[str, object] | None = None,
+    ) -> None:
+        self.factor = factor
+        if options is not None:
+            options["constructed"] = True
+        super().__init__(optimizer)
+
+    def get_lr(self) -> list[float]:
+        return [float(base_lr) * self.factor**self.last_epoch for base_lr in self.base_lrs]
+
+
+class VarArgsScheduler(LRScheduler):
+    """Scheduler whose step accepts the trainer's zero-argument call."""
+
+    def step(self, *args) -> None:
+        del args
+
+
+class RequiredKeywordScheduler(LRScheduler):
+    """Scheduler incompatible with the automatic zero-argument lifecycle."""
+
+    def __init__(self, optimizer: Optimizer) -> None:
+        self.optimizer = optimizer
+
+    def step(self, *, metric: float) -> None:
+        del metric
+
+
+class MisboundScheduler(LRScheduler):
+    """Invalid extension that discards the optimizer injected by core."""
+
+    def __init__(self, optimizer: Optimizer) -> None:
+        del optimizer
+        unrelated_parameter = torch.nn.Parameter(torch.ones(()))
+        unrelated_optimizer = SGD([unrelated_parameter], lr=0.1)
+        super().__init__(unrelated_optimizer)
+
+    def get_lr(self) -> list[float]:
+        return [float(base_lr) for base_lr in self.base_lrs]
+
+
+class KeyErrorScheduler(LRScheduler):
+    """Extension whose constructor fails outside TypeError/ValueError."""
+
+    def __init__(self, optimizer: Optimizer) -> None:
+        del optimizer
+        raise KeyError("constructor failed")
+
+
+REGISTRIES.optimizers.add("test_registered_optimizer", RegisteredOptimizer)
+REGISTRIES.lr_schedulers.add("test_registered_scheduler", RegisteredScheduler)
+REGISTRIES.lr_schedulers.add("test_varargs_scheduler", VarArgsScheduler)
+REGISTRIES.lr_schedulers.add(
+    "test_required_keyword_scheduler",
+    RequiredKeywordScheduler,
+)
+REGISTRIES.lr_schedulers.add("test_misbound_scheduler", MisboundScheduler)
+REGISTRIES.lr_schedulers.add("test_key_error_scheduler", KeyErrorScheduler)
 
 
 @REGISTRIES.processes.register("test_learnable_gaussian")
@@ -100,7 +190,7 @@ def test_build_training_components_from_ddpm_mnist_config() -> None:
     assert isinstance(components.optimizer, Optimizer)
     assert components.ema is not None
     assert isinstance(components.lr_scheduler, CosineAnnealingLR)
-    assert components.lr_scheduler.T_max == config.trainer.num_epochs
+    assert components.lr_scheduler.T_max == 30
     assert components.trainer.lr_scheduler_interval == "epoch"
     assert isinstance(components.logger, ExperimentLogger)
     assert isinstance(components.checkpoint_manager, CheckpointManager)
@@ -109,7 +199,7 @@ def test_build_training_components_from_ddpm_mnist_config() -> None:
 
 def test_build_training_components_from_ddpm_flowers102_config() -> None:
     config = load_config(Path("configs/ddpm_flowers102.yaml"))
-    components = build_training_components(config, steps_per_epoch=10, num_epochs=200)
+    components = build_training_components(config)
 
     assert isinstance(components.model, UNet)
     assert isinstance(components.process, DiscreteGaussianProcess)
@@ -118,7 +208,8 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
     assert isinstance(components.plan.strategy, GaussianDenoisingTrainingStrategy)
     assert isinstance(components.objective, MSEObjective)
     assert isinstance(components.optimizer, Optimizer)
-    assert isinstance(components.lr_scheduler, LambdaLR)
+    assert isinstance(components.lr_scheduler, WarmupCosineLR)
+    assert components.lr_scheduler.total_steps == 10500
     assert components.ema is not None
     assert len(components.diagnostics) == 1
     assert isinstance(components.logger, ExperimentLogger)
@@ -177,7 +268,7 @@ def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> 
     assert "process_gain" not in components.ema.shadow_params
 
     state = components.checkpoint_manager.build_state()
-    assert state.get("format_version") == 6
+    assert state.get("format_version") == 7
     process_state = state.get("process_state_dict")
     assert process_state is not None
     assert "process_gain" in process_state
@@ -244,6 +335,98 @@ def test_checkpoint_manager_rejects_process_presence_mismatches(
         process_manager.load(missing_path)
 
 
+def test_checkpoint_restores_real_optimizer_and_scheduler_continuously(
+    tmp_path: Path,
+) -> None:
+    first_model = torch.nn.Linear(1, 1)
+    first_optimizer = SGD(first_model.parameters(), lr=0.8, momentum=0.9)
+    first_scheduler = CosineAnnealingLR(first_optimizer, T_max=6, eta_min=0.2)
+    for _ in range(2):
+        first_optimizer.step()
+        first_scheduler.step()
+    checkpoint = CheckpointManager(
+        model=first_model,
+        optimizer=first_optimizer,
+        lr_scheduler=first_scheduler,
+    ).save(tmp_path / "optimizer-scheduler.pt")
+
+    second_model = torch.nn.Linear(1, 1)
+    second_optimizer = SGD(second_model.parameters(), lr=0.1, momentum=0.0)
+    second_scheduler = CosineAnnealingLR(second_optimizer, T_max=6, eta_min=0.2)
+    CheckpointManager(
+        model=second_model,
+        optimizer=second_optimizer,
+        lr_scheduler=second_scheduler,
+    ).load(checkpoint)
+
+    assert second_optimizer.param_groups[0]["lr"] == pytest.approx(
+        first_optimizer.param_groups[0]["lr"]
+    )
+    assert second_optimizer.param_groups[0]["momentum"] == pytest.approx(0.9)
+    assert second_scheduler.state_dict() == first_scheduler.state_dict()
+
+    first_optimizer.step()
+    first_scheduler.step()
+    second_optimizer.step()
+    second_scheduler.step()
+    assert second_optimizer.param_groups[0]["lr"] == pytest.approx(
+        first_optimizer.param_groups[0]["lr"]
+    )
+
+
+def test_checkpoint_rejects_scheduler_state_without_a_runtime_scheduler(
+    tmp_path: Path,
+) -> None:
+    source_model = torch.nn.Linear(1, 1)
+    source_optimizer = SGD(source_model.parameters(), lr=0.1)
+    source_scheduler = StepLR(source_optimizer, step_size=1)
+    checkpoint = CheckpointManager(
+        model=source_model,
+        optimizer=source_optimizer,
+        lr_scheduler=source_scheduler,
+    ).save(tmp_path / "with-scheduler.pt")
+
+    runtime_model = torch.nn.Linear(1, 1)
+    runtime_optimizer = SGD(runtime_model.parameters(), lr=0.1)
+    with pytest.raises(ValueError, match="runtime has no lr scheduler"):
+        CheckpointManager(
+            model=runtime_model,
+            optimizer=runtime_optimizer,
+        ).load(checkpoint)
+
+
+def test_checkpoint_rejects_optimizer_and_scheduler_class_mismatches(
+    tmp_path: Path,
+) -> None:
+    optimizer_model = torch.nn.Linear(1, 1)
+    optimizer_checkpoint = CheckpointManager(
+        model=optimizer_model,
+        optimizer=SGD(optimizer_model.parameters(), lr=0.1),
+    ).save(tmp_path / "sgd.pt")
+    runtime_optimizer_model = torch.nn.Linear(1, 1)
+    with pytest.raises(ValueError, match="optimizer class does not match runtime"):
+        CheckpointManager(
+            model=runtime_optimizer_model,
+            optimizer=torch.optim.Adam(runtime_optimizer_model.parameters()),
+        ).load(optimizer_checkpoint)
+
+    scheduler_model = torch.nn.Linear(1, 1)
+    scheduler_optimizer = SGD(scheduler_model.parameters(), lr=0.1)
+    scheduler_checkpoint = CheckpointManager(
+        model=scheduler_model,
+        optimizer=scheduler_optimizer,
+        lr_scheduler=CosineAnnealingLR(scheduler_optimizer, T_max=2),
+    ).save(tmp_path / "cosine.pt")
+    runtime_scheduler_model = torch.nn.Linear(1, 1)
+    runtime_scheduler_optimizer = SGD(runtime_scheduler_model.parameters(), lr=0.1)
+    with pytest.raises(ValueError, match="lr scheduler class does not match runtime"):
+        CheckpointManager(
+            model=runtime_scheduler_model,
+            optimizer=runtime_scheduler_optimizer,
+            lr_scheduler=StepLR(runtime_scheduler_optimizer, step_size=1),
+        ).load(scheduler_checkpoint)
+
+
 def test_custom_diagnostic_receives_only_generic_runtime_parameters(tmp_path) -> None:
     logger = NullLogger()
 
@@ -262,7 +445,7 @@ def test_custom_diagnostic_receives_only_generic_runtime_parameters(tmp_path) ->
     assert diagnostic.marker == "ready"
 
 
-def test_warmup_cosine_lr_scheduler_uses_auto_total_steps() -> None:
+def test_warmup_cosine_lr_scheduler_uses_explicit_total_steps() -> None:
     parameter = torch.nn.Parameter(torch.ones(()))
     optimizer = SGD([parameter], lr=1.0)
     scheduler = build_lr_scheduler(
@@ -271,16 +454,14 @@ def test_warmup_cosine_lr_scheduler_uses_auto_total_steps() -> None:
             interval="step",
             params={
                 "warmup_steps": 2,
-                "total_steps": "auto",
+                "total_steps": 6,
                 "min_lr_ratio": 0.1,
             },
         ),
         optimizer,
-        steps_per_epoch=3,
-        num_epochs=2,
     )
 
-    assert isinstance(scheduler, LambdaLR)
+    assert isinstance(scheduler, WarmupCosineLR)
     lrs = [optimizer.param_groups[0]["lr"]]
     for _ in range(6):
         optimizer.step()
@@ -293,21 +474,35 @@ def test_warmup_cosine_lr_scheduler_uses_auto_total_steps() -> None:
     assert lrs[-1] == pytest.approx(0.1)
 
 
-def test_cosine_lr_scheduler_uses_effective_epoch_override() -> None:
+def test_warmup_cosine_rejects_auto_total_steps() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = SGD([parameter], lr=1.0)
+
+    with pytest.raises(RegistryError, match="total_steps must be a positive integer"):
+        build_lr_scheduler(
+            LRSchedulerConfig(
+                name="warmup_cosine",
+                interval="step",
+                params={"warmup_steps": 2, "total_steps": "auto"},
+            ),
+            optimizer,
+        )
+
+
+def test_native_cosine_lr_scheduler_uses_explicit_params() -> None:
     parameter = torch.nn.Parameter(torch.ones(()))
     optimizer = SGD([parameter], lr=1.0)
     scheduler = build_lr_scheduler(
         LRSchedulerConfig(
-            name="cosine",
+            name="torch.optim.lr_scheduler.CosineAnnealingLR",
             interval="epoch",
-            params={"T_max": "auto", "eta_min": 0.1},
+            params={"T_max": 60, "eta_min": 0.1},
         ),
         optimizer,
-        steps_per_epoch=3,
-        num_epochs=60,
     )
 
     assert isinstance(scheduler, CosineAnnealingLR)
+    assert scheduler.optimizer is optimizer
     assert scheduler.T_max == 60
 
 
@@ -316,7 +511,7 @@ def test_torch_builtin_lr_scheduler_can_be_built() -> None:
     optimizer = SGD([parameter], lr=1.0)
     scheduler = build_lr_scheduler(
         LRSchedulerConfig(
-            name="step",
+            name="torch.optim.lr_scheduler.StepLR",
             interval="epoch",
             params={"step_size": 1, "gamma": 0.5},
         ),
@@ -329,9 +524,309 @@ def test_torch_builtin_lr_scheduler_can_be_built() -> None:
     assert optimizer.param_groups[0]["lr"] == pytest.approx(0.5)
 
 
+def test_native_optimizer_resolver_needs_no_per_class_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        torch.optim,
+        "Stage41Optimizer",
+        RegisteredOptimizer,
+        raising=False,
+    )
+    parameter = torch.nn.Parameter(torch.ones(()))
+
+    optimizer = build_optimizer(
+        ComponentConfig(
+            name="torch.optim.Stage41Optimizer",
+            params={"lr": 0.25},
+        ),
+        [parameter],
+    )
+
+    assert isinstance(optimizer, RegisteredOptimizer)
+    assert optimizer.param_groups[0]["params"] == [parameter]
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "torch.optim.MissingStage41Optimizer",
+        "torch.optim.lr_scheduler.StepLR",
+        "torch.optim._Stage41Optimizer",
+    ],
+)
+def test_native_optimizer_rejects_unknown_nested_or_private_targets(
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+) -> None:
+    monkeypatch.setattr(
+        torch.optim,
+        "_Stage41Optimizer",
+        RegisteredOptimizer,
+        raising=False,
+    )
+    parameter = torch.nn.Parameter(torch.ones(()))
+
+    with pytest.raises(RegistryError, match="optimizer target"):
+        build_optimizer(
+            ComponentConfig(name=target, params={"lr": 0.1}),
+            [parameter],
+        )
+
+
+def test_native_optimizer_rejects_wrong_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.optim, "Stage41WrongBase", str, raising=False)
+    parameter = torch.nn.Parameter(torch.ones(()))
+
+    with pytest.raises(RegistryError, match="must inherit.*Optimizer"):
+        build_optimizer(
+            ComponentConfig(
+                name="torch.optim.Stage41WrongBase",
+                params={"lr": 0.1},
+            ),
+            [parameter],
+        )
+
+
+def test_optimizer_and_scheduler_registries_reject_wrong_bases() -> None:
+    with pytest.raises(RegistryError, match="optimizer registrations must inherit"):
+        REGISTRIES.optimizers.add(
+            "test_wrong_optimizer",
+            cast(type[Optimizer], str),
+        )
+    with pytest.raises(RegistryError, match="lr scheduler registrations must inherit"):
+        REGISTRIES.lr_schedulers.add(
+            "test_wrong_scheduler",
+            cast(type[LRScheduler], str),
+        )
+
+
+def test_optimizer_and_scheduler_registries_reject_native_namespaces() -> None:
+    with pytest.raises(RegistryError, match="reserved namespace 'torch.optim.'"):
+        REGISTRIES.optimizers.add(
+            "torch.optim.Stage41Optimizer",
+            RegisteredOptimizer,
+        )
+    with pytest.raises(
+        RegistryError,
+        match=r"reserved namespace 'torch\.optim\.lr_scheduler\.'",
+    ):
+        REGISTRIES.lr_schedulers.add(
+            "torch.optim.lr_scheduler.Stage41Scheduler",
+            RegisteredScheduler,
+        )
+
+
+def test_non_native_target_is_not_imported_as_a_python_path() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+
+    with pytest.raises(RegistryError, match="unknown optimizer 'os.system'"):
+        build_optimizer(
+            ComponentConfig(name="os.system", params={}),
+            [parameter],
+        )
+
+
+def test_registered_optimizer_and_scheduler_use_native_constructor_contract() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = build_optimizer(
+        ComponentConfig(
+            name="test_registered_optimizer",
+            params={"lr": 0.5},
+        ),
+        [parameter],
+    )
+    scheduler = build_lr_scheduler(
+        LRSchedulerConfig(
+            name="test_registered_scheduler",
+            interval="step",
+            params={"factor": 0.5},
+        ),
+        optimizer,
+    )
+
+    assert isinstance(optimizer, RegisteredOptimizer)
+    assert optimizer.step() is None
+    assert isinstance(scheduler, RegisteredScheduler)
+    assert scheduler.optimizer is optimizer
+
+
+def test_optimizer_requiring_a_closure_is_rejected_at_build_boundary() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+
+    with pytest.raises(RegistryError, match=r"optimizer .*step\(\).*without arguments"):
+        build_optimizer(
+            ComponentConfig(name="torch.optim.LBFGS", params={"lr": 0.1}),
+            [parameter],
+        )
+
+
+def test_scheduler_must_retain_the_injected_optimizer() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = SGD([parameter], lr=1.0)
+
+    with pytest.raises(RegistryError, match="must retain the injected optimizer"):
+        build_lr_scheduler(
+            LRSchedulerConfig(name="test_misbound_scheduler"),
+            optimizer,
+        )
+
+
+def test_optimizer_and_scheduler_constructor_params_are_deep_copied() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer_options: dict[str, object] = {"label": "original"}
+    optimizer_config = ComponentConfig(
+        name="test_registered_optimizer",
+        params={"lr": 0.5, "options": optimizer_options},
+    )
+
+    optimizer = build_optimizer(optimizer_config, [parameter])
+
+    scheduler_options: dict[str, object] = {"label": "original"}
+    scheduler_config = LRSchedulerConfig(
+        name="test_registered_scheduler",
+        interval="step",
+        params={"factor": 0.5, "options": scheduler_options},
+    )
+    build_lr_scheduler(scheduler_config, optimizer)
+
+    assert optimizer_options == {"label": "original"}
+    assert optimizer_config.params["options"] == {"label": "original"}
+    assert scheduler_options == {"label": "original"}
+    assert scheduler_config.params["options"] == {"label": "original"}
+
+
+def test_runtime_constructor_parameters_cannot_be_overridden() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = SGD([parameter], lr=1.0)
+
+    with pytest.raises(RegistryError, match="cannot override.*'params'"):
+        build_optimizer(
+            ComponentConfig(
+                name="torch.optim.SGD",
+                params={"params": [parameter], "lr": 0.1},
+            ),
+            [parameter],
+        )
+    with pytest.raises(RegistryError, match="cannot override.*'optimizer'"):
+        build_lr_scheduler(
+            LRSchedulerConfig(
+                name="torch.optim.lr_scheduler.StepLR",
+                params={"optimizer": optimizer, "step_size": 1},
+            ),
+            optimizer,
+        )
+
+
+def test_native_constructor_type_error_preserves_original_cause() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+
+    with pytest.raises(RegistryError, match="torch.optim.SGD") as raised:
+        build_optimizer(
+            ComponentConfig(
+                name="torch.optim.SGD",
+                params={"unknown_parameter": True},
+            ),
+            [parameter],
+        )
+
+    assert isinstance(raised.value.__cause__, TypeError)
+
+
+def test_constructor_failure_is_wrapped_with_target_and_original_cause() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = SGD([parameter], lr=0.1)
+
+    with pytest.raises(RegistryError, match="test_key_error_scheduler") as raised:
+        build_lr_scheduler(
+            LRSchedulerConfig(name="test_key_error_scheduler"),
+            optimizer,
+        )
+
+    assert isinstance(raised.value.__cause__, KeyError)
+
+
+def test_metric_driven_scheduler_is_rejected_at_build_boundary() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = SGD([parameter], lr=1.0)
+
+    with pytest.raises(RegistryError, match=r"step\(\).*without arguments"):
+        build_lr_scheduler(
+            LRSchedulerConfig(
+                name="torch.optim.lr_scheduler.ReduceLROnPlateau",
+                interval="epoch",
+            ),
+            optimizer,
+        )
+
+
+def test_zero_argument_step_contract_accepts_varargs() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = SGD([parameter], lr=1.0)
+
+    scheduler = build_lr_scheduler(
+        LRSchedulerConfig(name="test_varargs_scheduler"),
+        optimizer,
+    )
+
+    assert isinstance(scheduler, VarArgsScheduler)
+
+
+def test_zero_argument_step_contract_rejects_required_keyword() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = SGD([parameter], lr=1.0)
+
+    with pytest.raises(RegistryError, match=r"step\(\).*without arguments"):
+        build_lr_scheduler(
+            LRSchedulerConfig(name="test_required_keyword_scheduler"),
+            optimizer,
+        )
+
+
+def test_zero_argument_step_contract_rejects_uninspectable_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = SGD([parameter], lr=1.0)
+
+    def unavailable_signature(_callable):
+        raise ValueError("signature unavailable")
+
+    monkeypatch.setattr(
+        "stochaflow.training.optimization.inspect.signature",
+        unavailable_signature,
+    )
+    with pytest.raises(RegistryError, match="no inspectable step"):
+        build_lr_scheduler(
+            LRSchedulerConfig(
+                name="torch.optim.lr_scheduler.StepLR",
+                params={"step_size": 1},
+            ),
+            optimizer,
+        )
+
+
+def test_removed_native_aliases_are_not_compatibility_names() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+
+    with pytest.raises(RegistryError, match="unknown optimizer 'adam'"):
+        build_optimizer(
+            ComponentConfig(name="adam", params={"lr": 0.1}),
+            [parameter],
+        )
+    with pytest.raises(RegistryError, match="unknown lr scheduler 'step'"):
+        build_lr_scheduler(
+            LRSchedulerConfig(name="step", params={"step_size": 1}),
+            SGD([parameter], lr=0.1),
+        )
+
+
 def test_disabled_lr_scheduler_uses_safe_trainer_interval() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["lr_scheduler"] = {"name": None, "interval": "batch", "params": {}}
+    raw["lr_scheduler"] = None
     config = load_config_dict(raw)
 
     components = build_training_components(config)

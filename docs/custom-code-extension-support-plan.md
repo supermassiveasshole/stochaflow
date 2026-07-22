@@ -1,8 +1,8 @@
 # 自定义代码扩展支持实施计划
 
-- 状态：Stage 4 完成，Stage 5 待实施
+- 状态：Stage 4.1 完成，Stage 5 待实施
 - 制定日期：2026-07-17
-- 最近修订：2026-07-21
+- 最近修订：2026-07-22
 - 目标分支：`feature/custom-code-extension-support`
 
 ## 目标
@@ -19,13 +19,17 @@
 
 ```text
 安装 stochaflow
-→ stochaflow project create my_project
-→ 编写并注册 extension
-→ 在项目清单中声明 extension 模块
-→ 在 YAML 中选择数据 builder、模型、TrainingBuilder、可选 Objective，以及采样所需的
-  Process/SamplingBuilder
-→ stochaflow train / stochaflow sample
+→ stochaflow init my-project
+→ cd my-project
+→ 在所选 Python 环境中安装项目（例如 pip install -e . 或 uv sync）
+→ 编写 extension、data 和 config
+→ stochaflow train --config experiments/example/train.yaml
+→ stochaflow sample --checkpoint outputs/.../checkpoints/best.pt
 ```
+
+生成目录是普通、可安装的 `src` 布局 Python 项目。Stochaflow 发布包提供
+CLI，extension 项目通过标准 Python packaging 安装到同一环境。pip、uv、
+venv、conda、Poetry 或 PDM 都可以；核心不识别 workspace 也不管理环境。
 
 ## 架构原则
 
@@ -98,7 +102,8 @@ Gaussian math 集中在 `GaussianDiffusion`，但也合并了训练 Loss、模�
 首版默认边界：
 
 - 使用本地 `src` 布局项目；
-- 通过项目清单显式加载扩展，不扫描目录；
+- extension package 通过标准 Python entry point 暴露单一聚合入口；脚手架生成的
+  YAML 显式选择该插件，不扫描目录，也不依赖隐式环境全量加载；
 - Dataset 单样本与 batching 由 DataBuilder 按需定义；送入 Trainer 的 batch 可以是
   `Tensor`，或由 mapping、tuple、list 和 Tensor 组成的嵌套结构；
 - 提供开箱即用的普通图像、多分辨率图像和 paired super-resolution recipe，但这些
@@ -122,6 +127,9 @@ Gaussian math 集中在 `GaussianDiffusion`，但也合并了训练 Loss、模�
 - resolved config 和 checkpoint 保存最终扩展模块列表；
 - 新增稳定的 `stochaflow.extensions` 公开入口；
 - 保持 Registry 的重复注册、类型校验和异常语义。
+
+Stage 5 会在正式发布前用 packaging entry point 和 `extensions.plugins` 替换这里的
+module-path bootstrap。该未发布接口不保留兼容层。
 
 ### 逻辑提交
 
@@ -658,6 +666,9 @@ class TrainingStrategy(ABC):
 
 - Builder context 深复制 params。factory 只注入 Builder，因为资产组装是 Builder 的
   职责；Strategy 不访问 Registry 或 factory。
+- Strategy 的构造签名不属于公共 schema。具体 Builder 可以直接注入模型、Process、
+  Objective、teacher callable 或其他已经组装好的依赖；核心只依赖
+  `training_step()` / `evaluation_step()`，不要求所有任务使用统一的 context mapping。
 - `primary_model`、`process` 和 `objective` 是具有 sampling/checkpoint 固定身份的
   主资产，不得在 `auxiliary_modules` 重复声明。
 - auxiliary name 必须稳定、非空且唯一。首版所有 auxiliary module 都进入
@@ -725,9 +736,12 @@ Trainer/core
 损失能够合成为一个标量总 loss，自动训练循环就无需理解蒸馏。
 
 首版覆盖 frozen-teacher online distillation；预先生成 teacher target 的 offline
-distillation 则不需要 auxiliary teacher。需要联合更新 teacher、独立 teacher optimizer、
-EMA teacher 或交替优化的方案具有不同训练 lifecycle，不通过继续给 Strategy 增加可选
-控制字段来兼容，而应在出现真实需求后定义新的训练 loop family。
+distillation 则不需要 auxiliary teacher。多 teacher、feature/logit/score distillation
+仍沿用同一组合边界：Builder 组装并声明资产，Strategy 解释一次 batch 的 forward 与
+loss 数学。若 student 与 teacher 共享同一个 optimizer 和一次 backward，Plan 可以将
+两者都声明为可训练资产；需要独立 optimizer、EMA teacher、交替更新或 manual backward
+时，变化的是训练生命周期，而不是单步 loss 公式，因此应在出现真实需求后定义新的
+training-loop family，不能继续给 Strategy 增加可选控制字段。
 
 ### Core runtime 与 lifecycle
 
@@ -813,74 +827,495 @@ uv run pyright
 - Stage 4 只统一自动单 optimizer lifecycle；多 optimizer 需要新的训练 loop family。
 - Stage 4 形成单一逻辑提交：`Stage 4: Add extensible training builders`。
 
-## Stage 5：用户项目系统与 CLI 脚手架
+## Stage 4.1：成熟依赖原生 Provider 收口
 
-### 目标
+### Summary
 
-在数据、训练和采样公共 API 均已存在后，让用户无需操作 `PYTHONPATH` 即可创建和使用
-独立 Stochaflow 项目。模板不再引用尚未实现的扩展契约。
+配置必须记录运行选择以保证可复现，但 Registry 不应成为 PyTorch 类目录。标准
+`torch.optim` optimizer 与 `torch.optim.lr_scheduler` scheduler 通过受限 native-provider
+resolver 解析，核心注入运行时依赖后将 `params` 原样传给 PyTorch 构造器。第三方实现只有
+在保持同一构造与生命周期契约时才注册为对应 PyTorch 基类；本 Stage 不增加第二套
+run-aware scheduler Builder。
 
-### 实施内容
+### 配置边界
 
-- 新增命令：
+```yaml
+optimizer:
+  name: torch.optim.AdamW
+  params:
+    lr: 0.0002
+    weight_decay: 0.01
 
-  ```bash
-  stochaflow project create my_project
-  stochaflow train --project /path/to/project --config configs/train.yaml
-  stochaflow sample --project /path/to/project --checkpoint checkpoints/best.pt
-  ```
+lr_scheduler:
+  name: torch.optim.lr_scheduler.CosineAnnealingLR
+  interval: epoch
+  params:
+    T_max: 100
+```
 
-- 创建以下项目结构：
+- `name` 以 `torch.optim.` 或 `torch.optim.lr_scheduler.` 开头时，只能从对应 allowlisted
+  namespace 解析，不能作为任意 Python import path；解析结果分别验证为
+  `torch.optim.Optimizer` 子类或当前自动 Trainer 支持的 scheduler contract。
+- 两个 native prefix 是保留 namespace；对应 Registry 在注册边界直接拒绝使用这些前缀的
+  扩展名称，避免出现“注册成功但永远被 native resolver 遮蔽”的组件。
+- 其他 optimizer 名称继续由 `REGISTRIES.optimizers` 解析为
+  `torch.optim.Optimizer` 子类；其他 scheduler 名称由 `REGISTRIES.lr_schedulers` 解析为
+  `torch.optim.lr_scheduler.LRScheduler` 子类。两类 Registry 都只服务真正的扩展，不复制
+  PyTorch namespace。
+- optimizer 的 parameter iterable 与 scheduler 的 optimizer 由 core 作为位置参数注入；
+  `params` 只包含用户真正覆盖的 PyTorch 构造关键字参数，省略值继续采用当前安装
+  PyTorch 的默认值。optimizer 配置拒绝保留键 `params`，scheduler 配置拒绝保留键
+  `optimizer`，避免配置覆盖运行时依赖。
+- `StochaflowConfig.optimizer` 直接使用已有 `ComponentConfig`；删除字段完全相同、没有独立
+  行为的 `OptimizerConfig`。默认 target 为 `torch.optim.Adam`，默认 params 只保留框架
+  确实选择的 `lr`，其余采用 PyTorch 默认值。
+- `lr_scheduler.interval` 保留为 `step | epoch`，因为 PyTorch 实现不定义 Trainer 应在
+  哪个 lifecycle event 调用 `step()`。
+- 首版自动生命周期只支持可无参数调用 `step()` 的 optimizer 与 scheduler。需要 closure
+  的 optimizer 或 validation metric 的 scheduler 必须等待明确的 lifecycle contract，不能
+  根据具体类名特判。
+- `lr_scheduler: null` 表示禁用，不需要为“无 scheduler”构造空对象。
 
-  ```text
-  my_project/
-  ├── stochaflow.project.yaml
-  ├── pyproject.toml
-  ├── .gitignore
-  ├── configs/
-  │   └── train.yaml
-  ├── src/
-  │   └── my_project/
-  │       ├── __init__.py
-  │       └── extensions/
-  │           └── __init__.py
-  └── tests/
-      └── test_extensions.py
-  ```
+### 构造、验证与运行时值
 
-- 项目清单首版结构：
+构造路径保持直接且统一：
 
-  ```yaml
-  schema_version: 1
+```python
+optimizer = optimizer_class(trainable_parameters, **optimizer_params)
+scheduler = scheduler_class(optimizer, **scheduler_params)
+```
 
-  project:
-    name: my_project
-    source_roots: [src]
+- `params` 是不透明 mapping；generic factory 不复制、重命名、补全或解释具体 PyTorch
+  constructor 字段。PyTorch 构造器是参数合法性的权威来源，factory 只为失败补充配置路径、
+  target 和原始异常链。
+- 这里的配置 `params` 表示 constructor kwargs，不等于 optimizer 构造器首个 `params`
+  iterable，也不从运行时 `.defaults`、`.param_groups` 或 scheduler state 反向生成配置；
+  PyTorch 没有跨 optimizer/scheduler 通用的可序列化“参数字段”。
+- `inspect.signature()` 可以作为未来 CLI help 的 best-effort 信息源，但不能生成稳定公共
+  schema，也不能决定 constructor compatibility。这里的反射只允许用于验证构造后的 bound
+  optimizer/scheduler `step` 是否满足当前自动 Trainer 的零参数调用契约：执行
+  `inspect.signature(component.step).bind()`；必需 positional/keyword-only 参数导致拒绝，
+  默认参数和 `*args` 可以接受零参数。无法取得可靠 signature 时也在构建边界明确拒绝，
+  不延迟到训练中途。scheduler 还必须保留 core 注入的同一个 optimizer。
+- `T_max`、`total_steps`、`num_training_steps`、`epochs + steps_per_epoch` 等名称不构成通用
+  语义协议。首版要求在 `params` 中提供具体值，不根据字段名自动注入 run context，也不接受
+  `"auto"` sentinel。
+- Stochaflow 内置 warmup-cosine 若继续保留，应实现为真正的 `LRScheduler` 子类并显式接收
+  `warmup_steps` 与 `total_steps`，通过和第三方 scheduler 相同的 Registry/构造路径使用；
+  它不是 generic factory 的名称分支。
+- CLI 改变 epoch 或 batch limit 时不会隐式重写 scheduler kwargs。需要同步改变总步数的运行
+  必须修改并传入一份内部一致的完整训练 config；Stage 4.1 不增加通用 CLI override 或训练
+  overlay。若未来多个真实用例证明需要运行时引用，再单独设计配置引用或训练组合能力，
+  不提前发布 scheduler-only Builder。
 
-  extensions:
-    modules: [my_project.extensions]
-  ```
+### 实现修改
 
-- 项目发现顺序：显式 `--project`、配置目录向上、当前工作目录向上；找不到项目时继续
-  支持独立配置；
-- CLI 加载 `source_roots` 后按清单顺序导入扩展；
-- 清单模块与配置中的 `extensions.modules` 按顺序合并并稳定去重；
-- 项目名中的连字符转换为 Python 包名下划线；非空目标目录拒绝覆盖；
-- 模板按独立小示例展示 DataBuilder、Model、TrainingBuilder/Strategy、可选 Objective、可选 Process、
-  Sampler 和 SamplingBuilder 注册，不暗示每个项目必须实现全部角色。
+- 删除 Adam、AdamW、CosineAnnealingLR、StepLR、MultiStepLR、ExponentialLR 和 LinearLR
+  的逐项 Registry alias；新增一个只解析上述 PyTorch namespace 的通用 resolver。
+- 删除重复的 `OptimizerConfig`，配置加载、factory 与公共 utility export 使用
+  `ComponentConfig`；`LRSchedulerConfig` 因额外拥有 interval lifecycle 字段而保留。
+- generic optimizer/scheduler factory 不按具体 component name 添加 `if/elif`。
+- Registry 在注册期只验证 `Optimizer`/`LRScheduler` 子类关系；构建期才通过统一的
+  `Class(runtime_dependency, **params)` 调用验证 constructor substitution，并保留原始
+  `TypeError` 异常链。不得暗示基类检查已经证明具体 constructor 签名兼容。
+- 纯 PyTorch `CosineAnnealingLR` 要求显式合法的 `T_max`；warmup-cosine 要求显式合法的
+  `total_steps`。删除 `auto_cosine`、`T_max: auto`、`total_steps: auto` 及其 name-specific
+  配置校验。
+- optimizer/scheduler checkpoint 继续直接使用 PyTorch `state_dict()`，并在当前未发布格式
+  记录 concrete class identity；scheduler 构造时必须保留同一个 optimizer。恢复时严格校验
+  runtime/state 存在性与 class identity，先加载 scheduler state，再加载 optimizer state，
+  遵守 PyTorch 的恢复 contract。
+- 配置 reference 不复制每个 PyTorch class 的完整签名、默认值或版本相关参数；只记录
+  allowlisted namespace、core 注入参数、Stochaflow lifecycle 字段并链接上游文档。
+- resolved config/checkpoint 保存 target 与用户显式 kwargs，不把当前 PyTorch 默认值展开成
+  Stochaflow schema；跨环境复现依赖项目锁定 PyTorch 版本，运行 provenance 可记录版本，
+  但不能通过复制上游 defaults 替代依赖锁定。
+- 同一 native-provider 原则只在依赖实现与 Stochaflow 行为契约确实一致时复用到其他组件；
+  不能仅因为某个 `torch.nn` 类存在，就推断它满足 Objective、Model 或其他框架语义。
 
-### 验收条件
+### Resume 与 checkpoint 边界
 
-- CLI 可以生成合法、可安装、可测试的 `src` 项目；
-- 自定义 DataBuilder/TrainingBuilder 可以直接被 `train` 使用，自定义 SamplingBuilder
-  可以直接被 `sample` 使用；
-- checkpoint-only sampling 使用同一项目发现和扩展导入逻辑；
-- 临时合成数据完成端到端 CLI 测试，不依赖网络下载；
-- 生成模板只使用 Stage 1–4 已稳定的公开入口。
+当前尚无需要保留的用户 checkpoint，因此本 Stage 不增加旧格式迁移、兼容层、配置差异
+合并或 optimization-state reset 选项。`resume` 保持单一含义：恢复同一训练的完整 PyTorch
+optimizer/scheduler state；constructor config 用于重建对象，checkpoint state 用于继续其运行
+状态。若用户要更换 optimizer、scheduler 或其超参数，那是以 checkpoint 权重初始化的新训练，
+不是 resume，本 Stage 不提前增加 weights-only workflow。
+
+checkpoint 格式直接升级为 v7，加载顺序遵守 PyTorch state contract；不为 v6 草案增加版本
+迁移。不同 concrete optimizer/scheduler class 或 scheduler 有无不一致直接拒绝，不能将
+state mapping 的可加载性误当作语义兼容。
+
+### Test Plan
+
+- 任意测试私有 `torch.optim.Optimizer` 子类通过 monkeypatched allowlisted namespace 构建，
+  证明 resolver 不需要逐项登记；错误类型、未知属性和越界 module path 明确失败。
+- PyTorch scheduler 获得 core 注入的同一 optimizer，`step`/`epoch` interval、checkpoint
+  save/load 和恢复后的 learning rate 与直接使用 PyTorch 一致。
+- 需要 closure 的 optimizer 和需要 positional metric 的 native/registered scheduler 在构建
+  边界明确拒绝，不在训练中途才失败。
+- extension 注册的 custom optimizer 与 scheduler subclass 继续工作，native 与
+  Registry namespace 无歧义。
+- constructor params 原样透传且不修改调用方 mapping；未知参数由 PyTorch 报错并保留异常链；
+  配置中的保留注入键明确失败。
+- optimizer/scheduler bound `step()` 的零参数 bind 覆盖必需参数、默认参数、`*args`、
+  keyword-only 参数和无法取得 signature 的实现；错误绑定 optimizer 的 scheduler 明确失败。
+- warmup-cosine 使用显式 `total_steps`，CLI epoch/limit 改动不触发隐式重写。
+- 配置 reference 不再枚举或复制 Adam/AdamW 与标准 scheduler 的上游参数表。
+
+日常验证：
+
+```bash
+uv run pytest tests/test_factory.py tests/test_config.py tests/test_trainer_reporting.py
+uv run ruff check .
+uv run pyright
+```
 
 ### 逻辑提交
 
-`Add extension project scaffolding`
+`Stage 4.1: Reuse native PyTorch optimizers and schedulers`
+
+### 非目标
+
+- 不增加任意 Python class-path import、全局 dependency provider Registry 或自动扫描；
+- 不在本 Stage 支持 metric-driven scheduler、多个 scheduler、scheduler chaining 配置图或
+  manual optimization；
+- 不为只需要显式 PyTorch kwargs 的 scheduler 编写 Stochaflow wrapper；
+- 不增加 `LRSchedulerBuilder`、run-context 参数名推断、通用 `auto` sentinel 或配置插值系统。
+
+## Stage 5：Entry-point extension 与多实验项目脚手架
+
+### Summary
+
+将扩展激活从 Python module path 收口为标准 Python packaging entry point。
+用户在 extension package 内继续通过 decorator 直接注册；Stochaflow 从当前
+Python environment 的 `stochaflow.extensions` group 发现并导入聚合模块。
+
+`stochaflow init` 生成的 repo 是普通、可安装、可发布的单 Python
+distribution 多实验 research repo。仓库可以同时包含 Stochaflow 实验和任意其他
+研究代码；Stochaflow 只管理由其 CLI 启动的工作流，不解释 scope 外的目录或工具。
+
+### 已确认边界
+
+- repo 首版是单一 installable distribution、多实验，不生成多 package workspace；
+- 非 Stochaflow 实验可以自由共存，但不进入 Stochaflow 的模板契约或运行时 dispatch；
+- extension project 必须与当前 `stochaflow` CLI 位于同一 Python environment；
+- pip、uv、conda、Poetry 或 PDM 均可安装该环境，Stochaflow 不管理包管理器；
+- extension 通过 `[project.entry-points."stochaflow.extensions"]` 发现，不扫描目录、
+  package naming convention 或 namespace package；
+- `init` 模板直接生成可运行配置，用户在此基础上修改。
+
+### Entry point 契约
+
+生成项目在 `pyproject.toml` 声明：
+
+```toml
+[project.entry-points."stochaflow.extensions"]
+my-project = "my_project.stochaflow_ext"
+```
+
+`my-project` 与 `my_project` 只表示由用户输入名称派生的 distribution/package 占位符，
+不是模板内置的领域或仓库名称。
+
+- entry-point name 是稳定的插件身份；生成模板默认使用 canonical distribution name；
+- target 必须是纯 module，不允许 `:callable` 或 extras；`EntryPoint.load()` 只导入
+  该模块，decorator 完成注册；
+- 一个 distribution 可以发布多个具有唯一名称的 Stochaflow entry point；生成模板只
+  声明一个聚合入口，该模块可以导入多个 data/model/training/sampling 子模块；
+- entry-point 导入阶段只定义类/函数并注册，不读取数据、构建模型、加载
+  checkpoint、创建 accelerator context 或启动任务；
+- 非 Stochaflow 代码不从该聚合模块导入。
+
+### 配置契约
+
+`ExtensionsConfig` 收口为：
+
+```python
+@dataclass
+class ExtensionsConfig:
+    plugins: list[str] | None = None
+```
+
+- 省略 `extensions` 或 `plugins: null`：发现当前环境的全部
+  `stochaflow.extensions` entry points；
+- `plugins: []`：不加载任何第三方插件；
+- `plugins: [my-project]`：只加载指定 entry-point names；
+- `init` 模板不使用环境自动发现，而是直接写入项目 entry-point name：
+
+  ```yaml
+  extensions:
+    plugins:
+      - my-project
+  ```
+
+- resolved config 始终将 `plugins` 保存为确定列表，不保存 `null`；
+- 删除 `extensions.modules`，不保留未发布 module bootstrap 的兼容层；
+- sampling-only overlay 若提供 `extensions.plugins`，它是覆盖后的完整列表，
+  不与 checkpoint list 隐式追加。
+
+### 发现、排序与冲突
+
+Stochaflow 通过 `importlib.metadata.entry_points(group="stochaflow.extensions")` 读取已安装
+distribution metadata，不读取未安装源码。在加载任何插件前完成预检：
+
+- 按 canonical entry-point name、canonical distribution name 和 target 稳定排序；
+- 同名 entry point 由多个 distribution 提供时直接失败，不使用后加载覆盖；
+- 配置请求的插件缺失时，报告 entry-point name 和当前 Python executable；
+- target 不是纯 module、distribution metadata 非法或 import 失败时，报告 name、
+  distribution、version、target 和原始异常链；
+- Registry 名称重复继续由 `RegistryError` 失败，错误上下文增加当前插件身份；
+- RegistryCatalog 按 distribution/name/target identity 保证进程内幂等，不支持 reload/unload。
+
+### Resolved config、checkpoint 与版本策略
+
+resolved config 保存决定性插件名列表；checkpoint metadata 另外保存 provenance：
+
+```yaml
+extension_plugins:
+  - name: my-project
+    distribution: my-project
+    version: 0.1.0
+    target: my_project.stochaflow_ext
+```
+
+- 新训练/显式完整 config 按其 `extensions.plugins` 选择当前环境插件；
+- checkpoint-only resume/sampling 只加载 checkpoint resolved config 记录的插件，
+  忽略环境中后来安装的其他插件；
+- entry-point name、distribution 或 target 不匹配属于身份错误，始终硬失败，
+  不能 force；
+- 仅 version 不一致时，CLI 在加载任何插件代码前汇总显示 warning；
+- 交互式 TTY 一次询问是否继续，默认为 No；用户拒绝时在任何构建/状态
+  恢复前退出；
+- 非交互式 stdin 不等待 prompt，默认失败；
+- train/sample 提供范围明确的 `--force-extension-version-mismatch`，允许交互或
+  非交互命令跳过版本询问；不提供含义模糊的通用 `--force`；
+- Python 库 API 不进行交互：默认抛出类型化版本不匹配异常，调用方必须
+  显式选择 allow policy；
+- 接受版本不一致后，run summary、resolved manifest 和后续 checkpoint metadata
+  记录 expected/current version 与接受方式（prompt 或 force flag）；
+- editable install 中“代码改变但版本号未变”无法由 entry-point metadata 检测，
+  Git commit/wheel hash/lockfile provenance 留到 Stage 8。
+
+checkpoint 格式升级到 v8，不加载 v7 module-based config，不增加迁移层。
+
+### 用户流程与 CLI
+
+```bash
+stochaflow init my-project
+cd my-project
+```
+
+`init` 只生成文件，不运行 pip/uv、不创建环境且不覆盖非空目录。项目通过
+标准 Python packaging 安装到用户选择的环境：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+stochaflow train --config experiments/example/train.yaml
+```
+
+或使用可选 uv 工作流：
+
+```bash
+uv sync
+uv run stochaflow train --config experiments/example/train.yaml
+```
+
+`stochaflow` CLI、extension distribution 及任务依赖必须在同一 Python environment。
+独立 pipx/uvx 环境可用于执行 `init`，但不能直接运行另一项目环境内的 extension。
+
+### 配置权威、恢复与覆盖规则
+
+config、checkpoint 和 CLI 不作为三份对等配置参与 merge。每次命令先选择唯一 base
+config，再应用用户显式请求的局部覆盖：
+
+| 命令 | 显式完整 config | checkpoint | 权威 base config | 后续覆盖 |
+| --- | --- | --- | --- | --- |
+| 新训练 | 是 | 否 | 外部 config | train CLI flags |
+| 继续训练 | 否 | 是 | checkpoint 保存的 config | train CLI flags |
+| 继续训练并改配置 | 是 | 是 | 外部 config | train CLI flags；checkpoint 只恢复 state |
+| checkpoint-only sampling | 否 | 是 | checkpoint 保存的 config | sample CLI flags |
+| 完整 config sampling | 是 | 可选 | 外部 config | sample CLI flags；checkpoint 只提供 state |
+| sampling-only overlay | 局部 | 是 | checkpoint 保存的 config | overlay 的 `sampling`/`extensions`，再应用 CLI flags |
+
+- 新训练没有 checkpoint 时必须提供完整 config；
+- `train --resume CHECKPOINT` 可以不提供 `--config`，直接重建 checkpoint 保存的组件图；
+- `train --resume` 不带路径只在同时提供外部 config 时合法，此时从该 config 的输出根查找
+  latest checkpoint；
+- 显式完整 config 是整体替换，不与 checkpoint config 做 equality/compatibility 对比；
+- sampling-only YAML 是明确声明的局部 overlay，不会被解释成第二份完整配置；
+- CLI 只覆盖其文档化字段或 runtime option，不增加 Stage 5 通用 `--set` DSL；
+- resolved config、后续 checkpoint 与 sampling manifest 保存覆盖后的最终结果。
+
+训练恢复延续当前“一次 CLI invocation 对应一个输出 run”的生命周期，而不是重新打开并
+覆盖旧 run：
+
+- checkpoint-only resume 从保存配置重建实验设置和 state，但创建新的 `exp_id` 与兄弟
+  run directory；默认 output root 取前一 resolved run directory 的父目录；
+- 显式完整 config resume 使用该 config 的 `experiment.output_dir` 作为新 run root；
+- `--output-dir` 显式覆盖上述 root；
+- epoch、global step、模型与 optimizer 等 state 连续，日志与 artifact 写入新 run，避免
+  本地日志截断、第三方 logger run-id 复用和旧 artifact 覆盖；
+- resolved config 和 checkpoint metadata 记录新的 run 路径以及 `resumed_from` lineage。
+
+因此 resume 表示“恢复训练状态”，不是“原地追加旧输出目录”。这与每次 Hydra job 拥有
+独立 output directory 的思路一致，也保持当前 Stochaflow timestamped run 模型。
+
+checkpoint state 是否能加载到显式配置构建的资产，由既有严格 runtime contract 判断：
+model/Process/Objective state dict、具名 training assets、optimizer/scheduler/EMA state 和
+checkpoint format 必须匹配。核心不通过比较完整 config 推断兼容性；显式改变但仍满足
+state contract 的配置是合法用户选择，不满足时由具体加载边界报告 missing/unexpected
+state 或资产拓扑错误。
+
+### 插件与 runtime 数据流
+
+Stage 5 用标准 distribution metadata 替换 Stage 1 的 module-path bootstrap，但不把
+“项目”引入 runner：
+
+```text
+用户选择的包管理器将 extension 安装到 CLI 所在环境
+→ load_config() 解析 extensions.plugins
+→ entry-point resolver 预检身份与版本
+→ 导入选定聚合模块，decorator 注册组件
+→ 构建并运行已注册组件
+```
+
+- `load_config()` / `load_config_dict()` 不增加 project 参数；
+- `RegistryCatalog`、runner、Trainer 和 sampling runtime 不知道用户项目；
+- checkpoint 保存具体插件列表与 distribution provenance；恢复时要求相应 distribution
+  已安装到当前 Python 环境；
+- 跨机器运行由 `pyproject.toml`、所选包管理器的 lockfile 或已发布的 extension package
+  恢复代码环境，checkpoint 不携带源码。
+
+### 生成项目
+
+```text
+my-project/
+├── pyproject.toml
+├── .gitignore
+├── README.md
+├── data/
+│   └── .gitkeep
+├── notebooks/
+├── experiments/
+│   └── example/
+│       └── train.yaml
+├── src/
+│   └── my_project/
+│       ├── __init__.py
+│       └── stochaflow_ext/
+│           ├── __init__.py
+│           ├── data.py
+│           ├── model.py
+│           ├── training.py
+│           └── sampling.py
+└── tests/
+    └── test_extensions.py
+```
+
+`outputs/` 由第一次运行创建并写入 `.gitignore`，不预生成或提交运行产物。
+默认 YAML 使用项目根目录相对值，例如 `data/...` 和 `outputs/...`；模板 README
+明确要求从项目根目录运行。包管理器提供切换工作目录的能力时可以使用它，但这不是
+Stochaflow 的运行时契约。
+
+默认模板是一个数步即可完成的合成回归项目：
+
+- 自定义 DataBuilder 返回小型 structured tensor batches；
+- 自定义 Model 注册到 model Registry；
+- 自定义 TrainingBuilder 组装薄 TrainingStrategy 与内置 `mse` Objective；
+- 自定义 direct-transform SamplingBuilder 复用 checkpoint model，不虚构 Process、
+  Dynamics 或 Sampler；
+- registry name 使用项目名命名空间，降低不同扩展包的名称冲突；
+- `pyproject.toml` 声明 `my-project = "my_project.stochaflow_ext"`；
+- 生成的配置是无需补充必填 TODO 的完整可运行配置，直接声明
+  `extensions.plugins: [my-project]`；用户以它为起点根据任务修改字段。
+
+该目录树只规定 Stochaflow 示例所需的最小文件，不把整个仓库变成 Stochaflow
+workspace。用户可以自行添加其他实验、包内模块、脚本或工具；这些内容既不要求使用
+上述目录名，也不会被 `stochaflow` 扫描或驱动。
+
+模板资产作为 `stochaflow.projects` 包资源发布，构建测试必须证明 wheel/sdist 包含所有
+文件。生成逻辑只替换经过验证的 project/package name，不执行模板中的 Python。
+
+### 实现范围与文件
+
+- 新增 `src/stochaflow/projects/`：项目名验证、确定性 renderer 和模板资源；
+- 修改 `src/stochaflow/scripts/cli.py`：增加顶层 `init`，不改变 train/sample 的
+  项目感知；
+- 新增 entry-point discovery、插件 provenance 与版本 mismatch policy；
+- 配置权威收口仅修改 training/sampling input resolution 和相应 CLI，不增加
+  project 数据流；
+- 修改 `pyproject.toml`：确保模板 package data 进入 wheel/sdist；
+- 更新配置 reference generator，使顶层 `init` 和 positional NAME 可被校验/渲染；
+- 新增 init/CLI 测试，并更新 README、配置入口、扩展、workflow、troubleshooting、
+  reference metadata 和本开发决策记录。
+
+### Test Plan
+
+- config/runtime：上述六种权威配置矩阵、resolved config/checkpoint 持久化、
+  训练后采样与 checkpoint-only sampling；
+- resume：checkpoint-only resume、显式完整 config resume、无 config 的无路径 resume
+  错误、新 run/旧 state 的 lineage、CLI override 持久化，以及显式不兼容资产由 state
+  contract 拒绝；
+- scaffold：合法/连字符名称、非法名称、空目录、非空目录、确定性文件内容、合法
+  `pyproject.toml`、模板资源完整；
+- plugin discovery：显式列表、全量发现、空列表、确定性顺序、同名冲突、缺失 target、
+  import failure、进程内幂等和 Registry 冲突上下文；
+- version policy：身份变化硬失败；版本变化在交互 TTY 一次确认、非交互默认失败，
+  专用 force flag 与 library allow policy 可继续且留下审计记录；
+- subprocess E2E：分别用标准 `pip install -e .` 路径和一个可选包管理器路径生成、安装
+  项目并完成短训练、resume 和 checkpoint-only sample，证明模板不依赖 uv 私有行为，
+  且自定义 DataBuilder、Model、TrainingBuilder/Strategy、SamplingBuilder 和 writer
+  均通过 entry point 注册；
+- OCP：脚手架不修改 RegistryCatalog、Trainer 或 SamplingBuilder dispatch；生成项目只
+  使用公开 extension API；
+- public docs/reference：`init` CLI reference 生成确定且 Sphinx 无 warning。
+
+施工期间执行聚焦测试与常规门禁：
+
+```bash
+uv run pytest <stage-5-focused-tests>
+uv run ruff check .
+uv run pyright
+```
+
+整个 feature 分支合并前再执行完整 pytest、reference 生成与检查、build、Sphinx 和
+其他 CI 静态检查。
+
+实现完成后按 Stage loop 启动只读独立 reviewer；Critical/High 修复并复验后，记录 review、
+rejected alternatives、trade-off 与 known limitations。
+
+### 设计取舍
+
+- **采用标准 Python packaging entry point。** extension 身份与 import target 属于
+  distribution metadata；Stochaflow 不复制包管理器、环境或源码路径发现。
+- **项目创建与环境变更分离。** `init` 只写文件；安装命令由用户和所选包管理器显式执行。
+- **模板配置显式选择自己的插件。** entry point 解决可发现性，YAML 决定本次运行激活谁；
+  resolved config、checkpoint 和用户看到的配置因此保持同一组件图。
+- **环境全量发现只是一种显式默认语义。** `plugins: null` 可用于通用环境，但生成模板写入
+  确定插件名，避免安装了新 package 后悄悄改变运行。
+- **版本差异允许知情继续，身份差异不允许。** 专用 force 只跳过 version prompt，不能
+  绕过 name/distribution/target 或 state contract。
+- **不生成万能 extension 模板。** 一个可运行的最小纵向组合比大量未使用空类更能验证
+  API；高级算法 family 继续由文档示例说明。
+- **不存在 ProjectManifest。** 项目信息已由 `pyproject.toml` 表达；核心只接收稳定插件
+  identity 并执行既有生命周期。
+- **不比较完整 external/checkpoint config。** 二者不是对等候选；显式 config 选择组件图，
+  checkpoint 只提供 state。兼容性由实际 state/asset contract 验证。
+
+### 已知限制
+
+- checkpoint 不保存扩展源码；移动 checkpoint 后必须在 CLI 所在环境安装对应扩展包；
+- 依赖锁定由用户选择的包管理器与 lockfile 负责，checkpoint 本身不是 Python 环境快照；
+- distribution version 不能检测 editable source 在版本号不变时的代码修改；
+- 用户自定义 Builder 的 `params` 是不透明 mapping，核心无法也不应自动识别和
+  重写其中的路径；如需不同基准，由该 Builder 显式定义。
+- 首版只生成一个合成任务，不代表用户仓库必须采用某个科学领域、模型 family 或
+  非 Stochaflow 实验布局。
+
+### 逻辑提交
+
+`Stage 5: Add entry-point extension projects`
 
 ## Stage 6：大规模 Sampling artifact 容量验收门
 
@@ -962,9 +1397,11 @@ uv run pyright
 
 ### 实施内容
 
-- resolved config 与 checkpoint metadata 记录项目、清单版本、扩展模块和所有已选择的
-  注册组件名，包括显式的 `process: null`；
-- 缺失扩展时报告模块、项目根目录与 `--project` 修复建议；
+- resolved config 与 checkpoint metadata 记录已选择的插件 identity、provenance 和所有
+  注册组件名，包括显式的 `process: null`；项目和完整依赖锁定由 `pyproject.toml` 与
+  用户选择的 lockfile 记录；
+- 缺失扩展时报告 entry-point name、distribution、target 和当前 Python executable，
+  并建议将对应 extension 安装到 CLI 所在环境；
 - 文档覆盖项目创建、自定义 DataBuilder、structured batch、可选 Process、family Dynamics、
   Sampler、SamplingBuilder、模型、Objective、TrainingBuilder/Plan 和 TrainingStrategy；
 - 单独提供“复用内置 Process/Sampler 完成新任务”和“不使用 Process 的自定义 family”
@@ -1008,7 +1445,8 @@ uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 ## 首版明确不做
 
 - 自动扫描 `extensions/` 目录；
-- Python entry point 插件市场；
+- 远程插件市场、插件索引或自动下载安装（标准 entry-point discovery 属于 Stage 5）；
+- Stochaflow 专用 project manifest、source-root 激活或 train/sample `--project`；
 - 全局 Dataset/Sampler/DataLoader/Split/Batching Registry 体系；
 - 为所有 Process 强制统一的巨大数学接口；
 - 要求所有生成或训练算法为了通用 dispatch 虚构 Process；
@@ -1028,8 +1466,9 @@ uv run sphinx-build -W --keep-going -b html docs docs/_build/html
   语义未验收前，不进入 Stage 4；
 - 每个 Stage 独立开发、测试和验收，未通过不进入下一 Stage；
 - 每个 Stage 形成一个或文档明确列出的少量逻辑提交，避免跨 Stage 修改；
-- Stage 4 的 TrainingBuilder/Plan/Strategy/Objective/checkpoint/diagnostic 边界必须先于 Stage 5 项目模板，
-  模板不得引用未来 API；
+- Stage 4 的 TrainingBuilder/Plan/Strategy/Objective/checkpoint/diagnostic 边界必须先于
+  Stage 4.1；native-provider 收口必须先于 Stage 5 项目模板，使模板不再生成重复的
+  PyTorch Registry alias 或过时配置；
 - Stage 6 的容量结论是 Stage 7 Physics AI 案例的入口条件；案例不得边做边修改通用
   sampling lifecycle；
 - 新 capability 只由真实的第二种实现驱动，不预先添加“可能有用”的通用方法；

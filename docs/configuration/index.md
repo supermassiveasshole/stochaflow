@@ -125,13 +125,43 @@ sampling:
 | `training` | TrainingBuilder Registry 声明与任务组合参数 |
 | `process` | 可选的 model-free probability process；`null` 表示所选算法不需要 |
 | `objective` | 可选、可复用的标量训练目标；由 TrainingBuilder 决定是否需要 |
-| `optimizer` / `lr_scheduler` | 参数更新与学习率策略 |
+| `optimizer` / `lr_scheduler` | 原生 PyTorch target、构造参数与调度器推进周期 |
 | `ema` | 模型参数指数移动平均 |
 | `sampling` | 独立采样和训练后验收采样 |
 | `diagnostics` | 扩散特有的训练期诊断 |
 | `trainer` | epoch、设备、梯度和提前停止 |
 | `logging` | 日志频率与后端 |
 | `artifacts` | checkpoint 周期 |
+
+## PyTorch optimizer 与 LR scheduler
+
+标准 PyTorch 实现直接通过受限 target path 选择，不复制为 Stochaflow Registry alias：
+
+```yaml
+optimizer:
+  name: torch.optim.AdamW
+  params:
+    lr: 0.0002
+    weight_decay: 0.01
+
+lr_scheduler:
+  name: torch.optim.lr_scheduler.CosineAnnealingLR
+  interval: epoch
+  params:
+    T_max: 100
+```
+
+核心分别注入模型的可训练 parameters 和已经构造的 optimizer；其余 `params` 原样作为
+构造关键字参数传给当前安装的 PyTorch。省略的参数采用该 PyTorch 版本的默认值，完整
+签名以 [PyTorch optimizer](https://docs.pytorch.org/docs/stable/optim.html) 和
+[LR scheduler](https://docs.pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate)
+文档为准。项目应锁定依赖版本，而不是依赖 Stochaflow 复制上游默认值。
+
+`interval` 是 Stochaflow 的训练生命周期策略，不是 PyTorch 构造参数。首版自动训练循环
+只支持能够无参数调用 `step()` 的 optimizer 与 scheduler；需要 closure 的 optimizer 或
+validation metric 的 scheduler 暂不支持。`T_max`、`total_steps` 等具体参数必须写入确定
+整数，不支持 `auto`，CLI 的 epoch 或 batch limit 覆盖也不会隐式重写这些参数。设
+`lr_scheduler: null` 可禁用 scheduler。
 
 ## 术语表
 
@@ -149,8 +179,9 @@ base bucket
 : 只定义图像 recipe 动态 batch 的像素预算基准；采样输出由 `sampling.shape` 独立声明。
 
 Registry
-: 名称到组件类/构造器的显式映射。配置只写名称和参数；`extensions.modules`
-  导入通用组件，diagnostic 的 `params.modules` 导入可插拔 provider。
+: 名称到 Stochaflow 组件类/构造器的显式映射。`extensions.modules` 导入通用组件，
+  diagnostic 的 `params.modules` 导入可插拔 provider。标准 PyTorch optimizer 和 LR
+  scheduler 使用上面的受限原生 provider，不会复制到 Registry 中。
 
 ## 内置示例
 

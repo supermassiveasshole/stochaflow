@@ -121,7 +121,7 @@ def test_runner_uses_valid_loss_when_validation_is_available(monkeypatch, tmp_pa
     assert trainer.fit_kwargs["validation_dataloader"] is not None
     assert trainer.fit_kwargs["early_stopping_monitor"] == "valid_loss"
     assert trainer.fit_kwargs["num_epochs"] == config.trainer.num_epochs
-    assert build_kwargs["num_epochs"] == config.trainer.num_epochs
+    assert build_kwargs == {}
     assert logger.closed
 
 
@@ -179,7 +179,7 @@ def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
 
     assert config.trainer.num_epochs == 3
     assert trainer.fit_kwargs["num_epochs"] == 3
-    assert build_kwargs["num_epochs"] == 3
+    assert build_kwargs == {}
     resolved = yaml.safe_load((tmp_path / "resolved_config.yaml").read_text())
     assert resolved["trainer"]["num_epochs"] == 3
     assert resolved["trainer"]["show_progress"] is False

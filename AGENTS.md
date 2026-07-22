@@ -93,6 +93,23 @@ where the complete task composition is known. In particular:
   Diagnostics must consume an explicit narrow Strategy capability for any
   task-specific model invocation; they must not infer a primary model signature
   from a Process family or a prediction-type field.
+- Do not mirror mature dependency namespaces into Stochaflow registries or
+  configuration metadata. Standard PyTorch optimizers and learning-rate
+  schedulers should be constructed through an allowlisted native-provider
+  resolver and validated against their public PyTorch contracts; do not
+  register aliases or copy every upstream constructor parameter and default.
+  Core injects the trainable parameter iterable or optimizer and passes the
+  remaining configuration mapping directly as constructor keyword arguments.
+  Registry entries remain appropriate for third-party subclasses that preserve
+  the same construction and lifecycle contracts. The automatic loop requires
+  both optimizer and scheduler `step()` methods to be callable without required
+  arguments, and a scheduler must retain the injected optimizer. Do not infer
+  runtime values from constructor parameter names, add universal run-aware
+  factories, or use signature introspection as a substitute for an upstream API
+  contract. Keep only lifecycle policy that PyTorch cannot infer, such as
+  whether a scheduler advances per optimizer step or per epoch. A
+  closure-required optimizer or metric-driven scheduler requires an explicit
+  supported lifecycle; do not infer it from a concrete class name.
 - Process describes a model-free probability path and its mathematical
   capabilities. It must not own a task model, interpret a training batch, or run
   a sampling loop. The `Process` root is a registry and lifecycle boundary, not
@@ -118,8 +135,10 @@ where the complete task composition is known. In particular:
   maintain a global name-based compatibility matrix.
   Do not force methods with a direct exact generation transform to invent a
   numerical Sampler.
-- Built-in components use the same registry and construction paths as external
-  extensions; do not add hidden core-only shortcuts.
+- Stochaflow-owned built-in components use the same registry and construction
+  paths as external extensions; do not add hidden core-only shortcuts.
+  Allowlisted native dependency providers are a separate documented boundary,
+  not Stochaflow-owned built-ins.
 
 When a feature appears to require task-specific branching in a runner, a common
 config schema field used by only one modality, a dependency on a concrete

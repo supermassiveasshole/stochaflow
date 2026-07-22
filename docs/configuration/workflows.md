@@ -28,6 +28,10 @@ uv run stochaflow train \
 `--skip-final-sample`；若 `sampling.builder` 为 null，训练后不执行默认采样。
 `shape` 是否必需由具体 Builder 决定。
 
+这些 smoke 覆盖也不会重写 LR scheduler 的 `T_max`、`total_steps` 或其他构造参数。
+它们是具体 PyTorch scheduler 的显式配置，而不是框架可推断的通用 run length。若要运行
+一份具有不同调度周期的完整实验，应同时修改 YAML，使 scheduler 参数与训练计划一致。
+
 ### CLI 覆盖优先级
 
 训练有效值按下列顺序决定，后者优先：
@@ -39,6 +43,8 @@ uv run stochaflow train \
 
 `--no-progress` 会关闭本次运行的进度条；`--deterministic` 启用 Torch 支持的确定性
 行为。配置随机 seed 仍应固定，但跨设备、PyTorch 版本和第三方算子不保证逐位一致。
+同理，`--epochs` 和 `--limit-batches` 不会按参数名猜测并改写 optimizer/scheduler
+constructor kwargs。
 
 ## 输出目录
 
@@ -88,11 +94,14 @@ uv run stochaflow train \
   --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt
 ```
 
-checkpoint v6 分别保存 primary inference model、可选 Process/Objective、可选 EMA model、
+checkpoint v7 分别保存 primary inference model、可选 Process/Objective、可选 EMA model、
 optimizer、scheduler、EMA、具名 training assets、训练进度和 resolved 配置。它只保存
 `data: {name, params}`，不保存 Dataset、PyTorch Sampler、DataLoader、partition 或数值
 solver 的运行时状态。
-恢复时配置与 checkpoint 必须兼容；旧格式会收到明确错误，不自动转换。
+恢复时配置用于重建同一 target，随后加载完整 optimizer/scheduler state 继续同一训练；
+checkpoint 会校验两者 concrete class identity 和 scheduler state 有无。更换 optimizer、
+scheduler 或其构造参数属于以已有权重开始的新训练，而不是 resume。当前未发布格式和旧
+alias 不提供转换或兼容层。
 
 ## K-fold
 

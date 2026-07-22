@@ -11,6 +11,7 @@ from typing import Any, cast
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 
 from stochaflow.training.diagnostics.contracts import (
     FitStartEvent,
@@ -154,7 +155,7 @@ def _validate_checkpoint_manager(
     *,
     plan: TrainingPlan,
     optimizer: Optimizer,
-    lr_scheduler: Any | None,
+    lr_scheduler: LRScheduler | None,
     ema: ExponentialMovingAverage | None,
 ) -> None:
     """Keep checkpoint ownership identical to the validated training Plan."""
@@ -199,7 +200,7 @@ class Trainer:
         optimizer: Optimizer,
         *,
         device: torch.device | str,
-        lr_scheduler: Any | None = None,
+        lr_scheduler: LRScheduler | None = None,
         lr_scheduler_interval: str = "step",
         ema: ExponentialMovingAverage | None = None,
         diagnostics: Iterable[TrainingDiagnostic] | None = None,

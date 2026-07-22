@@ -2,20 +2,12 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-import math
 from typing import Any, cast
 
 import torch
 import torch.nn as nn
-from torch.optim import Adam, AdamW, Optimizer
-from torch.optim.lr_scheduler import (
-    CosineAnnealingLR,
-    ExponentialLR,
-    LambdaLR,
-    LinearLR,
-    MultiStepLR,
-    StepLR,
-)
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 
 from stochaflow.processes import GaussianNoiseSchedule, Process
 from stochaflow.training import (
@@ -27,14 +19,13 @@ from stochaflow.training import (
     trainable_parameters,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
+from stochaflow.training.optimization import build_lr_scheduler, build_optimizer
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
     ComponentConfig,
     EMAConfig,
     ExperimentConfig,
-    LRSchedulerConfig,
     LoggingConfig,
-    OptimizerConfig,
     StochaflowConfig,
 )
 from stochaflow.utils.logging import CompositeLogger, ExperimentLogger, configure_torch_logging
@@ -62,16 +53,8 @@ REGISTRIES.models.require_base(nn.Module)
 REGISTRIES.noise_schedules.require_base(GaussianNoiseSchedule)
 REGISTRIES.processes.require_base(Process)
 REGISTRIES.objectives.require_base(nn.Module)
-REGISTRIES.optimizers.require_base(Optimizer)
 REGISTRIES.loggers.require_base(ExperimentLogger)
 REGISTRIES.diagnostics.require_base(TrainingDiagnostic)
-REGISTRIES.optimizers.add("adam", Adam)
-REGISTRIES.optimizers.add("adamw", AdamW)
-REGISTRIES.lr_schedulers.add("cosine", CosineAnnealingLR)
-REGISTRIES.lr_schedulers.add("step", StepLR)
-REGISTRIES.lr_schedulers.add("multistep", MultiStepLR)
-REGISTRIES.lr_schedulers.add("exponential", ExponentialLR)
-REGISTRIES.lr_schedulers.add("linear", LinearLR)
 
 
 @dataclass(slots=True)
@@ -83,7 +66,7 @@ class TrainingComponents:
     objective: nn.Module | None
     plan: TrainingPlan
     optimizer: Optimizer
-    lr_scheduler: Any | None
+    lr_scheduler: LRScheduler | None
     ema: ExponentialMovingAverage | None
     use_ema_for_sampling: bool
     logger: ExperimentLogger
@@ -215,138 +198,6 @@ def build_diagnostics(
     return diagnostics
 
 
-def build_optimizer(config: OptimizerConfig, parameters: Any) -> Optimizer:
-    """Instantiate an optimizer from configuration."""
-
-    optimizer_cls = REGISTRIES.optimizers.resolve(config.name)
-    try:
-        return optimizer_cls(parameters, **config.params)
-    except TypeError as exc:
-        raise RegistryError(
-            f"failed to initialize optimizer '{config.name}' with params {config.params}: {exc}"
-        ) from exc
-
-
-def _resolve_warmup_cosine_total_steps(
-    params: dict[str, Any],
-    *,
-    steps_per_epoch: int | None,
-    num_epochs: int | None,
-) -> int:
-    total_steps = params.get("total_steps")
-    if total_steps == "auto":
-        if steps_per_epoch is None or num_epochs is None:
-            raise RegistryError(
-                "lr_scheduler warmup_cosine with total_steps='auto' requires "
-                "steps_per_epoch and num_epochs"
-            )
-        if steps_per_epoch <= 0 or num_epochs <= 0:
-            raise RegistryError("steps_per_epoch and num_epochs must be positive")
-        return steps_per_epoch * num_epochs
-    if not isinstance(total_steps, int) or total_steps <= 0:
-        raise RegistryError(
-            "lr_scheduler warmup_cosine requires a positive integer total_steps "
-            "or 'auto'"
-        )
-    return total_steps
-
-
-def _resolve_cosine_t_max(
-    params: dict[str, Any],
-    *,
-    interval: str,
-    steps_per_epoch: int | None,
-    num_epochs: int | None,
-) -> int:
-    t_max = params.get("T_max")
-    if t_max == "auto":
-        if num_epochs is None or num_epochs <= 0:
-            raise RegistryError(
-                "lr_scheduler cosine with T_max='auto' requires positive num_epochs"
-            )
-        if interval == "epoch":
-            return num_epochs
-        if interval == "step":
-            if steps_per_epoch is None or steps_per_epoch <= 0:
-                raise RegistryError(
-                    "lr_scheduler cosine with T_max='auto' and interval='step' "
-                    "requires positive steps_per_epoch"
-                )
-            return steps_per_epoch * num_epochs
-        raise RegistryError("lr_scheduler interval must be 'step' or 'epoch'")
-    if isinstance(t_max, bool) or not isinstance(t_max, int) or t_max <= 0:
-        raise RegistryError(
-            "lr_scheduler cosine requires a positive integer T_max or 'auto'"
-        )
-    return t_max
-
-
-def _build_warmup_cosine_lr_scheduler(
-    optimizer: Optimizer,
-    *,
-    warmup_steps: int,
-    total_steps: int,
-    min_lr_ratio: float = 0.0,
-) -> LambdaLR:
-    if warmup_steps <= 0:
-        raise RegistryError("warmup_cosine warmup_steps must be positive")
-    if total_steps <= warmup_steps:
-        raise RegistryError("warmup_cosine total_steps must be greater than warmup_steps")
-    if not 0.0 <= min_lr_ratio <= 1.0:
-        raise RegistryError("warmup_cosine min_lr_ratio must be between 0 and 1")
-
-    def lr_lambda(step: int) -> float:
-        if step < warmup_steps:
-            return float(step + 1) / float(warmup_steps)
-        progress = min(
-            1.0,
-            float(step + 1 - warmup_steps) / float(total_steps - warmup_steps),
-        )
-        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return min_lr_ratio + (1.0 - min_lr_ratio) * cosine_decay
-
-    return LambdaLR(optimizer, lr_lambda=lr_lambda)
-
-
-REGISTRIES.lr_schedulers.add("warmup_cosine", _build_warmup_cosine_lr_scheduler)
-
-
-def build_lr_scheduler(
-    config: LRSchedulerConfig,
-    optimizer: Optimizer,
-    *,
-    steps_per_epoch: int | None = None,
-    num_epochs: int | None = None,
-) -> Any | None:
-    """Instantiate an optimizer LR scheduler from configuration."""
-
-    if config.name is None:
-        return None
-    params = dict(config.params)
-    if config.name == "cosine":
-        params["T_max"] = _resolve_cosine_t_max(
-            params,
-            interval=config.interval,
-            steps_per_epoch=steps_per_epoch,
-            num_epochs=num_epochs,
-        )
-    elif config.name == "warmup_cosine":
-        params["total_steps"] = _resolve_warmup_cosine_total_steps(
-            params,
-            steps_per_epoch=steps_per_epoch,
-            num_epochs=num_epochs,
-        )
-
-    scheduler_builder = REGISTRIES.lr_schedulers.resolve(config.name)
-    try:
-        return scheduler_builder(optimizer, **params)
-    except TypeError as exc:
-        raise RegistryError(
-            f"failed to initialize lr scheduler '{config.name}' with params "
-            f"{params}: {exc}"
-        ) from exc
-
-
 def build_ema(config: EMAConfig, model: nn.Module) -> ExponentialMovingAverage | None:
     """Instantiate an EMA tracker for a model when configured."""
 
@@ -372,12 +223,7 @@ def resolve_device(device_name: str) -> torch.device:
     return torch.device(device_name)
 
 
-def build_training_components(
-    config: StochaflowConfig,
-    *,
-    steps_per_epoch: int | None = None,
-    num_epochs: int | None = None,
-) -> TrainingComponents:
+def build_training_components(config: StochaflowConfig) -> TrainingComponents:
     """Build model-side training components without dataset I/O side effects."""
 
     model = build_model(config.model)
@@ -395,12 +241,7 @@ def build_training_components(
     )
     parameters = trainable_parameters(plan)
     optimizer = build_optimizer(config.optimizer, parameters)
-    lr_scheduler = build_lr_scheduler(
-        config.lr_scheduler,
-        optimizer,
-        steps_per_epoch=steps_per_epoch,
-        num_epochs=num_epochs or config.trainer.num_epochs,
-    )
+    lr_scheduler = build_lr_scheduler(config.lr_scheduler, optimizer)
     ema = build_ema(config.ema, model)
     checkpoint_manager = CheckpointManager(
         model=model,
@@ -435,7 +276,9 @@ def build_training_components(
         device=device,
         lr_scheduler=lr_scheduler,
         lr_scheduler_interval=(
-            config.lr_scheduler.interval if lr_scheduler is not None else "step"
+            config.lr_scheduler.interval
+            if config.lr_scheduler is not None
+            else "step"
         ),
         ema=ema,
         max_grad_norm=config.trainer.max_grad_norm,

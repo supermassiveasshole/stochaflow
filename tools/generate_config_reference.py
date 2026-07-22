@@ -444,8 +444,9 @@ def render_reference() -> str:
         "本页由运行时 dataclass、Registry、argparse 与中文元数据确定性生成。",
         "修改配置接口后必须运行 `uv run python tools/generate_config_reference.py`。",
         "",
-        "字段路径中的 `[]` 表示列表中的每个元素。`params` 是 Registry 组件的",
-        "构造参数容器；允许的参数见本页后半部分的组件索引。",
+        "字段路径中的 `[]` 表示列表中的每个元素。`params` 是构造关键字参数容器；",
+        "框架自有和 Registry 组件的参数见本页后半部分的组件索引。原生依赖 target",
+        "遵循当前安装版本的上游 API，不在本地复制完整签名和默认值。",
         "",
     ]
     current_section: str | None = None
@@ -457,6 +458,29 @@ def render_reference() -> str:
         lines.extend(
             _render_field(path, annotation, field_info, field_metadata[path])
         )
+    lines.extend(
+        [
+            "## 原生依赖 Provider",
+            "",
+            "标准 PyTorch optimizer 使用 `torch.optim.<Class>`，LR scheduler 使用",
+            "`torch.optim.lr_scheduler.<Class>`。这两个受限 namespace 不是任意 Python",
+            "class-path importer，也不会复制为 Stochaflow Registry entry；对应前缀保留给",
+            "native provider，扩展 Registry 不能占用。",
+            "",
+            "核心为 optimizer 注入 trainable parameters，为 scheduler 注入 optimizer；",
+            "配置 `params` 的其余内容原样传给当前 PyTorch 构造器。具体签名与默认值见",
+            "[PyTorch optimizer API](https://docs.pytorch.org/docs/stable/optim.html) 和",
+            (
+                "[LR scheduler API](https://docs.pytorch.org/docs/stable/optim.html"
+                "#how-to-adjust-learning-rate)。"
+            ),
+            "",
+            "`lr_scheduler.interval` 是 Stochaflow 的 step/epoch 生命周期策略。",
+            "`T_max`、`total_steps` 等具体构造参数必须显式给出确定值；框架不解释",
+            "`auto`，也不根据 epoch、DataLoader 长度或 CLI batch limit 推断它们。",
+            "",
+        ]
+    )
     lines.extend(_render_registries(registry_metadata))
     lines.extend(_render_cli(metadata, cli_actions))
     return "\n".join(lines).rstrip() + "\n"

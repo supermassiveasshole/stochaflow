@@ -63,7 +63,7 @@ objective:
     reduction: mean
 
 optimizer:
-  name: adam
+  name: torch.optim.Adam
   params:
     lr: 0.0002
     weight_decay: 0.0
@@ -71,10 +71,10 @@ optimizer:
     eps: 1.0e-8
 
 lr_scheduler:
-  name: cosine
+  name: torch.optim.lr_scheduler.CosineAnnealingLR
   interval: epoch
   params:
-    T_max: auto
+    T_max: 30
     eta_min: 0.00002
 
 ema:

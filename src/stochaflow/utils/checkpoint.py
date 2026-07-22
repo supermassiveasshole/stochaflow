@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 
 if TYPE_CHECKING:
     from stochaflow.training.ema import EMAStateDict, ExponentialMovingAverage
@@ -17,7 +18,7 @@ else:
     ExponentialMovingAverage = Any
 
 
-CHECKPOINT_FORMAT_VERSION = 6
+CHECKPOINT_FORMAT_VERSION = 7
 
 
 class CheckpointState(TypedDict, total=False):
@@ -31,7 +32,9 @@ class CheckpointState(TypedDict, total=False):
     objective_state_dict: dict[str, Any]
     training_assets_state_dict: dict[str, dict[str, Any]]
     ema_model_state_dict: dict[str, Any]
+    optimizer_class: str
     optimizer_state_dict: dict[str, Any]
+    lr_scheduler_class: str
     lr_scheduler_state_dict: dict[str, Any]
     ema_state_dict: EMAStateDict
     config: dict[str, Any]
@@ -65,7 +68,7 @@ class CheckpointManager:
     objective: nn.Module | None = None
     auxiliary_modules: dict[str, nn.Module] = field(default_factory=dict)
     optimizer: Optimizer | None = None
-    lr_scheduler: Any | None = None
+    lr_scheduler: LRScheduler | None = None
     ema: ExponentialMovingAverage | None = None
 
     @staticmethod
@@ -111,8 +114,10 @@ class CheckpointManager:
             finally:
                 self.ema.restore(self.model)
         if self.optimizer is not None:
+            state["optimizer_class"] = _type_identity(self.optimizer)
             state["optimizer_state_dict"] = self.optimizer.state_dict()
         if self.lr_scheduler is not None:
+            state["lr_scheduler_class"] = _type_identity(self.lr_scheduler)
             state["lr_scheduler_state_dict"] = self.lr_scheduler.state_dict()
         if self.ema is not None:
             state["ema_state_dict"] = self.ema.state_dict()
@@ -228,6 +233,53 @@ class CheckpointManager:
                 )
             validated_assets[name] = asset_state
 
+        has_optimizer_state = "optimizer_state_dict" in state
+        optimizer_state_dict = cast(object, state.get("optimizer_state_dict"))
+        optimizer_class = cast(object, state.get("optimizer_class"))
+        validated_optimizer_state: dict[str, Any] | None = None
+        if self.optimizer is None:
+            if has_optimizer_state or optimizer_class is not None:
+                raise ValueError(
+                    "checkpoint contains optimizer state but runtime has no optimizer"
+                )
+        else:
+            if not has_optimizer_state:
+                raise TypeError("checkpoint is missing optimizer_state_dict")
+            if not isinstance(optimizer_state_dict, dict):
+                raise TypeError("optimizer_state_dict must be a dictionary when provided")
+            expected_optimizer_class = _type_identity(self.optimizer)
+            if optimizer_class != expected_optimizer_class:
+                raise ValueError(
+                    "checkpoint optimizer class does not match runtime: "
+                    f"{optimizer_class!r} != {expected_optimizer_class!r}"
+                )
+            validated_optimizer_state = optimizer_state_dict
+
+        has_lr_scheduler_state = "lr_scheduler_state_dict" in state
+        lr_scheduler_state_dict = cast(object, state.get("lr_scheduler_state_dict"))
+        lr_scheduler_class = cast(object, state.get("lr_scheduler_class"))
+        validated_lr_scheduler_state: dict[str, Any] | None = None
+        if self.lr_scheduler is None:
+            if has_lr_scheduler_state or lr_scheduler_class is not None:
+                raise ValueError(
+                    "checkpoint contains lr_scheduler_state_dict but runtime has no "
+                    "lr scheduler"
+                )
+        else:
+            if not has_lr_scheduler_state:
+                raise TypeError("checkpoint is missing lr_scheduler_state_dict")
+            if not isinstance(lr_scheduler_state_dict, dict):
+                raise TypeError(
+                    "lr_scheduler_state_dict must be a dictionary when provided"
+                )
+            expected_lr_scheduler_class = _type_identity(self.lr_scheduler)
+            if lr_scheduler_class != expected_lr_scheduler_class:
+                raise ValueError(
+                    "checkpoint lr scheduler class does not match runtime: "
+                    f"{lr_scheduler_class!r} != {expected_lr_scheduler_class!r}"
+                )
+            validated_lr_scheduler_state = lr_scheduler_state_dict
+
         self.model.load_state_dict(model_state_dict)
         if self.process is not None:
             assert validated_process_state is not None
@@ -238,23 +290,12 @@ class CheckpointManager:
         for name, module in self.auxiliary_modules.items():
             module.load_state_dict(validated_assets[name])
 
-        optimizer_state_dict = cast(object, state.get("optimizer_state_dict"))
-        if self.optimizer is not None:
-            if optimizer_state_dict is None:
-                raise TypeError("checkpoint is missing optimizer_state_dict")
-            if not isinstance(optimizer_state_dict, dict):
-                raise TypeError("optimizer_state_dict must be a dictionary when provided")
-            self.optimizer.load_state_dict(optimizer_state_dict)
-
-        lr_scheduler_state_dict = cast(object, state.get("lr_scheduler_state_dict"))
         if self.lr_scheduler is not None:
-            if lr_scheduler_state_dict is None:
-                raise TypeError("checkpoint is missing lr_scheduler_state_dict")
-            if not isinstance(lr_scheduler_state_dict, dict):
-                raise TypeError(
-                    "lr_scheduler_state_dict must be a dictionary when provided"
-                )
-            self.lr_scheduler.load_state_dict(lr_scheduler_state_dict)
+            assert validated_lr_scheduler_state is not None
+            self.lr_scheduler.load_state_dict(validated_lr_scheduler_state)
+        if self.optimizer is not None:
+            assert validated_optimizer_state is not None
+            self.optimizer.load_state_dict(validated_optimizer_state)
 
         ema_state_dict = cast(object, state.get("ema_state_dict"))
         if self.ema is not None:
@@ -318,6 +359,11 @@ def _ensure_parent_directory(path: Path) -> None:
     """Create the parent directory for a checkpoint path."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _type_identity(value: object) -> str:
+    value_type = type(value)
+    return f"{value_type.__module__}.{value_type.__qualname__}"
 
 
 def _clone_module_state(module: nn.Module) -> OrderedDict[str, Any]:

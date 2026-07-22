@@ -456,7 +456,7 @@ def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> N
     }
     raw["objective"] = {"name": "mse", "params": {}}
     raw["diagnostics"] = []
-    raw["lr_scheduler"] = {"name": None, "interval": "step", "params": {}}
+    raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False
     components = build_training_components(load_config_dict(raw))
 
@@ -529,7 +529,7 @@ def test_custom_builder_trains_without_process_or_objective(tmp_path: Path) -> N
     raw["training"] = {"name": "stage4_direct_loss", "params": {}}
     raw["objective"] = None
     raw["diagnostics"] = []
-    raw["lr_scheduler"] = {"name": None, "interval": "step", "params": {}}
+    raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False
 
     components = build_training_components(load_config_dict(raw))

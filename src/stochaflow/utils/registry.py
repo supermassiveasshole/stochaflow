@@ -6,6 +6,9 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from importlib import import_module
 from typing import Any, Generic, TypeVar, cast
 
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
+
 T = TypeVar("T")
 U = TypeVar("U")
 
@@ -28,9 +31,16 @@ class Registry(Mapping[str, T], Generic[T]):
     loading, and consistent construction errors.
     """
 
-    def __init__(self, kind: str, *, expected_type: type[Any] | None = None) -> None:
+    def __init__(
+        self,
+        kind: str,
+        *,
+        expected_type: type[Any] | None = None,
+        reserved_prefixes: Sequence[str] = (),
+    ) -> None:
         self.kind = kind
         self._expected_type = expected_type
+        self._reserved_prefixes = tuple(reserved_prefixes)
         self._components: dict[str, T] = {}
         self._loaded_modules: set[str] = set()
 
@@ -81,6 +91,15 @@ class Registry(Mapping[str, T], Generic[T]):
         name_value = cast(object, name)
         if not isinstance(name_value, str) or not name_value.strip():
             raise RegistryError(f"{self.kind} registry name must be non-empty")
+        reserved_prefix = next(
+            (prefix for prefix in self._reserved_prefixes if name.startswith(prefix)),
+            None,
+        )
+        if reserved_prefix is not None:
+            raise RegistryError(
+                f"{self.kind} registry names cannot use reserved namespace "
+                f"'{reserved_prefix}'"
+            )
         self._validate(component)
         existing = self._components.get(name)
         if existing is not None:
@@ -168,8 +187,16 @@ class RegistryCatalog:
         self.sampling_builders: Registry[type[Any]] = Registry("sampling builder")
         self.training_builders: Registry[type[Any]] = Registry("training builder")
         self.objectives: Registry[type[Any]] = Registry("objective")
-        self.optimizers: Registry[type[Any]] = Registry("optimizer")
-        self.lr_schedulers: Registry[Callable[..., Any]] = Registry("lr scheduler")
+        self.optimizers: Registry[type[Optimizer]] = Registry(
+            "optimizer",
+            expected_type=Optimizer,
+            reserved_prefixes=("torch.optim.",),
+        )
+        self.lr_schedulers: Registry[type[LRScheduler]] = Registry(
+            "lr scheduler",
+            expected_type=LRScheduler,
+            reserved_prefixes=("torch.optim.lr_scheduler.", "torch.optim."),
+        )
         self.loggers: Registry[type[Any]] = Registry("logger")
         self.diagnostics: Registry[type[Any]] = Registry("diagnostic")
         self._loaded_modules: set[str] = set()

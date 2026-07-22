@@ -52,25 +52,10 @@ class SamplingConfig:
 
 
 @dataclass(slots=True)
-class OptimizerConfig:
-    """Optimizer declaration and hyperparameters."""
-
-    name: str = "adam"
-    params: dict[str, Any] = field(
-        default_factory=lambda: {
-            "lr": 2e-4,
-            "weight_decay": 0.0,
-            "betas": [0.9, 0.999],
-            "eps": 1e-8,
-        }
-    )
-
-
-@dataclass(slots=True)
 class LRSchedulerConfig:
     """Optimizer learning-rate scheduler declaration."""
 
-    name: str | None = None
+    name: str
     interval: str = "step"
     params: dict[str, Any] = field(default_factory=dict)
 
@@ -137,8 +122,13 @@ class StochaflowConfig:
     objective: ComponentConfig | None = None
     process: ComponentConfig | None = None
     extensions: ExtensionsConfig = field(default_factory=ExtensionsConfig)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    lr_scheduler: LRSchedulerConfig = field(default_factory=LRSchedulerConfig)
+    optimizer: ComponentConfig = field(
+        default_factory=lambda: ComponentConfig(
+            name="torch.optim.Adam",
+            params={"lr": 2e-4},
+        )
+    )
+    lr_scheduler: LRSchedulerConfig | None = None
     ema: EMAConfig = field(default_factory=EMAConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     diagnostics: list[ComponentConfig] = field(default_factory=list)
@@ -216,39 +206,28 @@ class StochaflowConfig:
                 raise ConfigError(
                     f"sampling.writers[{index}].params must be a mapping"
                 )
-        if self.lr_scheduler.name is not None:
+        optimizer_name = cast(object, self.optimizer.name)
+        if not isinstance(optimizer_name, str) or not optimizer_name.strip():
+            raise ConfigError("optimizer.name must be a non-empty string")
+        if not isinstance(cast(object, self.optimizer.params), dict):
+            raise ConfigError("optimizer.params must be a mapping")
+        if "params" in self.optimizer.params:
+            raise ConfigError(
+                "optimizer.params cannot override runtime parameter 'params'"
+            )
+        if self.lr_scheduler is not None:
             scheduler_name = cast(object, self.lr_scheduler.name)
-            if not isinstance(scheduler_name, str) or not scheduler_name:
-                raise ConfigError("lr_scheduler.name must be a non-empty string or null")
+            if not isinstance(scheduler_name, str) or not scheduler_name.strip():
+                raise ConfigError("lr_scheduler.name must be a non-empty string")
+            if not isinstance(cast(object, self.lr_scheduler.params), dict):
+                raise ConfigError("lr_scheduler.params must be a mapping")
+            if "optimizer" in self.lr_scheduler.params:
+                raise ConfigError(
+                    "lr_scheduler.params cannot override runtime parameter "
+                    "'optimizer'"
+                )
             if self.lr_scheduler.interval not in {"step", "epoch"}:
                 raise ConfigError("lr_scheduler.interval must be 'step' or 'epoch'")
-            if self.lr_scheduler.name == "warmup_cosine":
-                warmup_steps = self.lr_scheduler.params.get("warmup_steps")
-                if not isinstance(warmup_steps, int) or warmup_steps <= 0:
-                    raise ConfigError(
-                        "lr_scheduler.params.warmup_steps must be a positive integer"
-                    )
-                total_steps = self.lr_scheduler.params.get("total_steps")
-                if total_steps != "auto":
-                    if not isinstance(total_steps, int) or total_steps <= 0:
-                        raise ConfigError(
-                            "lr_scheduler.params.total_steps must be a positive "
-                            "integer or 'auto'"
-                        )
-                    if total_steps <= warmup_steps:
-                        raise ConfigError(
-                            "lr_scheduler.params.total_steps must be greater than "
-                            "warmup_steps"
-                        )
-                min_lr_ratio = self.lr_scheduler.params.get("min_lr_ratio", 0.0)
-                if not isinstance(min_lr_ratio, (int, float)):
-                    raise ConfigError(
-                        "lr_scheduler.params.min_lr_ratio must be numeric"
-                    )
-                if not 0.0 <= float(min_lr_ratio) <= 1.0:
-                    raise ConfigError(
-                        "lr_scheduler.params.min_lr_ratio must be between 0 and 1"
-                    )
         if self.trainer.max_grad_norm is not None and self.trainer.max_grad_norm <= 0:
             raise ConfigError("trainer.max_grad_norm must be positive when provided")
         if self.trainer.early_stopping.mode not in {"min", "max"}:

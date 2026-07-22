@@ -6,6 +6,7 @@ from typing import Any, NamedTuple, cast
 import pytest
 import torch
 import torch.nn as nn
+from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, TensorDataset
 
 from stochaflow.training import (
@@ -95,9 +96,10 @@ class RecordingReporter:
         self.epoch_summaries += 1
 
 
-class CountingScheduler:
-    def __init__(self) -> None:
-        self.count = 0
+class CountingScheduler(LRScheduler):
+    def __init__(self, optimizer: torch.optim.Optimizer) -> None:
+        self.count = -1
+        super().__init__(optimizer)
 
     def step(self) -> None:
         self.count += 1
@@ -217,12 +219,12 @@ def _make_trainer(tmp_path) -> Trainer:
 
 def _make_trainer_with_scheduler(
     tmp_path,
-    scheduler: CountingScheduler,
     *,
     interval: str,
-) -> Trainer:
+) -> tuple[Trainer, CountingScheduler]:
     model = TinyRegressor()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    scheduler = CountingScheduler(optimizer)
     objective = nn.MSELoss()
     checkpoint_manager = CheckpointManager(
         model=model,
@@ -230,14 +232,17 @@ def _make_trainer_with_scheduler(
         optimizer=optimizer,
         lr_scheduler=scheduler,
     )
-    return _build_trainer(
-        tmp_path,
-        model=model,
-        objective=objective,
-        optimizer=optimizer,
-        checkpoint_manager=checkpoint_manager,
-        lr_scheduler=scheduler,
-        lr_scheduler_interval=interval,
+    return (
+        _build_trainer(
+            tmp_path,
+            model=model,
+            objective=objective,
+            optimizer=optimizer,
+            checkpoint_manager=checkpoint_manager,
+            lr_scheduler=scheduler,
+            lr_scheduler_interval=interval,
+        ),
+        scheduler,
     )
 
 
@@ -412,8 +417,7 @@ def test_fit_early_stopping_enables_train_loss_tracking_without_validation(
 
 
 def test_step_lr_scheduler_steps_once_per_batch(tmp_path) -> None:
-    scheduler = CountingScheduler()
-    trainer = _make_trainer_with_scheduler(tmp_path, scheduler, interval="step")
+    trainer, scheduler = _make_trainer_with_scheduler(tmp_path, interval="step")
 
     trainer.fit(_make_loader(), num_epochs=1, show_progress=False, track_best=False)
 
@@ -583,8 +587,7 @@ def test_ema_store_restore_round_trips_floating_buffers() -> None:
 
 
 def test_epoch_lr_scheduler_steps_once_per_epoch(tmp_path) -> None:
-    scheduler = CountingScheduler()
-    trainer = _make_trainer_with_scheduler(tmp_path, scheduler, interval="epoch")
+    trainer, scheduler = _make_trainer_with_scheduler(tmp_path, interval="epoch")
 
     trainer.fit(_make_loader(), num_epochs=2, show_progress=False, track_best=False)
 
@@ -601,8 +604,7 @@ def test_train_loader_set_epoch_is_called_once_per_epoch(tmp_path) -> None:
 
 
 def test_checkpoint_saves_and_restores_lr_scheduler_state(tmp_path) -> None:
-    scheduler = CountingScheduler()
-    trainer = _make_trainer_with_scheduler(tmp_path, scheduler, interval="epoch")
+    trainer, scheduler = _make_trainer_with_scheduler(tmp_path, interval="epoch")
     trainer.fit(_make_loader(), num_epochs=1, show_progress=False, track_best=False)
     checkpoint_path = tmp_path / "checkpoints" / "epoch_0001.pt"
 
@@ -614,14 +616,14 @@ def test_checkpoint_saves_and_restores_lr_scheduler_state(tmp_path) -> None:
     assert scheduler.count == 1
 
 
-def test_checkpoint_manager_rejects_v5(tmp_path) -> None:
+def test_checkpoint_manager_rejects_v6(tmp_path) -> None:
     trainer = _make_trainer(tmp_path)
     checkpoint_manager = trainer.checkpoint_manager
     assert checkpoint_manager is not None
-    checkpoint = tmp_path / "v5.pt"
+    checkpoint = tmp_path / "v6.pt"
     payload = checkpoint_manager.build_state()
-    payload["format_version"] = 5
+    payload["format_version"] = 6
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="expected version 6"):
+    with pytest.raises(ValueError, match="expected version 7"):
         checkpoint_manager.load(checkpoint)

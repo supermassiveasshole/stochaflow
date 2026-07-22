@@ -370,14 +370,7 @@ def _run_single_run(
     if options.device is not None:
         config.trainer.device = options.device
     _write_resolved_config(config)
-    training = build_training_components(
-        config,
-        steps_per_epoch=_effective_steps_per_epoch(
-            loaders,
-            max_batches=options.max_train_batches,
-        ),
-        num_epochs=options.num_epochs,
-    )
+    training = build_training_components(config)
     reporter = RichTrainingReporter()
     logger = training.logger
     logger_closed = False

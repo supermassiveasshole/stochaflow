@@ -12,8 +12,9 @@ dotted path。schema 不忽略未知字段。
 
 ### `must not be null` / `missing required positional argument`
 
-前者表示非 Optional schema 字段写成了 `null`；后者通常表示某个 Registry 组件的
-`params` 缺少构造参数。分别查[字段索引](reference.md)和同页的 Registry 组件索引。
+前者表示非 Optional schema 字段写成了 `null`；后者通常表示组件或原生 PyTorch target
+的 `params` 缺少构造参数。分别查[字段索引](reference.md)、框架组件索引和所安装版本的
+上游 API 文档。
 
 ## 扩展模块与 Registry
 
@@ -25,12 +26,15 @@ dotted path。schema 不忽略未知字段。
 
 ### `unknown ... 'name'. Available: ...`
 
-名称不在对应 Registry。检查：
+普通名称不在对应 Registry。检查：
 
 1. 装饰器是否注册到了正确 Registry；
 2. 定义装饰器的模块是否列入 `extensions.modules`；
 3. 名称大小写是否完全一致；
 4. 扩展模块是否在训练与 checkpoint sampling 的 Python 环境中都可导入。
+
+标准 PyTorch optimizer/scheduler 不使用 Registry alias，应写完整受限 target，例如
+`torch.optim.AdamW` 或 `torch.optim.lr_scheduler.CosineAnnealingLR`。
 
 ### `already registered by ...`
 
@@ -56,6 +60,37 @@ SamplingBuilder 组合了不兼容的算法 family。内置 DDPM/DDIM 只消费
 
 从组件 `params` 删除运行时注入参数，例如 diagnostic 的 `logger`、`output_dir`、
 `sample_shape`。完整列表见[扩展手册](extensions.md#其他构造约定)。
+
+optimizer 的 trainable parameter iterable 和 LR scheduler 的 optimizer 也由核心注入。
+不要在 `optimizer.params` 中再次写 `params`，也不要在 `lr_scheduler.params` 中写
+`optimizer`。
+
+### `unknown native ... target` / `must name a direct class`
+
+原生 provider 不是任意 Python importer。optimizer 只能使用单层
+`torch.optim.<Class>`，LR scheduler 只能使用单层
+`torch.optim.lr_scheduler.<Class>`；目标必须是满足对应 PyTorch 基类契约的类。其他实现
+应由已安装 extension 注册到相应 Registry，再在配置中使用其注册名。
+
+### `failed to initialize optimizer` / `failed to initialize lr scheduler`
+
+Stochaflow 会将配置 `params` 原样交给所选构造器，并保留原始异常链。检查 target 对应的
+当前 PyTorch 文档、拼写、类型和值范围。框架不会复制完整签名、补默认值或把旧短 alias
+翻译成原生 target。
+
+`T_max`、`total_steps` 等参数必须是构造器接受的确定值；`auto` 不再具有特殊含义。
+CLI `--epochs` 或 `--limit-batches` 也不会自动更新它们。
+
+### `lr scheduler step must be callable without arguments`
+
+当前自动 Trainer 只支持在配置的 `step` 或 `epoch` interval 调用 `scheduler.step()`。
+`ReduceLROnPlateau` 等需要 validation metric 的 scheduler 尚无明确 monitor lifecycle，
+不能通过这个入口使用。不要仅为了绕过检查添加无意义默认 metric；应等待对应训练循环
+契约，或在拥有完整生命周期的自定义训练 loop family 中处理。
+
+同样地，当前 Trainer 直接调用 `optimizer.step()`，因此 `LBFGS` 等必须提供 closure 的
+optimizer 会在构建边界收到 `optimizer ... step() must be callable without arguments`。
+这不是构造参数错误，而是所选 optimizer 不满足当前自动训练 lifecycle。
 
 ## 数据与 partition
 
@@ -153,9 +188,9 @@ Tensor 只声明 `tensor` writer，或注册领域 writer。
 
 ### `checkpoint format version ... is unsupported`
 
-Stage 4 checkpoint 格式为 v6，分别保存 primary model、可选 Process/Objective、可选
-EMA model、optimizer/scheduler 和按稳定名称组织的 training assets。训练
-恢复和 checkpoint-only sampling 不读取 v4；
+当前 checkpoint 格式为 v7，分别保存 primary model、可选 Process/Objective、可选
+EMA model、带 concrete class identity 的 optimizer/scheduler，以及按稳定名称组织的
+training assets。训练恢复和 checkpoint-only sampling 不读取 v6 及更早格式；
 请用当前代码重新训练或重新生成 checkpoint。
 
 ## 文档生成与 CI

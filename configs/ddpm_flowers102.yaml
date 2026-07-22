@@ -64,7 +64,7 @@ objective:
     reduction: mean
 
 optimizer:
-  name: adam
+  name: torch.optim.Adam
   params:
     lr: 0.0001
     weight_decay: 0.0001
@@ -76,7 +76,7 @@ lr_scheduler:
   interval: step
   params:
     warmup_steps: 500
-    total_steps: auto
+    total_steps: 10500
     min_lr_ratio: 0.05
 
 ema:

@@ -26,6 +26,7 @@ from .gaussian import (
     GaussianDenoisingTrainingStrategy,
 )
 from .objectives import MSEObjective, PerSampleObjective, compute_objective
+from .optimization import WarmupCosineLR
 from .reporting import FinalSummary, RichTrainingReporter, RunSummary
 from .strategy import (
     Batch,
@@ -63,6 +64,7 @@ __all__ = [
     "TrainingDiagnostic",
     "TrainingPlan",
     "TrainingStrategy",
+    "WarmupCosineLR",
     "build_training_plan",
     "compute_objective",
     "trainable_parameters",

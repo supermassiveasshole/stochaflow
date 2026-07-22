@@ -1,7 +1,9 @@
 # 扩展与 Registry
 
 顶层扩展通过 `extensions.modules` 显式导入。配置不会扫描目录、Python entry point
-或工作区；推荐把用户 project 以 editable package 安装，使模块具有稳定 import path。
+或工作区；用户 project 应是普通、可安装的 Python package，并与 Stochaflow CLI
+安装在同一 Python 环境，使模块具有稳定 import path。配置中的相对数据/输出路径
+以进程 cwd 为基准，建议从项目根目录运行。
 
 ## RegistryCatalog
 
@@ -16,14 +18,42 @@
 | `sampling_builders` | `SamplingBuilder` 类 | `sampling.builder.name` |
 | `training_builders` | `TrainingBuilder` 类 | `training.name` |
 | `objectives` | `torch.nn.Module` 类 | `objective.name` |
-| `optimizers` | `torch.optim.Optimizer` 类 | `optimizer.name` |
-| `lr_schedulers` | scheduler 类或 builder | `lr_scheduler.name` |
+| `optimizers` | 第三方 `torch.optim.Optimizer` 子类 | `optimizer.name` |
+| `lr_schedulers` | Stochaflow 自有或第三方 `LRScheduler` 子类 | `lr_scheduler.name` |
 | `loggers` | `ExperimentLogger` 类 | `logging.backends[].name` |
 | `diagnostics` | `TrainingDiagnostic` 类 | `diagnostics[].name` |
 
 Dataset、source、partition、degradation、PyTorch 数据 sampler、collate 和 DataLoader
 不拥有全局 Registry。一个自定义 `DataBuilder` 完整拥有数据组合及其兼容性。生成算法的
 `Sampler` 则通过 `REGISTRIES.samplers` 注册，由 SamplingBuilder 组合。
+
+标准 PyTorch optimizer 和 LR scheduler 不在上述 Registry 中逐项注册。配置可以直接写
+受限原生 target：
+
+```yaml
+optimizer:
+  name: torch.optim.AdamW
+  params: {lr: 0.0002, weight_decay: 0.01}
+
+lr_scheduler:
+  name: torch.optim.lr_scheduler.CosineAnnealingLR
+  interval: epoch
+  params: {T_max: 100}
+```
+
+原生 resolver 只访问 `torch.optim.<Class>` 和
+`torch.optim.lr_scheduler.<Class>`，不是任意 Python class-path importer。核心分别注入
+trainable parameters 与 optimizer，再将配置 `params` 原样传给构造器。完整参数和默认值
+以 [PyTorch optimizer](https://docs.pytorch.org/docs/stable/optim.html) 与
+[LR scheduler](https://docs.pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate)
+文档为准；Stochaflow 不复制上游 namespace 或签名。
+这两个前缀也是保留 namespace，扩展不能用它们作为 Registry 名称。
+
+Registry 仍用于真正的第三方 optimizer/scheduler 子类，以及增加 Stochaflow 专属语义的
+自有实现。它们必须保持相同构造协议：optimizer 的第一个位置参数接收 parameters；
+scheduler 的第一个位置参数接收 optimizer，且构造后保留同一对象。当前自动 Trainer 还要求
+optimizer 与 scheduler 的 bound `step()` 都可以无参数调用。需要 closure 的 optimizer 或
+metric 的 scheduler 等到框架拥有明确的 lifecycle 后再接入，不能靠具体类名特判。
 
 ## 模块加载
 
@@ -280,6 +310,9 @@ class DirectTransformBuilder(SamplingBuilder):
 primary model、可选 Process/Objective 和辅助 factory，返回完成依赖注入的
 `TrainingPlan`。`TrainingStrategy` 只是普通训练计算对象：解释 structured batch、调用
 注入的模型和 Objective，并返回 `TrainStepOutput(loss, metrics, diagnostics)`。
+Strategy 没有统一的构造参数 schema；每个 Builder 可以直接向它注入该任务需要的模型、
+Objective、Process capability 或 callable。统一的是 step 的输入输出和职责边界，而不是
+把所有训练任务压进一个包含大量可选字段的 Strategy context。
 
 ```python
 from stochaflow.extensions import (
@@ -383,7 +416,12 @@ class DistillationBuilder(TrainingBuilder):
 核心会迁移并 checkpoint teacher，保持其 eval mode；`requires_grad=False` 使 teacher 不进入
 optimizer。offline distillation 可直接由 DataBuilder 提供 teacher target，因此无需
 auxiliary teacher。feature、logit 或 score distillation 也采用同一边界，只需在具体
-Strategy 内解释输出并返回单一标量总 loss。
+Strategy 内解释输出并返回单一标量总 loss。多个 teacher 或多个蒸馏 Objective 也不要求
+核心新增分支：Builder 用稳定名称声明所有资产，Strategy 在一次 step 内组合它们。
+
+如果 student 与 teacher 共同训练且共享一个 optimizer，Plan 可以将两者都声明为可训练
+资产，核心会统一收集 `requires_grad=True` 的参数。Strategy 不选择参数，只负责返回能够
+对这些参数反传的总 loss。
 
 Stage 4 的自动生命周期只支持一个 optimizer 和一次 backward。独立 teacher optimizer、
 交替更新、EMA teacher 或 manual backward 属于新的训练 loop family，不通过向 Strategy
@@ -497,7 +535,7 @@ writer 返回的 mapping 不能为空；artifact key 在全部 writer 间必须�
 
 ## 其他构造约定
 
-组件 `params` 通常作为关键字参数传给注册类。以下参数由运行时注入：
+组件 `params` 通常作为关键字参数传给注册类或受限原生 provider。以下参数由运行时注入：
 
 - DataBuilder：`DataBuilderContext`；
 - TrainingBuilder：`TrainingBuilderContext`；
@@ -505,6 +543,10 @@ writer 返回的 mapping 不能为空；artifact key 在全部 writer 间必须�
 - optimizer / LR scheduler：模型参数或 optimizer；
 - logger：`output_dir`、`run_name`；
 - diagnostic：`logger`、`output_dir`、可选 `sample_shape`。
+
+optimizer 的配置 `params` 不得包含其运行时 `params` iterable；LR scheduler 的配置
+`params` 不得包含 `optimizer`。`T_max`、`total_steps` 等具体构造参数必须显式写成确定值，
+不会从 epoch、DataLoader 长度或 CLI batch limit 推断，也不接受通用 `auto` sentinel。
 
 `diffusion_quality` 的 provider 仍使用其局部 `diagnostics[].params.modules` 机制。
 所有内置名称与构造参数见[生成式组件索引](reference.md#registry-组件索引)。

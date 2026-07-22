@@ -29,10 +29,12 @@ def test_load_ddpm_mnist_config() -> None:
     assert len(config.logging.backends) >= 1
     assert config.process.params["schedule"]["params"]["num_timesteps"] == 1000
     assert config.data.params["loader"]["num_workers"] == 0
-    assert config.lr_scheduler.name == "cosine"
+    assert config.optimizer.name == "torch.optim.Adam"
+    assert config.lr_scheduler is not None
+    assert config.lr_scheduler.name == "torch.optim.lr_scheduler.CosineAnnealingLR"
     assert config.lr_scheduler.interval == "epoch"
     assert config.lr_scheduler.params == {
-        "T_max": "auto",
+        "T_max": 30,
         "eta_min": 0.00002,
     }
     assert config.sampling.builder is not None
@@ -212,9 +214,10 @@ def test_load_ddpm_flowers102_config() -> None:
     assert config.process.params["schedule"]["name"] == "linear_beta"
     assert config.process.params["schedule"]["params"]["num_timesteps"] == 1000
     assert config.optimizer.params["lr"] == 0.0001
+    assert config.lr_scheduler is not None
     assert config.lr_scheduler.name == "warmup_cosine"
     assert config.lr_scheduler.interval == "step"
-    assert config.lr_scheduler.params["total_steps"] == "auto"
+    assert config.lr_scheduler.params["total_steps"] == 10500
     assert config.ema.enabled
     assert config.ema.use_for_sampling
     assert len(config.diagnostics) == 1
@@ -293,7 +296,7 @@ def test_config_to_dict_preserves_top_level_sections() -> None:
     assert "training" in data
     assert "ema" in data
     assert "sampling" in data
-    assert "lr_scheduler" in data
+    assert data["lr_scheduler"] is None
     assert "diagnostics" in data
     assert "trainer" in data
 
@@ -372,37 +375,81 @@ def test_config_rejects_bucket_incompatible_with_unet_depth() -> None:
         build_data_loaders(config.data, seed=config.experiment.seed)
 
 
+def test_optimizer_defaults_to_native_adam_with_minimal_explicit_params() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw.pop("optimizer")
+
+    config = load_config_dict(raw)
+
+    assert config.optimizer.name == "torch.optim.Adam"
+    assert config.optimizer.params == {"lr": 0.0002}
+
+
 def test_lr_scheduler_config_rejects_invalid_interval() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["lr_scheduler"] = {"name": "step", "interval": "batch", "params": {}}
+    raw["lr_scheduler"] = {
+        "name": "torch.optim.lr_scheduler.StepLR",
+        "interval": "batch",
+        "params": {"step_size": 1},
+    }
 
     with pytest.raises(ConfigError, match="lr_scheduler.interval"):
         load_config_dict(raw)
 
 
-def test_disabled_lr_scheduler_ignores_interval() -> None:
+@pytest.mark.parametrize("declaration", [None, "missing"])
+def test_lr_scheduler_null_or_missing_disables_it(declaration: object) -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["lr_scheduler"] = {"name": None, "interval": "batch", "params": {}}
+    if declaration == "missing":
+        raw.pop("lr_scheduler")
+    else:
+        raw["lr_scheduler"] = None
 
     config = load_config_dict(raw)
 
-    assert config.lr_scheduler.name is None
-    assert config.lr_scheduler.interval == "batch"
+    assert config.lr_scheduler is None
+    assert config.to_dict()["lr_scheduler"] is None
 
 
-def test_warmup_cosine_config_rejects_invalid_bounds() -> None:
+def test_lr_scheduler_rejects_legacy_null_name_form() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
     raw["lr_scheduler"] = {
-        "name": "warmup_cosine",
+        "name": None,
         "interval": "step",
-        "params": {
-            "warmup_steps": 10,
-            "total_steps": 10,
-            "min_lr_ratio": 0.05,
-        },
+        "params": {},
     }
 
-    with pytest.raises(ConfigError, match="greater than warmup_steps"):
+    with pytest.raises(ConfigError, match="lr_scheduler.name"):
+        load_config_dict(raw)
+
+
+@pytest.mark.parametrize(
+    ("section", "reserved_name"),
+    [("optimizer", "params"), ("lr_scheduler", "optimizer")],
+)
+def test_optimization_config_rejects_runtime_injection_keys(
+    section: str,
+    reserved_name: str,
+) -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw[section]["params"][reserved_name] = "invalid"
+
+    with pytest.raises(ConfigError, match=f"cannot override.*'{reserved_name}'"):
+        load_config_dict(raw)
+
+
+@pytest.mark.parametrize(
+    ("section", "value"),
+    [("optimizer", ""), ("optimizer", 3), ("lr_scheduler", "")],
+)
+def test_optimization_config_rejects_invalid_names(
+    section: str,
+    value: object,
+) -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw[section]["name"] = value
+
+    with pytest.raises(ConfigError, match=rf"{section}\.name"):
         load_config_dict(raw)
 
 

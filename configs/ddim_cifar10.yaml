@@ -63,7 +63,7 @@ objective:
     reduction: mean
 
 optimizer:
-  name: adam
+  name: torch.optim.Adam
   params:
     lr: 0.0002
     weight_decay: 0.0001

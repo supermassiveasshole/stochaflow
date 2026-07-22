@@ -4,8 +4,9 @@
 本页由运行时 dataclass、Registry、argparse 与中文元数据确定性生成。
 修改配置接口后必须运行 `uv run python tools/generate_config_reference.py`。
 
-字段路径中的 `[]` 表示列表中的每个元素。`params` 是 Registry 组件的
-构造参数容器；允许的参数见本页后半部分的组件索引。
+字段路径中的 `[]` 表示列表中的每个元素。`params` 是构造关键字参数容器；
+框架自有和 Registry 组件的参数见本页后半部分的组件索引。原生依赖 target
+遵循当前安装版本的上游 API，不在本地复制完整签名和默认值。
 
 ## `experiment`
 
@@ -216,49 +217,47 @@ Process 构造参数；模型、condition 和 sampler 不进入此处。
 (config-field-path-optimizer)=
 ### `optimizer`
 
-优化器 Registry 声明。
+原生 PyTorch optimizer target 或 optimizers Registry 扩展声明。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{name: adam, params: {betas: [0.9, 0.999], eps: 1.0e-08, lr: 0.0002, weight_decay: 0.0}}`
+- 默认值：`{name: torch.optim.Adam, params: {lr: 0.0002}}`
 
 (config-field-path-optimizer-name)=
 ### `optimizer.name`
 
-optimizers Registry 名称。
+受限 torch.optim.<Class> target，或第三方 optimizers Registry 名称。
 
 - 类型：`str`
-- 必填：否
-- 默认值：`adam`
+- 必填：是
 
 (config-field-path-optimizer-params)=
 ### `optimizer.params`
 
-透传给优化器的参数；模型 parameters 由运行时注入。
+原样透传给 optimizer 构造器的关键字参数；trainable parameters 由运行时注入。
 
 - 类型：`mapping[str, any]`
 - 必填：否
-- 默认值：`{betas: [0.9, 0.999], eps: 1.0e-08, lr: 0.0002, weight_decay: 0.0}`
+- 默认值：`{}`
 
 ## `lr_scheduler`
 
 (config-field-path-lr-scheduler)=
 ### `lr_scheduler`
 
-可选学习率调度器及更新周期。
+可选原生 PyTorch/Registry LR scheduler target、构造参数及更新周期；null 禁用。
 
-- 类型：`mapping`
+- 类型：`mapping | null`
 - 必填：否
-- 默认值：`{interval: step, name: null, params: {}}`
+- 默认值：`null`
 
 (config-field-path-lr-scheduler-name)=
 ### `lr_scheduler.name`
 
-lr_schedulers Registry 名称；null 禁用调度器。
+受限 torch.optim.lr_scheduler.<Class> target，或第三方 lr_schedulers Registry 名称。
 
-- 类型：`str | null`
-- 必填：否
-- 默认值：`null`
+- 类型：`str`
+- 必填：是
 
 (config-field-path-lr-scheduler-interval)=
 ### `lr_scheduler.interval`
@@ -656,6 +655,22 @@ logger 构造参数；output_dir 与 run_name 由运行时注入。
 - 默认值：`1`
 - 约束：正整数。
 
+## 原生依赖 Provider
+
+标准 PyTorch optimizer 使用 `torch.optim.<Class>`，LR scheduler 使用
+`torch.optim.lr_scheduler.<Class>`。这两个受限 namespace 不是任意 Python
+class-path importer，也不会复制为 Stochaflow Registry entry；对应前缀保留给
+native provider，扩展 Registry 不能占用。
+
+核心为 optimizer 注入 trainable parameters，为 scheduler 注入 optimizer；
+配置 `params` 的其余内容原样传给当前 PyTorch 构造器。具体签名与默认值见
+[PyTorch optimizer API](https://docs.pytorch.org/docs/stable/optim.html) 和
+[LR scheduler API](https://docs.pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate)。
+
+`lr_scheduler.interval` 是 Stochaflow 的 step/epoch 生命周期策略。
+`T_max`、`total_steps` 等具体构造参数必须显式给出确定值；框架不解释
+`auto`，也不根据 epoch、DataLoader 长度或 CLI batch limit 推断它们。
+
 ## Registry 组件索引
 
 (config-registry-name-models)=
@@ -885,151 +900,32 @@ logger 构造参数；output_dir 与 run_name 由运行时注入。
 (config-registry-name-optimizers)=
 ### `optimizers`
 
-构建 PyTorch 优化器；模型 parameters 由运行时注入。
+构建第三方 PyTorch Optimizer 扩展；标准 torch.optim 类通过受限原生 provider 解析，不复制为 Registry entry。
 
 - 基类/契约：`torch.optim.Optimizer`
 - 配置位置：`optimizer.name / optimizer.params`
 
-(config-component-optimizers-adam)=
-#### `adam`
-
-PyTorch Adam 优化器。
-
-运行时注入（不得在 YAML 中覆盖）：`params`。
-
-> 参数由当前 PyTorch 版本透传；下表只列项目承诺的常用参数，最终以所安装 PyTorch 版本为准。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `lr` | 学习率。 |
-| `betas` | 一阶和二阶矩估计的衰减系数。 |
-| `eps` | 数值稳定项。 |
-| `weight_decay` | L2 权重衰减。 |
-| `amsgrad` | 是否使用 AMSGrad 变体。 |
-| `foreach` | 是否使用 foreach 实现；null 由 PyTorch 决定。 |
-| `maximize` | 是否最大化目标。 |
-| `capturable` | 是否允许 CUDA graph capture。 |
-| `differentiable` | optimizer step 是否参与 autograd。 |
-| `fused` | 是否使用 fused 实现；null 由 PyTorch 决定。 |
-| `decoupled_weight_decay` | 是否使用解耦权重衰减；依赖 PyTorch 版本。 |
-
-(config-component-optimizers-adamw)=
-#### `adamw`
-
-使用解耦权重衰减的 PyTorch AdamW。
-
-运行时注入（不得在 YAML 中覆盖）：`params`。
-
-> 参数由当前 PyTorch 版本透传；下表只列项目承诺的常用参数，最终以所安装 PyTorch 版本为准。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `lr` | 学习率。 |
-| `betas` | 一阶和二阶矩估计的衰减系数。 |
-| `eps` | 数值稳定项。 |
-| `weight_decay` | 解耦权重衰减系数。 |
-| `amsgrad` | 是否使用 AMSGrad 变体。 |
-| `foreach` | 是否使用 foreach 实现；null 由 PyTorch 决定。 |
-| `maximize` | 是否最大化目标。 |
-| `capturable` | 是否允许 CUDA graph capture。 |
-| `differentiable` | optimizer step 是否参与 autograd。 |
-| `fused` | 是否使用 fused 实现；null 由 PyTorch 决定。 |
-
 (config-registry-name-lr-schedulers)=
 ### `lr_schedulers`
 
-构建学习率调度器；optimizer 由运行时注入。
+构建第三方或 Stochaflow 自有 LR scheduler；标准 torch.optim.lr_scheduler 类通过受限原生 provider 解析，不复制为 Registry entry。
 
-- 基类/契约：`torch.optim.lr_scheduler.LRScheduler 或注册 builder`
+- 基类/契约：`torch.optim.lr_scheduler.LRScheduler`
 - 配置位置：`lr_scheduler.name / lr_scheduler.params`
-
-(config-component-lr_schedulers-cosine)=
-#### `cosine`
-
-PyTorch CosineAnnealingLR。
-
-运行时注入（不得在 YAML 中覆盖）：`optimizer`。
-
-> 参数由当前 PyTorch 版本透传；下表只列项目承诺的常用参数，最终以所安装 PyTorch 版本为准。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `T_max` | 余弦周期的最大迭代数；auto 根据 interval 使用有效训练 epoch 数或总 step 数。 |
-| `eta_min` | 最低学习率。 |
-| `last_epoch` | 恢复时的最后 epoch/step 索引。 |
-
-(config-component-lr_schedulers-exponential)=
-#### `exponential`
-
-PyTorch ExponentialLR。
-
-运行时注入（不得在 YAML 中覆盖）：`optimizer`。
-
-> 参数由当前 PyTorch 版本透传；下表只列项目承诺的常用参数，最终以所安装 PyTorch 版本为准。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `gamma` | 每次推进时乘到学习率上的系数。 |
-| `last_epoch` | 恢复时的最后 epoch/step 索引。 |
-
-(config-component-lr_schedulers-linear)=
-#### `linear`
-
-PyTorch LinearLR。
-
-运行时注入（不得在 YAML 中覆盖）：`optimizer`。
-
-> 参数由当前 PyTorch 版本透传；下表只列项目承诺的常用参数，最终以所安装 PyTorch 版本为准。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `start_factor` | 初始学习率乘数。 |
-| `end_factor` | 结束学习率乘数。 |
-| `total_iters` | 线性变化的推进次数。 |
-| `last_epoch` | 恢复时的最后 epoch/step 索引。 |
-
-(config-component-lr_schedulers-multistep)=
-#### `multistep`
-
-PyTorch MultiStepLR。
-
-运行时注入（不得在 YAML 中覆盖）：`optimizer`。
-
-> 参数由当前 PyTorch 版本透传；下表只列项目承诺的常用参数，最终以所安装 PyTorch 版本为准。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `milestones` | 应用 gamma 的递增 step/epoch 索引。 |
-| `gamma` | milestone 到达时的学习率乘数。 |
-| `last_epoch` | 恢复时的最后 epoch/step 索引。 |
-
-(config-component-lr_schedulers-step)=
-#### `step`
-
-PyTorch StepLR。
-
-运行时注入（不得在 YAML 中覆盖）：`optimizer`。
-
-> 参数由当前 PyTorch 版本透传；下表只列项目承诺的常用参数，最终以所安装 PyTorch 版本为准。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `step_size` | 每隔多少次推进应用 gamma。 |
-| `gamma` | 学习率乘数。 |
-| `last_epoch` | 恢复时的最后 epoch/step 索引。 |
 
 (config-component-lr_schedulers-warmup-cosine)=
 #### `warmup_cosine`
 
-项目内置的线性 warmup 加余弦衰减 builder。
+项目内置的线性 warmup 加余弦衰减 LRScheduler。
 
 运行时注入（不得在 YAML 中覆盖）：`optimizer`。
 
 | 参数 | 含义与约束 |
 | --- | --- |
 | `warmup_steps` | 线性 warmup 的正 step 数。 |
-| `total_steps` | 总 step 数；配置允许正整数或 auto。 |
+| `total_steps` | 显式总 step 数；必须大于 warmup_steps。 |
 | `min_lr_ratio` | 最终学习率相对基础学习率的比例，范围为零到一。 |
+| `last_epoch` | 恢复或手动初始化时使用的最后 step 索引；默认 -1。 |
 
 (config-registry-name-loggers)=
 ### `loggers`

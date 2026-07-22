@@ -26,11 +26,11 @@ fields:
   objective: {description: 可选训练目标函数的 Registry 声明；具体 TrainingBuilder 决定是否需要。}
   objective.name: {description: objectives Registry 名称。}
   objective.params: {description: 目标函数构造参数。}
-  optimizer: {description: 优化器 Registry 声明。}
-  optimizer.name: {description: optimizers Registry 名称。}
-  optimizer.params: {description: 透传给优化器的参数；模型 parameters 由运行时注入。}
-  lr_scheduler: {description: 可选学习率调度器及更新周期。}
-  lr_scheduler.name: {description: lr_schedulers Registry 名称；null 禁用调度器。}
+  optimizer: {description: 原生 PyTorch optimizer target 或 optimizers Registry 扩展声明。}
+  optimizer.name: {description: 受限 torch.optim.<Class> target，或第三方 optimizers Registry 名称。}
+  optimizer.params: {description: 原样透传给 optimizer 构造器的关键字参数；trainable parameters 由运行时注入。}
+  lr_scheduler: {description: 可选原生 PyTorch/Registry LR scheduler target、构造参数及更新周期；null 禁用。}
+  lr_scheduler.name: {description: 受限 torch.optim.lr_scheduler.<Class> target，或第三方 lr_schedulers Registry 名称。}
   lr_scheduler.interval: {description: 在每个 optimizer step 后或每个 epoch 后推进调度器。, constraints: 启用时为 step 或 epoch。}
   lr_scheduler.params: {description: 调度器构造参数；optimizer 由运行时注入。}
   ema: {description: 模型参数的指数移动平均策略。}
@@ -207,94 +207,24 @@ registries:
           reduction: {description: MSE 标量聚合方式；支持 mean 或 sum。}
 
   optimizers:
-    description: 构建 PyTorch 优化器；模型 parameters 由运行时注入。
+    description: 构建第三方 PyTorch Optimizer 扩展；标准 torch.optim 类通过受限原生 provider 解析，不复制为 Registry entry。
     base: torch.optim.Optimizer
     config_path: optimizer.name / optimizer.params
-    entries:
-      adam:
-        description: PyTorch Adam 优化器。
-        version_dependent: true
-        runtime_parameters: [params]
-        parameters:
-          lr: {description: 学习率。}
-          betas: {description: 一阶和二阶矩估计的衰减系数。}
-          eps: {description: 数值稳定项。}
-          weight_decay: {description: L2 权重衰减。}
-          amsgrad: {description: 是否使用 AMSGrad 变体。}
-          foreach: {description: 是否使用 foreach 实现；null 由 PyTorch 决定。}
-          maximize: {description: 是否最大化目标。}
-          capturable: {description: 是否允许 CUDA graph capture。}
-          differentiable: {description: optimizer step 是否参与 autograd。}
-          fused: {description: 是否使用 fused 实现；null 由 PyTorch 决定。}
-          decoupled_weight_decay: {description: 是否使用解耦权重衰减；依赖 PyTorch 版本。}
-      adamw:
-        description: 使用解耦权重衰减的 PyTorch AdamW。
-        version_dependent: true
-        runtime_parameters: [params]
-        parameters:
-          lr: {description: 学习率。}
-          betas: {description: 一阶和二阶矩估计的衰减系数。}
-          eps: {description: 数值稳定项。}
-          weight_decay: {description: 解耦权重衰减系数。}
-          amsgrad: {description: 是否使用 AMSGrad 变体。}
-          foreach: {description: 是否使用 foreach 实现；null 由 PyTorch 决定。}
-          maximize: {description: 是否最大化目标。}
-          capturable: {description: 是否允许 CUDA graph capture。}
-          differentiable: {description: optimizer step 是否参与 autograd。}
-          fused: {description: 是否使用 fused 实现；null 由 PyTorch 决定。}
+    entries: {}
 
   lr_schedulers:
-    description: 构建学习率调度器；optimizer 由运行时注入。
-    base: torch.optim.lr_scheduler.LRScheduler 或注册 builder
+    description: 构建第三方或 Stochaflow 自有 LR scheduler；标准 torch.optim.lr_scheduler 类通过受限原生 provider 解析，不复制为 Registry entry。
+    base: torch.optim.lr_scheduler.LRScheduler
     config_path: lr_scheduler.name / lr_scheduler.params
     entries:
-      cosine:
-        description: PyTorch CosineAnnealingLR。
-        version_dependent: true
-        runtime_parameters: [optimizer]
-        parameters:
-          T_max: {description: 余弦周期的最大迭代数；auto 根据 interval 使用有效训练 epoch 数或总 step 数。}
-          eta_min: {description: 最低学习率。}
-          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
-      exponential:
-        description: PyTorch ExponentialLR。
-        version_dependent: true
-        runtime_parameters: [optimizer]
-        parameters:
-          gamma: {description: 每次推进时乘到学习率上的系数。}
-          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
-      linear:
-        description: PyTorch LinearLR。
-        version_dependent: true
-        runtime_parameters: [optimizer]
-        parameters:
-          start_factor: {description: 初始学习率乘数。}
-          end_factor: {description: 结束学习率乘数。}
-          total_iters: {description: 线性变化的推进次数。}
-          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
-      multistep:
-        description: PyTorch MultiStepLR。
-        version_dependent: true
-        runtime_parameters: [optimizer]
-        parameters:
-          milestones: {description: 应用 gamma 的递增 step/epoch 索引。}
-          gamma: {description: milestone 到达时的学习率乘数。}
-          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
-      step:
-        description: PyTorch StepLR。
-        version_dependent: true
-        runtime_parameters: [optimizer]
-        parameters:
-          step_size: {description: 每隔多少次推进应用 gamma。}
-          gamma: {description: 学习率乘数。}
-          last_epoch: {description: 恢复时的最后 epoch/step 索引。}
       warmup_cosine:
-        description: 项目内置的线性 warmup 加余弦衰减 builder。
+        description: 项目内置的线性 warmup 加余弦衰减 LRScheduler。
         runtime_parameters: [optimizer]
         parameters:
           warmup_steps: {description: 线性 warmup 的正 step 数。}
-          total_steps: {description: 总 step 数；配置允许正整数或 auto。}
+          total_steps: {description: 显式总 step 数；必须大于 warmup_steps。}
           min_lr_ratio: {description: 最终学习率相对基础学习率的比例，范围为零到一。}
+          last_epoch: {description: 恢复或手动初始化时使用的最后 step 索引；默认 -1。}
 
   loggers:
     description: 记录配置、指标、文本和图像 artifact。
