@@ -361,6 +361,9 @@ artifact。
 所有注册 Sampler 通过相同的完整 `sample(dynamics, initial_state, ...)` 生命周期执行，但
 不共享万能数学接口。内置 DDPM/DDIM 要求 Gaussian Dynamics；其他算法 family 可定义
 自己的 Dynamics capability，并由所属 Builder 与 Sampler 在调用边界验证。
+离散 Gaussian family 同时公开 DDPM/DDIM transition 与 DDIM schedule primitive，供项目
+Sampler 组合 post-transition correction 或其他 family 内算法；这些 primitive 不进入
+通用 `Sampler`/`GenerativeDynamics` 根接口。
 trajectory 是 observer 对 initial、accepted step 和唯一 final observation 的抽样，不会
 改变 solver 循环。保留的 state 在 observation 到达时复制，内置 Tensor 路径会立即转存到
 CPU，避免后续原地更新污染历史或让显存随 trajectory 长度增长。`trajectory.pt` 按声明

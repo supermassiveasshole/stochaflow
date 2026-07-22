@@ -52,7 +52,8 @@ Implemented:
 - DDPM/DDIM epsilon-prediction training
 - model-free discrete Gaussian Process with marginal and posterior mathematics
 - Gaussian model Dynamics with epsilon/x0/v/score prediction conversion
-- registered DDPM and DDIM Samplers with one complete `sample()` interface
+- registered DDPM and DDIM Samplers with one complete `sample()` interface and
+  reusable discrete-Gaussian transition/schedule primitives
 - registered SamplingBuilder composition and observer-based trajectories
 - beta-native linear and alpha-bar-native cosine noise schedules
 - a thin, modality-neutral `DataBuilder -> DataLoaders` extension contract

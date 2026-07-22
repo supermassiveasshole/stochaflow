@@ -299,6 +299,22 @@ Sampler 负责决定 lifecycle 时机、创建完整的 `SamplingObservation` �
 terminal-to-clean 路径。基于观测或其他中间状态的 partial denoising 应由自定义
 SamplingBuilder 构造 initial state，或直接调用 Sampler。
 
+完整 `sample()` 是 framework-level 统一生命周期，不意味着当前支持的算法 family 必须把
+可组合数学全部藏进循环。离散 Gaussian family 另外公开：
+
+- `DDPMAncestralSampler.transition()`：构造 adjacent `x_t -> x_{t-1}` 分布；
+- `DDIMSampler.resolve_schedule()`：解析 configured uniform、explicit 或 partial schedule；
+- `DDIMSampler.transition()`：构造 batch-aligned selected-pair `x_t -> x_s` 分布；
+- `GaussianTransition.mean/standard_deviation` 与 `sample(generator=...)`：显式抽取 next
+  state，零方差时不消费 RNG；
+- `normalize_gaussian_prediction()`：把 raw epsilon/x0/v/score 输出归一化为一致的
+  `GaussianPrediction`。
+
+这些 API 只属于离散 Gaussian family，不是 `Sampler.step()` 的别名，也不要求未来的 Flow
+Matching、SDE 或 sigma-space sampler 实现。transition 不调用模型、不发送 observation、
+不应用任务 correction；完整 DDPM/DDIM Sampler 委托这些 primitive 并继续拥有 RNG、loop
+和 accepted-step lifecycle。
+
 ### 复用 Gaussian family 完成 condition 或 physics guidance
 
 如果任务仍满足 Gaussian denoising 行为契约，condition 不进入 Sampler API。Builder 可以
@@ -343,6 +359,14 @@ class PhysicsGuidedDynamics(GaussianDenoisingDynamics):
 transition、accepted-step 更新或 solver 内部子步，而不能表达为 Gaussian prediction
 修正，则应在项目扩展中提供匹配的窄 Dynamics 和自定义 Sampler；不要给内置 Process、
 DDPM/DDIM 或顶层 YAML 增加 physics 专用参数。
+
+exact DFSR 的典型顺序是：guided Dynamics 产生 source-state `GaussianPrediction` 和 physics
+correction；项目 Sampler 调用公开 `resolve_schedule()` 与 `transition()`，从标准 DDIM
+transition 抽样后再减 correction，最后才发送 accepted observation。correction 的数学方向
+由任务 Dynamics 计算，correction 在数值 update 中的位置由项目 Sampler 决定。这样能够
+复用内置 DDIM 数学，又不会让 Dynamics 感知 target schedule，或让 Observer 反向修改 solver
+state。correction 为零时，项目 Sampler 应在相同 schedule 和 generator 下与内置 DDIM
+逐步一致。
 
 ### 接入新的算法 family
 
@@ -424,6 +448,11 @@ primary model、可选 Process/Objective 和辅助 factory，返回完成依赖�
 Strategy 没有统一的构造参数 schema；每个 Builder 可以直接向它注入该任务需要的模型、
 Objective、Process capability 或 callable。统一的是 step 的输入输出和职责边界，而不是
 把所有训练任务压进一个包含大量可选字段的 Strategy context。
+
+离散 Gaussian 自定义 Strategy 可直接复用 `gaussian_training_target()` 构造 epsilon、x0、
+v 或 score target，并用 `compute_objective()` 获得统一的 scalar/per-sample Objective 校验。
+batch 解释、condition、timestep sampling、模型调用和 diagnostics 仍由具体 Strategy 拥有；
+这两个 helper 不构成新的通用 TrainingStrategy。
 
 ```python
 from stochaflow.extensions import (

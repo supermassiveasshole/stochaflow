@@ -15,12 +15,14 @@ from stochaflow.sampling import (
     GaussianDenoisingDynamics,
     GaussianModelDynamics,
     GaussianPrediction,
+    GaussianTransition,
     GenerativeDynamics,
     PredictionType,
     Sampler,
     SamplerResult,
     SamplingObservation,
     TrajectoryObserver,
+    normalize_gaussian_prediction,
 )
 
 
@@ -114,7 +116,7 @@ def test_gaussian_model_dynamics_validates_untrusted_model_output(
         dynamics.predict(torch.randn(2, 3), torch.tensor([1, 2]))
 
 
-def test_physics_guided_dynamics_wrapper_reuses_builtin_samplers() -> None:
+def test_prediction_guided_dynamics_wrapper_reuses_builtin_samplers() -> None:
     process = _process(2)
 
     class PhysicsGuidedDynamics(GaussianDenoisingDynamics):
@@ -277,6 +279,105 @@ def test_clipping_recomputes_epsilon_from_clipped_clean_prediction() -> None:
     )
 
 
+def test_prediction_normalization_is_reusable_without_model_adapter() -> None:
+    process = _process(4)
+    state = torch.randn(2, 3)
+    times = torch.tensor([1, 4])
+    raw_prediction = torch.randn_like(state)
+
+    prediction = normalize_gaussian_prediction(
+        process,
+        state,
+        times,
+        raw_prediction,
+        prediction_type="epsilon",
+        clip_denoised=False,
+    )
+
+    scales = process.marginal_scales(times, state.size())
+    assert torch.equal(prediction.epsilon, raw_prediction)
+    assert torch.allclose(
+        state,
+        scales.signal * prediction.clean + scales.noise * prediction.epsilon,
+    )
+
+
+def test_gaussian_prediction_rejects_non_floating_values() -> None:
+    integer = torch.ones(1, dtype=torch.long)
+
+    with pytest.raises(TypeError, match="floating-point"):
+        GaussianPrediction(integer, integer, integer)
+
+
+def test_prediction_normalization_rejects_non_floating_model_output() -> None:
+    process = _process(2)
+
+    with pytest.raises(TypeError, match="model output must be floating-point"):
+        normalize_gaussian_prediction(
+            process,
+            torch.zeros(1, 2),
+            torch.tensor([1]),
+            torch.ones(1, 2, dtype=torch.long),
+        )
+
+
+def test_ddpm_public_transition_exposes_adjacent_distribution() -> None:
+    process = _process(4)
+    state = torch.randn(2, 3)
+    times = torch.tensor([4, 1])
+    prediction = normalize_gaussian_prediction(
+        process,
+        state,
+        times,
+        torch.zeros_like(state),
+        clip_denoised=False,
+    )
+
+    result = DDPMAncestralSampler().transition(
+        process,
+        state,
+        times,
+        prediction,
+    )
+
+    assert isinstance(result, GaussianTransition)
+    assert torch.equal(
+        result.mean,
+        process.posterior_mean(state, times, prediction.clean),
+    )
+    assert torch.count_nonzero(result.standard_deviation[0]) > 0
+    assert torch.count_nonzero(result.standard_deviation[1]) == 0
+
+
+def test_ddpm_complete_sample_delegates_to_public_transition() -> None:
+    process = _process(3)
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda state, time: torch.zeros_like(state),
+        clip_denoised=False,
+    )
+
+    class RecordingSampler(DDPMAncestralSampler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.source_times: list[int] = []
+
+        def transition(
+            self,
+            process: DiscreteGaussianDenoisingProcess,
+            state: torch.Tensor,
+            state_times: torch.Tensor,
+            prediction: GaussianPrediction,
+        ) -> GaussianTransition:
+            self.source_times.append(int(state_times[0]))
+            return super().transition(process, state, state_times, prediction)
+
+    sampler = RecordingSampler()
+    sampler.sample(dynamics, torch.randn(2, 3))
+
+    assert sampler.source_times == [3, 2, 1]
+
+
 def test_ddpm_unified_sample_emits_initial_accepted_and_unique_final() -> None:
     process = _process(5)
     dynamics = GaussianModelDynamics(
@@ -297,7 +398,7 @@ def test_ddpm_unified_sample_emits_initial_accepted_and_unique_final() -> None:
 
     assert result.final_state.shape == initial.shape
     assert result.num_steps == 5
-    assert result.diagnostics == {"num_model_evaluations": 5}
+    assert result.diagnostics == {"num_dynamics_evaluations": 5}
     assert [item.step_index for item in observer.observations] == list(range(6))
     assert [item.coordinate for item in observer.observations] == [5, 4, 3, 2, 1, 0]
     assert [item.is_final for item in observer.observations].count(True) == 1
@@ -422,7 +523,7 @@ def test_unified_sampler_allows_multiple_dynamics_evaluations_per_outer_step() -
             return SamplerResult(
                 state,
                 3,
-                {"num_model_evaluations": dynamics.calls},
+                {"num_dynamics_evaluations": dynamics.calls},
             )
 
     dynamics = CountingDynamics()
@@ -430,7 +531,7 @@ def test_unified_sampler_allows_multiple_dynamics_evaluations_per_outer_step() -
     result = sampler.sample(dynamics, torch.ones(2))
 
     assert result.num_steps == 3
-    assert result.diagnostics["num_model_evaluations"] == 6
+    assert result.diagnostics["num_dynamics_evaluations"] == 6
     assert not hasattr(sampler, "step")
 
 

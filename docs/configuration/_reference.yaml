@@ -161,13 +161,13 @@ registries:
     config_path: sampling.builder.params.sampler 或自定义 SamplingBuilder 参数
     entries:
       ddim:
-        description: 支持非均匀 state schedule 与 eta 随机性的 DDIM solver。
+        description: 支持非均匀 state schedule 与 eta 随机性的 DDIM solver；具体类公开 schedule resolver 与 selected-pair transition primitive。
         parameters:
           num_inference_steps: {description: 自动生成 schedule 时的外层 transition 数。}
           schedule: {description: 可选、位于零到 T 且严格递减的显式 state schedule；可表达局部降噪。}
           eta: {description: 随机性系数；0 不消费 transition RNG。}
       ddpm:
-        description: 在离散 Gaussian dynamics 上执行 adjacent ancestral transition。
+        description: 在离散 Gaussian dynamics 上执行 adjacent ancestral transition；具体类公开同一 adjacent transition primitive。
         parameters:
           start_time: {description: 可选起始 state time；null 使用 process terminal time。}
           end_time: {description: 结束 state time；默认 0。}

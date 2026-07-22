@@ -16,9 +16,12 @@ from stochaflow.processes import (
     TabulatedDiscreteVPSchedule,
 )
 from stochaflow.sampling import (
+    DDIMSampler,
+    DDPMAncestralSampler,
     GaussianDenoisingDynamics,
     GaussianModelDynamics,
     GaussianPrediction,
+    GaussianTransition,
     GenerativeDynamics,
     InferenceModelProvider,
     PredictionType,
@@ -33,6 +36,7 @@ from stochaflow.sampling import (
     SamplingObserver,
     SamplingOutput,
     TrajectoryObserver,
+    normalize_gaussian_prediction,
 )
 from stochaflow.training import (
     DiagnosticBuildContext,
@@ -40,6 +44,7 @@ from stochaflow.training import (
     GaussianDiagnosticSemantics,
     ManagedTrainingModule,
     MSEObjective,
+    PerSampleObjective,
     TrainBatchEndEvent,
     TrainEpochEndEvent,
     TrainStepOutput,
@@ -48,6 +53,8 @@ from stochaflow.training import (
     TrainingDiagnostic,
     TrainingPlan,
     TrainingStrategy,
+    compute_objective,
+    gaussian_training_target,
 )
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.logging import ExperimentLogger
@@ -77,6 +84,8 @@ __all__ = [
     "DataBuilder",
     "DataBuilderContext",
     "DataLoaders",
+    "DDIMSampler",
+    "DDPMAncestralSampler",
     "DiagnosticBuildContext",
     "DiscreteGaussianProcess",
     "DiscreteGaussianDenoisingProcess",
@@ -102,10 +111,12 @@ __all__ = [
     "GaussianNoiseSchedule",
     "GaussianPrediction",
     "GaussianScales",
+    "GaussianTransition",
     "GenerativeDynamics",
     "InferenceModelProvider",
     "MSEObjective",
     "ManagedTrainingModule",
+    "PerSampleObjective",
     "Process",
     "PredictionType",
     "REGISTRIES",
@@ -133,7 +144,10 @@ __all__ = [
     "TrajectoryObserver",
     "TabulatedDiscreteVPSchedule",
     "activate_extension_plugins",
+    "compute_objective",
     "extension_plugin_provenance_to_dicts",
     "parse_extension_plugin_provenance",
     "prepare_extension_plugins",
+    "gaussian_training_target",
+    "normalize_gaussian_prediction",
 ]

@@ -14,6 +14,7 @@ from stochaflow.training import (
     GaussianDenoisingTrainingStrategy,
     MSEObjective,
     TrainStepOutput,
+    gaussian_training_target,
     validate_train_step_output,
 )
 
@@ -112,4 +113,82 @@ def test_gaussian_strategy_rejects_unhandled_conditions() -> None:
     with pytest.raises(TypeError, match="custom TrainingBuilder"):
         strategy.training_step(
             (torch.zeros(1, 1, 2, 2), {"low_res": torch.zeros(1, 1, 1, 1)})
+        )
+
+
+@pytest.mark.parametrize("prediction_type", ["epsilon", "x0", "v", "score"])
+def test_gaussian_training_target_is_reusable_by_custom_strategies(
+    prediction_type: PredictionType,
+) -> None:
+    process = DeterministicGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 4}}
+    )
+    clean = torch.full((2, 3), 0.25)
+    noise = torch.full_like(clean, 0.5)
+    state_times = torch.tensor([1, 4])
+    scales = process.marginal_scales(state_times, clean.size())
+    expected = {
+        "epsilon": noise,
+        "x0": clean,
+        "v": scales.signal * noise - scales.noise * clean,
+        "score": -noise / scales.noise,
+    }[prediction_type]
+
+    target = gaussian_training_target(
+        process,
+        clean=clean,
+        noise=noise,
+        state_times=state_times,
+        prediction_type=prediction_type,
+    )
+
+    assert torch.equal(target, expected)
+
+
+def test_gaussian_training_target_rejects_clean_state_time() -> None:
+    process = DeterministicGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 2}}
+    )
+
+    with pytest.raises(ValueError, match="source state times"):
+        gaussian_training_target(
+            process,
+            clean=torch.zeros(1, 2),
+            noise=torch.ones(1, 2),
+            state_times=torch.tensor([0]),
+            prediction_type="epsilon",
+        )
+
+
+@pytest.mark.parametrize(
+    ("clean", "noise", "message"),
+    [
+        (
+            torch.zeros(1, 2, dtype=torch.long),
+            torch.ones(1, 2, dtype=torch.long),
+            "floating-point",
+        ),
+        (
+            torch.zeros(1, 2, dtype=torch.float32),
+            torch.ones(1, 2, dtype=torch.float64),
+            "share the clean state dtype",
+        ),
+    ],
+)
+def test_gaussian_training_target_rejects_invalid_numeric_contract(
+    clean: torch.Tensor,
+    noise: torch.Tensor,
+    message: str,
+) -> None:
+    process = DeterministicGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 2}}
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        gaussian_training_target(
+            process,
+            clean=clean,
+            noise=noise,
+            state_times=torch.tensor([1]),
+            prediction_type="epsilon",
         )

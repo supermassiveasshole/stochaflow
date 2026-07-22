@@ -819,7 +819,7 @@ native provider，扩展 Registry 不能占用。
 (config-component-samplers-ddim)=
 #### `ddim`
 
-支持非均匀 state schedule 与 eta 随机性的 DDIM solver。
+支持非均匀 state schedule 与 eta 随机性的 DDIM solver；具体类公开 schedule resolver 与 selected-pair transition primitive。
 
 | 参数 | 含义与约束 |
 | --- | --- |
@@ -830,7 +830,7 @@ native provider，扩展 Registry 不能占用。
 (config-component-samplers-ddpm)=
 #### `ddpm`
 
-在离散 Gaussian dynamics 上执行 adjacent ancestral transition。
+在离散 Gaussian dynamics 上执行 adjacent ancestral transition；具体类公开同一 adjacent transition primitive。
 
 | 参数 | 含义与约束 |
 | --- | --- |

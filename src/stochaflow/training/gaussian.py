@@ -96,7 +96,7 @@ class GaussianDenoisingTrainingStrategy(TrainingStrategy):
         )
         noisy, noise = self.process.sample_marginal(clean, state_times)
         prediction = self.dynamics.predict(noisy, state_times)
-        target = _training_target(
+        target = gaussian_training_target(
             self.process,
             clean=clean,
             noise=noise,
@@ -187,7 +187,7 @@ def _clean_samples(batch: Any) -> torch.Tensor:
     return clean
 
 
-def _training_target(
+def gaussian_training_target(
     process: DiscreteGaussianDenoisingProcess,
     *,
     clean: torch.Tensor,
@@ -195,6 +195,44 @@ def _training_target(
     state_times: torch.Tensor,
     prediction_type: PredictionType,
 ) -> torch.Tensor:
+    """Build the configured discrete Gaussian model-training target."""
+
+    process_value = cast(object, process)
+    if not isinstance(process_value, DiscreteGaussianDenoisingProcess):
+        raise TypeError(
+            "Gaussian training target requires DiscreteGaussianDenoisingProcess"
+        )
+    process = process_value
+    clean_value = cast(object, clean)
+    noise_value = cast(object, noise)
+    if not isinstance(clean_value, torch.Tensor) or not isinstance(
+        noise_value,
+        torch.Tensor,
+    ):
+        raise TypeError("Gaussian training clean state and noise must be Tensors")
+    clean = clean_value
+    noise = noise_value
+    if clean.ndim == 0:
+        raise ValueError("Gaussian training clean state must have a batch dimension")
+    if not torch.is_floating_point(clean) or not torch.is_floating_point(noise):
+        raise TypeError("Gaussian training clean state and noise must be floating-point")
+    if noise.shape != clean.shape:
+        raise ValueError("Gaussian training noise must match the clean state shape")
+    if noise.device != clean.device:
+        raise ValueError("Gaussian training noise must share the clean state device")
+    if noise.dtype != clean.dtype:
+        raise ValueError("Gaussian training noise must share the clean state dtype")
+    state_times = process.validate_noisy_state_times(state_times)
+    if state_times.shape[0] != clean.shape[0]:
+        raise ValueError("Gaussian training state times must match the batch")
+    if state_times.device != clean.device:
+        raise ValueError(
+            "Gaussian training state times must share the clean state device"
+        )
+    if prediction_type not in ("epsilon", "x0", "v", "score"):
+        raise ValueError(
+            "Gaussian prediction_type must be epsilon, x0, v, or score"
+        )
     if prediction_type == "epsilon":
         return noise
     if prediction_type == "x0":
@@ -209,4 +247,5 @@ __all__ = [
     "GaussianDiagnosticSemantics",
     "GaussianDenoisingTrainingBuilder",
     "GaussianDenoisingTrainingStrategy",
+    "gaussian_training_target",
 ]

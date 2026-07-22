@@ -1,13 +1,19 @@
 """Ancestral DDPM sampler."""
 
-from typing import Any
+from typing import Any, cast
 
 import torch
 
+from stochaflow.processes import DiscreteGaussianDenoisingProcess
 from stochaflow.utils.registry import REGISTRIES
 
 from .dynamics import GenerativeDynamics
-from .gaussian import GaussianDenoisingDynamics
+from .gaussian import (
+    GaussianDenoisingDynamics,
+    GaussianPrediction,
+    GaussianTransition,
+    _validate_gaussian_prediction,
+)
 from .sampler import (
     Sampler,
     SamplerResult,
@@ -34,6 +40,51 @@ class DDPMAncestralSampler(Sampler):
             raise TypeError("DDPM end_time must be an integer")
         self.start_time: int | None = start_time
         self.end_time: int = end_time
+
+    def transition(
+        self,
+        process: DiscreteGaussianDenoisingProcess,
+        state: torch.Tensor,
+        state_times: torch.Tensor,
+        prediction: GaussianPrediction,
+    ) -> GaussianTransition:
+        """Build one adjacent ``x_t -> x_{t-1}`` transition distribution."""
+
+        process_value = cast(object, process)
+        if not isinstance(process_value, DiscreteGaussianDenoisingProcess):
+            raise TypeError(
+                "DDPM transition requires DiscreteGaussianDenoisingProcess"
+            )
+        process = process_value
+        state_value = cast(object, state)
+        if not isinstance(state_value, torch.Tensor):
+            raise TypeError("DDPM transition state must be a Tensor")
+        state = state_value
+        if state.ndim == 0:
+            raise ValueError("DDPM transition state must include a batch dimension")
+        if not torch.is_floating_point(state):
+            raise TypeError("DDPM transition state must be floating-point")
+        state_times = process.validate_noisy_state_times(state_times)
+        if state_times.shape[0] != state.shape[0]:
+            raise ValueError("DDPM state times must match the state batch")
+        if state_times.device != state.device:
+            raise ValueError("DDPM state times must share the state device")
+        prediction = _validate_gaussian_prediction(prediction, state=state)
+        mean = process.posterior_mean(state, state_times, prediction.clean)
+        standard_deviation = process.posterior_standard_deviation(
+            state_times,
+            state.size(),
+        )
+        target_times = state_times - 1
+        stochastic_mask = (target_times > process.clean_time).reshape(
+            (state.shape[0],) + (1,) * (state.ndim - 1)
+        )
+        standard_deviation = standard_deviation * stochastic_mask
+        standard_deviation = standard_deviation.to(
+            device=mean.device,
+            dtype=mean.dtype,
+        )
+        return GaussianTransition(mean, standard_deviation)
 
     def sample(
         self,
@@ -76,17 +127,12 @@ class DDPMAncestralSampler(Sampler):
             )
             prediction = dynamics.predict(state, times)
             evaluations += 1
-            state = process.posterior_mean(state, times, prediction.clean)
-            if state_time - 1 > process.clean_time:
-                noise = torch.randn(
-                    state.shape,
-                    device=state.device,
-                    dtype=state.dtype,
-                    generator=generator,
-                )
-                state = state + process.posterior_standard_deviation(
-                    times, state.size()
-                ) * noise
+            state = self.transition(
+                process,
+                state,
+                times,
+                prediction,
+            ).sample(generator=generator)
             coordinate = state_time - 1
             if observer is not None:
                 observer.observe(
@@ -95,13 +141,13 @@ class DDPMAncestralSampler(Sampler):
                         coordinate=coordinate,
                         state=state,
                         is_final=step_index == num_steps,
-                        diagnostics={"num_model_evaluations": evaluations},
+                        diagnostics={"num_dynamics_evaluations": evaluations},
                     )
                 )
         return SamplerResult(
             state,
             num_steps,
-            {"num_model_evaluations": evaluations},
+            {"num_dynamics_evaluations": evaluations},
         )
 
 

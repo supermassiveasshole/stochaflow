@@ -547,3 +547,89 @@ state。常规门禁为 Ruff、Pyright 和聚焦 Pytest；文档以 Sphinx `-W` 
 完整分支验收留到 feature merge 前的最终循环。
 
 逻辑提交主题：`Stage 6: Validate sampling artifact capacity`。
+
+## Stage 7 设计检查点（待维护者确认）
+
+状态：完成现有计划、参考 DFSR 实现和当前公共扩展 API 的只读审计；尚未开始实现。
+
+### 发现的架构冲突
+
+原 Stage 7 同时要求 Physics 案例复用内置 DDPM/DDIM，又要求覆盖论文中的
+physics-guided DFSR。两者不能在不限定语义的情况下同时成立：论文的 guided update 在
+每个 accepted DDIM transition 后显式执行 `x_next = x_next - dx`。`dx` 虽由当前 state 的
+PDE residual gradient 产生，但它被施加的位置属于 solver transition，而不是
+`GaussianDenoisingDynamics.predict()` 返回的 prediction parameterization。
+
+把该 correction 隐藏进通用 Gaussian prediction 会改变算法含义，也会让 DDPM/DDIM 在未知
+前提下看似可互换；把 physics callback 加入内置 Sampler 则直接违反 OCP。因此 Stage 7 在
+确认前暂停编码。
+
+### 推荐边界
+
+1. baseline DFSR/SDEdit 使用项目 SamplingBuilder 构造 partial-noised initial state，复用
+   内置 Discrete Gaussian Process 和 DDPM/DDIM；两者的切换只改变项目 sampler 配置；
+2. exact physics-guided DFSR 使用项目私有窄 Dynamics capability 与注册的
+   `GuidedDDIMSampler`，复用公开的 DDIM schedule/transition primitive，并由该 Sampler
+   拥有 post-transition correction；Stage 3.1 完成后核心和内置 DDIM 无需再改变；
+3. normalization/PDE constants 由项目 model 的构造配置和 buffers 持有。DataBuilder 返回
+   raw field，Strategy 与 SamplingBuilder 通过 model 的项目私有接口复用同一状态；不向
+   DataLoaders 增加 metadata；
+4. Physics 与 distillation 作为两个独立可安装 distribution 验收 entry point isolation，
+   但这不构成对用户 repo、monorepo 或包管理器的约束；
+5. Stage 7 公共 API 变化为零，且 `src/stochaflow/**` 是明确的 no-change gate；
+6. tiny deterministic E2E 证明算法和 lifecycle，真实 256² batch 证明 shape/device/capacity。
+   没有训练权重时不得把随机模型结果描述为论文精度复现。
+
+### 其他已确认缺口
+
+- DFSR 训练只使用高分辨率三连帧，LR/sparse observation 只在 reconstruction 阶段出现；
+  conventional paired image SR 是另一项内置 recipe，不能作为 DFSR 的实现；
+- sampling runtime 在 `torch.no_grad()` 下调用 Builder。项目的 PDE gradient helper 可以在
+  最窄范围使用 `torch.enable_grad()`，随后 detach；该行为需要回归测试，不需要核心变更；
+- Writer 只序列化 reconstruction 与 Builder/evaluator 已计算的 metric summary，不拥有
+  PDE residual 数学；
+- distillation teacher 使用项目定义的普通 PyTorch state 初始化；resume 后同名
+  `training_assets_state_dict` 是 runtime state 权威。扩展不读取 Stochaflow 私有 checkpoint
+  payload；
+- Stage 6 只证明 final artifact 容量，Stage 7 必须单独记录真实 model、condition、residual
+  autograd 与 input 共存时的单 batch host/accelerator peak。
+
+完整拟议实施范围、测试矩阵和 rejected alternatives 已写入
+[实施计划的 Stage 7](../custom-code-extension-support-plan.md)。维护者确认推荐边界后才进入
+Implementation。
+
+## Stage 3.1 离散 Gaussian primitive 修正（已完成）
+
+维护者复审 `codex/refactor-diffusion-schedules` 与当前 Stage 3 后确认：完整
+`Sampler.sample()` 与具体算法的单 transition API 并不冲突。禁止的是所有 family 都必须
+实现的 universal `step()`，而不是离散 Gaussian family 自己的 DDPM adjacent transition、
+DDIM selected-pair transition 或 DDIM schedule resolver。
+
+当前 DDIM 将 prediction、selected-pair 数学、RNG、loop 与 observer 全部内联在
+`DDIMSampler.sample()`，并把 schedule resolver 私有化；DDPM 虽保留 Process posterior
+数学，也丢失了一个内聚的公开 adjacent transition。exact DFSR 因而只能复制算法。该结果
+否定了 Stage 7 的原始 no-core-change 前提，并构成发布前必须修复的 OCP 回归。
+
+已批准的修正边界：
+
+1. framework root 仍只有完整 `Sampler.sample()`；不增加 universal step、Dynamics 方法、
+   hook、callback 或 Registry；
+2. 离散 Gaussian family 公开 transition mean/standard-deviation result、DDPM adjacent
+   transition、DDIM selected-pair transition 和 DDIM schedule resolver；
+3. transition 不调用模型、不发送 observation、不应用任务 correction；完整 Sampler 委托
+   primitive 并继续拥有 RNG、loop 与 lifecycle；
+4. Dynamics 负责 source-state model prediction。项目可以定义更窄的 guided Dynamics 同时
+   产生 `GaussianPrediction` 与 correction；guided Sampler 在共享 DDIM transition 后应用
+   correction；
+5. 公开 Gaussian prediction normalization 与 training-target 小型 helper，不建立把 batch、
+   Objective、diagnostics 再次捆绑起来的“大训练 helper”；
+6. 稳定 extension 入口补充 family primitive、`PerSampleObjective` 和
+   `compute_objective()`；Sampler 统计改称 `num_dynamics_evaluations`；
+7. Stage 3.1 完成并形成独立 checkpoint 后，Stage 7 才重新启用 `src/stochaflow/**`
+   no-change gate。
+
+明确拒绝恢复 model-owning diffusion、旧多套 sample/trajectory API、Observer state mutation、
+target-aware 通用 Dynamics，以及把 physics 参数加入内置 DDIM。
+
+实现、聚焦回归、Ruff、Pyright 与两轮独立审查均已完成。Stage 7 重新启用
+`src/stochaflow/**` no-change gate，项目扩展必须只依赖本检查点公开的 family primitive。

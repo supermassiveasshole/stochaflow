@@ -24,6 +24,7 @@ from .gaussian import (
     GaussianDiagnosticSemantics,
     GaussianDenoisingTrainingBuilder,
     GaussianDenoisingTrainingStrategy,
+    gaussian_training_target,
 )
 from .objectives import MSEObjective, PerSampleObjective, compute_objective
 from .optimization import WarmupCosineLR
@@ -67,6 +68,7 @@ __all__ = [
     "WarmupCosineLR",
     "build_training_plan",
     "compute_objective",
+    "gaussian_training_target",
     "trainable_parameters",
     "training_module_roots",
     "validate_train_step_output",

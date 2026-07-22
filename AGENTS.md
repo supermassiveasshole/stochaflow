@@ -133,6 +133,12 @@ where the complete task composition is known. In particular:
   Process/Dynamics/Sampler compatibility. A family-specific Sampler may require
   its narrow Dynamics capability at the call boundary; core code must not
   maintain a global name-based compatibility matrix.
+  The universal lifecycle does not forbid a supported algorithm family from
+  exposing narrow transition or schedule primitives needed by a second solver
+  composition. Such primitives must remain family-specific, model-free at the
+  transition boundary, and must not become methods required by `Sampler` or
+  `GenerativeDynamics` roots. Built-in complete samplers must delegate to their
+  public family primitives instead of maintaining duplicate mathematics.
   Do not force methods with a direct exact generation transform to invent a
   numerical Sampler.
 - Stochaflow-owned built-in components use the same registry and construction

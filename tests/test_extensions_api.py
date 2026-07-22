@@ -13,6 +13,8 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "DataBuilder": data.DataBuilder,
         "DataBuilderContext": data.DataBuilderContext,
         "DataLoaders": data.DataLoaders,
+        "DDIMSampler": sampling.DDIMSampler,
+        "DDPMAncestralSampler": sampling.DDPMAncestralSampler,
         "DiagnosticBuildContext": training.DiagnosticBuildContext,
         "ExperimentLogger": logging.ExperimentLogger,
         "ExtensionActivationError": plugins.ExtensionActivationError,
@@ -40,10 +42,12 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "GaussianNoiseSchedule": processes.GaussianNoiseSchedule,
         "GaussianPrediction": sampling.GaussianPrediction,
         "GaussianScales": processes.GaussianScales,
+        "GaussianTransition": sampling.GaussianTransition,
         "GenerativeDynamics": sampling.GenerativeDynamics,
         "InferenceModelProvider": sampling.InferenceModelProvider,
         "MSEObjective": training.MSEObjective,
         "ManagedTrainingModule": training.ManagedTrainingModule,
+        "PerSampleObjective": training.PerSampleObjective,
         "PredictionType": sampling.PredictionType,
         "Process": processes.Process,
         "REGISTRIES": registry.REGISTRIES,
@@ -71,6 +75,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "TrajectoryObserver": sampling.TrajectoryObserver,
         "TabulatedDiscreteVPSchedule": processes.TabulatedDiscreteVPSchedule,
         "activate_extension_plugins": plugins.activate_extension_plugins,
+        "compute_objective": training.compute_objective,
         "extension_plugin_provenance_to_dicts": (
             plugins.extension_plugin_provenance_to_dicts
         ),
@@ -78,6 +83,8 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
             plugins.parse_extension_plugin_provenance
         ),
         "prepare_extension_plugins": plugins.prepare_extension_plugins,
+        "gaussian_training_target": training.gaussian_training_target,
+        "normalize_gaussian_prediction": sampling.normalize_gaussian_prediction,
     }
 
     assert set(public.__all__) == set(expected)

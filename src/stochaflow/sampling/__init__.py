@@ -14,7 +14,9 @@ from .gaussian import (
     GaussianDenoisingDynamics,
     GaussianModelDynamics,
     GaussianPrediction,
+    GaussianTransition,
     PredictionType,
+    normalize_gaussian_prediction,
 )
 from .grid import (
     denormalize_samples,
@@ -44,6 +46,7 @@ __all__ = [
     "GaussianDenoisingDynamics",
     "GaussianModelDynamics",
     "GaussianPrediction",
+    "GaussianTransition",
     "GenerativeDynamics",
     "ImageSamplingArtifactWriter",
     "InferenceModelProvider",
@@ -62,6 +65,7 @@ __all__ = [
     "TensorSamplingArtifactWriter",
     "TrajectoryObserver",
     "denormalize_samples",
+    "normalize_gaussian_prediction",
     "save_image_grid",
     "save_trajectory_gif",
     "save_trajectory_grid",

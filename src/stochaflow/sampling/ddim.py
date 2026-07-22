@@ -1,14 +1,20 @@
 """Denoising Diffusion Implicit Model sampler."""
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 import torch
 
+from stochaflow.processes import DiscreteGaussianDenoisingProcess
 from stochaflow.utils.registry import REGISTRIES
 
 from .dynamics import GenerativeDynamics
-from .gaussian import GaussianDenoisingDynamics
+from .gaussian import (
+    GaussianDenoisingDynamics,
+    GaussianPrediction,
+    GaussianTransition,
+    _validate_gaussian_prediction,
+)
 from .sampler import (
     Sampler,
     SamplerResult,
@@ -56,114 +62,123 @@ class DDIMSampler(Sampler):
         )
         self.eta = float(eta)
 
-    def sample(
+    def transition(
         self,
-        dynamics: GenerativeDynamics,
-        initial_state: Any,
-        *,
-        generator: torch.Generator | None = None,
-        observer: SamplingObserver | None = None,
-    ) -> SamplerResult:
-        """Execute one complete DDIM schedule."""
+        process: DiscreteGaussianDenoisingProcess,
+        state: torch.Tensor,
+        source_times: torch.Tensor,
+        target_times: torch.Tensor,
+        prediction: GaussianPrediction,
+    ) -> GaussianTransition:
+        """Build one selected-pair ``x_t -> x_s`` transition distribution."""
 
-        if not isinstance(dynamics, GaussianDenoisingDynamics):
-            raise TypeError("ddim sampler requires GaussianDenoisingDynamics")
-        if not isinstance(initial_state, torch.Tensor):
-            raise TypeError("ddim initial_state must be a Tensor")
-        process = dynamics.process
-        states = self._schedule(
-            process.clean_time, process.terminal_time, initial_state.device
-        )
-        num_steps = states.numel() - 1
-        current = initial_state
-        if observer is not None:
-            observer.observe(
-                SamplingObservation(
-                    step_index=0,
-                    coordinate=int(states[0]),
-                    state=current,
-                    is_final=False,
-                    diagnostics={},
-                )
+        process_value = cast(object, process)
+        if not isinstance(process_value, DiscreteGaussianDenoisingProcess):
+            raise TypeError(
+                "DDIM transition requires DiscreteGaussianDenoisingProcess"
             )
-        evaluations = 0
-        for step_index, (source, target) in enumerate(
-            zip(states[:-1], states[1:]), start=1
+        process = process_value
+        state_value = cast(object, state)
+        if not isinstance(state_value, torch.Tensor):
+            raise TypeError("DDIM transition state must be a Tensor")
+        state = state_value
+        if state.ndim == 0:
+            raise ValueError("DDIM transition state must include a batch dimension")
+        if not torch.is_floating_point(state):
+            raise TypeError("DDIM transition state must be floating-point")
+        source_times = process.validate_noisy_state_times(source_times)
+        if source_times.shape[0] != state.shape[0]:
+            raise ValueError("DDIM source times must match the state batch")
+        if source_times.device != state.device:
+            raise ValueError("DDIM source times must share the state device")
+        target_times_value = cast(object, target_times)
+        if not isinstance(target_times_value, torch.Tensor):
+            raise TypeError("DDIM target times must be a Tensor")
+        target_times = target_times_value
+        if target_times.ndim != 1:
+            raise ValueError("DDIM target times must be a 1D tensor")
+        if target_times.dtype == torch.bool or torch.is_floating_point(target_times):
+            raise TypeError("DDIM target times must contain integer states")
+        target_times = target_times.to(dtype=torch.long)
+        if target_times.shape != source_times.shape:
+            raise ValueError("DDIM target times must match source times")
+        if target_times.device != state.device:
+            raise ValueError("DDIM target times must share the state device")
+        if torch.any(target_times < process.clean_time) or torch.any(
+            target_times > process.terminal_time
         ):
-            source_times = source.expand(current.shape[0])
-            target_times = target.expand(current.shape[0])
-            prediction = dynamics.predict(current, source_times)
-            evaluations += 1
-            if self.eta == 1.0 and int(target) == int(source) - 1:
-                current = dynamics.process.posterior_mean(
-                    current, source_times, prediction.clean
-                )
-                if int(target) > process.clean_time:
-                    stochastic_scale = (
-                        dynamics.process.posterior_standard_deviation(
-                            source_times, current.size()
-                        )
-                    )
-                    if bool(torch.any(stochastic_scale != 0)):
-                        transition_noise = torch.randn(
-                            current.shape,
-                            device=current.device,
-                            dtype=current.dtype,
-                            generator=generator,
-                        )
-                        current = current + stochastic_scale * transition_noise
-            else:
-                scales_t = dynamics.process.marginal_scales(
-                    source_times, current.size()
-                )
-                scales_s = dynamics.process.marginal_scales(
-                    target_times, current.size()
-                )
-                signal_t, noise_t = scales_t.signal, scales_t.noise
-                signal_s, noise_s = scales_s.signal, scales_s.noise
-                posterior_variance = (
-                    noise_s.square()
-                    / noise_t.square()
-                    * (1.0 - signal_t.square() / signal_s.square())
-                ).clamp_min(0.0)
-                direction_scale = (
-                    noise_s.square() - self.eta**2 * posterior_variance
-                ).clamp_min(0.0).sqrt()
-                current = (
-                    signal_s * prediction.clean
-                    + direction_scale * prediction.epsilon
-                )
-                stochastic_scale = self.eta * posterior_variance.sqrt()
-                if (
-                    int(target) > process.clean_time
-                    and bool(torch.any(stochastic_scale != 0))
-                ):
-                    transition_noise = torch.randn(
-                        current.shape,
-                        device=current.device,
-                        dtype=current.dtype,
-                        generator=generator,
-                    )
-                    current = current + stochastic_scale * transition_noise
-            if observer is not None:
-                observer.observe(
-                    SamplingObservation(
-                        step_index=step_index,
-                        coordinate=int(target),
-                        state=current,
-                        is_final=step_index == num_steps,
-                        diagnostics={"num_model_evaluations": evaluations},
-                    )
-                )
-        return SamplerResult(
-            current,
-            num_steps,
-            {"num_model_evaluations": evaluations},
-        )
+            raise ValueError("DDIM target times must lie in the process time range")
+        if torch.any(target_times >= source_times):
+            raise ValueError("DDIM target times must be smaller than source times")
+        prediction = _validate_gaussian_prediction(prediction, state=state)
 
-    def _schedule(
-        self, clean_time: int, terminal_time: int, device: torch.device
+        source_scales = process.marginal_scales(source_times, state.size())
+        target_scales = process.marginal_scales(target_times, state.size())
+        signal_t, noise_t = source_scales.signal, source_scales.noise
+        signal_s, noise_s = target_scales.signal, target_scales.noise
+        posterior_variance = (
+            noise_s.square()
+            / noise_t.square()
+            * (1.0 - signal_t.square() / signal_s.square())
+        ).clamp_min(0.0)
+        direction_scale = (
+            noise_s.square() - self.eta**2 * posterior_variance
+        ).clamp_min(0.0).sqrt()
+        mean = signal_s * prediction.clean + direction_scale * prediction.epsilon
+        standard_deviation = self.eta * posterior_variance.sqrt()
+
+        if self.eta == 1.0:
+            adjacent = target_times == source_times - 1
+            if bool(torch.any(adjacent)):
+                adjacent_mask = adjacent.reshape(
+                    (state.shape[0],) + (1,) * (state.ndim - 1)
+                )
+                posterior_mean = process.posterior_mean(
+                    state,
+                    source_times,
+                    prediction.clean,
+                )
+                posterior_standard_deviation = (
+                    process.posterior_standard_deviation(
+                        source_times,
+                        state.size(),
+                    )
+                )
+                mean = torch.where(adjacent_mask, posterior_mean, mean)
+                standard_deviation = torch.where(
+                    adjacent_mask,
+                    posterior_standard_deviation,
+                    standard_deviation,
+                )
+
+        stochastic_mask = (target_times > process.clean_time).reshape(
+            (state.shape[0],) + (1,) * (state.ndim - 1)
+        )
+        standard_deviation = standard_deviation * stochastic_mask
+        standard_deviation = standard_deviation.to(
+            device=mean.device,
+            dtype=mean.dtype,
+        )
+        return GaussianTransition(mean, standard_deviation)
+
+    def resolve_schedule(
+        self,
+        process: DiscreteGaussianDenoisingProcess,
+        *,
+        device: torch.device | None = None,
     ) -> torch.Tensor:
+        """Resolve the configured descending mathematical state schedule."""
+
+        process_value = cast(object, process)
+        if not isinstance(process_value, DiscreteGaussianDenoisingProcess):
+            raise TypeError(
+                "DDIM schedule requires DiscreteGaussianDenoisingProcess"
+            )
+        process = process_value
+        if device is None:
+            device = torch.device("cpu")
+        clean_time = process.clean_time
+        terminal_time = process.terminal_time
         if self.explicit_schedule is not None:
             states = torch.as_tensor(self.explicit_schedule, device=device)
             if states.ndim != 1 or states.numel() < 2:
@@ -192,6 +207,65 @@ class DDIMSampler(Sampler):
         if not torch.all(states[:-1] > states[1:]):
             raise ValueError("DDIM schedule must be strictly descending and unique")
         return states
+
+    def sample(
+        self,
+        dynamics: GenerativeDynamics,
+        initial_state: Any,
+        *,
+        generator: torch.Generator | None = None,
+        observer: SamplingObserver | None = None,
+    ) -> SamplerResult:
+        """Execute one complete DDIM schedule."""
+
+        if not isinstance(dynamics, GaussianDenoisingDynamics):
+            raise TypeError("ddim sampler requires GaussianDenoisingDynamics")
+        if not isinstance(initial_state, torch.Tensor):
+            raise TypeError("ddim initial_state must be a Tensor")
+        process = dynamics.process
+        states = self.resolve_schedule(process, device=initial_state.device)
+        num_steps = states.numel() - 1
+        current = initial_state
+        if observer is not None:
+            observer.observe(
+                SamplingObservation(
+                    step_index=0,
+                    coordinate=int(states[0]),
+                    state=current,
+                    is_final=False,
+                    diagnostics={},
+                )
+            )
+        evaluations = 0
+        for step_index, (source, target) in enumerate(
+            zip(states[:-1], states[1:]), start=1
+        ):
+            source_times = source.expand(current.shape[0])
+            target_times = target.expand(current.shape[0])
+            prediction = dynamics.predict(current, source_times)
+            evaluations += 1
+            current = self.transition(
+                process,
+                current,
+                source_times,
+                target_times,
+                prediction,
+            ).sample(generator=generator)
+            if observer is not None:
+                observer.observe(
+                    SamplingObservation(
+                        step_index=step_index,
+                        coordinate=int(target),
+                        state=current,
+                        is_final=step_index == num_steps,
+                        diagnostics={"num_dynamics_evaluations": evaluations},
+                    )
+                )
+        return SamplerResult(
+            current,
+            num_steps,
+            {"num_dynamics_evaluations": evaluations},
+        )
 
 
 __all__ = ["DDIMSampler"]
