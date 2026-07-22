@@ -419,7 +419,7 @@ def test_auxiliary_name_order_does_not_change_optimizer_state_binding(
         assert torch.equal(second_optimizer.state[parameter]["exp_avg"], expected)
 
 
-def test_checkpoint_preserves_arbitrary_module_extra_state(tmp_path: Path) -> None:
+def test_checkpoint_preserves_data_only_module_extra_state(tmp_path: Path) -> None:
     model = nn.Linear(1, 1)
     asset = ExtraStateModule()
     manager = CheckpointManager(model=model, auxiliary_modules={"asset": asset})
@@ -497,8 +497,10 @@ def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> N
 
     checkpoint = tmp_path / "distillation.pt"
     components.checkpoint_manager.save(checkpoint)
-    payload = torch.load(checkpoint, weights_only=False)
-    assert set(payload["training_assets_state_dict"]) == {
+    payload = CheckpointManager.load_payload(checkpoint)
+    assets_state = payload.get("training_assets_state_dict")
+    assert isinstance(assets_state, dict)
+    assert set(assets_state) == {
         "teacher",
         "distill_objective",
     }
@@ -512,9 +514,9 @@ def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> N
         assert torch.equal(value, expected_teacher[name])
 
     mismatched = deepcopy(payload)
-    mismatched["training_assets_state_dict"]["renamed"] = mismatched[
-        "training_assets_state_dict"
-    ].pop("teacher")
+    mismatched_assets = mismatched.get("training_assets_state_dict")
+    assert isinstance(mismatched_assets, dict)
+    mismatched_assets["renamed"] = mismatched_assets.pop("teacher")
     mismatched_path = tmp_path / "mismatched.pt"
     torch.save(mismatched, mismatched_path)
     with pytest.raises(ValueError, match="asset names do not match"):

@@ -4,7 +4,12 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
-from stochaflow.sampling.runtime import run_sampling
+from stochaflow.projects import ProjectScaffoldError, create_project
+from stochaflow.sampling.runtime import (
+    resolve_sampling_inputs,
+    run_resolved_sampling,
+)
+from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
 from stochaflow.scripts.experiment_runner import (
     add_training_arguments,
     run_experiment_from_args,
@@ -12,7 +17,7 @@ from stochaflow.scripts.experiment_runner import (
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    """Build the top-level train/sample command parser."""
+    """Build the top-level init/train/sample command parser."""
 
     parser = argparse.ArgumentParser(prog="stochaflow", description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -31,7 +36,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=None,
-        help="Optional experiment config whose sampling section overrides the checkpoint.",
+        help=(
+            "Optional complete config (fully authoritative) or a lightweight "
+            "sampling/extensions overlay for an explicit checkpoint."
+        ),
     )
     sample_parser.add_argument(
         "--checkpoint",
@@ -51,6 +59,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory for generated artifacts.",
     )
+    sample_parser.add_argument(
+        "--force-extension-version-mismatch",
+        action="store_true",
+        help=(
+            "Accept extension version differences after identity validation; "
+            "does not bypass checkpoint state compatibility."
+        ),
+    )
+
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Create an installable Stochaflow extension project.",
+    )
+    init_parser.add_argument(
+        "name",
+        metavar="NAME",
+        help="Canonical project slug, for example my-research-project.",
+    )
     return parser
 
 
@@ -62,14 +88,31 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "train":
         run_experiment_from_args(args)
         return
+    if args.command == "init":
+        try:
+            project_path = create_project(args.name)
+        except ProjectScaffoldError as exc:
+            parser.error(str(exc))
+        print(f"Created project: {project_path}")
+        return
     if args.config is None and args.checkpoint is None:
         parser.error("sample requires --config, --checkpoint, or both")
 
-    result = run_sampling(
+    startup_cwd = Path.cwd()
+    inputs = resolve_sampling_inputs(
         config_path=args.config,
         checkpoint=args.checkpoint,
+    )
+    extensions = activate_extensions_for_cli(
+        inputs.extension_plan,
+        force_version_mismatch=args.force_extension_version_mismatch,
+    )
+    result = run_resolved_sampling(
+        inputs,
+        extensions,
         output_dir=args.output_dir,
         device_name=args.device,
+        startup_cwd=startup_cwd,
     )
     print(f"Checkpoint: {result.checkpoint_path}")
     print(f"Builder: {result.builder_name}")

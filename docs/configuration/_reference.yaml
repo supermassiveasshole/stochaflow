@@ -7,14 +7,14 @@ fields:
   experiment.output_dir: {description: 运行目录根路径；训练会在其下创建时间戳子目录。, cli: "train --output-dir"}
   experiment.exp_id: {description: 运行实例标识；通常由 runner 在创建时间戳目录后写入。}
 
-  extensions: {description: 在配置校验、训练组件构建和 checkpoint 采样前加载的通用 Registry 扩展。}
-  extensions.modules: {description: 按声明顺序幂等导入的 Python 扩展模块；模块导入应执行 Registry 装饰器。, constraints: 每项是非空 import path。}
+  extensions: {description: 从当前 Python 环境选择并激活标准 entry-point Registry 扩展。}
+  extensions.plugins: {description: 要加载的 stochaflow.extensions entry-point 名称；null 选择当前环境中的全部插件。, constraints: 非 null 时为无重复的非空名称列表；空列表禁用第三方插件。}
 
   data: {description: 由 data_builders Registry 构建的一次训练运行数据入口。}
   data.name: {description: data_builders Registry 名称。}
   data.params: {description: DataBuilder 完整拥有的参数；核心不解释 Dataset、split、sampler、collate 或 batch 语义。}
 
-  model: {description: 由 models Registry 构建的去噪模型。}
+  model: {description: 由 models Registry 构建的 primary inference/training model。}
   model.name: {description: models Registry 名称。}
   model.params: {description: 模型构造参数；内置参数见 Registry 组件索引。}
   training: {description: 由 training_builders Registry 组装 TrainingPlan 的训练任务声明。}
@@ -75,7 +75,7 @@ fields:
 
 registries:
   models:
-    description: 构建可训练的去噪网络。
+    description: 构建 primary inference/training model。
     base: torch.nn.Module
     config_path: model.name / model.params
     entries:
@@ -272,7 +272,7 @@ registries:
           failure_policy: {description: 运行期错误采用 raise 或 warn；配置错误始终失败。}
 
 cli:
-  "train.--config": {description: 实验 YAML 路径。}
+  "train.--config": {description: 新训练使用的完整实验 YAML；与 --resume 互斥且二者必须提供一个。}
   "train.--device": {description: 本次运行覆盖 trainer.device。}
   "train.--output-dir": {description: 本次运行覆盖 experiment.output_dir。}
   "train.--epochs": {description: 本次运行覆盖 trainer.num_epochs。}
@@ -281,9 +281,12 @@ cli:
   "train.--limit-test-batches": {description: 最终测试最多执行的 batch 数。}
   "train.--deterministic": {description: 在 Torch 支持的范围内启用确定性算法。}
   "train.--no-progress": {description: 禁用 Rich 进度条。}
-  "train.--resume": {description: 无值时恢复配置输出根下的 latest.pt；也可显式给 checkpoint 路径。}
+  "train.--resume": {description: 从显式 checkpoint 文件或运行目录执行严格完整恢复；使用 checkpoint 保存的配置和训练状态，并与 --config 互斥。}
   "train.--skip-final-sample": {description: 跳过训练完成后的最佳 checkpoint 验收采样。}
-  "sample.--config": {description: 可选外部配置；其 sampling 设置覆盖 checkpoint 中的采样设置。}
+  "train.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}
+  "sample.--config": {description: 可选完整外部配置（整体权威），或在显式 checkpoint 上应用的 sampling/extensions 轻量 overlay。}
   "sample.--checkpoint": {description: checkpoint 文件或运行目录；仅给 config 时自动查找最新 best.pt。}
   "sample.--device": {description: 覆盖采样设备。}
   "sample.--output-dir": {description: 覆盖生成 artifact 的目录。}
+  "sample.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}
+  "init.NAME": {description: 新项目目录、distribution 和 extension entry-point 使用的 canonical ASCII slug。}

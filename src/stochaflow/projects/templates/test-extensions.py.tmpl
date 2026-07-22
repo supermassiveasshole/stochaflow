@@ -1,0 +1,15 @@
+"""Registration smoke tests for the generated extension package."""
+
+from importlib import import_module
+
+from stochaflow.extensions import REGISTRIES
+
+import_module("__STOCHAFLOW_PACKAGE_NAME__.stochaflow_ext")
+
+
+def test_extension_components_are_registered() -> None:
+    prefix = "__STOCHAFLOW_PROJECT_SLUG__."
+    assert f"{prefix}synthetic-regression" in REGISTRIES.data_builders
+    assert f"{prefix}linear-regression" in REGISTRIES.models
+    assert f"{prefix}regression" in REGISTRIES.training_builders
+    assert f"{prefix}regression-predictions" in REGISTRIES.sampling_builders

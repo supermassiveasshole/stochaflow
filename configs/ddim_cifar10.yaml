@@ -4,7 +4,7 @@ experiment:
   output_dir: outputs/ddim_cifar10
 
 extensions:
-  modules: []
+  plugins: []
 
 data:
   name: image

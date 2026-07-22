@@ -4,7 +4,7 @@ experiment:
   output_dir: outputs/ddpm_mnist
 
 extensions:
-  modules: []
+  plugins: []
 
 data:
   name: image

@@ -1,0 +1,23 @@
+"""Model registered by the generated extension."""
+
+import torch
+import torch.nn as nn
+
+from stochaflow.extensions import REGISTRIES
+
+
+@REGISTRIES.models.register("__STOCHAFLOW_PROJECT_SLUG__.linear-regression")
+class LinearRegressionModel(nn.Module):
+    """A tiny model that keeps the scaffold smoke test fast."""
+
+    def __init__(self, input_features: int = 3) -> None:
+        super().__init__()
+        if input_features <= 0:
+            raise ValueError("input_features must be positive")
+        self.linear = nn.Linear(input_features, 1)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.linear(inputs)
+
+
+__all__ = ["LinearRegressionModel"]

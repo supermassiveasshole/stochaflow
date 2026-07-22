@@ -1,0 +1,37 @@
+# __STOCHAFLOW_PROJECT_SLUG__
+
+This repository is a standard Python distribution containing one Stochaflow
+extension and room for multiple experiments. Stochaflow discovers the installed
+extension through Python package metadata; it does not scan this directory.
+
+Run commands from this project root so relative `data/` and `outputs/` paths in
+experiment configuration resolve predictably.
+
+## Install with pip
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[test]"
+stochaflow train --config experiments/example/train.yaml
+```
+
+On Windows, activate the environment with `.venv\Scripts\activate`.
+
+## Install with uv
+
+```bash
+uv sync --extra test
+uv run stochaflow train --config experiments/example/train.yaml
+```
+
+The generated configuration trains a tiny synthetic regression model in a few
+steps. It demonstrates a custom `DataBuilder`, model, `TrainingBuilder` and
+`TrainingStrategy`, plus a direct-transform `SamplingBuilder`. The built-in MSE
+objective and tensor artifact writer are reused.
+
+The package entry point imports `__STOCHAFLOW_PACKAGE_NAME__.stochaflow_ext`.
+Keep that aggregation module free of data loading, model construction, and task
+execution: importing it should only define and register extension components.
+
+Run the extension tests with either `python -m pytest` or `uv run pytest`.

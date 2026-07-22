@@ -416,6 +416,64 @@ def test_fit_early_stopping_enables_train_loss_tracking_without_validation(
     assert trainer.best_checkpoint_path == tmp_path / "checkpoints" / "best.pt"
 
 
+def test_fit_resume_preserves_best_and_early_stopping_wait(tmp_path) -> None:
+    trainer = _make_trainer(tmp_path)
+    previous_best = tmp_path / "checkpoints" / "best.pt"
+    previous_best.parent.mkdir(parents=True)
+    previous_best.touch()
+    trainer.restore_fit_state(
+        {
+            "best_epoch": 1,
+            "best_metric_value": 0.1,
+            "epochs_without_improvement": 1,
+            "stopped_early": False,
+            "monitor": "valid_loss",
+            "mode": "min",
+        },
+        best_checkpoint_path=previous_best,
+    )
+    trainer.train_epoch = lambda *args, **kwargs: {
+        "loss": 0.2,
+        "num_batches": 1.0,
+        "duration_seconds": 0.0,
+    }
+    trainer.evaluate_epoch = lambda *args, **kwargs: {
+        "loss": 0.2,
+        "num_batches": 1.0,
+        "duration_seconds": 0.0,
+    }
+
+    trainer.fit(
+        _make_loader(),
+        num_epochs=2,
+        start_epoch=2,
+        validation_dataloader=_make_loader(),
+        show_progress=False,
+        early_stopping_patience=2,
+        early_stopping_monitor="valid_loss",
+        track_best=True,
+    )
+
+    assert trainer.best_epoch == 1
+    assert trainer.best_metric_value == 0.1
+    assert trainer.best_checkpoint_path == previous_best
+    assert trainer.epochs_without_improvement == 2
+    assert trainer.stopped_early
+    latest = CheckpointManager.load_payload(
+        tmp_path / "checkpoints" / "latest.pt"
+    )
+    metadata = latest.get("metadata")
+    assert metadata is not None
+    assert metadata["training_loop"] == {
+        "best_epoch": 1,
+        "best_metric_value": 0.1,
+        "epochs_without_improvement": 2,
+        "stopped_early": True,
+        "monitor": "valid_loss",
+        "mode": "min",
+    }
+
+
 def test_step_lr_scheduler_steps_once_per_batch(tmp_path) -> None:
     trainer, scheduler = _make_trainer_with_scheduler(tmp_path, interval="step")
 
@@ -563,9 +621,8 @@ def test_ema_updates_once_per_train_batch(tmp_path) -> None:
     trainer.fit(_make_loader(), num_epochs=1, show_progress=False, track_best=False)
 
     assert ema.num_updates == 2
-    assert "ema_state_dict" in torch.load(
-        tmp_path / "checkpoints" / "epoch_0001.pt",
-        weights_only=False,
+    assert "ema_state_dict" in CheckpointManager.load_payload(
+        tmp_path / "checkpoints" / "epoch_0001.pt"
     )
 
 
@@ -616,14 +673,14 @@ def test_checkpoint_saves_and_restores_lr_scheduler_state(tmp_path) -> None:
     assert scheduler.count == 1
 
 
-def test_checkpoint_manager_rejects_v6(tmp_path) -> None:
+def test_checkpoint_manager_rejects_v7(tmp_path) -> None:
     trainer = _make_trainer(tmp_path)
     checkpoint_manager = trainer.checkpoint_manager
     assert checkpoint_manager is not None
-    checkpoint = tmp_path / "v6.pt"
+    checkpoint = tmp_path / "v7.pt"
     payload = checkpoint_manager.build_state()
-    payload["format_version"] = 6
+    payload["format_version"] = 7
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="expected version 7"):
+    with pytest.raises(ValueError, match="expected version 8"):
         checkpoint_manager.load(checkpoint)

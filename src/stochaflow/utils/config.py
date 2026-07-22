@@ -22,9 +22,14 @@ class ComponentConfig:
 
 @dataclass(slots=True)
 class ExtensionsConfig:
-    """Import paths for user-defined Registry components."""
+    """Installed extension plugins selected for this invocation.
 
-    modules: list[str] = field(default_factory=list)
+    ``None`` explicitly selects every installed ``stochaflow.extensions``
+    entry point.  An empty list, including the default, selects no third-party
+    plugins.  Configuration parsing never imports plugin code.
+    """
+
+    plugins: list[str] | None = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -155,12 +160,28 @@ class StochaflowConfig:
                 raise ConfigError("objective.name must be a non-empty registry name")
             if not isinstance(cast(object, self.objective.params), dict):
                 raise ConfigError("objective.params must be a mapping")
-        for index, declared_module in enumerate(self.extensions.modules):
-            module = cast(object, declared_module)
-            if not isinstance(module, str) or not module.strip():
-                raise ConfigError(
-                    f"extensions.modules[{index}] must be a non-empty string"
-                )
+        plugins_value = cast(object, self.extensions.plugins)
+        if plugins_value is not None and not isinstance(plugins_value, list):
+            raise ConfigError("extensions.plugins must be a list or null")
+        if self.extensions.plugins is not None:
+            seen_plugins: set[str] = set()
+            for index, declared_plugin in enumerate(self.extensions.plugins):
+                plugin = cast(object, declared_plugin)
+                if not isinstance(plugin, str) or not plugin.strip():
+                    raise ConfigError(
+                        f"extensions.plugins[{index}] must be a non-empty string"
+                    )
+                if plugin != plugin.strip():
+                    raise ConfigError(
+                        f"extensions.plugins[{index}] must not contain "
+                        "leading or trailing whitespace"
+                    )
+                if plugin in seen_plugins:
+                    raise ConfigError(
+                        f"extensions.plugins contains duplicate entry-point name "
+                        f"'{plugin}'"
+                    )
+                seen_plugins.add(plugin)
         if self.trainer.num_epochs <= 0:
             raise ConfigError("trainer.num_epochs must be positive")
         if not 0.0 <= self.ema.decay < 1.0:
@@ -340,34 +361,8 @@ def coerce_config_section(cls: type[Any], raw: Any, path: str) -> Any:
     return _coerce_dataclass(cls, deepcopy(raw), path)
 
 
-def _validate_module_declarations(value: Any, *, path: str) -> list[str]:
-    if not isinstance(value, list):
-        raise ConfigError(f"{path} must be a list")
-    for index, module in enumerate(value):
-        if not isinstance(module, str) or not module.strip():
-            raise ConfigError(f"{path}[{index}] must be a non-empty string")
-    return value
-
-
-def _load_configured_modules(config: StochaflowConfig) -> None:
-    """Import explicitly configured registry extensions before validation.
-
-    The import is intentionally local so the schema module does not create an
-    import cycle with component modules that import configuration dataclasses.
-    ``RegistryCatalog.load_modules`` owns idempotency across config loads.
-    """
-
-    from stochaflow.utils.registry import REGISTRIES
-
-    _validate_module_declarations(
-        config.extensions.modules,
-        path="config.extensions.modules",
-    )
-    REGISTRIES.load_modules(config.extensions.modules)
-
-
 def load_config(path: str | Path) -> StochaflowConfig:
-    """Load and validate a YAML config file."""
+    """Load and validate a YAML config file without importing extensions."""
 
     config_path = Path(path)
     with config_path.open("r", encoding="utf-8") as handle:
@@ -377,15 +372,13 @@ def load_config(path: str | Path) -> StochaflowConfig:
         raise ConfigError(f"{config_path} must contain a top-level mapping")
 
     config = _coerce_dataclass(StochaflowConfig, raw, "config")
-    _load_configured_modules(config)
     config.validate()
     return config
 
 
 def load_config_dict(raw: dict[str, Any]) -> StochaflowConfig:
-    """Load and validate a configuration from a plain dictionary."""
+    """Load a plain configuration without mutating it or importing extensions."""
 
     config = _coerce_dataclass(StochaflowConfig, raw, "config")
-    _load_configured_modules(config)
     config.validate()
     return config

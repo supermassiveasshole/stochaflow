@@ -12,7 +12,6 @@ from stochaflow.utils.config import (
     load_config,
     load_config_dict,
 )
-from stochaflow.utils.registry import REGISTRIES, RegistryError
 
 
 def test_load_ddpm_mnist_config() -> None:
@@ -65,104 +64,26 @@ def test_load_ddpm_mnist_config() -> None:
     assert config.artifacts.checkpoint_every == 5
 
 
-def test_config_loads_custom_modules_before_validation(
+def test_config_parsing_does_not_import_declared_plugins(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    marker = tmp_path / "imported"
     module_path = tmp_path / "config_extension.py"
     module_path.write_text(
-        """
-import torch.nn as nn
-
-from stochaflow.extensions import (
-    DataBuilder,
-    DataLoaders,
-    Process,
-    REGISTRIES,
-    Sampler,
-    SamplerResult,
-    SamplingBuilder,
-    SamplingOutput,
-    SamplingArtifactWriter,
-    TrainingBuilder,
-)
-
-
-@REGISTRIES.models.register("config_extension_model")
-class ConfigExtensionModel(nn.Module):
-    def forward(self, inputs):
-        return inputs
-
-
-@REGISTRIES.processes.register("config_extension_process")
-class ConfigExtensionProcess(Process):
-    pass
-
-
-@REGISTRIES.samplers.register("config_extension_sampler")
-class ConfigExtensionSampler(Sampler):
-    def sample(self, dynamics, initial_state, **kwargs):
-        return SamplerResult(initial_state, 0, {})
-
-
-@REGISTRIES.sampling_builders.register("config_extension_sampling_builder")
-class ConfigExtensionSamplingBuilder(SamplingBuilder):
-    def run(self):
-        return SamplingOutput((), {})
-
-
-@REGISTRIES.data_builders.register("config_extension_builder")
-class ConfigExtensionBuilder(DataBuilder):
-    def build(self):
-        return DataLoaders(train=[0])
-
-
-@REGISTRIES.sampling_artifact_writers.register("config_extension_writer")
-class ConfigExtensionWriter(SamplingArtifactWriter):
-    def write(self, context):
-        raise NotImplementedError
-
-
-@REGISTRIES.training_builders.register("config_extension_training")
-class ConfigExtensionTrainingBuilder(TrainingBuilder):
-    def build(self):
-        raise NotImplementedError
-""",
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n",
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["extensions"]["modules"] = ["config_extension"]
-    raw["data"] = {"name": "config_extension_builder", "params": {}}
+    raw["extensions"] = {"plugins": ["config_extension"]}
+    original = deepcopy(raw)
 
     config = load_config_dict(raw)
-    repeated = load_config_dict(raw)
 
-    assert config.extensions.modules == ["config_extension"]
-    assert config.data.name == "config_extension_builder"
-    assert repeated.data.name == "config_extension_builder"
-    assert REGISTRIES.models.resolve("config_extension_model").__name__ == (
-        "ConfigExtensionModel"
-    )
-    assert REGISTRIES.processes.resolve(
-        "config_extension_process"
-    ).__name__ == "ConfigExtensionProcess"
-    assert REGISTRIES.samplers.resolve(
-        "config_extension_sampler"
-    ).__name__ == "ConfigExtensionSampler"
-    assert REGISTRIES.sampling_builders.resolve(
-        "config_extension_sampling_builder"
-    ).__name__ == "ConfigExtensionSamplingBuilder"
-    assert (
-        REGISTRIES.data_builders.resolve("config_extension_builder").__name__
-        == "ConfigExtensionBuilder"
-    )
-    assert REGISTRIES.sampling_artifact_writers.resolve(
-        "config_extension_writer"
-    ).__name__ == "ConfigExtensionWriter"
-    assert REGISTRIES.training_builders.resolve(
-        "config_extension_training"
-    ).__name__ == "ConfigExtensionTrainingBuilder"
+    assert config.extensions.plugins == ["config_extension"]
+    assert not marker.exists()
+    assert raw == original
 
 
 def test_config_rejects_removed_data_modules_without_mutating_input() -> None:
@@ -176,21 +97,45 @@ def test_config_rejects_removed_data_modules_without_mutating_input() -> None:
     assert raw == original
 
 
-@pytest.mark.parametrize("module", ["", "   ", 7, None])
-def test_config_rejects_invalid_extension_module_declarations(module) -> None:
+@pytest.mark.parametrize("plugin", ["", "   ", " padded", 7])
+def test_config_rejects_invalid_extension_plugin_declarations(plugin) -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["extensions"]["modules"] = [module]
+    raw["extensions"] = {"plugins": [plugin]}
 
-    with pytest.raises(ConfigError, match=r"extensions\.modules\[0\]"):
+    with pytest.raises(ConfigError, match=r"extensions\.plugins\[0\]"):
         load_config_dict(raw)
 
 
-def test_config_reports_missing_extension_module() -> None:
+def test_config_rejects_duplicate_extension_plugins() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
-    raw["extensions"]["modules"] = ["stochaflow_missing_extension_for_test"]
+    raw["extensions"] = {"plugins": ["example", "example"]}
 
-    with pytest.raises(RegistryError, match="failed to import registry module"):
+    with pytest.raises(ConfigError, match="duplicate entry-point name 'example'"):
         load_config_dict(raw)
+
+
+def test_config_rejects_removed_extension_modules_schema() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["extensions"] = {"modules": ["example.extension"]}
+
+    with pytest.raises(ConfigError, match=r"config\.extensions\.modules"):
+        load_config_dict(raw)
+
+
+@pytest.mark.parametrize(
+    ("raw_extensions", "expected"),
+    [({}, []), ({"plugins": []}, []), ({"plugins": None}, None)],
+)
+def test_config_preserves_extension_plugin_selection_semantics(
+    raw_extensions: dict[str, object],
+    expected: list[str] | None,
+) -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["extensions"] = raw_extensions
+
+    config = load_config_dict(raw)
+
+    assert config.extensions.plugins == expected
 
 
 def test_config_rejects_empty_data_builder_name() -> None:
@@ -291,7 +236,7 @@ def test_config_to_dict_preserves_top_level_sections() -> None:
     config = load_config(Path("configs/ddpm_cifar10.yaml"))
     data = config.to_dict()
     assert "experiment" in data
-    assert data["extensions"] == {"modules": []}
+    assert data["extensions"] == {"plugins": []}
     assert "model" in data
     assert "training" in data
     assert "ema" in data

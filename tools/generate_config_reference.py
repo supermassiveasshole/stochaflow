@@ -276,11 +276,20 @@ def _cli_actions() -> dict[str, dict[str, argparse.Action]]:
     )
     commands: dict[str, dict[str, argparse.Action]] = {}
     for command, command_parser in subparsers.choices.items():
-        commands[command] = {
-            action.option_strings[-1]: action
-            for action in command_parser._actions
-            if action.option_strings and "--help" not in action.option_strings
-        }
+        command_actions: dict[str, argparse.Action] = {}
+        for action in command_parser._actions:
+            if "--help" in action.option_strings:
+                continue
+            if action.option_strings:
+                label = action.option_strings[-1]
+            else:
+                label = (
+                    action.metavar
+                    if isinstance(action.metavar, str)
+                    else action.dest
+                )
+            command_actions[label] = action
+        commands[command] = command_actions
     return commands
 
 

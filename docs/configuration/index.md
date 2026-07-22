@@ -51,6 +51,18 @@ uv run stochaflow sample \
   --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt
 ```
 
+创建可安装的自定义扩展项目：
+
+```bash
+stochaflow init my-research-project
+cd my-research-project
+python -m pip install -e ".[test]"
+stochaflow train --config experiments/example/train.yaml
+```
+
+`init` 只生成普通 Python distribution，不创建环境或绑定包管理器。扩展 package 与
+`stochaflow` CLI 必须安装在同一个 Python environment。
+
 ## 最小完整配置
 
 下面只填写 schema 必填项以及内置 UNet/噪声 schedule 的必需参数；其余部分使用
@@ -110,16 +122,18 @@ sampling:
     - {name: image, params: {grid_nrow: 4}}
 ```
 
-配置加载顺序是：YAML 结构化为 dataclass → 导入
-`extensions.modules` → 执行跨字段校验 → runner 应用 CLI 覆盖 → 构建数据和训练
-组件。自定义模块因此既可用于训练，也可在只读取 checkpoint 的采样流程中注册组件。
+`load_config()` 和 `load_config_dict()` 只把 YAML/mapping 结构化为 dataclass 并校验
+schema，不导入第三方代码。runner 随后发现并预检所选
+`stochaflow.extensions` entry points，在任何插件导入前处理 checkpoint provenance 和
+version policy，再激活插件、执行跨组件校验并构建组件。训练、resume 和 sampling 因而
+使用同一套显式插件选择与审计结果。
 
 ## 配置层次
 
 | 顶层段 | 作用 |
 | --- | --- |
 | `experiment` | 名称、seed、输出根目录和 run id |
-| `extensions` | 训练、采样和 checkpoint 重建前导入的 Registry 扩展模块 |
+| `extensions` | 本次运行激活的已安装 entry-point 插件；默认不激活第三方代码 |
 | `data` | DataBuilder Registry 声明与 builder 专属参数 |
 | `model` | 去噪模型 Registry 声明 |
 | `training` | TrainingBuilder Registry 声明与任务组合参数 |
@@ -179,9 +193,15 @@ base bucket
 : 只定义图像 recipe 动态 batch 的像素预算基准；采样输出由 `sampling.shape` 独立声明。
 
 Registry
-: 名称到 Stochaflow 组件类/构造器的显式映射。`extensions.modules` 导入通用组件，
-  diagnostic 的 `params.modules` 导入可插拔 provider。标准 PyTorch optimizer 和 LR
-  scheduler 使用上面的受限原生 provider，不会复制到 Registry 中。
+: 名称到 Stochaflow 组件类/构造器的显式映射。`extensions.plugins` 选择已安装
+  distribution 的 `stochaflow.extensions` entry point，聚合模块通过 decorator 注册通用
+  组件；diagnostic 的 `params.modules` 是独立的局部 provider 机制。标准 PyTorch
+  optimizer 和 LR scheduler 使用上面的受限原生 provider，不会复制到 Registry 中。
+
+plugin selection
+: 省略 `extensions` 或写 `plugins: []` 表示不加载第三方插件；`plugins: null` 是显式
+  opt-in，加载当前环境发现的全部插件；非空列表按精确 entry-point name 选择。resolved
+  config 总是保存排序后的确定列表，不保存 `null`。
 
 ## 内置示例
 

@@ -4,7 +4,7 @@ import pytest
 
 from stochaflow import data, processes, sampling, training
 from stochaflow import extensions as public
-from stochaflow.utils import config, logging, registry
+from stochaflow.utils import config, logging, plugins, registry
 
 
 def test_public_extension_contracts_reexport_runtime_types() -> None:
@@ -15,6 +15,18 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "DataLoaders": data.DataLoaders,
         "DiagnosticBuildContext": training.DiagnosticBuildContext,
         "ExperimentLogger": logging.ExperimentLogger,
+        "ExtensionActivationError": plugins.ExtensionActivationError,
+        "ExtensionActivationPlan": plugins.ExtensionActivationPlan,
+        "ExtensionActivationStateError": plugins.ExtensionActivationStateError,
+        "ExtensionDiscoveryError": plugins.ExtensionDiscoveryError,
+        "ExtensionIdentityError": plugins.ExtensionIdentityError,
+        "ExtensionPluginError": plugins.ExtensionPluginError,
+        "ExtensionPluginProvenance": plugins.ExtensionPluginProvenance,
+        "ExtensionSelectionPolicy": plugins.ExtensionSelectionPolicy,
+        "ExtensionVersionAcceptance": plugins.ExtensionVersionAcceptance,
+        "ExtensionVersionMismatch": plugins.ExtensionVersionMismatch,
+        "ExtensionVersionMismatchError": plugins.ExtensionVersionMismatchError,
+        "ExtensionVersionPolicy": plugins.ExtensionVersionPolicy,
         "FitStartEvent": training.FitStartEvent,
         "DiscreteGaussianDenoisingProcess": (
             processes.DiscreteGaussianDenoisingProcess
@@ -37,6 +49,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "REGISTRIES": registry.REGISTRIES,
         "Registry": registry.Registry,
         "RegistryError": registry.RegistryError,
+        "ResolvedExtensions": plugins.ResolvedExtensions,
         "Sampler": sampling.Sampler,
         "SamplerResult": sampling.SamplerResult,
         "SamplingArtifactContext": sampling.SamplingArtifactContext,
@@ -57,6 +70,14 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "TrainingStrategy": training.TrainingStrategy,
         "TrajectoryObserver": sampling.TrajectoryObserver,
         "TabulatedDiscreteVPSchedule": processes.TabulatedDiscreteVPSchedule,
+        "activate_extension_plugins": plugins.activate_extension_plugins,
+        "extension_plugin_provenance_to_dicts": (
+            plugins.extension_plugin_provenance_to_dicts
+        ),
+        "parse_extension_plugin_provenance": (
+            plugins.parse_extension_plugin_provenance
+        ),
+        "prepare_extension_plugins": plugins.prepare_extension_plugins,
     }
 
     assert set(public.__all__) == set(expected)

@@ -34,6 +34,7 @@ from stochaflow.training.strategy import (
 )
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
+from stochaflow.utils.seed import preserve_global_rng_state
 
 
 def _move_to_device(batch: Batch, device: torch.device) -> Batch:
@@ -250,7 +251,10 @@ class Trainer:
         self.best_checkpoint_path: Path | None = None
         self.best_epoch: int | None = None
         self.best_metric_value: float | None = None
+        self.epochs_without_improvement = 0
         self.stopped_early = False
+        self._best_monitor: str | None = None
+        self._best_mode: str | None = None
         self._last_train_step_output: TrainStepOutput | None = None
 
         if self.checkpoint_every is not None and self.checkpoint_every <= 0:
@@ -272,6 +276,90 @@ class Trainer:
             asset.module.to(self.device)
         if self.ema is not None:
             self.ema.to(self.device)
+
+    def restore_fit_state(
+        self,
+        state: object,
+        *,
+        best_checkpoint_path: str | Path | None = None,
+    ) -> None:
+        """Restore best-selection and early-stopping state for strict resume."""
+
+        if not isinstance(state, Mapping):
+            raise TypeError("checkpoint metadata.training_loop must be a mapping")
+        required = {
+            "best_epoch",
+            "best_metric_value",
+            "epochs_without_improvement",
+            "stopped_early",
+            "monitor",
+            "mode",
+        }
+        if set(state) != required:
+            missing = sorted(required - set(state))
+            unknown = sorted(set(state) - required, key=str)
+            raise ValueError(
+                "checkpoint metadata.training_loop has invalid fields: "
+                f"missing={missing or '<none>'}, unknown={unknown or '<none>'}"
+            )
+        best_epoch = state["best_epoch"]
+        if best_epoch is not None and (
+            isinstance(best_epoch, bool)
+            or not isinstance(best_epoch, int)
+            or best_epoch <= 0
+        ):
+            raise TypeError("training_loop.best_epoch must be a positive int or null")
+        best_metric = state["best_metric_value"]
+        if best_metric is not None and (
+            isinstance(best_metric, bool)
+            or not isinstance(best_metric, (int, float))
+        ):
+            raise TypeError("training_loop.best_metric_value must be numeric or null")
+        if (best_epoch is None) != (best_metric is None):
+            raise ValueError(
+                "training_loop best_epoch and best_metric_value must both be null "
+                "or both be set"
+            )
+        wait = state["epochs_without_improvement"]
+        if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
+            raise TypeError(
+                "training_loop.epochs_without_improvement must be a non-negative int"
+            )
+        stopped_early = state["stopped_early"]
+        if not isinstance(stopped_early, bool):
+            raise TypeError("training_loop.stopped_early must be a bool")
+        monitor = state["monitor"]
+        if monitor is not None and (
+            not isinstance(monitor, str) or not monitor
+        ):
+            raise TypeError("training_loop.monitor must be a non-empty string or null")
+        mode = state["mode"]
+        if mode is not None and mode not in {"min", "max"}:
+            raise ValueError("training_loop.mode must be 'min', 'max', or null")
+
+        self.best_epoch = best_epoch
+        self.best_metric_value = (
+            None if best_metric is None else float(best_metric)
+        )
+        self.epochs_without_improvement = wait
+        self.stopped_early = stopped_early
+        self._best_monitor = monitor
+        self._best_mode = mode
+        self.best_checkpoint_path = (
+            Path(best_checkpoint_path)
+            if best_checkpoint_path is not None
+            else None
+        )
+
+    def _fit_state_dict(self) -> dict[str, Any]:
+        return {
+            "best_epoch": self.best_epoch,
+            "best_metric_value": self.best_metric_value,
+            "epochs_without_improvement": self.epochs_without_improvement,
+            "stopped_early": self.stopped_early,
+            "monitor": self._best_monitor,
+            "mode": self._best_mode,
+        }
 
     def _set_module_modes(self, *, training: bool) -> None:
         for asset in self.managed_modules.values():
@@ -303,7 +391,8 @@ class Trainer:
             epoch_index=epoch_index,
         )
         for diagnostic in self.diagnostics:
-            diagnostic.on_train_batch_end(event)
+            with preserve_global_rng_state(self.device):
+                diagnostic.on_train_batch_end(event)
 
     def _emit_fit_start_diagnostics(
         self,
@@ -317,7 +406,8 @@ class Trainer:
             validation_dataloader=validation_dataloader,
         )
         for diagnostic in self.diagnostics:
-            diagnostic.on_fit_start(event)
+            with preserve_global_rng_state(self.device):
+                diagnostic.on_fit_start(event)
 
     def _emit_epoch_diagnostics(
         self,
@@ -331,7 +421,8 @@ class Trainer:
             metrics=metrics,
         )
         for diagnostic in self.diagnostics:
-            diagnostic.on_train_epoch_end(event)
+            with preserve_global_rng_state(self.device):
+                diagnostic.on_train_epoch_end(event)
 
     def train_batch(self, batch: Batch) -> float:
         """Run one optimization step and return the scalar loss."""
@@ -576,11 +667,29 @@ class Trainer:
             should_track_best = True
 
         history: list[dict[str, float]] = []
-        best_value: float | None = None
-        epochs_without_improvement = 0
-        self.best_checkpoint_path = None
-        self.best_epoch = None
-        self.best_metric_value = None
+        if start_epoch == 1:
+            self.best_checkpoint_path = None
+            self.best_epoch = None
+            self.best_metric_value = None
+            self.epochs_without_improvement = 0
+            self._best_monitor = None
+            self._best_mode = None
+        elif self._best_monitor is not None and (
+            self._best_monitor != early_stopping_monitor
+            or self._best_mode != early_stopping_mode
+        ):
+            raise ValueError(
+                "restored best-tracking monitor/mode do not match this fit"
+            )
+        if start_epoch > 1 and self.stopped_early:
+            raise ValueError(
+                "restored training already stopped early and cannot be strictly "
+                "resumed"
+            )
+        best_value = self.best_metric_value
+        epochs_without_improvement = self.epochs_without_improvement
+        self._best_monitor = early_stopping_monitor if should_track_best else None
+        self._best_mode = early_stopping_mode if should_track_best else None
         self.stopped_early = False
         try:
             self._emit_fit_start_diagnostics(
@@ -617,8 +726,6 @@ class Trainer:
                     }
                 self._step_lr_scheduler("epoch")
                 history.append(metrics)
-                self._maybe_save_checkpoint(epoch, metrics)
-                self._save_latest_checkpoint(epoch, metrics)
 
                 status = "-"
                 if should_track_best:
@@ -637,6 +744,7 @@ class Trainer:
                     if improved:
                         best_value = float(current_value)
                         epochs_without_improvement = 0
+                        self.epochs_without_improvement = 0
                         status = "BEST"
                         self.best_epoch = epoch
                         self.best_metric_value = best_value
@@ -651,16 +759,20 @@ class Trainer:
                                 "mode": early_stopping_mode,
                             },
                         )
-                        self.logger.log_metrics(
-                            {
-                                "best/epoch": float(epoch),
-                                f"best/{early_stopping_monitor}": best_value,
-                            },
-                            step=self.global_step,
-                        )
+                        with preserve_global_rng_state(self.device):
+                            self.logger.log_metrics(
+                                {
+                                    "best/epoch": float(epoch),
+                                    f"best/{early_stopping_monitor}": best_value,
+                                },
+                                step=self.global_step,
+                            )
                     else:
                         if early_stopping_patience is not None:
                             epochs_without_improvement += 1
+                            self.epochs_without_improvement = (
+                                epochs_without_improvement
+                            )
                             status = (
                                 f"WAIT {epochs_without_improvement}/"
                                 f"{early_stopping_patience}"
@@ -684,25 +796,28 @@ class Trainer:
                             )
                             if reporter is not None:
                                 reporter.on_early_stopping(early_stopping_text)
+                self._maybe_save_checkpoint(epoch, metrics)
+                self._save_latest_checkpoint(epoch, metrics)
                 self._emit_epoch_diagnostics(epoch_index=epoch, metrics=metrics)
                 if reporter is not None:
-                    reporter.on_epoch_end(
-                        epoch=epoch,
-                        total_epochs=num_epochs,
-                        train_loss=metrics["loss"],
-                        valid_loss=metrics.get("valid_loss"),
-                        best_valid_loss=best_value,
-                        lr=_first_lr(self.optimizer),
-                        train_batches=int(metrics["num_batches"]),
-                        valid_batches=(
-                            int(metrics["valid_num_batches"])
-                            if "valid_num_batches" in metrics
-                            else None
-                        ),
-                        epoch_time=metrics["duration_seconds"]
-                        + metrics.get("valid_duration_seconds", 0.0),
-                        status=status,
-                    )
+                    with preserve_global_rng_state(self.device):
+                        reporter.on_epoch_end(
+                            epoch=epoch,
+                            total_epochs=num_epochs,
+                            train_loss=metrics["loss"],
+                            valid_loss=metrics.get("valid_loss"),
+                            best_valid_loss=best_value,
+                            lr=_first_lr(self.optimizer),
+                            train_batches=int(metrics["num_batches"]),
+                            valid_batches=(
+                                int(metrics["valid_num_batches"])
+                                if "valid_num_batches" in metrics
+                                else None
+                            ),
+                            epoch_time=metrics["duration_seconds"]
+                            + metrics.get("valid_duration_seconds", 0.0),
+                            status=status,
+                        )
                 if self.stopped_early:
                     break
         finally:
@@ -795,5 +910,5 @@ class Trainer:
             global_step=self.global_step,
             config=self.checkpoint_config,
             metrics=metrics,
-            metadata=metadata,
+            metadata={**metadata, "training_loop": self._fit_state_dict()},
         )

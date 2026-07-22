@@ -183,7 +183,7 @@ class PhysicsDataBuilder(DataBuilder):
 
 ```yaml
 extensions:
-  modules: [my_project.data]
+  plugins: [my-project]
 data:
   name: physics
   params:

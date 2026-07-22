@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "__STOCHAFLOW_PROJECT_SLUG__"
+version = "0.1.0"
+description = "A Stochaflow extension project."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "stochaflow==__STOCHAFLOW_VERSION__",
+    "torch>=2.2,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.3"]
+
+[project.entry-points."stochaflow.extensions"]
+__STOCHAFLOW_PROJECT_SLUG__ = "__STOCHAFLOW_PACKAGE_NAME__.stochaflow_ext"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

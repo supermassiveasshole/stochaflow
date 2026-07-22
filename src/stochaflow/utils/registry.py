@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from importlib import import_module
 from typing import Any, Generic, TypeVar, cast
 
 from torch.optim import Optimizer
@@ -27,8 +26,9 @@ class Registry(Mapping[str, T], Generic[T]):
     """Store and construct named components of one semantic kind.
 
     A registry is deliberately a small object instead of a public dictionary:
-    it owns duplicate checks, optional base-class validation, discovery, module
-    loading, and consistent construction errors.
+    it owns duplicate checks, optional base-class validation, and consistent
+    construction errors.  Distribution discovery and plugin activation
+    deliberately live outside the registry layer.
     """
 
     def __init__(
@@ -42,7 +42,6 @@ class Registry(Mapping[str, T], Generic[T]):
         self._expected_type = expected_type
         self._reserved_prefixes = tuple(reserved_prefixes)
         self._components: dict[str, T] = {}
-        self._loaded_modules: set[str] = set()
 
     def __getitem__(self, name: str) -> T:
         return self.resolve(name)
@@ -154,24 +153,6 @@ class Registry(Mapping[str, T], Generic[T]):
 
         return tuple(sorted(self._components))
 
-    def load_modules(self, modules: Sequence[str]) -> None:
-        """Import extension modules once so their decorators can register."""
-
-        for declared_module_name in modules:
-            module_name = cast(object, declared_module_name)
-            if not isinstance(module_name, str) or not module_name.strip():
-                raise RegistryError("registry module names must be non-empty strings")
-            if module_name in self._loaded_modules:
-                continue
-            try:
-                import_module(module_name)
-            except (ImportError, ModuleNotFoundError) as exc:
-                raise RegistryError(
-                    f"failed to import registry module '{module_name}': {exc}"
-                ) from exc
-            self._loaded_modules.add(module_name)
-
-
 class RegistryCatalog:
     """Application-wide collection of typed component registries."""
 
@@ -199,24 +180,6 @@ class RegistryCatalog:
         )
         self.loggers: Registry[type[Any]] = Registry("logger")
         self.diagnostics: Registry[type[Any]] = Registry("diagnostic")
-        self._loaded_modules: set[str] = set()
-
-    def load_modules(self, modules: Sequence[str]) -> None:
-        """Import component modules once for the entire catalog."""
-
-        for declared_module_name in modules:
-            module_name = cast(object, declared_module_name)
-            if not isinstance(module_name, str) or not module_name.strip():
-                raise RegistryError("registry module names must be non-empty strings")
-            if module_name in self._loaded_modules:
-                continue
-            try:
-                import_module(module_name)
-            except (ImportError, ModuleNotFoundError) as exc:
-                raise RegistryError(
-                    f"failed to import registry module '{module_name}': {exc}"
-                ) from exc
-            self._loaded_modules.add(module_name)
 
 
 REGISTRIES = RegistryCatalog()

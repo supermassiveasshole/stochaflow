@@ -69,7 +69,7 @@ Implemented:
   scheduler construction
 - multi-sampler diffusion diagnostics with denoiser metrics and visual artifacts
 - Rich terminal reporting, checkpointing, and local/TensorBoard/W&B logging
-- one `stochaflow` CLI with `train` and `sample` subcommands
+- one `stochaflow` CLI with `init`, `train`, and `sample` subcommands
 - pytest, ruff, and pyright configuration
 
 Still evolving:
@@ -117,6 +117,66 @@ uv python install 3.14
 uv sync --python 3.14 --extra dev
 uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 ```
+
+## Extension projects
+
+Create a package-manager-neutral extension repository with:
+
+```bash
+stochaflow init my-research-project
+cd my-research-project
+```
+
+`init` writes an installable Python distribution, a small end-to-end extension,
+and a runnable experiment config. It does not create an environment, install
+dependencies, overwrite a non-empty directory, or require `uv`. Install the
+generated distribution into the same Python environment as the Stochaflow CLI:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[test]"
+stochaflow train --config experiments/example/train.yaml
+```
+
+When the platform provides secure descriptor-relative filesystem operations,
+`init` can also populate an existing empty real directory. On other platforms,
+remove that empty directory and let `init` create it.
+
+An optional `uv` workflow works as well:
+
+```bash
+uv sync --extra test
+uv run stochaflow train --config experiments/example/train.yaml
+```
+
+The generated repository is an ordinary single Python distribution with room
+for multiple experiments and unrelated research code. Stochaflow only discovers
+the installed entry point and runs explicitly selected components; it does not
+scan or manage the repository. Relative paths in configs and opaque builder
+parameters resolve from the process working directory, so run the generated
+example from the project root.
+
+The package declares its aggregate registration module through standard Python
+metadata:
+
+```toml
+[project.entry-points."stochaflow.extensions"]
+my-research-project = "my_research_project.stochaflow_ext"
+```
+
+The experiment selects that exact entry-point name:
+
+```yaml
+extensions:
+  plugins: [my-research-project]
+```
+
+Omitting `extensions` (or writing `plugins: []`) loads no third-party code;
+`plugins: null` explicitly opts into every Stochaflow extension installed in the
+current environment. Config parsing itself is side-effect free. Discovery,
+checkpoint provenance checks, and plugin activation happen before Registry
+components are constructed.
 
 ## Training
 
@@ -166,8 +226,9 @@ uv run stochaflow train \
   --limit-batches 10
 ```
 
-Custom data builders are registered as classes and imported through
-`extensions.modules`; see [Extensions and registries](docs/configuration/extensions.md).
+Custom data builders are registered as classes and exposed through an installed
+`stochaflow.extensions` entry point. A config activates them by plugin name; see
+[Extensions and registries](docs/configuration/extensions.md).
 
 For the complete YAML schema, framework-owned component parameters,
 multi-source mixing, buckets, K-fold, logging, and CLI overrides, see the
@@ -180,12 +241,32 @@ config. Passing `--epochs` is an explicit run-time override.
 Useful training options:
 
 ```bash
---resume [PATH]               Resume training. Without PATH, use latest.pt.
+--resume CHECKPOINT           Strictly resume saved config and full training state.
 --device DEVICE               Override trainer.device for this run.
 --output-dir PATH             Override experiment.output_dir for this run.
 --skip-final-sample           Skip best-checkpoint acceptance sampling.
 --no-progress                 Disable Rich terminal progress bars.
+--force-extension-version-mismatch
+                              Accept a plugin version mismatch after identity checks.
 ```
+
+`--config` and `--resume` are mutually exclusive. Resume always uses the config
+stored in the checkpoint and creates a new sibling run directory; it is not a
+weights-only warm start and does not reopen the previous output directory.
+For strict best-selection continuity, resume a run directory or keep the matching
+`best.pt` beside any `latest.pt`/epoch checkpoint you move. Its recorded best
+resolved config, extension provenance, epoch, metric, monitor, and mode must
+match the selected checkpoint; a mutable `best.pt` produced by a later epoch
+cannot resume an older snapshot. A standalone
+best checkpoint is self-sufficient because its metadata identifies it as the
+selected best. Resume materializes the validated best in the new run before
+training, so later resume and sampling do not depend on the parent run.
+Strict resume also restores the checkpointed Python, NumPy, Torch CPU, and
+applicable CUDA RNG streams after all selected/best state validation. A device
+override remains allowed, but bitwise continuity is only promised for the same
+runtime and device topology. DataBuilder, Dataset, loader, worker, and sampler
+runtime state is not checkpointed; custom stochastic loaders must derive each
+epoch from the configured seed and a duck-typed `set_epoch(epoch)` contract.
 
 Each run writes a timestamped directory under the configured output root:
 
@@ -197,6 +278,8 @@ outputs/<experiment>/<YYYYMMDD_HHMMSS>/
     epoch_XXXX.pt
   metrics.jsonl
   train.log
+  resolved_config.yaml
+  run_manifest.yaml
   samples/
     final/
       samples.png
@@ -237,7 +320,7 @@ reconstruction, and trajectory panels and record sample statistics and latency.
 
 The implementation is a provider pipeline under `training/diagnostics/`.
 Step metrics, sampler metrics, denoiser artifacts, sampler artifacts, and
-reference metrics have separate registries. External modules can register a new
+reference metrics have separate registries. Diagnostic-local modules can register a new
 provider and enable it from `diagnostics[].params.modules` without modifying the
 `diffusion_quality` orchestrator; explicit empty provider lists disable a phase.
 
@@ -248,8 +331,10 @@ a complete DDPM/DDIM comparison declaration.
 
 ## Sampling
 
-Sample directly from a portable Stochaflow checkpoint. The checkpoint contains
-the model and experiment config, so an extra YAML file is optional:
+Sample directly from a Stochaflow checkpoint. The checkpoint contains model
+state and the resolved experiment config, so an extra YAML file is optional;
+extension-backed checkpoints also require their recorded distributions to be
+installed in the CLI environment:
 
 ```bash
 uv run stochaflow sample \
@@ -270,11 +355,20 @@ may instead construct conditions, guidance, multiple Samplers, or an initial
 state without requiring `sampling.shape`.
 
 You can alternatively pass only `--config`; Stochaflow then finds the newest
-`best.pt` under `experiment.output_dir`. With both inputs, the checkpoint
-provides weights while a lightweight external file supplies the complete
-`sampling` section and optional `extensions`. A complete external config is also
-accepted, with model and Process compatibility checks. Checkpoint and external
-`extensions.modules` are merged in stable order before Builder construction.
+`best.pt` under `experiment.output_dir`. With both inputs, a lightweight YAML
+containing `sampling` and optional `extensions` overlays the checkpoint config.
+Its `sampling` section is the complete replacement, so it may change sample
+count, batch size, shape, Builder/Sampler parameters, trajectory, writers, and
+raw/EMA selection. A complete external config is authoritative as a whole;
+the checkpoint supplies state, and normal state-loading contracts determine
+whether the chosen components are compatible. Stochaflow does not compare or
+merge two complete configs.
+
+For a lightweight overlay, `extensions: {}` keeps the checkpoint plugin
+selection. An explicitly present `extensions.plugins` replaces that selection
+instead of appending to it. Plugin identity must still match any reused
+checkpoint provenance; only a version difference can be accepted with an
+interactive confirmation or `--force-extension-version-mismatch`.
 
 The standard builder uses EMA model weights when `ema.enabled` and
 `ema.use_for_sampling` are both true. Declared `sampling.writers` decide the outputs: `tensor` writes PT
@@ -298,6 +392,7 @@ configs/ddpm_mnist_flowers102.yaml
 Important sections:
 
 - `experiment`: run name, seed, and output directory
+- `extensions`: installed entry-point plugins activated for this component graph
 - `data`: registered builder name plus builder-owned parameters
 - `model`: registered model name and constructor parameters
 - `training`: registered TrainingBuilder and builder-owned task parameters

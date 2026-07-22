@@ -24,8 +24,11 @@ from stochaflow.sampling import (
 )
 from stochaflow.sampling.runtime import run_sampling, validate_sampling_output
 from stochaflow.scripts.cli import build_argument_parser
-from stochaflow.utils.checkpoint import CHECKPOINT_FORMAT_VERSION
-from stochaflow.utils.config import load_config_dict
+from stochaflow.utils.checkpoint import (
+    CHECKPOINT_FORMAT_VERSION,
+    capture_rng_state,
+)
+from stochaflow.utils.config import ConfigError, load_config_dict
 from stochaflow.utils.registry import REGISTRIES
 
 
@@ -290,7 +293,7 @@ REGISTRIES.samplers.add("stage3_malformed_lifecycle", MalformedLifecycleSampler)
 def _raw_config(*, builder: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "experiment": {"name": "test", "output_dir": "unused", "seed": 7},
-        "extensions": {"modules": []},
+        "extensions": {"plugins": []},
         "data": {"name": "image", "params": {}},
         "model": {"name": "stage3_tiny_model", "params": {}},
         "process": {
@@ -329,7 +332,9 @@ def _checkpoint(
     payload: dict[str, Any] = {
         "format_version": version,
         "model_state_dict": model.state_dict(),
+        "rng_state": capture_rng_state(),
         "config": raw,
+        "metadata": {"extension_plugins": []},
     }
     process_config = raw.get("process")
     if process_config is not None:
@@ -689,28 +694,67 @@ def test_full_external_config_can_override_sampling(tmp_path: Path) -> None:
     assert result.builder_name == "stage3_no_shape"
 
 
-def test_full_external_config_must_match_checkpoint_model(tmp_path: Path) -> None:
+def test_full_external_config_does_not_require_checkpoint_config(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=True)
+    payload.pop("config")
+    torch.save(payload, checkpoint)
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        config_path=config_path,
+        output_dir=tmp_path / "samples",
+    )
+
+    assert result.builder_name == "stage3_no_shape"
+
+
+def test_full_external_config_is_not_compared_with_checkpoint_model(
+    tmp_path: Path,
+) -> None:
     raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
     external = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    external["model"]["params"] = {"incompatible": True}
+    external["experiment"]["name"] = "sampling-only-name"
+    external["data"] = {"name": "not_used_for_sampling", "params": {}}
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(external), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="incompatible.*model"):
-        run_sampling(checkpoint=checkpoint, config_path=config_path)
+    result = run_sampling(
+        checkpoint=checkpoint,
+        config_path=config_path,
+        output_dir=tmp_path / "samples",
+    )
+
+    manifest = yaml.safe_load(result.artifacts["config"].read_text())
+    assert manifest["config_source"] == "external"
+    assert manifest["config"]["experiment"]["name"] == "sampling-only-name"
 
 
-def test_full_external_config_must_match_optional_process(tmp_path: Path) -> None:
+def test_full_external_config_can_ignore_checkpoint_process_state(
+    tmp_path: Path,
+) -> None:
     raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    raw["process"] = None
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
-    external = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    external = _raw_config(
+        builder={"name": "stage3_direct_transform", "params": {"offset": 1.0}}
+    )
+    external["process"] = None
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(external), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="incompatible.*process"):
-        run_sampling(checkpoint=checkpoint, config_path=config_path)
+    result = run_sampling(
+        checkpoint=checkpoint,
+        config_path=config_path,
+        output_dir=tmp_path / "samples",
+    )
+
+    assert result.builder_name == "stage3_direct_transform"
 
 
 def test_sampling_only_config_can_override_checkpoint(tmp_path: Path) -> None:
@@ -734,6 +778,24 @@ def test_sampling_only_config_can_override_checkpoint(tmp_path: Path) -> None:
     manifest = yaml.safe_load(result.artifacts["config"].read_text())
     assert result.builder_name == "stage3_no_shape"
     assert manifest["builder"]["params"] == {"external": True}
+
+
+def test_sampling_overlay_rejects_unknown_extension_fields(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "sampling": raw["sampling"],
+                "extensions": {"plguins": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"config\.extensions\.plguins"):
+        run_sampling(checkpoint=checkpoint, config_path=config_path)
 
 
 def test_complete_config_can_locate_checkpoint(tmp_path: Path) -> None:
@@ -781,18 +843,18 @@ def test_sampling_only_config_requires_explicit_checkpoint(tmp_path: Path) -> No
         run_sampling(config_path=config_path)
 
 
-def test_checkpoint_v6_is_rejected(tmp_path: Path) -> None:
+def test_checkpoint_v7_is_rejected(tmp_path: Path) -> None:
     raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=6)
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=7)
 
-    with pytest.raises(ValueError, match="expected version 7"):
+    with pytest.raises(ValueError, match="expected version 8"):
         run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
 
 
 def test_sampling_rejects_missing_configured_process_state(tmp_path: Path) -> None:
     raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
-    payload = torch.load(checkpoint, weights_only=False)
+    payload = torch.load(checkpoint, weights_only=True)
     payload.pop("process_state_dict")
     torch.save(payload, checkpoint)
 
@@ -804,7 +866,7 @@ def test_sampling_rejects_process_state_when_config_is_null(tmp_path: Path) -> N
     raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
     raw["process"] = None
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
-    payload = torch.load(checkpoint, weights_only=False)
+    payload = torch.load(checkpoint, weights_only=True)
     payload["process_state_dict"] = {}
     torch.save(payload, checkpoint)
 
@@ -872,4 +934,4 @@ def test_sampling_builder_context_copies_params() -> None:
     )
     context.params["nested"]["value"] = 2
     assert raw == {"nested": {"value": 1}}
-    assert CHECKPOINT_FORMAT_VERSION == 7
+    assert CHECKPOINT_FORMAT_VERSION == 8

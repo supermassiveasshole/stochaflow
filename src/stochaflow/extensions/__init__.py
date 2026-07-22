@@ -51,6 +51,25 @@ from stochaflow.training import (
 )
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.logging import ExperimentLogger
+from stochaflow.utils.plugins import (
+    ExtensionActivationError,
+    ExtensionActivationPlan,
+    ExtensionActivationStateError,
+    ExtensionDiscoveryError,
+    ExtensionIdentityError,
+    ExtensionPluginError,
+    ExtensionPluginProvenance,
+    ExtensionSelectionPolicy,
+    ExtensionVersionAcceptance,
+    ExtensionVersionMismatch,
+    ExtensionVersionMismatchError,
+    ExtensionVersionPolicy,
+    ResolvedExtensions,
+    activate_extension_plugins,
+    extension_plugin_provenance_to_dicts,
+    parse_extension_plugin_provenance,
+    prepare_extension_plugins,
+)
 from stochaflow.utils.registry import REGISTRIES, Registry, RegistryError
 
 __all__ = [
@@ -64,6 +83,18 @@ __all__ = [
     "DiscreteVPCoefficients",
     "DiscreteVPSchedule",
     "ExperimentLogger",
+    "ExtensionActivationError",
+    "ExtensionActivationPlan",
+    "ExtensionActivationStateError",
+    "ExtensionDiscoveryError",
+    "ExtensionIdentityError",
+    "ExtensionPluginError",
+    "ExtensionPluginProvenance",
+    "ExtensionSelectionPolicy",
+    "ExtensionVersionAcceptance",
+    "ExtensionVersionMismatch",
+    "ExtensionVersionMismatchError",
+    "ExtensionVersionPolicy",
     "FitStartEvent",
     "GaussianDiagnosticSemantics",
     "GaussianDenoisingDynamics",
@@ -80,6 +111,7 @@ __all__ = [
     "REGISTRIES",
     "Registry",
     "RegistryError",
+    "ResolvedExtensions",
     "Sampler",
     "SamplerResult",
     "SamplingArtifactContext",
@@ -100,4 +132,8 @@ __all__ = [
     "TrainingStrategy",
     "TrajectoryObserver",
     "TabulatedDiscreteVPSchedule",
+    "activate_extension_plugins",
+    "extension_plugin_provenance_to_dicts",
+    "parse_extension_plugin_provenance",
+    "prepare_extension_plugins",
 ]

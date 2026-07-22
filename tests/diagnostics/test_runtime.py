@@ -1,7 +1,9 @@
 """State, RNG, and sampling runtime service tests."""
 
+import random
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 import torch.nn as nn
@@ -86,7 +88,11 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
         name: value.detach().clone() for name, value in model.named_parameters()
     }
     model.train()
+    random.seed(789)
+    np.random.seed(876)
     torch.manual_seed(987)
+    python_rng_before = random.getstate()
+    numpy_rng_before = np.random.get_state()
     cpu_rng_before = torch.random.get_rng_state().clone()
     cuda_rng_before = (
         torch.cuda.get_rng_state(device).clone() if device.type == "cuda" else None
@@ -94,9 +100,13 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
 
     with EvaluationGuard(runtime, seed=123, use_ema=True):
         assert not model.inference_model.training
+        random.random()
+        np.random.random()
         torch.rand(4, device=device)
 
     assert model.training
+    assert random.getstate() == python_rng_before
+    np.testing.assert_equal(np.random.get_state(), numpy_rng_before)
     assert torch.equal(torch.random.get_rng_state(), cpu_rng_before)
     if cuda_rng_before is not None:
         assert torch.equal(torch.cuda.get_rng_state(device), cuda_rng_before)
@@ -105,10 +115,14 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
 
     with pytest.raises(RuntimeError, match="guard failure"):
         with EvaluationGuard(runtime, seed=456, use_ema=True):
+            random.random()
+            np.random.random()
             torch.rand(4, device=device)
             raise RuntimeError("guard failure")
 
     assert model.training
+    assert random.getstate() == python_rng_before
+    np.testing.assert_equal(np.random.get_state(), numpy_rng_before)
     assert torch.equal(torch.random.get_rng_state(), cpu_rng_before)
     if cuda_rng_before is not None:
         assert torch.equal(torch.cuda.get_rng_state(device), cuda_rng_before)
@@ -122,9 +136,38 @@ def test_seed_policy_is_stable_and_uses_common_initial_noise() -> None:
     first = policy.initial_noise(3, (1, 4, 4), torch.device("cpu"))
     second = policy.initial_noise(3, (1, 4, 4), torch.device("cpu"))
 
+    random.seed(11)
+    np.random.seed(12)
+    torch.manual_seed(13)
+    first_outer_state = (
+        random.getstate(),
+        np.random.get_state(),
+        torch.random.get_rng_state().clone(),
+    )
+    with policy.fork_rng(torch.device("cpu")):
+        first_draws = (random.random(), np.random.random(), torch.rand(()).item())
+    assert random.getstate() == first_outer_state[0]
+    np.testing.assert_equal(np.random.get_state(), first_outer_state[1])
+    assert torch.equal(torch.random.get_rng_state(), first_outer_state[2])
+
+    random.seed(21)
+    np.random.seed(22)
+    torch.manual_seed(23)
+    second_outer_state = (
+        random.getstate(),
+        np.random.get_state(),
+        torch.random.get_rng_state().clone(),
+    )
+    with policy.fork_rng(torch.device("cpu")):
+        second_draws = (random.random(), np.random.random(), torch.rand(()).item())
+
     assert torch.equal(first, second)
     assert policy.profile_seed("ddpm") == policy.profile_seed("ddpm")
     assert policy.profile_seed("ddpm") != policy.profile_seed("ddim")
+    assert second_draws == first_draws
+    assert random.getstate() == second_outer_state[0]
+    np.testing.assert_equal(np.random.get_state(), second_outer_state[1])
+    assert torch.equal(torch.random.get_rng_state(), second_outer_state[2])
 
 
 def test_prepare_reference_images_expands_grayscale_and_normalizes() -> None:

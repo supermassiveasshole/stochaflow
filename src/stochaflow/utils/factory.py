@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import import_module
 from typing import Any, cast
 
 import torch
@@ -45,7 +46,8 @@ BUILTIN_COMPONENT_MODULES = (
 def load_builtin_components() -> None:
     """Import built-in component modules so their registry decorators run."""
 
-    REGISTRIES.load_modules(BUILTIN_COMPONENT_MODULES)
+    for module_name in BUILTIN_COMPONENT_MODULES:
+        import_module(module_name)
 
 
 load_builtin_components()
@@ -223,7 +225,11 @@ def resolve_device(device_name: str) -> torch.device:
     return torch.device(device_name)
 
 
-def build_training_components(config: StochaflowConfig) -> TrainingComponents:
+def build_training_components(
+    config: StochaflowConfig,
+    *,
+    checkpoint_metadata: dict[str, Any] | None = None,
+) -> TrainingComponents:
     """Build model-side training components without dataset I/O side effects."""
 
     model = build_model(config.model)
@@ -289,6 +295,7 @@ def build_training_components(config: StochaflowConfig) -> TrainingComponents:
         checkpoint_dir=f"{config.experiment.output_dir}/checkpoints",
         checkpoint_every=config.artifacts.checkpoint_every,
         checkpoint_config=config.to_dict(),
+        checkpoint_metadata=checkpoint_metadata,
     )
     return TrainingComponents(
         model=model,

@@ -1,0 +1,75 @@
+experiment:
+  name: __STOCHAFLOW_PROJECT_SLUG__-example
+  seed: 42
+  output_dir: outputs/example
+
+extensions:
+  plugins:
+    - __STOCHAFLOW_PROJECT_SLUG__
+
+data:
+  name: __STOCHAFLOW_PROJECT_SLUG__.synthetic-regression
+  params:
+    input_features: 3
+    train_samples: 32
+    validation_samples: 8
+    batch_size: 8
+    noise_std: 0.02
+
+model:
+  name: __STOCHAFLOW_PROJECT_SLUG__.linear-regression
+  params:
+    input_features: 3
+
+training:
+  name: __STOCHAFLOW_PROJECT_SLUG__.regression
+  params: {}
+
+objective:
+  name: mse
+  params: {}
+
+process: null
+
+optimizer:
+  name: torch.optim.Adam
+  params:
+    lr: 0.05
+
+lr_scheduler: null
+
+ema:
+  enabled: false
+
+sampling:
+  shape: null
+  num_samples: 8
+  batch_size: 4
+  builder:
+    name: __STOCHAFLOW_PROJECT_SLUG__.regression-predictions
+    params:
+      input_features: 3
+      input_min: -1.0
+      input_max: 1.0
+  writers:
+    - name: tensor
+      params: {}
+
+diagnostics: []
+
+trainer:
+  num_epochs: 2
+  device: cpu
+  max_grad_norm: null
+  show_progress: true
+
+logging:
+  log_every: 1
+  backends:
+    - name: local
+      params:
+        console: true
+  torch_logs: {}
+
+artifacts:
+  checkpoint_every: 1

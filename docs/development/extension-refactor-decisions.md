@@ -144,7 +144,7 @@ Strategy 可以通过普通构造函数接收任意已经组装好的依赖，�
 | Critical | 无 | — |
 | High | auxiliary mapping 声明顺序会改变 optimizer 参数位置，resume 时可能静默错绑 Adam state | auxiliary 按稳定名称排序，并增加反转声明顺序的 resume 回归测试 |
 | Medium | 空/冻结 primary model 配合可训练 auxiliary 时，EMA 无法区分“未 store”和“合法空快照” | 使用显式 stored-state 标记，空 EMA 快照可安全 checkpoint/restore |
-| Medium | checkpoint clone 假定所有 module state 都是 Tensor | Tensor 执行 detach/clone，任意 extra state 执行 deepcopy |
+| Medium | checkpoint clone 假定所有 module state 都是 Tensor | Tensor 执行 detach/clone，其他 checkpoint-safe extra state 执行 deepcopy；Stage 5 再收窄可持久化值域 |
 | Medium | diagnostic 仅凭 prediction type 猜测 `model(state, time)` 签名 | 新增 `GaussianDiagnosticSemantics` prediction callable，并用独立非标准签名 Strategy 验证 |
 | Suggestion | Trainer 重新暴露可变 managed-assets dict | 暴露只读 mapping，Plan 仍是唯一权威资产清单 |
 | Suggestion | Strategy metric 可覆盖核心 `train/loss` 或 `train/epoch` | 隔离到 `train/strategy/*` 命名空间 |
@@ -278,9 +278,12 @@ weights-only workflow。
 
 逻辑提交主题：`Stage 4.1: Reuse native PyTorch optimizers and schedulers`。
 
-## Stage 5 规划检查点
+## Stage 5 实施检查点
 
-Stage 5 尚未进入实现。初版计划曾经提议 `stochaflow.project.yaml`、
+状态：实现、聚焦验证、独立审查与问题修复均已完成；checkpoint 格式为 v8，逻辑提交
+主题为 `Stage 5: Add entry-point extension projects`。
+
+Stage 5 初版计划曾经提议 `stochaflow.project.yaml`、
 Stochaflow `--project`、source-root `sys.path` 激活与 config/checkpoint 祖先发现。
 这是一个过度设计：它复制了 Python packaging 和包管理器已有的项目、环境与 import
 职责，还将脚手架便利错误地扩张成一套核心运行时概念。
@@ -295,15 +298,16 @@ stochaflow init my-project
 → stochaflow train --config experiments/example/train.yaml
 ```
 
-规划阶段已确认以下边界，等待实施：
+最终实现遵守以下边界：
 
 1. scaffold 生成普通、可构建、可发布的 `src` 布局单 distribution 多实验 Python repo；
    它不定义 Stochaflow workspace，也不约束 scope 外实验的技术或目录。
 2. `pyproject.toml` 用 `[project.entry-points."stochaflow.extensions"]` 暴露一个纯 module
    聚合入口；模块导入后由 decorator 直接注册组件，不增加 registration callback。模板
    生成一个入口，但协议允许同一 distribution 发布多个唯一 entry-point name。
-3. `ExtensionsConfig.plugins` 选择 entry-point name：`null` 发现当前环境全部插件，空列表
-   禁用第三方插件，非空列表精确选择。`init` 直接把自身插件名写入完整示例配置，避免
+3. `ExtensionsConfig.plugins` 选择 entry-point name：省略 `extensions` 默认不激活第三方
+   插件，显式 `plugins: null` 才发现当前环境全部插件，空列表同样禁用第三方插件，非空
+   列表精确选择。全量发现是显式 opt-in；`init` 直接把自身插件名写入完整示例配置，避免
    环境变化隐式改变生成项目的运行。
 4. extension distribution、Stochaflow CLI 与任务依赖必须安装在同一 Python environment；
    pip、uv、conda、Poetry 或 PDM 均可管理该环境，Stochaflow 不替用户安装或切换环境。
@@ -327,10 +331,30 @@ stochaflow init my-project
 - 接受的 expected/current version 和接受方式写入 manifest/checkpoint，专用 force 不绕过
   Registry、state 或其他兼容性检查。
 
-config/checkpoint 权威规则是独立的 CLI input-resolution 问题，不与“项目发现”绑定：
-新训练使用外部 config；resume/sampling 默认使用 checkpoint 保存的 config；显式完整 config
-则整体成为 base，checkpoint 只提供 state；sampling-only 文件是 checkpoint base 上的明确
-局部 overlay。overlay 中的 `extensions.plugins` 是完整替换列表，不做隐式追加。
+配置解析和插件代码执行必须是两个阶段：先无副作用地解析配置、读取 entry-point metadata、
+完成 selection/provenance 预检，再由 CLI 或显式 library policy 决定是否导入。Prompt 只属于
+CLI；library API 永不读取 stdin。插件激活集合在一个 Python 进程内固定：相同 selection
+重复激活幂等，不同 selection 明确失败，不尝试从全局 decorator Registry 卸载组件。CLI 的
+一次 invocation 是标准隔离边界；需要运行不同插件集合的嵌入式调用方应使用不同进程。
+
+config/checkpoint 权威规则是独立的 CLI input-resolution 问题，不与“项目发现”绑定。
+sampling 已收口为：checkpoint-only 使用保存配置，显式完整 config 整体成为 base，
+sampling-only 文件只替换 checkpoint base 的 `sampling` 与显式 `extensions`；插件列表不做
+隐式追加。若外部 config/overlay 复用 checkpoint 中同一 entry-point name，则仍校验该名字的
+distribution/target identity，并将 version 差异纳入一次性确认；新增或删除的插件不进行
+集合相等比较。本次实际加载的 provenance 成为新 artifact/checkpoint 的基准，历史差异只作为
+acceptance audit 保存。
+
+训练 resume 的 config 规则已最终确认。Stage 4.1 已确认 full resume 恢复完整
+optimizer/scheduler state，而 PyTorch state 会覆盖 `lr`、`weight_decay`、`T_max` 等构造值；
+因此 `train --resume CHECKPOINT` 只表示 checkpoint config/state 权威的 strict full resume，
+并与外部 `--config` 互斥。用新 config 加载旧模型权重属于独立 weights-only warm-start，
+不恢复 optimizer/scheduler/epoch，本 Stage 不实现该入口。
+
+该严格边界不适用于 sampling。Sampling 不恢复 optimizer/scheduler/epoch，可由本次外部
+sampling config 自由改变样本数量、shape、Builder/Sampler、solver 参数、trajectory、writer
+和 raw/EMA 选择；checkpoint 在该路径只提供所需资产 state，实际可加载性由 state contract
+验证。
 
 ### 成熟设计调研
 
@@ -361,15 +385,35 @@ config/checkpoint 权威规则是独立的 CLI input-resolution 问题，不与�
   workspace 都属于特定环境工具能力，不应成为 Stochaflow scaffold 或 runtime 的前提。
 
 据此采用：**standard entry points + explicit activation + one authoritative base config +
-runtime state validation**。完整外部 config 与 checkpoint config 不再报告“冲突”；显式
-外部 config 选择组件图，checkpoint 只恢复 state。兼容性由插件身份、严格 state dict、
-具名资产、optimizer/scheduler/EMA 和 format contract 验证。
+runtime state validation**。sampling 的显式完整 config 选择组件图，checkpoint 只提供 state；
+训练 full resume 不套用这句规则，因为 optimizer/scheduler state 本身包含超参数。
+兼容性由插件身份、严格 state dict、具名资产、
+optimizer/scheduler/EMA 和 format contract 验证，而不是完整 config equality。
 
-训练 resume 继续采用“一次 invocation 一个 timestamped run”：checkpoint-only resume
-使用 checkpoint config，但在旧 run 的同级目录创建新 run；显式 config 或
-`--output-dir` 决定新的 output root。训练 state 连续，日志/artifact 不原地覆盖，并在
-checkpoint metadata 记录 `resumed_from`。这避免为了原地追加而把 logger-specific resume
-行为塞进 Trainer 或通用 Logger contract。
+训练 resume 继续采用“一次 invocation 一个 timestamped run”：checkpoint config 在旧 run
+的同级目录创建新 run，`--output-dir` 可以改变新的 output root。训练 state 连续，日志/
+artifact 不原地覆盖，并在 checkpoint metadata 记录 `resumed_from`。这避免为了原地追加而
+把 logger-specific resume 行为塞进 Trainer 或通用 Logger contract。外部完整 config 与
+`--resume` 明确互斥。
+
+### 独立审查与修复
+
+Stage 5 实现完成后进行只读独立审查，并将影响安全发布、恢复正确性或配置权威的 finding
+全部在本 Stage 收口：
+
+| Finding | 修复结果 |
+| --- | --- |
+| scaffold 的 staging pathname 在 rename/并发替换后仍可能被清理，存在 TOCTOU 删除外部对象风险 | 成功发布后不再触碰旧 staging pathname；失败清理绑定本次对象身份或 descriptor。现有空目录只在具备安全 descriptor-relative 原语的平台支持，否则写入前拒绝 |
+| strict resume 可能把 sibling `best.pt` 中另一 run 或未来 epoch 的权重作为历史 best | 同时校验 resolved config、extension provenance、epoch、metric、monitor 和 mode；被未来训练覆盖的 mutable best 明确拒绝 |
+| 新 run 继续依赖父 run 的 best checkpoint | 先用当前资产 topology 验证，再以当前 config/provenance 原子物化 inherited best 到新 run |
+| checkpoint CPU 预加载后恢复的 EMA state 可能仍停留在 CPU | 完成 restore 后显式迁移 EMA state 到 Trainer device |
+| checkpoint 与 inherited-best 写入可能暴露半写文件 | 集中使用同目录临时文件与 `os.replace()` 原子发布，并在失败时清理本次临时项 |
+| strict resume 重新从 experiment seed 开始随机流，并宽松接受缺失 progress | v8 保存 data-only Python/NumPy/Torch RNG snapshot；恢复前要求合法 `epoch`/`global_step`，在全部 state 校验后恢复适用随机流，并用随机训练的中断/续训等价测试验证 |
+| sampling 的外部 config、overlay 与 checkpoint provenance 权威可能漂移 | 完整外部 config 整体权威；overlay 只替换显式 sampling/plugin selection；checkpoint 只提供 state，同名插件仍校验 identity/version，本次实际 provenance 成为新基准 |
+
+scaffold 的安全保证有意按平台能力分层：不存在目标可通过同级 staging rename 发布；现有
+空目录只在能安全执行 descriptor-relative exclusive create/rollback 时支持。框架不以一个
+不可兑现的“所有平台对已有目录原子替换”承诺掩盖文件系统差异。
 
 ### Rejected alternatives
 
@@ -406,3 +450,54 @@ checkpoint metadata 记录 `resumed_from`。这避免为了原地追加而把 lo
 distribution version 也无法检测 editable code 在版本号不变时的修改。核心继续将任意
 component `params` 当作不透明 mapping，因此不猜测或重写其中的路径；生成项目以 repo root
 为 cwd 作为明确运行契约。
+
+Stage 5 最终计划复审发现：若 checkpoint 继续允许任意 pickle `extra_state`，runtime 为读取
+内嵌 config/provenance 而执行 `torch.load(weights_only=False)` 时就可能动态导入 extension
+class，使“版本确认后才导入插件”成为不可实现的承诺。由于没有任何用户 checkpoint 需要
+兼容，v8 直接将 payload 收窄为 PyTorch `weights_only=True` 默认支持的 Tensor、primitive
+与普通 container；保存边界递归拒绝 custom class、custom tensor subclass 和任意 pickle
+global，extension 不得在预检前扩展 safe globals。自定义额外状态必须编码为该数据值域。
+
+该决定取代 Stage 4 草案中“任意可 pickle extra state”的宽松表述。拒绝采用 sidecar/双文件
+envelope，因为它降低 checkpoint 单文件可移植性；也拒绝仅降低 preflight 文档承诺，因为那会
+让版本提示发生在扩展代码已经执行之后。`weights_only=True` 不是 DoS 或资源隔离沙箱，这一
+限制继续在公开文档说明。
+
+strict resume 的 best continuity 还有一个刻意保留的限制：每个 run 只有一个 mutable
+`best.pt`。恢复 latest/current checkpoint 时可以校验并本地化匹配的 inherited best；若用户
+选择更早的历史 epoch，而 sibling `best.pt` 已被后续 epoch 覆盖，框架会明确拒绝，不能从现有
+文件可靠重建“当时的 best”。支持任意历史点需要 versioned immutable best 或把 best snapshot
+嵌入每个 checkpoint，会增加存储和保留策略，等待真实需求后再设计。匹配 best 一旦物化到新
+run，后续 resume 和 sampling 不再依赖父目录。
+
+strict resume 的随机状态边界同样收口为 epoch-boundary process-global streams：v8 以
+weights-only-safe 的 list/primitive/Tensor 编码保存 Python `random`、NumPy global
+`RandomState`、Torch CPU 与当时可用的 CUDA RNG。恢复前完整解析全部字段，selected state 与
+inherited best 恢复完成后才一次性恢复 RNG。普通 checkpoint load 不修改全局 RNG；
+sampling 不恢复 checkpoint RNG snapshot，而是按 `sampling.seed`（为 `null` 时使用
+`experiment.seed`）重新初始化 Python、NumPy 与 Torch 全局 RNG。CPU 目标
+忽略 CUDA snapshot，CUDA 目标仅在保存了 CUDA state 时要求 device count 兼容，因此 device
+override 可运行，但跨设备/拓扑不保证 bitwise continuity。DataBuilder、loader iterator、
+worker、sampler 和用户 generator 属于扩展 runtime，不进入核心 checkpoint；自定义随机 loader
+必须通过 seed + epoch/`set_epoch` 自行满足可重建性。
+
+TrainingDiagnostic 是观察性扩展。Trainer 在每个 diagnostic lifecycle callback 外隔离并恢复
+Python、NumPy 和 Torch 全局 RNG；这同时避免 strict resume 重新触发 `on_fit_start` 时改变
+后续训练随机流。需要跨 callback 延续随机状态的 diagnostic 应持有自己的 generator。
+
+checkpoint 只冻结 state、resolved config 和插件 provenance，不冻结 extension 源码或 wheel。
+version 未变化的 editable 源码修改无法检测；若修改最终导致 state 或行为不兼容，由严格 state
+contract 或扩展运行错误暴露，框架不承诺为任意用户代码演化提供兼容层。
+
+### 验证与逻辑提交
+
+Stage 5 聚焦验证覆盖配置与插件预检/激活、CLI 版本策略、v8 checkpoint-safe state、严格
+resume 与 inherited-best 连续性、scaffold 安全边界、sampling config/provenance 权威、
+builder/Trainer runtime，以及隔离环境中安装 Stochaflow wheel、执行 `init`、安装生成项目
+wheel、短训练、连续恢复和 checkpoint-only sampling 的端到端路径。常规门禁为 Ruff、Pyright
+与配置 reference 生成/检查。
+
+完整 pytest、build、Sphinx 和其他 CI 静态检查留到整个 feature 分支合并验收，不计入本
+Stage 的日常收口声明。
+
+逻辑提交主题：`Stage 5: Add entry-point extension projects`。

@@ -1,0 +1,73 @@
+"""Direct-transform sampling registered by the generated extension."""
+
+from typing import Any
+
+import torch
+
+from stochaflow.extensions import (
+    REGISTRIES,
+    SamplingBatch,
+    SamplingBuilder,
+    SamplingOutput,
+)
+
+
+def _number(params: dict[str, Any], name: str, default: float) -> float:
+    value = params.pop(name, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be numeric")
+    return float(value)
+
+
+@REGISTRIES.sampling_builders.register(
+    "__STOCHAFLOW_PROJECT_SLUG__.regression-predictions"
+)
+class RegressionPredictionBuilder(SamplingBuilder):
+    """Evaluate the checkpoint model directly without a Process or Sampler."""
+
+    def run(self) -> SamplingOutput:
+        if self.context.process is not None:
+            raise ValueError("direct regression sampling does not use a Process")
+        params = dict(self.context.params)
+        input_features = params.pop("input_features", 3)
+        if (
+            isinstance(input_features, bool)
+            or not isinstance(input_features, int)
+            or input_features <= 0
+        ):
+            raise ValueError("input_features must be a positive integer")
+        input_min = _number(params, "input_min", -1.0)
+        input_max = _number(params, "input_max", 1.0)
+        if input_min >= input_max:
+            raise ValueError("input_min must be less than input_max")
+        if params:
+            raise ValueError(f"unknown sampling params: {', '.join(sorted(params))}")
+
+        model, weights = self.context.model_provider.resolve("auto")
+        values = torch.linspace(
+            input_min,
+            input_max,
+            self.context.num_samples * input_features,
+            device=self.context.device,
+        ).reshape(self.context.num_samples, input_features)
+        batches: list[SamplingBatch] = []
+        with torch.no_grad():
+            for start in range(0, self.context.num_samples, self.context.batch_size):
+                inputs = values[start : start + self.context.batch_size]
+                predictions = model(inputs)
+                if not isinstance(predictions, torch.Tensor):
+                    raise TypeError("regression model must return a Tensor")
+                batches.append(SamplingBatch(samples=predictions.detach().cpu()))
+        return SamplingOutput(
+            batches=tuple(batches),
+            metadata={
+                "workflow": "direct-regression-prediction",
+                "weights": weights,
+                "input_features": input_features,
+                "input_min": input_min,
+                "input_max": input_max,
+            },
+        )
+
+
+__all__ = ["RegressionPredictionBuilder"]

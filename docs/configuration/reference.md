@@ -86,7 +86,7 @@ DataBuilder 完整拥有的参数；核心不解释 Dataset、split、sampler、
 (config-field-path-model)=
 ### `model`
 
-由 models Registry 构建的去噪模型。
+由 models Registry 构建的 primary inference/training model。
 
 - 类型：`mapping`
 - 必填：是
@@ -196,21 +196,21 @@ Process 构造参数；模型、condition 和 sampler 不进入此处。
 (config-field-path-extensions)=
 ### `extensions`
 
-在配置校验、训练组件构建和 checkpoint 采样前加载的通用 Registry 扩展。
+从当前 Python 环境选择并激活标准 entry-point Registry 扩展。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{modules: []}`
+- 默认值：`{plugins: []}`
 
-(config-field-path-extensions-modules)=
-### `extensions.modules`
+(config-field-path-extensions-plugins)=
+### `extensions.plugins`
 
-按声明顺序幂等导入的 Python 扩展模块；模块导入应执行 Registry 装饰器。
+要加载的 stochaflow.extensions entry-point 名称；null 选择当前环境中的全部插件。
 
-- 类型：`list[str]`
+- 类型：`list[str] | null`
 - 必填：否
 - 默认值：`[]`
-- 约束：每项是非空 import path。
+- 约束：非 null 时为无重复的非空名称列表；空列表禁用第三方插件。
 
 ## `optimizer`
 
@@ -676,7 +676,7 @@ native provider，扩展 Registry 不能占用。
 (config-registry-name-models)=
 ### `models`
 
-构建可训练的去噪网络。
+构建 primary inference/training model。
 
 - 基类/契约：`torch.nn.Module`
 - 配置位置：`model.name / model.params`
@@ -1007,7 +1007,8 @@ native provider，扩展 Registry 不能占用。
 
 | 参数 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- |
-| `--config` | 是 | `—` | 实验 YAML 路径。 |
+| `--config` | 否 | `—` | 新训练使用的完整实验 YAML；与 --resume 互斥且二者必须提供一个。 |
+| `--resume` | 否 | `—` | 从显式 checkpoint 文件或运行目录执行严格完整恢复；使用 checkpoint 保存的配置和训练状态，并与 --config 互斥。 |
 | `--device` | 否 | `—` | 本次运行覆盖 trainer.device。 |
 | `--output-dir` | 否 | `—` | 本次运行覆盖 experiment.output_dir。 |
 | `--epochs` | 否 | `—` | 本次运行覆盖 trainer.num_epochs。 |
@@ -1016,7 +1017,7 @@ native provider，扩展 Registry 不能占用。
 | `--limit-test-batches` | 否 | `—` | 最终测试最多执行的 batch 数。 |
 | `--deterministic` | 否 | `false` | 在 Torch 支持的范围内启用确定性算法。 |
 | `--no-progress` | 否 | `false` | 禁用 Rich 进度条。 |
-| `--resume` | 否 | `—` | 无值时恢复配置输出根下的 latest.pt；也可显式给 checkpoint 路径。 |
+| `--force-extension-version-mismatch` | 否 | `false` | 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。 |
 | `--skip-final-sample` | 否 | `false` | 跳过训练完成后的最佳 checkpoint 验收采样。 |
 
 (config-cli-sample)=
@@ -1024,7 +1025,15 @@ native provider，扩展 Registry 不能占用。
 
 | 参数 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- |
-| `--config` | 否 | `—` | 可选外部配置；其 sampling 设置覆盖 checkpoint 中的采样设置。 |
+| `--config` | 否 | `—` | 可选完整外部配置（整体权威），或在显式 checkpoint 上应用的 sampling/extensions 轻量 overlay。 |
 | `--checkpoint` | 否 | `—` | checkpoint 文件或运行目录；仅给 config 时自动查找最新 best.pt。 |
 | `--device` | 否 | `—` | 覆盖采样设备。 |
 | `--output-dir` | 否 | `—` | 覆盖生成 artifact 的目录。 |
+| `--force-extension-version-mismatch` | 否 | `false` | 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。 |
+
+(config-cli-init)=
+### `stochaflow init`
+
+| 参数 | 必填 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `NAME` | 是 | `—` | 新项目目录、distribution 和 extension entry-point 使用的 canonical ASCII slug。 |

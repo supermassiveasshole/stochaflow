@@ -1,9 +1,12 @@
 # 扩展与 Registry
 
-顶层扩展通过 `extensions.modules` 显式导入。配置不会扫描目录、Python entry point
-或工作区；用户 project 应是普通、可安装的 Python package，并与 Stochaflow CLI
-安装在同一 Python 环境，使模块具有稳定 import path。配置中的相对数据/输出路径
-以进程 cwd 为基准，建议从项目根目录运行。
+顶层扩展通过标准 Python packaging entry point 发现，再由 `extensions.plugins` 按稳定
+插件名选择。用户 project 是普通、可安装的 Python distribution，并且必须与 Stochaflow
+CLI 安装在同一 Python environment。Stochaflow 不扫描源码目录、工作区或 package 命名
+约定，也不管理 pip、uv、conda、Poetry 或 PDM。
+
+配置中的相对数据/输出路径以及不透明 builder 参数都以进程启动 cwd 为基准。生成项目的
+默认配置使用 `data/...` 与 `outputs/...`，因此建议从项目根目录运行。
 
 ## RegistryCatalog
 
@@ -55,10 +58,27 @@ scheduler 的第一个位置参数接收 optimizer，且构造后保留同一对
 optimizer 与 scheduler 的 bound `step()` 都可以无参数调用。需要 closure 的 optimizer 或
 metric 的 scheduler 等到框架拥有明确的 lifecycle 后再接入，不能靠具体类名特判。
 
-## 模块加载
+## Entry-point 插件发现与激活
+
+extension distribution 在 `pyproject.toml` 声明聚合注册模块：
+
+```toml
+[project.entry-points."stochaflow.extensions"]
+my-project = "my_project.stochaflow_ext"
+```
+
+entry-point name `my-project` 是配置和 checkpoint 使用的稳定插件身份。target 必须是纯
+module，不能含 `:callable` 或 extras。聚合模块可以导入 package 内多个注册模块，但导入
+阶段只应定义类/函数并运行 decorator；不能读取数据、构建模型、加载 checkpoint 或启动
+任务。
 
 ```python
-# my_project/extensions.py
+# my_project/stochaflow_ext/__init__.py
+from . import data, model, sampling, training  # noqa: F401
+```
+
+```python
+# my_project/stochaflow_ext/model.py
 from stochaflow.extensions import REGISTRIES
 
 
@@ -69,17 +89,108 @@ class PhysicsOperator(...):
 
 ```yaml
 extensions:
-  modules:
-    - my_project.extensions
+  plugins:
+    - my-project
 
 model:
   name: physics_operator
   params: {}
 ```
 
-`load_config()` 和 `load_config_dict()` 在 dataclass 构建后导入模块，再执行跨字段校验。
-`RegistryCatalog.load_modules()` 保证同一进程内幂等。注册名必须非空且唯一；错误基类、
-重复名称和未知名称会抛出 `RegistryError`。
+选择规则是：
+
+- 省略 `extensions` 或写 `plugins: []`：不加载第三方插件；
+- 写 `plugins: null`：显式选择当前环境发现的全部插件；
+- 写非空列表：只选择精确匹配的 entry-point names；
+- resolved config 始终保存经过解析的确定插件列表，不保存 `null`；
+- sampling-only overlay 若明确包含 `extensions.plugins`，该值完整替换 checkpoint selection，
+  不执行追加或去重 merge；仅写 `extensions: {}` 则保留 checkpoint selection。
+
+`load_config()` 与 `load_config_dict()` 是无副作用解析函数，不导入插件。runtime 先发现
+distribution metadata、解析 selection，并在任何插件代码运行前检查 checkpoint 中保存的
+插件 identity/version；接受 version policy 后才导入聚合模块并构建 Registry 组件。配置
+mapping 和传入的 config 对象不会被原地修改。
+
+插件按 entry-point name、canonical distribution name 和 target 确定性排序。同名 entry
+point、缺失插件、非 module target、非法 distribution metadata 或导入失败都会给出包含
+插件 provenance 的明确错误。注册名仍必须非空且唯一；错误基类、重复名称和未知名称会
+抛出 `RegistryError`。
+
+一次进程首次成功激活后，插件 selection 固定；相同 selection 可重复使用，不同 selection
+必须在新进程运行。activation 过程中出现 partial import 或 Registry 冲突时，由于 decorator
+注册无法事务回滚，该进程进入失败状态并要求重启。
+
+第三方 runtime 也可以直接使用 `prepare_extension_plugins()` 与
+`activate_extension_plugins()`。前者只做 discovery/provenance 预检并返回 immutable plan；
+后者才导入代码，默认以 `ExtensionVersionPolicy.REJECT` 拒绝 version mismatch。library API
+不读取 stdin；调用方必须显式选择 allow policy。
+
+### Checkpoint provenance 与版本差异
+
+checkpoint 保存 entry-point name、distribution、version 和 target，但不保存或 freeze
+extension class/source。恢复时必须在当前 CLI 环境安装相应 distribution：
+
+- checkpoint config 作为 base 时，resolved plugin names 必须与 checkpoint provenance
+  完全一致；完整外部 sampling config 或显式 plugin overlay 可以增加/删除 selection，但
+  复用的同名插件仍必须通过 identity/version 检查；
+- name、distribution 或 target 变化是 identity mismatch，始终失败；
+- 仅 version 不一致时，CLI 会在导入插件前集中警告并在交互式终端询问，默认答案为 No；
+- 非交互式运行默认失败；`--force-extension-version-mismatch` 可明确接受版本差异，但不会
+  绕过 identity 或 checkpoint state compatibility；
+- 接受方式与 expected/current version 写入 run/sampling manifest 和后续 checkpoint
+  metadata。
+
+editable install 在版本号不变时修改源码无法由 distribution metadata 检测。checkpoint
+不是源码或 Python 环境快照；依赖锁定仍由用户选择的包管理器和 lockfile 负责。扩展实现
+变化导致的 state shape、资产拓扑或运行逻辑不兼容，会在既有构建/加载边界报错，核心不为
+任意第三方实现提供源码兼容保证。
+
+checkpoint v8 使用 `torch.load(..., weights_only=True)`，payload 只允许 Tensor、primitive
+和普通 container。扩展组件的 `state_dict` 或 extra state 也必须编码为这些数据类型；不能
+要求 `safe_globals`、保存自定义 class instance 或 custom Tensor subclass。这个约束让 runtime
+能在导入扩展前安全读取 config/provenance，但不是针对恶意超大 Tensor 的完整资源沙箱。
+
+### 生成一个扩展项目
+
+```bash
+stochaflow init my-project
+cd my-project
+```
+
+项目名必须是长度不超过 64 的 canonical ASCII slug，例如 `my-project`；Python package
+对应为 `my_project`。`init` 只写文件，不创建环境、安装依赖、运行 Git，也不覆盖文件、
+symlink 或非空目录。生成结果是单一可安装 distribution、多实验 research repo：
+
+若平台提供安全的 descriptor-relative 文件系统操作，`init` 也可写入已存在的空真实目录；
+不具备这些原语的平台应先删除该空目录，由 `init` 创建目标目录。
+
+```text
+my-project/
+├── pyproject.toml
+├── experiments/example/train.yaml
+├── src/my_project/stochaflow_ext/
+│   ├── __init__.py
+│   ├── data.py
+│   ├── model.py
+│   ├── training.py
+│   └── sampling.py
+├── data/
+├── notebooks/
+└── tests/test_extensions.py
+```
+
+默认 synthetic regression 示例完整注册 DataBuilder、model、TrainingBuilder/Strategy 和
+direct-transform SamplingBuilder，并复用内置 MSE objective 与 tensor writer。它不虚构
+Process 或 Sampler。repo 可以自行增加其他实验、研究代码、脚本或工具；这些内容无需采用
+Stochaflow 目录结构，也不会被 CLI 扫描或驱动。
+
+生成的 `pyproject.toml` 精确依赖当前 Stochaflow 版本，默认配置显式写入
+`extensions.plugins: [my-project]`。使用任意包管理器把它安装到 CLI 所在环境后即可运行：
+
+```bash
+python -m pip install -e ".[test]"
+stochaflow train --config experiments/example/train.yaml
+```
 
 第三方代码应从 `stochaflow.extensions` 导入稳定契约。数据层只导出 `DataBuilder`、
 `DataBuilderContext` 和 `DataLoaders`；内置 recipe 的 source、partition、transform、bucket
@@ -485,7 +596,7 @@ class PhysicsDataBuilder(DataBuilder):
 
 ```yaml
 extensions:
-  modules: [my_project.extensions]
+  plugins: [my-project]
 data:
   name: physics
   params:

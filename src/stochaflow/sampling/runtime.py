@@ -37,7 +37,20 @@ from stochaflow.utils.config import (
     load_config_dict,
 )
 from stochaflow.utils.factory import build_model, build_process, resolve_device
+from stochaflow.utils.plugins import (
+    ExtensionActivationPlan,
+    ExtensionSelectionPolicy,
+    ExtensionVersionPolicy,
+    ResolvedExtensions,
+    activate_extension_plugins,
+    parse_extension_plugin_provenance,
+    prepare_extension_plugins,
+)
 from stochaflow.utils.registry import REGISTRIES
+from stochaflow.utils.run_manifest import (
+    extension_runtime_metadata,
+    write_yaml_manifest,
+)
 from stochaflow.utils.seed import set_seed
 
 
@@ -48,6 +61,8 @@ class ResolvedSamplingInputs:
     config: StochaflowConfig
     checkpoint_path: Path
     checkpoint: CheckpointState
+    config_source: str
+    extension_plan: ExtensionActivationPlan
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,15 +107,39 @@ def resolve_sampling_inputs(
             )
     checkpoint_path = _resolve_checkpoint_path(checkpoint, external)
     payload = CheckpointManager.load_payload(checkpoint_path, map_location="cpu")
-    checkpoint_config = _load_checkpoint_config(payload)
+    selection_policy = ExtensionSelectionPolicy.EXACT
     if sampling_overlay is not None:
+        checkpoint_config = _load_checkpoint_config(payload)
         config = _apply_sampling_overlay(checkpoint_config, sampling_overlay)
+        config_source = "sampling-overlay"
+        raw_extensions = sampling_overlay.get("extensions")
+        if isinstance(raw_extensions, dict) and "plugins" in raw_extensions:
+            selection_policy = ExtensionSelectionPolicy.INTERSECTION
     elif external is not None:
-        validate_sampling_compatibility(external, checkpoint_config)
-        config = _merge_external_config(checkpoint_config, external)
+        config = external
+        config_source = "external"
+        selection_policy = ExtensionSelectionPolicy.INTERSECTION
     else:
-        config = checkpoint_config
-    return ResolvedSamplingInputs(config, checkpoint_path, payload)
+        config = _load_checkpoint_config(payload)
+        config_source = "checkpoint"
+    metadata = cast(object, payload.get("metadata"))
+    if not isinstance(metadata, dict):
+        raise TypeError("checkpoint is missing valid metadata")
+    expected_provenance = parse_extension_plugin_provenance(
+        metadata.get("extension_plugins")
+    )
+    extension_plan = prepare_extension_plugins(
+        config,
+        expected_provenance=expected_provenance,
+        selection_policy=selection_policy,
+    )
+    return ResolvedSamplingInputs(
+        extension_plan.config,
+        checkpoint_path,
+        payload,
+        config_source,
+        extension_plan,
+    )
 
 
 def _load_yaml_mapping(path: str | Path) -> dict[str, Any]:
@@ -118,61 +157,23 @@ def _apply_sampling_overlay(
     checkpoint: StochaflowConfig,
     overlay: dict[str, Any],
 ) -> StochaflowConfig:
-    extensions = coerce_config_section(
-        ExtensionsConfig,
-        overlay.get("extensions", {}),
-        "config.extensions",
-    )
     merged = checkpoint.to_dict()
     merged["sampling"] = deepcopy(overlay["sampling"])
-    merged["extensions"] = {
-        "modules": list(
-            dict.fromkeys(
-                [
-                    *checkpoint.extensions.modules,
-                    *extensions.modules,
-                ]
-            )
+    if "extensions" in overlay:
+        raw_extensions = overlay["extensions"]
+        if not isinstance(raw_extensions, dict):
+            raise ConfigError("config.extensions must be a mapping")
+        extensions = cast(
+            ExtensionsConfig,
+            coerce_config_section(
+                ExtensionsConfig,
+                raw_extensions,
+                "config.extensions",
+            ),
         )
-    }
+        if "plugins" in raw_extensions:
+            merged["extensions"] = {"plugins": deepcopy(extensions.plugins)}
     return load_config_dict(merged)
-
-
-def _merge_external_config(
-    checkpoint: StochaflowConfig,
-    external: StochaflowConfig,
-) -> StochaflowConfig:
-    merged = checkpoint.to_dict()
-    merged["sampling"] = deepcopy(external.to_dict()["sampling"])
-    merged["extensions"] = {
-        "modules": list(
-            dict.fromkeys(
-                [
-                    *checkpoint.extensions.modules,
-                    *external.extensions.modules,
-                ]
-            )
-        )
-    }
-    return load_config_dict(merged)
-
-
-def validate_sampling_compatibility(
-    external: StochaflowConfig,
-    checkpoint: StochaflowConfig,
-) -> None:
-    """Reject external configs that do not describe the trained model/process."""
-
-    mismatches: list[str] = []
-    if external.model != checkpoint.model:
-        mismatches.append("model")
-    if external.process != checkpoint.process:
-        mismatches.append("process")
-    if mismatches:
-        raise ValueError(
-            "external config is incompatible with checkpoint training config: "
-            + ", ".join(mismatches)
-        )
 
 
 def run_sampling(
@@ -181,18 +182,48 @@ def run_sampling(
     checkpoint: str | Path | None = None,
     output_dir: str | Path | None = None,
     device_name: str | None = None,
+    extension_version_policy: ExtensionVersionPolicy = ExtensionVersionPolicy.REJECT,
+    extension_acceptance_method: str | None = None,
 ) -> SamplingRunResult:
     """Run one configured SamplingBuilder and materialize its output."""
 
     inputs = resolve_sampling_inputs(config_path=config_path, checkpoint=checkpoint)
-    config = inputs.config
+    extensions = activate_extension_plugins(
+        inputs.extension_plan,
+        policy=extension_version_policy,
+        acceptance_method=extension_acceptance_method,
+    )
+    return run_resolved_sampling(
+        inputs,
+        extensions,
+        output_dir=output_dir,
+        device_name=device_name,
+    )
+
+
+def run_resolved_sampling(
+    inputs: ResolvedSamplingInputs,
+    extensions: ResolvedExtensions,
+    *,
+    output_dir: str | Path | None = None,
+    device_name: str | None = None,
+    startup_cwd: str | Path | None = None,
+) -> SamplingRunResult:
+    """Execute sampling after the caller has explicitly activated extensions."""
+
+    config = extensions.config
     declaration = config.sampling.builder
     if declaration is None:
         raise ValueError("sample requires sampling.builder to be configured")
     seed = config.experiment.seed if config.sampling.seed is None else config.sampling.seed
     set_seed(seed)
     device = resolve_device(device_name or config.trainer.device)
-    process = _build_checkpointed_process(config, inputs.checkpoint, device=device)
+    process = _build_checkpointed_process(
+        config,
+        inputs.checkpoint,
+        device=device,
+        allow_unused_state=inputs.config_source == "external",
+    )
     provider = _build_model_provider(config, inputs.checkpoint, device=device)
     context = SamplingBuilderContext(
         params=declaration.params,
@@ -224,8 +255,20 @@ def run_sampling(
     )
     manifest_path = target_dir / "resolved_sampling.yaml"
     manifest = {
+        "kind": "sampling",
+        "config_source": inputs.config_source,
+        "config": config.to_dict(),
         "checkpoint": str(inputs.checkpoint_path),
         "checkpoint_format_version": inputs.checkpoint.get("format_version"),
+        **extension_runtime_metadata(extensions),
+        "lineage": {"checkpoint": str(inputs.checkpoint_path)},
+        "startup_cwd": str(
+            Path.cwd().resolve() if startup_cwd is None else Path(startup_cwd).resolve()
+        ),
+        "runtime_options": {
+            "device": device_name,
+            "output_dir": str(output_dir) if output_dir is not None else None,
+        },
         "process": asdict(config.process) if config.process is not None else None,
         "builder": asdict(declaration),
         "sampling": asdict(config.sampling),
@@ -234,9 +277,7 @@ def run_sampling(
         "metadata": dict(output.metadata),
         "artifacts": {name: str(path) for name, path in artifacts.items()},
     }
-    manifest_path.write_text(
-        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
-    )
+    write_yaml_manifest(manifest_path, manifest)
     artifacts["config"] = manifest_path
     return SamplingRunResult(
         inputs.checkpoint_path,
@@ -325,10 +366,11 @@ def _build_checkpointed_process(
     payload: CheckpointState,
     *,
     device: torch.device,
+    allow_unused_state: bool = False,
 ) -> Process | None:
     has_state = "process_state_dict" in payload
     if config.process is None:
-        if has_state:
+        if has_state and not allow_unused_state:
             raise ValueError(
                 "checkpoint contains 'process_state_dict' but config.process is null"
             )
@@ -381,7 +423,7 @@ __all__ = [
     "ResolvedSamplingInputs",
     "SamplingRunResult",
     "resolve_sampling_inputs",
+    "run_resolved_sampling",
     "run_sampling",
-    "validate_sampling_compatibility",
     "validate_sampling_output",
 ]

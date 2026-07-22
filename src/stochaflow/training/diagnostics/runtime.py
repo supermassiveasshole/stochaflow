@@ -6,9 +6,11 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import hashlib
+import random
 import time
 from typing import Any, cast
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -29,6 +31,7 @@ from stochaflow.training.diagnostics.contracts import (
     SamplingResult,
 )
 from stochaflow.utils.registry import REGISTRIES
+from stochaflow.utils.seed import preserve_global_rng_state
 
 
 def first_tensor_from_batch(batch: Any) -> torch.Tensor | None:
@@ -74,13 +77,9 @@ def prepare_reference_images(images: torch.Tensor) -> torch.Tensor:
     return ((images.clamp(-1.0, 1.0) + 1.0) * 0.5).contiguous()
 
 
-def _fork_rng_devices(device: torch.device) -> list[int]:
-    if device.type != "cuda":
-        return []
-    return [torch.cuda.current_device() if device.index is None else device.index]
-
-
 def _manual_seed(seed: int, device: torch.device) -> None:
+    random.seed(seed)
+    np.random.seed(seed % 2**32)
     torch.manual_seed(seed)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(seed)
@@ -129,7 +128,7 @@ class SeedPolicy:
     def fork_rng(self, device: torch.device, *, offset: int = 0):
         """Run with a fixed seed and restore global RNG state on exit."""
 
-        with torch.random.fork_rng(devices=_fork_rng_devices(device)):
+        with preserve_global_rng_state(device):
             _manual_seed(self.base_seed + offset, device)
             yield
 
@@ -174,9 +173,7 @@ class EvaluationGuard:
         try:
             self._stack.enter_context(torch.inference_mode())
             self._stack.enter_context(
-                torch.random.fork_rng(
-                    devices=_fork_rng_devices(self.trainer.device)
-                )
+                preserve_global_rng_state(self.trainer.device)
             )
             _manual_seed(self.seed, self.trainer.device)
             if self._ema is not None:

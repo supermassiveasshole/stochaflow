@@ -16,22 +16,64 @@ dotted path。schema 不忽略未知字段。
 的 `params` 缺少构造参数。分别查[字段索引](reference.md)、框架组件索引和所安装版本的
 上游 API 文档。
 
-## 扩展模块与 Registry
+## Entry-point 插件与 Registry
 
-### `failed to import registry module '...'`
+### `secure publication into a pre-existing empty directory is not supported`
 
-确认 `extensions.modules` 使用完整 Python import path，当前环境已安装扩展包，而且
-模块的依赖也能导入。不要把文件路径（如 `my_project/datasets.py`）写进配置，应写
-`my_project.datasets`。
+当前平台缺少安全的 descriptor-relative 文件系统原语。该限制只影响已存在的空目标目录；
+确认目录为空后删除它，再运行同一条 `stochaflow init NAME`，让 CLI 原子创建目标目录。
+非空目录始终会在写入前拒绝。
+
+### 请求的 extension plugin 未安装
+
+确认 `extensions.plugins` 使用 `[project.entry-points."stochaflow.extensions"]` 声明的
+精确 entry-point name，而不是 Python module path、distribution 的任意别名或文件路径。
+扩展 distribution 与 `stochaflow` CLI 必须安装在同一 Python environment；错误信息中的
+Python executable 可以帮助确认实际运行环境。
+
+`load_config()`/`load_config_dict()` 不会导入插件，所以“配置可以解析”不代表当前环境已经
+安装或成功激活 extension。先在 CLI 所在环境执行对应包管理器的包列表/metadata 检查，再
+确认 entry-point target 的依赖均可导入。
+
+### `failed to activate extension plugin ...`
+
+插件已发现，但导入 pure-module target 或 decorator 注册失败。错误上下文会包含 entry-point
+name、distribution、version 和 target；继续阅读保留的原始异常链，检查聚合模块的 import
+依赖和 Registry 重名。聚合模块导入时只应定义并注册组件，不应访问数据、构建 runtime
+资产或启动任务。发生 partial import 后必须重启进程再试。
+
+### duplicate `stochaflow.extensions` entry-point name
+
+两个 distribution 声明了相同插件名。Stochaflow 不采用“后加载覆盖”，即使配置只选择
+该名称也无法确定身份；卸载冲突 distribution 或修改其中一个 entry-point name。若配置是
+非空显式列表，未被选择的其他插件 metadata 不会影响本次运行；`plugins: null` 会检查全
+环境，因此也会暴露所有冲突。
+
+### `extension plugin version mismatch`
+
+checkpoint 记录的插件 version 与当前安装 version 不同，但 name/distribution/target identity
+仍一致。交互式 CLI 会在任何插件代码导入前汇总询问，默认 No；非交互式运行直接失败。
+确认代码和 checkpoint state contract 后，可以传
+`--force-extension-version-mismatch`。该 flag 只接受 version 差异，不能绕过 identity、
+缺失插件或 state shape/asset topology 错误。
+
+若 version 没变但 editable source 已修改，distribution metadata 无法检测。checkpoint 不
+freeze extension class 或源码；请用项目 lockfile、发布版本或其他代码 provenance 管理环境。
+
+### `extension activation previously failed; restart the Python process`
+
+某个聚合模块导入、decorator 注册或 Registry 冲突已造成 partial activation。注册是进程
+全局副作用，不能安全 unload/rollback；修复最初异常并重启进程。相同 selection 只在首次
+activation 完整成功后才可幂等复用，一个进程也不能先后切换不同 plugin selections。
 
 ### `unknown ... 'name'. Available: ...`
 
 普通名称不在对应 Registry。检查：
 
 1. 装饰器是否注册到了正确 Registry；
-2. 定义装饰器的模块是否列入 `extensions.modules`；
+2. 聚合模块是否从 entry point 暴露，且其精确 name 是否列入 `extensions.plugins`；
 3. 名称大小写是否完全一致；
-4. 扩展模块是否在训练与 checkpoint sampling 的 Python 环境中都可导入。
+4. 扩展 distribution 是否在训练与 checkpoint sampling 的 Python 环境中都已安装。
 
 标准 PyTorch optimizer/scheduler 不使用 Registry alias，应写完整受限 target，例如
 `torch.optim.AdamW` 或 `torch.optim.lr_scheduler.CosineAnnealingLR`。
@@ -151,17 +193,40 @@ pickle、文件句柄是否按 worker 打开、路径是否有效。确认后逐
 TrainingBuilder 组装的 TrainingStrategy、模型输入输出契约彼此一致。内置图像 recipe
 的通道配置位于 `data.params.image.channels`。
 
-### resume 找不到 `latest.pt`
+### `train` 要求 `--config` 或 `--resume CHECKPOINT`
 
-无参数 `--resume` 在配置的 `experiment.output_dir` 下寻找最新 run 的
-`checkpoints/latest.pt`。若输出根改变，传入明确 checkpoint 路径。
+新训练传 `--config`；严格恢复传明确 checkpoint 文件或 run directory。两者互斥，裸
+`--resume` 不再搜索 config 输出根。resume 使用 checkpoint 保存的 config 与完整
+optimizer/scheduler/EMA/progress state，只允许文档化的安全 runtime flags，并写入新的兄弟
+run directory。需要更换组件配置并只加载旧权重不是 resume，当前没有通用 warm-start CLI。
 
-### checkpoint 配置与外部采样配置不兼容
+如果单独复制了 `latest.pt` 或某个 epoch checkpoint，strict resume 还会要求原
+`checkpoints/` 目录中的 sibling `best.pt`，用于延续 best-selection/early-stopping 状态。
+优先复制完整 `checkpoints/` 目录或直接传 run directory。单独的 best checkpoint 会由
+`metadata.checkpoint_kind` 识别，不依赖文件名。sibling best 还必须匹配所选 checkpoint
+记录的 resolved config、extension provenance、best epoch、metric、monitor 和 mode；若旧
+epoch 旁的 mutable `best.pt` 已被后续 epoch 覆盖，当前格式无法重建被覆盖的历史 best，
+恢复会明确拒绝。成功恢复时会验证 state topology，再用当前 config/provenance 将 best 原子
+物化到新 run，因此可以独立移动或删除父 run。
 
-同时传 `--config` 与 `--checkpoint` 时，外部文件可以只包含 `sampling` 和可选
-`extensions`，不能改变权重依赖的模型结构或可选训练 Process。若传入完整 Stochaflow
-配置，model 和 Process（包括是否为 `null`）会与 checkpoint 配置做兼容性校验。只需切换
-采样行为时，优先使用轻量 YAML，在 `sampling` 段改变 Builder、Sampler 和 solver 参数。
+Strict resume 还要求合法的 `epoch`、`global_step` 和 RNG snapshot；缺失或损坏会在修改训练
+资产前拒绝。只有 strict training resume 会从 checkpoint 恢复 RNG snapshot。普通
+checkpoint 读取不修改全局 RNG；sampling 不恢复该 snapshot，但会按 `sampling.seed`（为
+`null` 时使用 `experiment.seed`）重置 Python、NumPy 与 Torch 全局 RNG。跨 CPU/CUDA 或
+不同 CUDA topology 不保证逐位复现。DataBuilder/DataLoader/Sampler/worker 的运行态不进入
+checkpoint；自定义随机 loader 应由 seed 与 epoch 确定，并按需实现 `set_epoch(epoch)`。
+
+### 完整外部 sampling config 加载 checkpoint state 失败
+
+同时传完整 `--config` 与 `--checkpoint` 时，外部 config 整体权威，checkpoint 只提供
+state；核心不会先比较两份完整配置。可以自由改变 sampling 数量、shape、Builder、Sampler、
+solver、trajectory、writers 和 raw/EMA 选择，但外部 config 构建的 model/Process 仍必须
+满足 checkpoint 的 state contract。missing/unexpected key 或 shape mismatch 应通过修改
+外部组件配置解决，而不是期待自动 merge。
+
+只想改变 sampling 时，可以提供仅含完整 `sampling` 段与可选 `extensions` 的 lightweight
+overlay。`extensions: {}` 保留 checkpoint selection；只有明确写出 `extensions.plugins`
+才完整替换列表，不与 checkpoint 插件追加。
 
 ### 预期 EMA 采样但 manifest 显示 raw
 
@@ -188,10 +253,18 @@ Tensor 只声明 `tensor` writer，或注册领域 writer。
 
 ### `checkpoint format version ... is unsupported`
 
-当前 checkpoint 格式为 v7，分别保存 primary model、可选 Process/Objective、可选
+当前 checkpoint 格式为 v8，分别保存 primary model、可选 Process/Objective、可选
 EMA model、带 concrete class identity 的 optimizer/scheduler，以及按稳定名称组织的
-training assets。训练恢复和 checkpoint-only sampling 不读取 v6 及更早格式；
+training assets。训练恢复和 checkpoint-only sampling 不读取 v7 及更早格式；
 请用当前代码重新训练或重新生成 checkpoint。
+
+### checkpoint state 不是 weights-only 安全值
+
+v8 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor subclass 和
+其他 `torch.load(..., weights_only=True)` 默认值域之外的对象。自定义 module、optimizer
+或 scheduler 的 extra state 应转换为 Tensor、primitive、list/tuple/dict 等普通 container；
+不要添加 `safe_globals` 或依赖导入 extension class 才能读取的 pickle 对象。异常中的 state
+path 会定位具体非法值。
 
 ## 文档生成与 CI
 

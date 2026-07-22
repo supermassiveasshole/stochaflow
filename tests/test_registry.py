@@ -42,10 +42,3 @@ def test_registry_unknown_error_lists_available_names() -> None:
 
     with pytest.raises(RegistryError, match="Available: example"):
         registry.resolve("missing")
-
-
-def test_registry_module_loading_is_idempotent() -> None:
-    registry: Registry[object] = Registry("component")
-
-    registry.load_modules(["math"])
-    registry.load_modules(["math"])

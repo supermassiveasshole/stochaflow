@@ -1,0 +1,65 @@
+"""Training composition registered by the generated extension."""
+
+from typing import Any
+
+import torch
+import torch.nn as nn
+
+from stochaflow.extensions import (
+    REGISTRIES,
+    TrainStepOutput,
+    TrainingBuilder,
+    TrainingPlan,
+    TrainingStrategy,
+)
+
+
+class RegressionTrainingStrategy(TrainingStrategy):
+    """Interpret `(inputs, targets)` batches and compute the injected objective."""
+
+    def __init__(self, model: nn.Module, objective: nn.Module) -> None:
+        self._model = model
+        self._objective = objective
+
+    def training_step(self, batch: Any) -> TrainStepOutput:
+        if not isinstance(batch, (tuple, list)) or len(batch) != 2:
+            raise TypeError("regression batches must contain inputs and targets")
+        inputs, targets = batch
+        if not isinstance(inputs, torch.Tensor) or not isinstance(
+            targets,
+            torch.Tensor,
+        ):
+            raise TypeError("regression inputs and targets must be Tensors")
+        prediction = self._model(inputs)
+        loss = self._objective(prediction, targets)
+        if not isinstance(loss, torch.Tensor):
+            raise TypeError("regression objective must return a Tensor")
+        return TrainStepOutput(loss=loss, metrics={"regression_mse": loss.detach()})
+
+
+@REGISTRIES.training_builders.register("__STOCHAFLOW_PROJECT_SLUG__.regression")
+class RegressionTrainingBuilder(TrainingBuilder):
+    """Compose the injected model and MSE objective into one strategy."""
+
+    def build(self) -> TrainingPlan:
+        if self.context.params:
+            unknown = ", ".join(sorted(self.context.params))
+            raise ValueError(f"unknown training params: {unknown}")
+        if self.context.process is not None:
+            raise ValueError("the regression example does not use a Process")
+        objective = self.context.objective
+        if objective is None:
+            raise ValueError("the regression example requires an Objective")
+        strategy = RegressionTrainingStrategy(
+            self.context.primary_model,
+            objective,
+        )
+        return TrainingPlan(
+            strategy=strategy,
+            primary_model=self.context.primary_model,
+            process=self.context.process,
+            objective=objective,
+        )
+
+
+__all__ = ["RegressionTrainingBuilder", "RegressionTrainingStrategy"]

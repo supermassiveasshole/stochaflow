@@ -1,0 +1,85 @@
+"""Synthetic regression data used by the generated example."""
+
+from typing import Any
+
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+
+from stochaflow.extensions import (
+    DataBuilder,
+    DataLoaders,
+    REGISTRIES,
+)
+
+
+def _positive_int(params: dict[str, Any], name: str, default: int) -> int:
+    value = params.pop(name, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _dataset(
+    *,
+    num_samples: int,
+    input_features: int,
+    noise_std: float,
+    generator: torch.Generator,
+) -> TensorDataset:
+    inputs = torch.randn(num_samples, input_features, generator=generator)
+    weights = torch.linspace(0.5, 1.5, input_features).unsqueeze(1)
+    targets = inputs @ weights + 0.25
+    if noise_std:
+        targets = targets + noise_std * torch.randn(
+            targets.shape,
+            generator=generator,
+        )
+    return TensorDataset(inputs, targets)
+
+
+@REGISTRIES.data_builders.register(
+    "__STOCHAFLOW_PROJECT_SLUG__.synthetic-regression"
+)
+class SyntheticRegressionDataBuilder(DataBuilder):
+    """Assemble deterministic train and validation DataLoaders."""
+
+    def build(self) -> DataLoaders:
+        params = dict(self.context.params)
+        input_features = _positive_int(params, "input_features", 3)
+        train_samples = _positive_int(params, "train_samples", 32)
+        validation_samples = _positive_int(params, "validation_samples", 8)
+        batch_size = _positive_int(params, "batch_size", 8)
+        noise_std = params.pop("noise_std", 0.02)
+        if isinstance(noise_std, bool) or not isinstance(noise_std, (int, float)):
+            raise TypeError("noise_std must be numeric")
+        if noise_std < 0:
+            raise ValueError("noise_std must be non-negative")
+        if params:
+            raise ValueError(f"unknown data params: {', '.join(sorted(params))}")
+
+        generator = torch.Generator().manual_seed(self.context.seed)
+        train = _dataset(
+            num_samples=train_samples,
+            input_features=input_features,
+            noise_std=float(noise_std),
+            generator=generator,
+        )
+        validation = _dataset(
+            num_samples=validation_samples,
+            input_features=input_features,
+            noise_std=float(noise_std),
+            generator=generator,
+        )
+        shuffle_generator = torch.Generator().manual_seed(self.context.seed + 1)
+        return DataLoaders(
+            train=DataLoader(
+                train,
+                batch_size=batch_size,
+                shuffle=True,
+                generator=shuffle_generator,
+            ),
+            validation=DataLoader(validation, batch_size=batch_size),
+        )
+
+
+__all__ = ["SyntheticRegressionDataBuilder"]
