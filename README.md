@@ -62,8 +62,10 @@ Implemented:
 - recipe-local holdout/K-fold, multi-source mixtures, and dynamic pixel batches
 - registered tensor, image, and user-defined sampling artifact writers
 - registered TrainingBuilder composition with thin task-specific TrainingStrategy
-- reusable scalar Objectives and managed auxiliary modules for online/offline and
-  multi-teacher distillation under a single-optimizer lifecycle
+- reusable scalar Objectives and managed auxiliary modules for single-optimizer
+  training compositions
+- a fully exercised frozen-teacher distillation reference; offline and
+  multi-teacher policies remain extension-defined rather than core modes
 - UNet backbone with optional attention blocks
 - EMA tracking and EMA sampling
 - a project-owned warmup-cosine scheduler and direct native PyTorch optimizer/LR
@@ -281,10 +283,14 @@ selected best. Resume materializes the validated best in the new run before
 training, so later resume and sampling do not depend on the parent run.
 Strict resume also restores the checkpointed Python, NumPy, Torch CPU, and
 applicable CUDA RNG streams after all selected/best state validation. A device
-override remains allowed, but bitwise continuity is only promised for the same
-runtime and device topology. DataBuilder, Dataset, loader, worker, and sampler
-runtime state is not checkpointed; custom stochastic loaders must derive each
-epoch from the configured seed and a duck-typed `set_epoch(epoch)` contract.
+override remains allowed, but matching runtime and device topology is necessary,
+not sufficient, for bitwise continuity. DataBuilder, Dataset, loader, worker,
+and sampler runtime state is not checkpointed. The built-in image recipes
+rebuild shuffled index order from the configured seed and epoch; worker-side
+random crop/flip state is not restored and therefore is not guaranteed to match
+an uninterrupted run. Custom stochastic loaders own the same boundary and must
+derive each epoch from the configured seed and a duck-typed `set_epoch(epoch)`
+contract when continuity matters.
 
 Each run writes a timestamped directory under the configured output root:
 

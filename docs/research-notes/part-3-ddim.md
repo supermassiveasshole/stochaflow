@@ -53,10 +53,13 @@ $T$ 开始并以 $0$ 结束。对每一对相邻状态 $t\to s$，只在 source 
 $t\ge1$ 调用一次模型，并使用 model timestep $t-1$；noise schedule 同样读取内部
 index $t-1$。Clean state $0$ 不调用模型，整个公开层不存在 ``-1``。
 
-DDIM 与 DDPM 共享 Gaussian forward-training contract 和同一个 noise schedule
-抽象，但二者是同级 sampler：DDIM 不继承也不分配 DDPM posterior coefficients。
-DDIM reverse 只需要从公共噪声路径读取 source/target states 对应的
-$\bar\alpha_t$ 与 $\bar\alpha_s$，并保存自己特有的 $\eta$ 和 inference schedule。
+DDIM 与 DDPM 共享 `DiscreteGaussianProcess` 和 Gaussian Dynamics contract，但二者是
+同级 sampler：DDIM 不继承 DDPM，也不自行持有 coefficient buffers。Process 在构造期
+固定保存 marginal 与 adjacent-posterior snapshot，因此即使只选择 DDIM，Process state
+仍包含这一内聚的离散 Gaussian 数学状态。一般 selected-pair DDIM transition 从 Process
+读取 source/target marginal scales；当 $\eta=1$ 且执行 adjacent transition 时，内置实现
+复用 Process posterior mean/standard deviation，以保持与 ancestral transition 的数值
+一致性。DDIM 自己只保存 $\eta$ 和 inference schedule 配置。
 
 时间方向统一如下：
 

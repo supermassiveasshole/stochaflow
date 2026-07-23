@@ -122,6 +122,46 @@ def test_image_holdout_and_single_kfold_are_deterministic(tmp_path: Path) -> Non
     assert first_indices == repeated_indices
 
 
+@pytest.mark.parametrize("recipe", ["image", "super_resolution"])
+def test_shuffled_recipe_index_order_is_rebuilt_from_seed_and_epoch(
+    tmp_path: Path,
+    recipe: str,
+) -> None:
+    _folder(tmp_path, 12, size=(20, 16))
+    if recipe == "image":
+        component = _image_component(tmp_path)
+    else:
+        component = ComponentConfig(
+            name="super_resolution",
+            params={
+                "source": {"kind": "image_folder", "path": str(tmp_path)},
+                "partition": {"mode": "none"},
+                "image": {
+                    "high_resolution": [12, 12],
+                    "low_resolution": [4, 4],
+                    "channels": 3,
+                    "normalize": False,
+                    "random_horizontal_flip": False,
+                },
+                "low_resolution": {"kind": "bicubic"},
+                "loader": _loader_params(shuffle=True),
+            },
+        )
+    component.params["loader"]["shuffle"] = True
+
+    uninterrupted = cast(Any, build_data_loaders(component, seed=17).train)
+    uninterrupted.sampler.set_epoch(1)
+    epoch_one = list(uninterrupted.sampler)
+    uninterrupted.sampler.set_epoch(2)
+    epoch_two = list(uninterrupted.sampler)
+
+    rebuilt = cast(Any, build_data_loaders(component, seed=17).train)
+    rebuilt.sampler.set_epoch(2)
+
+    assert epoch_one != epoch_two
+    assert list(rebuilt.sampler) == epoch_two
+
+
 def test_kfold_requires_one_explicit_fold(tmp_path: Path) -> None:
     _folder(tmp_path, 6)
     with pytest.raises(ConfigError, match="fold_index is required"):

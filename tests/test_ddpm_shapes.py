@@ -8,6 +8,7 @@ import torch
 from stochaflow.processes import (
     DiscreteGaussianDenoisingProcess,
     DiscreteGaussianProcess,
+    GaussianScales,
 )
 from stochaflow.sampling import (
     DDIMSampler,
@@ -258,6 +259,103 @@ def test_prediction_parameterizations_convert_to_same_clean_and_epsilon(
 
     assert torch.allclose(prediction.clean, clean, atol=1e-5)
     assert torch.allclose(prediction.epsilon, epsilon, atol=1e-5)
+
+
+def test_v_prediction_conversion_does_not_assume_unit_normalized_scales() -> None:
+    class NonNormalizedGaussianProcess(DiscreteGaussianDenoisingProcess):
+        @property
+        def clean_time(self) -> int:
+            return 0
+
+        @property
+        def terminal_time(self) -> int:
+            return 1
+
+        def sample_terminal_prior(
+            self,
+            shape,
+            *,
+            device,
+            dtype=torch.float32,
+            generator=None,
+        ):
+            return torch.randn(
+                shape,
+                device=device,
+                dtype=dtype,
+                generator=generator,
+            )
+
+        def sample_marginal(
+            self,
+            clean,
+            state_times,
+            *,
+            noise=None,
+            generator=None,
+        ):
+            if noise is None:
+                noise = torch.randn(
+                    clean.shape,
+                    device=clean.device,
+                    dtype=clean.dtype,
+                    generator=generator,
+                )
+            scales = self.marginal_scales(state_times, clean.size())
+            return scales.signal * clean + scales.noise * noise, noise
+
+        def marginal_scales(self, state_times, broadcast_shape):
+            self.validate_noisy_state_times(state_times)
+            shape = (state_times.shape[0],) + (1,) * (len(broadcast_shape) - 1)
+            return GaussianScales(
+                torch.full(shape, 2.0, device=state_times.device),
+                torch.full(shape, 3.0, device=state_times.device),
+            )
+
+        def validate_noisy_state_times(self, state_times):
+            if (
+                state_times.ndim != 1
+                or state_times.dtype != torch.long
+                or bool(torch.any(state_times != 1))
+            ):
+                raise ValueError("state_times must contain only terminal time 1")
+            return state_times
+
+        def posterior_mean(
+            self,
+            state,
+            state_times,
+            clean_prediction,
+        ):
+            self.validate_noisy_state_times(state_times)
+            return clean_prediction
+
+        def posterior_standard_deviation(self, state_times, broadcast_shape):
+            self.validate_noisy_state_times(state_times)
+            return torch.zeros(
+                (state_times.shape[0],) + (1,) * (len(broadcast_shape) - 1),
+                device=state_times.device,
+            )
+
+    process = NonNormalizedGaussianProcess()
+    clean = torch.randn(2, 3)
+    epsilon = torch.randn_like(clean)
+    times = torch.ones(2, dtype=torch.long)
+    scales = process.marginal_scales(times, clean.size())
+    state = scales.signal * clean + scales.noise * epsilon
+    velocity = scales.signal * epsilon - scales.noise * clean
+
+    prediction = normalize_gaussian_prediction(
+        process,
+        state,
+        times,
+        velocity,
+        prediction_type="v",
+        clip_denoised=False,
+    )
+
+    assert torch.allclose(prediction.clean, clean)
+    assert torch.allclose(prediction.epsilon, epsilon)
 
 
 def test_clipping_recomputes_epsilon_from_clipped_clean_prediction() -> None:

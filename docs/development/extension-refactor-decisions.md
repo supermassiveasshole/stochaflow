@@ -483,6 +483,12 @@ override 可运行，但跨设备/拓扑不保证 bitwise continuity。DataBuild
 worker、sampler 和用户 generator 属于扩展 runtime，不进入核心 checkpoint；自定义随机 loader
 必须通过 seed + epoch/`set_epoch` 自行满足可重建性。
 
+最终分支审查进一步发现，PyTorch 默认 `RandomSampler` 会让重建后的内置 image/SR loader
+从第一轮 permutation 重新开始。内置 recipe 因此改用私有 epoch-aware sampler，与已有
+multi-resolution batch sampler 一样从 seed + epoch 重建索引顺序。仍刻意不把 worker 或
+随机 transform 状态放入核心 checkpoint：多 worker 的 crop/flip 不保证逐位连续，需要时由
+具体 DataBuilder 提供 stateless augmentation 或更窄的 worker 生命周期。
+
 TrainingDiagnostic 是观察性扩展。Trainer 在每个 diagnostic lifecycle callback 外隔离并恢复
 Python、NumPy 和 Torch 全局 RNG；这同时避免 strict resume 重新触发 `on_fit_start` 时改变
 后续训练随机流。需要跨 callback 延续随机状态的 diagnostic 应持有自己的 generator。
@@ -662,9 +668,9 @@ target-aware 通用 Dynamics，以及把 physics 参数加入内置 DDIM。
 
 ## Stage 8 实施检查点（已完成）
 
-状态：可复现性 metadata、缺失插件诊断、迁移/教程/API 文档、最终报告草案、聚焦验证和
-独立审查均已完成；最终整分支 diff、完整测试/build 和最终架构审查留给 Final Refactor
-Completion Loop。
+状态：可复现性 metadata、缺失插件诊断、迁移/教程/API 文档、最终报告、聚焦验证和
+独立审查均已完成；检查点为 `72e2395`。整分支 diff、完整测试/build 和最终架构审查也已
+在 Final Refactor Completion Loop 中完成。
 
 ### 收口边界
 
@@ -709,3 +715,24 @@ Completion Loop。
   Sphinx `-W --keep-going` 通过。
 
 逻辑提交主题：`Stage 8: Complete extension reproducibility`。
+
+## Final Refactor Completion Loop（已完成）
+
+最终审查基于 merge base `231bfc7` 的完整 branch diff，而不是只检查 Stage 8。三个独立
+review 方向均未发现 Critical/High。最终发现和处理如下：
+
+- Gaussian `v` prediction 的反解原先隐含
+  `signal² + noise² == 1`；改为除以该尺度能量，并用独立的非单位归一化
+  `DiscreteGaussianDenoisingProcess` 回归验证，保持 family 契约的 Liskov substitution；
+- model/objective/logger/diagnostic/noise-schedule Registry 的类型约束原先部分依赖
+  factory 导入时机；约束移到 Registry 构造或公共契约定义边界，并用不导入 factory 的
+  subprocess 验证；
+- image/SR 的 PyTorch 默认 shuffle 在 resume 后会重放首轮顺序；改用 recipe 私有
+  `(seed, epoch)` sampler，与 multi-resolution 的既有 epoch contract 对齐。worker 随机增强
+  状态仍不进 checkpoint，作为明确限制保留；
+- sampling `process: null` 权威规则、Stage 2/3 research notes、README 能力范围和
+  Stage 8 状态中的文档漂移均已修正。
+
+三个代码/架构 Medium 均已独立复审关闭。保留的 multi-worker augmentation、
+整体物化式 sampling、mutable best、无 warm-start 和单 optimizer 等边界均在最终报告中
+列出，不以隐藏兼容层或临时抽象扩大本 feature。

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections.abc import Callable, Sequence, Sized
+from collections.abc import Callable, Iterator, Sequence, Sized
 import random
 from typing import Any, cast
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset, Sampler, Subset
 
 from stochaflow.data.builder import DataBuilder, DataBuilderContext, DataLoaders
 from stochaflow.data.partition import partition_datasets, validate_partition
@@ -117,6 +117,29 @@ def _loader_kwargs(config: LoaderRecipeConfig, *, seed: int) -> dict[str, Any]:
     return kwargs
 
 
+class _EpochRandomSampler(Sampler[int]):
+    """Rebuild one deterministic shuffled index stream from seed and epoch."""
+
+    def __init__(self, dataset: Dataset[Any], *, seed: int) -> None:
+        self.size = len(cast(Sized, dataset))
+        self.seed = seed
+        self.epoch = 0
+
+    def __iter__(self) -> Iterator[int]:
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        yield from torch.randperm(self.size, generator=generator).tolist()
+
+    def __len__(self) -> int:
+        return self.size
+
+    def set_epoch(self, epoch: int) -> None:
+        """Select the shuffled index stream for one training epoch."""
+
+        if epoch < 0:
+            raise ValueError("epoch must be non-negative")
+        self.epoch = epoch
+
+
 def _build_loader(
     dataset: Dataset[Any] | None,
     config: LoaderRecipeConfig,
@@ -127,10 +150,16 @@ def _build_loader(
 ) -> DataLoader[Any] | None:
     if dataset is None:
         return None
+    sampler = (
+        _EpochRandomSampler(dataset, seed=seed)
+        if training and config.shuffle
+        else None
+    )
     return DataLoader(
         dataset,
         batch_size=config.batch_size,
-        shuffle=config.shuffle if training else False,
+        shuffle=False,
+        sampler=sampler,
         drop_last=config.drop_last if training else False,
         collate_fn=collate_fn,
         **_loader_kwargs(config, seed=seed),

@@ -2,7 +2,7 @@
 
 import pytest
 
-from stochaflow.utils.registry import Registry, RegistryError
+from stochaflow.utils.registry import Registry, RegistryCatalog, RegistryError
 
 
 class Base:
@@ -42,3 +42,11 @@ def test_registry_unknown_error_lists_available_names() -> None:
 
     with pytest.raises(RegistryError, match="Available: example"):
         registry.resolve("missing")
+
+
+@pytest.mark.parametrize("kind", ["models", "objectives"])
+def test_catalog_installs_native_module_constraints_immediately(kind: str) -> None:
+    component_registry = getattr(RegistryCatalog(), kind)
+
+    with pytest.raises(RegistryError, match="must inherit"):
+        component_registry.add("wrong_base", object)

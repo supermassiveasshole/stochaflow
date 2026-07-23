@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from stochaflow.processes import GaussianNoiseSchedule, Process
+from stochaflow.processes import Process
 from stochaflow.training import (
     DiagnosticBuildContext,
     Trainer,
@@ -51,12 +51,6 @@ def load_builtin_components() -> None:
 
 
 load_builtin_components()
-REGISTRIES.models.require_base(nn.Module)
-REGISTRIES.noise_schedules.require_base(GaussianNoiseSchedule)
-REGISTRIES.processes.require_base(Process)
-REGISTRIES.objectives.require_base(nn.Module)
-REGISTRIES.loggers.require_base(ExperimentLogger)
-REGISTRIES.diagnostics.require_base(TrainingDiagnostic)
 
 
 @dataclass(slots=True)

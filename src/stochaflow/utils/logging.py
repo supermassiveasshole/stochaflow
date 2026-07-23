@@ -85,6 +85,9 @@ class ExperimentLogger(ABC):
         """Flush and close backend resources."""
 
 
+REGISTRIES.loggers.require_base(ExperimentLogger)
+
+
 class NullLogger(ExperimentLogger):
     """No-op logger used when logging is intentionally disabled."""
 

@@ -1,5 +1,8 @@
 """Tests for the stable third-party extension API."""
 
+import subprocess
+import sys
+
 import pytest
 
 from stochaflow import data, processes, sampling, training
@@ -120,13 +123,52 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
 @pytest.mark.parametrize(
     "component_registry",
     (
+        registry.REGISTRIES.models,
+        registry.REGISTRIES.data_builders,
+        registry.REGISTRIES.sampling_artifact_writers,
+        registry.REGISTRIES.noise_schedules,
         registry.REGISTRIES.processes,
         registry.REGISTRIES.samplers,
         registry.REGISTRIES.sampling_builders,
+        registry.REGISTRIES.training_builders,
+        registry.REGISTRIES.objectives,
+        registry.REGISTRIES.optimizers,
+        registry.REGISTRIES.lr_schedulers,
+        registry.REGISTRIES.loggers,
+        registry.REGISTRIES.diagnostics,
     ),
 )
-def test_stage3_registries_reject_wrong_base_at_public_import_time(
+def test_public_registries_reject_wrong_base_at_public_import_time(
     component_registry: registry.Registry,
 ) -> None:
     with pytest.raises(registry.RegistryError, match="must inherit"):
-        component_registry.add("stage3_wrong_base", object)
+        component_registry.add("public_wrong_base", object)
+
+
+def test_public_import_installs_contracts_without_factory_side_effect() -> None:
+    script = """
+import sys
+from stochaflow import extensions
+
+assert "stochaflow.utils.factory" not in sys.modules
+registries = (
+    extensions.REGISTRIES.models,
+    extensions.REGISTRIES.noise_schedules,
+    extensions.REGISTRIES.objectives,
+    extensions.REGISTRIES.loggers,
+    extensions.REGISTRIES.diagnostics,
+)
+for index, component_registry in enumerate(registries):
+    try:
+        component_registry.add(f"wrong_base_{index}", object)
+    except extensions.RegistryError:
+        continue
+    raise AssertionError(f"{component_registry.kind} accepted the wrong base")
+"""
+
+    subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )

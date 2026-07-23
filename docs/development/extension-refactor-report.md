@@ -1,8 +1,9 @@
-# Extension 重构最终报告（草案）
+# Extension 重构最终报告
 
-> 状态：Stage 1–7 已形成检查点；Stage 8 的可复现性与文档收口已进入实现，
-> 但整分支最终验收尚未执行。本文中的最终验证项均明确标记为 **待执行**，
-> 不应据此声称 feature branch 已可合并。
+> 状态：Stage 1–8 检查点、merge-base 全分支审查、最终修复与完整验收均已完成。
+> 独立最终审查未发现遗留 Critical/High；三个代码/架构 Medium 已修复并经独立
+> 复审关闭。最终完成提交主题为
+> `Extension support: complete extension refactor`。
 >
 > 对比基线：`codex/refactor-diffusion-schedules`
 >（merge base `231bfc76340b3a4b81e4b38dd60d228d5b78fb00`）。
@@ -109,7 +110,7 @@ core
 | 5 | 用 packaging entry point 取代 module bootstrap；加入插件 provenance、版本策略、`stochaflow init`、strict resume 与 weights-only-safe checkpoint v8 | `dfde7a6` |
 | 6 | 量化整体物化式 SamplingOutput/Writer 容量，保留现有 API，并明确 full dense trajectory 不受支持 | `abb4a29` |
 | 7 | 交付两个独立 reference distribution；完成 tiny E2E、wheel/entry-point、真实 Physics production-path smoke 和复审修复 | `d9f0855`、`879ed0d` |
-| 8 | 增加顶层 `selected_components` 审计摘要、包管理器中立的缺失插件诊断、迁移/教程/最终报告；checkpoint 仍为 v8 | **实现中；检查点待创建** |
+| 8 | 增加顶层 `selected_components` 审计摘要、包管理器中立的缺失插件诊断、迁移/教程/最终报告；checkpoint 仍为 v8 | `72e2395` |
 
 Stage 2 的第一次实现曾试图把扩展点上移到一个仍然统一 Dataset、split、metadata 和
 mixture 的 `DataPipeline`。该方向经架构复审后被明确替换，不保留旧公共类型兼容层。
@@ -385,6 +386,31 @@ baseline 和 guided reconstruction SHA-256 分别为
 完整单样本 solver schedule，不能称为“完整 production training”“full workload”或
 “scientific reproduction”。
 
+## 最终分支审查与修复
+
+最终审查从 merge base `231bfc7` 比较整个 feature branch，覆盖 199 个变更文件，而不是
+只复查最后一个 Stage。结论是当前架构已经从任务专用原型形成可长期维护的 framework
+边界：Data、Training、Process/Dynamics/Sampler、Sampling、插件发现和持久化各自具有
+单一 composition root，reference projects 也实际证明了不修改核心 dispatch 的扩展路径。
+
+独立 architecture、code/API 和 documentation/regression reviewer 均报告
+Critical/High 为零。最终 Medium 均已处理：
+
+1. Gaussian `v` prediction 的逆变换原先只对 VP 的单位尺度归一化成立。实现现在显式除以
+   `signal² + noise²`，独立非单位归一化 Process 测试证明训练 target 与 sampling
+   normalization 互逆；原 code reviewer 复审关闭。
+2. model、Objective、logger、diagnostic 和 noise schedule 的 Registry 类型约束原先部分
+   等待 factory 导入。约束已移到 Registry 构造或契约定义边界，fresh subprocess 证明
+   `stochaflow.extensions` 不导入 factory 也会立即拒绝错误注册；独立复审关闭。
+3. image/SR 使用 PyTorch 默认 `RandomSampler` 时，重建 loader 会重放首轮 shuffle。
+   recipe 现使用私有 epoch-aware sampler，并分别验证 image/SR 的重建 epoch 顺序与不中断
+   运行一致；独立复审关闭。worker 随机增强的剩余限制在下节明确保留。
+4. 文档 review 发现的 `process: null` sampling 权威语义、旧 diffusion research-note
+   架构描述、能力范围措辞和 Stage 状态漂移均已修正，并重新通过 Sphinx `-W`。
+
+最终 diff 没有恢复 legacy `data.modules`、旧 checkpoint/API 或按任务名称分支，也没有为
+关闭 review finding 引入新的 public abstraction。
+
 ## 已知限制
 
 - 自动训练 loop 只支持一个 optimizer、一个标量总 loss 和一次 backward；
@@ -398,8 +424,9 @@ baseline 和 guided reconstruction SHA-256 分别为
   尚未提供独立 `--init-from` 入口；
 - arbitrary historical resume 依赖仍匹配的 mutable sibling `best.pt`；没有 immutable
   per-epoch best snapshot；
-- DataLoader/worker/user sampler runtime state 不进入 checkpoint；可复现性依赖 seed、
-  epoch 和扩展自己的 `set_epoch()`；
+- DataLoader/worker/user sampler runtime state 不进入 checkpoint；内置图像 recipe 可由
+  seed + epoch 重建索引顺序，但多 worker 随机 crop/flip 不保证逐位连续；自定义数据路径
+  需要自己的 `set_epoch()` 或 stateless augmentation；
 - learnable/mutable Gaussian schedule 不在固定 Process-owned coefficient snapshot 契约内；
 - 自适应、rejection 或 early-stop solver 应在 Builder metadata 中显式记录真实 accepted
   step 数；通用 runtime 尚不强制该字段；
@@ -424,25 +451,24 @@ baseline 和 guided reconstruction SHA-256 分别为
 
 ## 最终验证状态
 
-Stage 1–7 各自执行过聚焦测试、Ruff/Pyright 和相应独立审查；Stage 6/7 另有上述提交的
-机器证据。但这不等于当前 Stage 8 工作树已经通过整分支门禁。
-
-下表是合并前必须执行的最终命令。状态栏在真实运行并保存结果前不得改成“通过”。
+Stage 1–8 各自完成了聚焦测试、Ruff/Pyright、文档记录、独立审查和逻辑 checkpoint；
+Stage 6/7 另有上述提交的机器证据。最终修复后的整分支门禁结果如下。
 
 | 验证 | 状态 | 结果/修复记录 |
 | --- | --- | --- |
-| `uv run python tools/generate_config_reference.py` | **待执行** | — |
-| `uv run python tools/generate_config_reference.py --check` | **待执行** | — |
-| `uv run pytest` | **待执行** | — |
-| `uv run ruff check .` | **待执行** | — |
-| `uv run pyright` | **待执行** | — |
-| `uv build` | **待执行** | — |
-| `uv run sphinx-build -W --keep-going -b html docs docs/_build/html` | **待执行** | — |
-| merge-base 全分支 diff 架构复审 | **待执行** | — |
-| 独立最终代码审查及 finding 收口 | **待执行** | — |
+| `uv run python tools/generate_config_reference.py` | **通过** | 重新生成后无版本控制差异 |
+| `uv run python tools/generate_config_reference.py --check` | **通过** | reference 已是最新 |
+| `uv run pytest` | **通过** | `501 passed, 1 skipped`；仅因 CUDA 不可用跳过一个 runtime test |
+| `uv run ruff check .` | **通过** | 无 finding |
+| `uv run pyright` | **通过** | `0 errors, 0 warnings, 0 informations` |
+| `uv build` | **通过** | 生成 `stochaflow-0.1.0` wheel 与 sdist |
+| `uv run sphinx-build -W --keep-going -b html docs docs/_build/html` | **通过** | 无 warning |
+| merge-base 全分支 diff 架构复审 | **通过** | Critical/High 为零；两个 architecture Medium 已修复并复审关闭 |
+| 独立最终代码/API 审查 | **通过** | Critical/High 为零；Gaussian `v` Medium 已修复并复审关闭 |
+| 独立文档/回归审查 | **通过** | Critical/High 为零；文档漂移已修复，剩余限制显式记录 |
 
-最终验收完成后，还应在本表记录实际命令结果、必要修复和最终 commit，而不是仅修改顶部
-状态文字。
+最终 checkpoint 为包含本报告的
+`Extension support: complete extension refactor` 逻辑提交。
 
 ## 相关资料
 

@@ -1,6 +1,6 @@
 # 自定义代码扩展支持实施计划
 
-- 状态：Stage 8 完成，最终整分支验收待执行
+- 状态：Stage 1–8 与最终整分支验收均已完成
 - 制定日期：2026-07-17
 - 最近修订：2026-07-23
 - 目标分支：`feature/custom-code-extension-support`
@@ -1457,7 +1457,8 @@ Stochaflow 版本；这是 scaffold API 快照，而非跨版本兼容承诺。�
   resolved config/checkpoint 持久化、训练后采样与 checkpoint-only sampling；
 - resume：按 strict-resume/warm-start 边界覆盖命令互斥与 state 恢复范围，另验证
   新 run/旧 state 的 lineage、安全 CLI override 持久化、必需 progress/RNG 字段、全局 RNG
-  roundtrip 与 stochastic uninterrupted-vs-resume 等价，以及不兼容资产由 state contract 拒绝；
+  roundtrip 与 process-global stochastic uninterrupted-vs-resume 等价，以及不兼容资产由
+  state contract 拒绝；
 - scaffold：合法/连字符名称、非法名称、空目录、非空目录、确定性文件内容、合法
   `pyproject.toml`、模板资源完整、symlink/path traversal/隐藏文件拒绝和失败无半成品；
 - plugin discovery：显式列表、全量发现、空列表、确定性顺序、同名冲突、缺失 target、
@@ -1516,8 +1517,9 @@ Stage loop 的只读独立审查发现并修复了以下实现边界问题：
   `os.replace()`，失败清理临时项，不暴露半写 checkpoint。
 - **strict resume 随机流与 progress：** v8 保存 weights-only-safe 的 Python、NumPy、Torch
   CPU/CUDA RNG snapshot，缺失或非法 `epoch`/`global_step` 在修改训练资产前拒绝；全部
-  selected/inherited-best state 验证后才恢复适用随机流，并以随机训练不中断/中断续训等价
-  回归覆盖。Trainer 在每个 public diagnostic 回调边界隔离三类全局 RNG，使观察性扩展不
+  selected/inherited-best state 验证后才恢复适用随机流，并以不依赖 DataLoader 私有状态的
+  随机训练不中断/中断续训等价回归覆盖。Trainer 在每个 public diagnostic 回调边界隔离三类
+  全局 RNG，使观察性扩展不
   改写训练随机流，也不会因 resume 再次执行 `on_fit_start` 而产生分叉；best/latest
   checkpoint 之后发生的 logger/reporter 回调采用同样隔离，保证保存点就是下一轮的随机
   边界。
@@ -2047,10 +2049,10 @@ uv build
 uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 ```
 
-这些命令在 Stage checkpoint 后按 Final Refactor Completion Loop 统一执行并写回最终报告，
-不能用本节的聚焦结果代替。
+这些命令已在 Stage checkpoint 后按 Final Refactor Completion Loop 统一执行，结果写入
+最终报告；本节的聚焦结果不替代整分支门禁。
 
-Stage checkpoint 逻辑提交主题：`Stage 8: Complete extension reproducibility`。
+Stage checkpoint：`72e2395 Stage 8: Complete extension reproducibility`。
 
 ## Open–Closed 验收矩阵
 

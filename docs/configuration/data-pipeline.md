@@ -155,6 +155,18 @@ B_b = \max\left(1, \left\lfloor B_0
 \frac{H_{base}W_{base}}{H_bW_b}\right\rfloor\right)
 $$
 
+## Epoch 与恢复边界
+
+三个内置 recipe 的训练 sampler 都根据 experiment seed 与 epoch 重建索引顺序：
+`image`/`super_resolution` 使用 recipe 私有的 epoch-aware shuffle，
+`multi_resolution_image` 使用自己的 `set_epoch()` batch sampler。因此在数据与配置不变时，
+strict resume 可以重建对应 epoch 的索引/batch 顺序。
+
+checkpoint 不保存 DataLoader iterator、worker 或 transform 的随机状态。使用
+`num_workers > 0` 的随机 crop/flip 不保证与不中断运行产生逐位相同的 batch Tensor；
+需要这一保证的任务应使用无 worker 随机增强、stateless `(seed, epoch, sample index)`
+增强，或在自定义 DataBuilder 中实现自己的恢复契约。
+
 ## 自定义 DataBuilder
 
 复杂数据逻辑应直接使用 Python 和 PyTorch，而不是扩展一份通用 YAML 拓扑：

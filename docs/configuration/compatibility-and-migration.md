@@ -12,6 +12,8 @@
 | 顶层 `diffusion` 与 `REGISTRIES.diffusions` | 可选 `process` 与 family-specific Process/Dynamics/Sampler | Gaussian 任务使用 `discrete_gaussian`；无 model-free probability path 的方法可以写 `process: null` |
 | `stochaflow.diffusion`、`GaussianDiffusion` 绑定模型与采样循环 | `stochaflow.processes`、family Dynamics、`Sampler.sample()` 和 `SamplingBuilder` 分责 | 第三方代码只从 `stochaflow.extensions` 导入公共契约；由 Builder 组合模型、condition、Dynamics、initial state 与 Sampler |
 | 顶层 `sampling.sampler`、`sampling.debug`、`grid_nrow` | `sampling.builder`、Builder 私有 sampler/trajectory 参数与 `sampling.writers` | 把求解器配置移入所选 SamplingBuilder 的 `params`，把输出格式参数移入对应 writer 的 `params` |
+| `sampling.batch_size: null` 回退到 data-loader batch size | 独立的正整数 `sampling.batch_size` | 按推理容量单独设置 sampling batch；不要假设训练数据配置会影响采样 |
+| 从图像 data/bucket 隐式推断 sample shape 与图像输出 | 可选 `sampling.shape`、Builder 自己的 initial state 和显式 writer 列表 | 固定-shape Builder 明确声明 shape；无固定 shape 的 Builder 可用 `null`；按所需 artifact 显式选择 tensor/image/custom writer |
 | 固定 Gaussian epsilon 训练路径 | `training: {name, params}` 选择 `TrainingBuilder`，其返回 `TrainingPlan` 与 `TrainingStrategy` | 在 Builder 中组装模型、可选 Process/Objective 和辅助模块；Strategy 只解释 batch 并计算 loss/metrics |
 | Stochaflow 为 PyTorch optimizer/scheduler 复制别名和参数 | `torch.optim.<Class>` 与 `torch.optim.lr_scheduler.<Class>` allowlisted native provider | 在 `params` 中直接传上游构造参数；仅真正的第三方子类需要 Registry |
 | sampler-specific CLI flags | 完整 config、sampling-only overlay 和通用 sampling CLI 覆盖 | 将 sampler-specific 选择写入 SamplingBuilder 的配置，不依赖命令级分支 |

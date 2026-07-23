@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Generic, TypeVar, cast
 
+import torch.nn as nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -157,7 +158,10 @@ class RegistryCatalog:
     """Application-wide collection of typed component registries."""
 
     def __init__(self) -> None:
-        self.models: Registry[type[Any]] = Registry("model")
+        self.models: Registry[type[Any]] = Registry(
+            "model",
+            expected_type=nn.Module,
+        )
         self.data_builders: Registry[type[Any]] = Registry("data builder")
         self.sampling_artifact_writers: Registry[type[Any]] = Registry(
             "sampling artifact writer"
@@ -167,7 +171,10 @@ class RegistryCatalog:
         self.samplers: Registry[type[Any]] = Registry("sampler")
         self.sampling_builders: Registry[type[Any]] = Registry("sampling builder")
         self.training_builders: Registry[type[Any]] = Registry("training builder")
-        self.objectives: Registry[type[Any]] = Registry("objective")
+        self.objectives: Registry[type[Any]] = Registry(
+            "objective",
+            expected_type=nn.Module,
+        )
         self.optimizers: Registry[type[Optimizer]] = Registry(
             "optimizer",
             expected_type=Optimizer,

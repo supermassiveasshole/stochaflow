@@ -12,6 +12,7 @@ import torch
 
 from stochaflow.sampling import SamplingObservation
 from stochaflow.utils.logging import ExperimentLogger
+from stochaflow.utils.registry import REGISTRIES
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,9 @@ class TrainingDiagnostic(ABC):
         """Process one completed training epoch."""
 
         del event
+
+
+REGISTRIES.diagnostics.require_base(TrainingDiagnostic)
 
 
 @dataclass(frozen=True, slots=True)

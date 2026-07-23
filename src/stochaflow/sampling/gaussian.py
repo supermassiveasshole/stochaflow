@@ -246,8 +246,9 @@ def normalize_gaussian_prediction(
         clean = model_output
         epsilon = (state - signal * clean) / noise
     elif prediction_type == "v":
-        clean = signal * state - noise * model_output
-        epsilon = noise * state + signal * model_output
+        scale_energy = signal.square() + noise.square()
+        clean = (signal * state - noise * model_output) / scale_energy
+        epsilon = (noise * state + signal * model_output) / scale_energy
     else:
         epsilon = -noise * model_output
         clean = (state - noise * epsilon) / signal

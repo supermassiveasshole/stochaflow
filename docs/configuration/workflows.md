@@ -169,8 +169,10 @@ checkpoint load 不修改全局 RNG。sampling 不恢复 checkpoint RNG snapshot
 全局 RNG。device override 仍受支持，但跨设备或 CUDA topology 不保证逐位一致。
 
 checkpoint 不保存 DataBuilder、Dataset、DataLoader iterator/worker、Sampler 或用户私有
-generator 的 runtime state。自定义随机 loader 应由 experiment seed 和 epoch 确定，并在需要
-时响应 duck-typed `set_epoch(epoch)`；核心只承诺 epoch-boundary 的全局 RNG 与训练资产恢复。
+generator 的 runtime state。内置图像 recipe 会由 experiment seed 与 epoch 重建索引顺序，
+但 worker 侧随机 crop/flip 不保证与不中断运行逐位一致。自定义随机 loader 应同样由 seed
+和 epoch 确定，并在需要时响应 duck-typed `set_epoch(epoch)`；核心只承诺 epoch-boundary
+的全局 RNG 与训练资产恢复。
 若 checkpoint config 保存的是相对 output path，它仍以本次进程启动 cwd 解释；从其他目录
 恢复时应显式传 `--output-dir`。DataBuilder 私有 params 中的相对路径遵循同一 cwd 规则，
 核心不会猜测并重写不透明字段。
@@ -344,7 +346,10 @@ uv run stochaflow sample --config configs/ddpm_mnist.yaml
 sampling 不恢复 optimizer/scheduler state，因此外部配置可以改变 `num_samples`、
 `batch_size`、`shape`、SamplingBuilder、Sampler/solver 参数、trajectory、writers 以及
 raw/EMA 选择。核心不比较两份完整 config 或根据字段名推断兼容性；最终配置构建的
-model/Process 必须能严格加载 checkpoint state，否则由正常 state contract 报错。
+primary model 必须能严格加载 checkpoint state。若最终配置仍选择 Process，该 Process
+也必须严格加载对应 state；但完整外部 config 可以明确写 `process: null`，让兼容的
+direct-transform Builder 不构建 Process，并丢弃 checkpoint 中未使用的 Process state。
+lightweight overlay 与 checkpoint-only sampling 不具备这个“删除算法资产”的权限。
 
 lightweight overlay 中 `extensions: {}` 保留 checkpoint 的插件 selection；只有 raw YAML
 明确含 `extensions.plugins` 时才完整替换，不执行追加/去重 merge。完整外部 config 也按

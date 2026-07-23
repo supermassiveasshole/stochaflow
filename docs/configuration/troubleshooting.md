@@ -226,15 +226,19 @@ Strict resume 还要求合法的 `epoch`、`global_step` 和 RNG snapshot；缺�
 checkpoint 读取不修改全局 RNG；sampling 不恢复该 snapshot，但会按 `sampling.seed`（为
 `null` 时使用 `experiment.seed`）重置 Python、NumPy 与 Torch 全局 RNG。跨 CPU/CUDA 或
 不同 CUDA topology 不保证逐位复现。DataBuilder/DataLoader/Sampler/worker 的运行态不进入
-checkpoint；自定义随机 loader 应由 seed 与 epoch 确定，并按需实现 `set_epoch(epoch)`。
+checkpoint。内置图像 recipe 会从 seed 与 epoch 重建 shuffle/batch 索引，但 worker 中的
+随机 crop/flip state 不恢复，因此这类增强不保证逐位连续。自定义随机 loader 应由 seed 与
+epoch 确定，并按需实现 `set_epoch(epoch)`。
 
 ### 完整外部 sampling config 加载 checkpoint state 失败
 
 同时传完整 `--config` 与 `--checkpoint` 时，外部 config 整体权威，checkpoint 只提供
 state；核心不会先比较两份完整配置。可以自由改变 sampling 数量、shape、Builder、Sampler、
-solver、trajectory、writers 和 raw/EMA 选择，但外部 config 构建的 model/Process 仍必须
-满足 checkpoint 的 state contract。missing/unexpected key 或 shape mismatch 应通过修改
-外部组件配置解决，而不是期待自动 merge。
+solver、trajectory、writers 和 raw/EMA 选择。primary model 始终必须满足 checkpoint
+state contract；若外部 config 选择 Process，该 Process 也必须严格加载对应 state。
+完整外部 config 还可以明确写 `process: null`，用兼容的 direct-transform Builder 丢弃
+checkpoint 中未使用的 Process state。除此之外的 missing/unexpected key 或 shape mismatch
+应通过修改外部组件配置解决，而不是期待自动 merge。
 
 只想改变 sampling 时，可以提供仅含完整 `sampling` 段与可选 `extensions` 的 lightweight
 overlay。`extensions: {}` 保留 checkpoint selection；只有明确写出 `extensions.plugins`

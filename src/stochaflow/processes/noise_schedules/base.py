@@ -7,6 +7,8 @@ from typing import cast
 import torch
 import torch.nn as nn
 
+from stochaflow.utils.registry import REGISTRIES
+
 
 @dataclass(frozen=True, slots=True)
 class GaussianScales:
@@ -57,6 +59,9 @@ class GaussianNoiseSchedule(nn.Module, ABC):
 
         scales = self.marginal_scales(state_times)
         return scales.signal.square() / scales.noise.square()
+
+
+REGISTRIES.noise_schedules.require_base(GaussianNoiseSchedule)
 
 
 __all__ = ["GaussianNoiseSchedule", "GaussianScales"]
