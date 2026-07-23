@@ -39,12 +39,23 @@ schedule 是 `[240, 232, ..., 8, 0]`，initial marginal 与第一个 reverse sou
 非零 CFG weight：参考 conditional wrapper 会自行计算 condition，第三 positional 参数在
 无 label 模式下并不构成可靠的 conditional/unconditional CFG 语义。
 
-Stage 7 还在真实 `[40, 320, 256, 256] float32` mmap 数据上完成了一个
-`[1, 3, 256, 256]` MPS 容量 smoke：生产 `T=1000, t=240` 下的训练反传、两步 baseline
-DDIM 和两步 guided DDIM 均成功。进程累计 RSS 高水位为 392,019,968 bytes；MPS current
-allocation 在训练后为 16,060,416 bytes、两条采样后为 6,086,400 bytes，driver
-allocation 约 1.15 GB。MPS 字段是同步后的 current/driver allocation，不是可重置的峰值；
-该证据只证明真实单 batch shape/device/capacity，不代表完整 solver 延迟或科学精度。
+Stage 7 的验收分为四层：tiny deterministic E2E；真实 batch 上的两步 capacity helper；
+正式 runtime 的一次 optimizer update 与完整 30/40-step 单样本 solver smoke；以及明确
+未执行、也不属于本 Stage 完成条件的 1272-sample 全量 job、收敛训练和科学精度复现。
+真实数据使用维护者机器上的外部 PhysicsNeMo 数据，而不是仓库内不存在的 fixture。
+容量 helper 在 `[40, 320, 256, 256] float32` mmap 上完成了
+`[1, 3, 256, 256]` 的 MPS 反传与两步 sampler smoke；MPS current/driver allocation 和
+进程 RSS 只属于该次机器运行，不作为稳定的通用容量数字。
+
+独立 review 还要求验证正式 runtime，而不能用 helper 代替。修复后，真实 3.1 GB reference
+和 6.3 GB sparse archive 经项目 prepare tool、entry point 和 production training config，
+完成了一个 Adam optimizer update；随后 baseline 使用完整 30-step、`t=240` schedule，guided
+使用完整 40-step、`t=320` schedule，各经 SamplingBuilder 和领域 Writer 生成一个 finite
+`[1, 3, 256, 256] float32` reconstruction。源文件 hash、shape、训练 checkpoint 断言、
+solver diagnostics、受审源码 hash、完整应用参数和忽略目录中 runtime artifact 的 hash
+记录在
+[`benchmarks/results/stage7-physics-macos-arm64.json`](../../benchmarks/results/stage7-physics-macos-arm64.json)。
+这仍不代表完整训练、1272-sample job 或科学精度复现。
 
 ## Frozen-teacher distillation
 

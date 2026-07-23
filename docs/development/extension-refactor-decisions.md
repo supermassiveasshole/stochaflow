@@ -579,8 +579,10 @@ PDE residual gradient 产生，但它被施加的位置属于 solver transition�
 4. Physics 与 distillation 作为两个独立可安装 distribution 验收 entry point isolation，
    但这不构成对用户 repo、monorepo 或包管理器的约束；
 5. Stage 7 公共 API 变化为零，且 `src/stochaflow/**` 是明确的 no-change gate；
-6. tiny deterministic E2E 证明算法和 lifecycle，真实 256² batch 证明 shape/device/capacity。
-   没有训练权重时不得把随机模型结果描述为论文精度复现。
+6. 验收证据分为四层：tiny deterministic E2E 验证算法与 lifecycle；真实 256² batch
+   的两步 capacity helper 验证 shape/device/capacity；正式 runtime 验证一次 optimizer
+   update 和单样本完整 30/40-step solver path；1272-sample 全量运行、收敛训练和科学精度
+   未执行且不属于本 Stage 完成条件。没有训练权重时不得把随机模型结果描述为论文精度复现。
 
 ### 其他已确认缺口
 
@@ -601,14 +603,26 @@ PDE residual gradient 产生，但它被施加的位置属于 solver transition�
 DDPM/DDIM、项目级 guided DDIM、frozen-teacher resume 和 student-only sampling 均可只用
 公开扩展契约完成；任何新的核心契约需求仍必须退回 Design。
 
-真实容量验收在 2026-07-22 使用本地 PhysicsNeMo mmap 数据
-`[40, 320, 256, 256] float32`、PyTorch 2.11.0、Apple-silicon MPS、batch
-`[1, 3, 256, 256]` 和生产时间域 `T=1000, t=240`。一次 train
-forward/backward、两步 baseline DDIM 和两步 guided DDIM 均成功；进程累计 RSS 高水位为
-392,019,968 bytes，MPS current allocation 在训练后为 16,060,416 bytes、两条采样后均为
-6,086,400 bytes，MPS driver allocation 约 1.15 GB。MPS 没有该工具可重置的 peak API，
-因此这些 MPS 数字是同步后的 current/driver allocation，不冒充峰值；两步 smoke 也不
-代表完整 30/40-step latency 或论文精度。
+真实验收在 2026-07-23 使用维护者机器上的外部 PhysicsNeMo reference mmap 和 sparse
+archive，不把仓库中未分发的数据描述成 fixture。第一层 capacity helper 证明真实
+`[1, 3, 256, 256]` batch、MPS、训练反传和两步 sampler 可以共存；其 RSS 与 MPS
+current/driver allocation 是单次运行记录，不是稳定容量保证。
+
+独立 review 指出 helper 手工组装组件，不能证明 production config。修复后，6.7 GB
+`ZIP_STORED` NumPy member 经 bounded CRC/metadata 校验后只 mmap 末四条 trajectory；
+正式 CLI 通过 entry point、
+DataBuilder、TrainingBuilder/Strategy、Trainer 和 Adam 完成 `global_step=1` 的 checkpoint，
+再由 SamplingBuilder/Writer 执行完整 30-step baseline DDIM 与 40-step guided DDIM，各输出
+一个 finite reconstruction。机器、source hash、checkpoint state、solver diagnostics 与明确
+限制保存在
+[`stage7-physics-macos-arm64.json`](../../benchmarks/results/stage7-physics-macos-arm64.json)。
+该结果仍不代表完整 30/40-step 吞吐基准、1272-sample job、收敛训练或论文精度。
+保留的 sampling manifest 通过固定 schedule 与 dynamics-evaluation diagnostics 审计本次
+accepted transitions，但尚未单独持久化 `SamplerResult.num_steps`；对未来支持 early stop、
+rejection 或内部子步的 solver，应由对应 Builder 把实际 accepted-step count 写入 metadata。
+CRC/ZIP64 hardening 后的 prepare rerun 晚于保留的 train/sample artifact，但重新生成的
+observation bytes/hash 完全一致；该时间关系在 evidence 的逐命令时间与 limitation 中明确
+记录。
 
 ## Stage 3.1 离散 Gaussian primitive 修正（已完成）
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
+import struct
 from typing import Any, cast
+from zipfile import ZIP_STORED, ZipFile
 
 import numpy as np
 import pytest
@@ -47,7 +50,10 @@ from stochaflow_physics_reconstruction.stochaflow_ext.training import (
 from stochaflow_physics_reconstruction.stochaflow_ext.writers import (
     ReconstructionArtifactWriter,
 )
-from stochaflow_physics_reconstruction.tools.prepare_kolmogorov import prepare
+from stochaflow_physics_reconstruction.tools.prepare_kolmogorov import (
+    _selected_stored_npy_member,
+    prepare,
+)
 from stochaflow_physics_reconstruction.tools import capacity_check
 from stochaflow_physics_reconstruction.tools.prepare_tiny_data import (
     write_tiny_data,
@@ -417,3 +423,112 @@ def test_prepare_tool_writes_resized_pairs_stats_and_alignment(tmp_path: Path) -
     assert observations.shape == (2, 5, 8, 8)
     assert outputs["alignment"].is_file()
     assert outputs["statistics"].is_file()
+
+
+def test_sparse_npz_reader_maps_only_selected_tail(tmp_path: Path) -> None:
+    sparse = np.arange(6 * 5 * 4 * 4, dtype=np.float64).reshape(6, 5, 4, 4)
+    archive_path = tmp_path / "sparse.npz"
+    np.savez(archive_path, ignored=np.ones((2,), dtype=np.float32), u3232=sparse)
+
+    selected = _selected_stored_npy_member(
+        archive_path,
+        key="u3232",
+        count=2,
+    )
+
+    assert isinstance(selected, np.memmap)
+    assert selected.shape == (2, 5, 4, 4)
+    assert np.array_equal(selected, sparse[-2:])
+
+
+def test_sparse_npz_reader_rejects_compressed_and_fortran_members(
+    tmp_path: Path,
+) -> None:
+    sparse = np.arange(4 * 3 * 2 * 2, dtype=np.float64).reshape(4, 3, 2, 2)
+    compressed_path = tmp_path / "compressed.npz"
+    fortran_path = tmp_path / "fortran.npz"
+    np.savez_compressed(compressed_path, u3232=sparse)
+    np.savez(fortran_path, u3232=np.asfortranarray(sparse))
+
+    with pytest.raises(ValueError, match="ZIP_STORED"):
+        _selected_stored_npy_member(compressed_path, key="u3232", count=1)
+    with pytest.raises(ValueError, match="Fortran order"):
+        _selected_stored_npy_member(fortran_path, key="u3232", count=1)
+
+
+def test_sparse_npz_reader_rejects_malformed_npy_payload(tmp_path: Path) -> None:
+    sparse = np.arange(2 * 3 * 4 * 4, dtype=np.float64).reshape(2, 3, 4, 4)
+    buffer = BytesIO()
+    np.save(buffer, sparse, allow_pickle=False)
+    payload = buffer.getvalue().replace(
+        b"(2, 3, 4, 4)",
+        b"(9, 3, 4, 4)",
+        1,
+    )
+    archive_path = tmp_path / "malformed.npz"
+    with ZipFile(archive_path, mode="w", compression=ZIP_STORED) as archive:
+        archive.writestr("u3232.npy", payload)
+
+    with pytest.raises(ValueError, match="payload size does not match"):
+        _selected_stored_npy_member(archive_path, key="u3232", count=1)
+
+
+def test_sparse_npz_reader_rejects_crc_corruption(tmp_path: Path) -> None:
+    sparse = np.arange(2 * 3 * 4 * 4, dtype=np.float64).reshape(2, 3, 4, 4)
+    archive_path = tmp_path / "corrupted.npz"
+    np.savez(archive_path, u3232=sparse)
+    with ZipFile(archive_path) as archive:
+        info = archive.getinfo("u3232.npy")
+    local_header = struct.Struct("<4s5H3I2H")
+    payload = bytearray(archive_path.read_bytes())
+    fields = local_header.unpack_from(payload, info.header_offset)
+    member_offset = info.header_offset + local_header.size + fields[-2] + fields[-1]
+    payload[member_offset + info.file_size - 1] ^= 0x01
+    archive_path.write_bytes(payload)
+
+    with pytest.raises(ValueError, match="integrity validation"):
+        _selected_stored_npy_member(archive_path, key="u3232", count=1)
+
+
+def test_sparse_npz_reader_rejects_inconsistent_local_crc(tmp_path: Path) -> None:
+    sparse = np.arange(2 * 3 * 4 * 4, dtype=np.float64).reshape(2, 3, 4, 4)
+    archive_path = tmp_path / "crc-metadata.npz"
+    np.savez(archive_path, u3232=sparse)
+    payload = bytearray(archive_path.read_bytes())
+    struct.pack_into("<I", payload, 14, 0)
+    archive_path.write_bytes(payload)
+
+    with pytest.raises(ValueError, match="inconsistent ZIP CRC metadata"):
+        _selected_stored_npy_member(archive_path, key="u3232", count=1)
+
+
+def test_sparse_npz_reader_accepts_and_validates_zip64_sizes(
+    tmp_path: Path,
+) -> None:
+    sparse = np.arange(2 * 3 * 4 * 4, dtype=np.float64).reshape(2, 3, 4, 4)
+    npy_buffer = BytesIO()
+    np.save(npy_buffer, sparse, allow_pickle=False)
+    archive_path = tmp_path / "zip64.npz"
+    with ZipFile(archive_path, mode="w", compression=ZIP_STORED) as archive:
+        with archive.open("u3232.npy", mode="w", force_zip64=True) as member:
+            member.write(npy_buffer.getvalue())
+
+    selected = _selected_stored_npy_member(
+        archive_path,
+        key="u3232",
+        count=1,
+    )
+    assert np.array_equal(selected, sparse[-1:])
+    del selected
+
+    local_header = struct.Struct("<4s5H3I2H")
+    payload = bytearray(archive_path.read_bytes())
+    fields = local_header.unpack_from(payload, 0)
+    extra_offset = local_header.size + fields[-2]
+    field_id, field_size = struct.unpack_from("<HH", payload, extra_offset)
+    assert (field_id, field_size) == (0x0001, 16)
+    struct.pack_into("<Q", payload, extra_offset + 4, len(npy_buffer.getvalue()) + 1)
+    archive_path.write_bytes(payload)
+
+    with pytest.raises(ValueError, match="ZIP64 uncompressed size"):
+        _selected_stored_npy_member(archive_path, key="u3232", count=1)

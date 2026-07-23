@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import configparser
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -431,6 +434,135 @@ def test_reference_projects_are_independent_installable_distributions() -> None:
             package_root / "stochaflow_ext" / "__init__.py"
         ).is_file()
         assert (project.source / project.train_config).is_file()
+
+
+@pytest.mark.parametrize(
+    ("profile", "accepted_steps", "partial_noise_time", "sampler_name"),
+    (
+        ("sample-baseline-ddim.yaml", 30, 240, "ddim"),
+        (
+            "sample-guided-ddim.yaml",
+            40,
+            320,
+            "physics-reconstruction.guided-ddim",
+        ),
+    ),
+)
+def test_physics_real_smoke_profiles_preserve_production_solver_math(
+    profile: str,
+    accepted_steps: int,
+    partial_noise_time: int,
+    sampler_name: str,
+) -> None:
+    production_document = yaml.safe_load(
+        (_PHYSICS.source / "experiments/production" / profile).read_text(
+            encoding="utf-8"
+        )
+    )
+    smoke_document = yaml.safe_load(
+        (_PHYSICS.source / "experiments/real-smoke" / profile).read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized_smoke = deepcopy(smoke_document)
+    normalized_sampling = normalized_smoke["sampling"]
+    production_sampling = production_document["sampling"]
+    normalized_sampling["num_samples"] = production_sampling["num_samples"]
+    normalized_sampling["batch_size"] = production_sampling["batch_size"]
+    normalized_sampling["builder"]["params"]["weights"] = production_sampling[
+        "builder"
+    ]["params"]["weights"]
+    assert normalized_smoke == production_document
+
+    smoke = smoke_document["sampling"]
+    smoke_params = smoke["builder"]["params"]
+    assert smoke["shape"] == [3, 256, 256]
+    assert smoke["num_samples"] == smoke["batch_size"] == 1
+    assert smoke_params["weights"] == "raw"
+    schedule = smoke_params["sampler"]["params"]["schedule"]
+    assert smoke_params["partial_noise_time"] == partial_noise_time
+    assert smoke_params["sampler"]["name"] == sampler_name
+    assert len(schedule) - 1 == accepted_steps
+    assert schedule[0] == partial_noise_time
+    assert schedule[-1] == 0
+
+
+def test_physics_stage7_evidence_matches_versioned_sources_and_configs() -> None:
+    evidence_path = (
+        _REPOSITORY / "benchmarks/results/stage7-physics-macos-arm64.json"
+    )
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["format_version"] == 1
+    assert datetime.fromisoformat(evidence["created_at"].replace("Z", "+00:00"))
+    assert len(bytes.fromhex(evidence["repository"]["head_at_run"])) == 20
+
+    for relative_path, expected_hash in evidence["repository"][
+        "relevant_files_sha256"
+    ].items():
+        with (_REPOSITORY / relative_path).open("rb") as source:
+            assert hashlib.file_digest(source, "sha256").hexdigest() == expected_hash
+
+    for source in evidence["sources"].values():
+        assert len(bytes.fromhex(source["sha256"])) == 32
+        assert source["bytes"] > 0
+    for artifact in evidence["artifacts"].values():
+        assert not Path(artifact["path"]).is_absolute()
+        assert len(bytes.fromhex(artifact["sha256"])) == 32
+        assert artifact["bytes"] > 0
+    prepared = evidence["preparation"]["observation"]
+    prepared_artifact = evidence["artifacts"]["prepared_observations"]
+    assert prepared["bytes"] == prepared_artifact["bytes"]
+    assert prepared["sha256"] == prepared_artifact["sha256"]
+
+    training = evidence["training_cli"]
+    training_config = yaml.safe_load(
+        (_REPOSITORY / training["config"]).read_text(encoding="utf-8")
+    )
+    assert training["checkpoint_format_version"] == 8
+    assert training["batch_size"] == training_config["data"]["params"]["loader"][
+        "batch_size"
+    ]
+    assert training["model"] == {
+        name: training_config["model"]["params"][name]
+        for name in ("hidden_channels", "num_blocks", "time_embedding_dim")
+    }
+    assert training["num_timesteps"] == training_config["process"]["params"][
+        "schedule"
+    ]["params"]["num_timesteps"]
+    assert training_config["optimizer"]["name"] == "torch.optim.Adam"
+
+    sampling = evidence["sampling_cli"]
+    for name in ("baseline_ddim", "guided_ddim"):
+        result = sampling[name]
+        config = yaml.safe_load(
+            (_REPOSITORY / result["config"]).read_text(encoding="utf-8")
+        )["sampling"]
+        params = config["builder"]["params"]
+        schedule = params["sampler"]["params"]["schedule"]
+        assert result["sampler"] == params["sampler"]["name"]
+        assert result["partial_noise_time"] == params["partial_noise_time"]
+        assert result["accepted_steps"] == len(schedule) - 1
+        assert result["num_dynamics_evaluations"] == result["accepted_steps"]
+        assert schedule == list(
+            range(result["partial_noise_time"], -1, -8)
+        )
+        assert sampling["output_shape"] == [config["num_samples"], *config["shape"]]
+        assert sampling["weights"] == params["weights"]
+        assert result["finite"] is True
+        assert result["reconstruction_sha256"] == evidence["artifacts"][
+            f"{name.removesuffix('_ddim')}_reconstruction"
+        ]["sha256"]
+    assert sampling["output_dtype"] == "float32"
+
+    project = tomllib.loads(
+        (_PHYSICS.source / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    plugin = evidence["extension_plugin"]
+    assert plugin["distribution"] == project["project"]["name"]
+    assert plugin["version"] == project["project"]["version"]
+    assert project["project"]["entry-points"]["stochaflow.extensions"] == {
+        plugin["name"]: plugin["target"]
+    }
 
 
 def test_reference_project_wheels_have_isolated_entry_points(

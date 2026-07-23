@@ -76,10 +76,12 @@ off-by-one path in which initial noising and the first reverse source differed.
 
 The reference workflow expects a floating high-resolution `.npy` array with
 shape `[40, 320, 256, 256]` and a sparse `.npz` member such as `u3232`. The tool
-selects the last four sparse trajectories, bicubic-resizes them when necessary,
-optionally applies periodic Gaussian smoothing, writes a mmap-ready observation
-array, computes first-36 normalization statistics, and writes a strict
-positional-alignment sidecar.
+requires that member to be an ordinary C-order, uncompressed `ZIP_STORED` NumPy
+array so it can memory-map only the selected tail instead of materializing the
+multi-gigabyte member. It selects the last four sparse trajectories,
+bicubic-resizes them when necessary, optionally applies periodic Gaussian
+smoothing, writes a mmap-ready observation array, computes first-36
+normalization statistics, and writes a strict positional-alignment sidecar.
 
 ```bash
 python tools/prepare_kolmogorov.py \
@@ -118,13 +120,58 @@ python -m stochaflow_physics_reconstruction.tools.capacity_check \
   --trajectory-start 0 \
   --batch-size 1 \
   --resolution 256 \
+  --hidden-channels 64 \
+  --num-blocks 6 \
+  --time-embedding-dim 128 \
+  --num-timesteps 1000 \
+  --partial-time 240 \
+  --sample-steps 2 \
   --device auto \
   --output capacity-report.json
 ```
 
 Do not treat a report as completed evidence unless this command was actually
-run on the target accelerator and real array. The repository does not commit a
-fabricated report.
+run on the target accelerator and real array. The measured maintainer-host
+record is committed at
+`../../../benchmarks/results/stage7-physics-macos-arm64.json`; it records source,
+config, implementation, command, and ignored runtime-artifact hashes rather
+than committing the datasets, checkpoint, or outputs.
+
+## Real-data production-path smoke
+
+The capacity helper is not a replacement for the configured runtime. After
+preparing the real observation and alignment files, run one bounded optimizer
+step through the production training config:
+
+```bash
+stochaflow train \
+  --config experiments/production/train.yaml \
+  --epochs 1 \
+  --limit-batches 1 \
+  --limit-test-batches 1 \
+  --skip-final-sample \
+  --no-progress
+```
+
+The `real-smoke` overlays reduce only the output count and batch size to one,
+select the freshly updated raw weights, and retain the production solver math:
+30 accepted transitions from state time 240 for baseline DDIM and 40 accepted
+transitions from state time 320 for guided DDIM.
+
+```bash
+stochaflow sample \
+  --checkpoint outputs/production/<run>/checkpoints/latest.pt \
+  --config experiments/real-smoke/sample-baseline-ddim.yaml \
+  --output-dir outputs/real-smoke-baseline
+stochaflow sample \
+  --checkpoint outputs/production/<run>/checkpoints/latest.pt \
+  --config experiments/real-smoke/sample-guided-ddim.yaml \
+  --output-dir outputs/real-smoke-guided
+```
+
+Together with the tiny deterministic E2E and two-step capacity helper, this is
+the third validation tier. It is not converged training, a 1272-sample job, or
+scientific accuracy evidence; those remain an explicit unexecuted fourth tier.
 
 ## Provenance
 

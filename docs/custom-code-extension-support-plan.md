@@ -2,7 +2,7 @@
 
 - 状态：Stage 7 完成，Stage 8 待实施
 - 制定日期：2026-07-17
-- 最近修订：2026-07-22
+- 最近修订：2026-07-23
 - 目标分支：`feature/custom-code-extension-support`
 
 ## 目标
@@ -1886,15 +1886,19 @@ docs/development/extension-refactor-decisions.md
 - 两个插件分别在干净进程运行，避免 Registry 的进程级激活状态互相污染；
 - manifest/checkpoint 记录真实 entry-point provenance 和 namespaced 注册名。
 
-#### 两级现实证据
+#### 四级验收证据
 
 - 自动门禁使用 tiny deterministic 数据和小模型，验证完整数学/生命周期，而不是用零 Tensor
   代替任务；
-- reference data 验收检查真实 `[40, 320, 256, 256] -> 11448/1272` schema，并在可用目标
-  accelerator 上执行至少一个真实 `[B,3,256,256]` train step 和 baseline/guided sample
-  batch，记录 host peak、accelerator allocated/reserved 和 artifact；
-- 没有预训练权重时不声称论文重建精度。全量科学训练、论文数值复现和数据/权重分发不是
-  framework refactor 的完成条件，但 production config 和真实 batch 必须可运行。
+- capacity helper 在真实 `[B,3,256,256]` batch 上执行一次反传和各两步
+  baseline/guided sampler，记录 host high-water mark 与可用 accelerator allocation；
+- production-path smoke 让真实 reference/sparse 数据经过项目 prepare tool、entry point、
+  正式 DataBuilder/TrainingBuilder/Trainer 和 SamplingBuilder/Writer；checkpoint 必须证明
+  一次 optimizer update，baseline/guided 分别执行完整生产 30/40-step schedule。
+  `real-smoke` 只把样本数、batch 和 checkpoint weight selection 缩减为运行时验收值；
+- 1272-sample 全量 job、收敛训练、论文数值复现和科学精度未执行，也不是 framework
+  refactor 的完成条件。没有预训练权重时不得声称论文重建精度，但 production config 和
+  真实 batch 必须可运行。
 
 常规验证：
 
@@ -1917,8 +1921,12 @@ Sphinx `-W` 和全分支静态检查仍按仓库规则留到 Stage 8/final merge
   post-transition correction 错误包装成通用 Gaussian prediction；
 - 选择项目自有 plain teacher initialization state，而不是让扩展读取 Stochaflow 私有
   checkpoint 字段或新增通用 teacher loader；
-- 选择 tiny E2E + real-batch capacity evidence，而不是提交 GB 数据/checkpoint 或把随机权重
-  结果描述为科学复现。
+- 选择 tiny E2E、真实 batch capacity helper 和正式 runtime 单样本完整 solver smoke，
+  而不是提交 GB 数据/checkpoint、强行运行 1272-sample job 或把随机权重结果描述为科学
+  复现。
+- 真实 sparse NPZ 的 6.7 GB `ZIP_STORED` member 只 mmap 被选择的 trajectory；不为便利而
+  在 16 GiB 主机上物化整份 member。工具先以 bounded chunk 流式读取 member，让标准库
+  校验 ZIP overlap 与 CRC，再验证 ZIP/ZIP64/NPY metadata，最后只 mmap 选择区间。
 
 ### 逻辑提交
 

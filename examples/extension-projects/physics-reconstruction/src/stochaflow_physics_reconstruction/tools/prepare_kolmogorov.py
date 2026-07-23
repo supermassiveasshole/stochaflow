@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import struct
+from math import prod
 from pathlib import Path
 from uuid import uuid4
+from zipfile import BadZipFile, ZIP_STORED, ZipFile, ZipInfo
 
 import numpy as np
 import torch
@@ -26,6 +29,296 @@ def _trajectory_array(path: Path) -> np.ndarray:
     if not np.issubdtype(value.dtype, np.floating):
         raise TypeError("reference must be floating-point")
     return value
+
+
+_LOCAL_FILE_HEADER = struct.Struct("<4s5H3I2H")
+_EXTRA_FIELD_HEADER = struct.Struct("<HH")
+_ZIP64_VALUE = struct.Struct("<Q")
+_LOCAL_FILE_SIGNATURE = b"PK\x03\x04"
+_ZIP64_SIZE_SENTINEL = 0xFFFFFFFF
+_ZIP64_EXTRA_FIELD_ID = 0x0001
+_CRC_CHUNK_BYTES = 8 * 1024 * 1024
+
+
+def _validate_zip64_sizes(
+    extra: bytes,
+    *,
+    member_name: str,
+    local_compressed_size: int,
+    local_file_size: int,
+    expected_size: int,
+) -> None:
+    required: list[str] = []
+    if local_file_size == _ZIP64_SIZE_SENTINEL:
+        required.append("uncompressed")
+    if local_compressed_size == _ZIP64_SIZE_SENTINEL:
+        required.append("compressed")
+    if not required:
+        return
+
+    cursor = 0
+    zip64_payload: bytes | None = None
+    while cursor < len(extra):
+        if len(extra) - cursor < _EXTRA_FIELD_HEADER.size:
+            raise ValueError(
+                f"sparse member {member_name!r} has malformed ZIP extra metadata"
+            )
+        field_id, field_size = _EXTRA_FIELD_HEADER.unpack_from(extra, cursor)
+        cursor += _EXTRA_FIELD_HEADER.size
+        field_end = cursor + field_size
+        if field_end > len(extra):
+            raise ValueError(
+                f"sparse member {member_name!r} has truncated ZIP extra metadata"
+            )
+        if field_id == _ZIP64_EXTRA_FIELD_ID:
+            if zip64_payload is not None:
+                raise ValueError(
+                    f"sparse member {member_name!r} has duplicate ZIP64 metadata"
+                )
+            zip64_payload = extra[cursor:field_end]
+        cursor = field_end
+
+    if zip64_payload is None:
+        raise ValueError(
+            f"sparse member {member_name!r} is missing required ZIP64 metadata"
+        )
+    required_bytes = len(required) * _ZIP64_VALUE.size
+    if len(zip64_payload) < required_bytes:
+        raise ValueError(
+            f"sparse member {member_name!r} has truncated ZIP64 size metadata"
+        )
+    for index, label in enumerate(required):
+        value = _ZIP64_VALUE.unpack_from(
+            zip64_payload,
+            index * _ZIP64_VALUE.size,
+        )[0]
+        if value != expected_size:
+            raise ValueError(
+                f"sparse member {member_name!r} ZIP64 {label} size does not "
+                "match its central directory"
+            )
+
+
+def _validate_member_crc(archive: ZipFile, info: ZipInfo) -> None:
+    """Stream one member with bounded memory so ``zipfile`` verifies its CRC."""
+
+    try:
+        with archive.open(info, mode="r") as member:
+            while member.read(_CRC_CHUNK_BYTES):
+                pass
+    except (BadZipFile, NotImplementedError, RuntimeError) as error:
+        raise ValueError(
+            f"sparse member {info.filename!r} failed ZIP integrity validation"
+        ) from error
+
+
+def _selected_stored_npy_member(
+    path: Path,
+    *,
+    key: str,
+    count: int,
+) -> np.memmap:
+    """Memory-map the final rows of one uncompressed NPY member in an NPZ."""
+
+    if count <= 0:
+        raise ValueError("selected sparse trajectory count must be positive")
+    member_name = key if key.endswith(".npy") else f"{key}.npy"
+    try:
+        with path.open("rb") as source:
+            initial_stat = os.fstat(source.fileno())
+            with ZipFile(source) as archive:
+                matches = [
+                    info
+                    for info in archive.infolist()
+                    if info.filename == member_name
+                ]
+                if not matches:
+                    raise KeyError(f"sparse archive has no key {key!r}")
+                if len(matches) != 1:
+                    raise ValueError(
+                        f"sparse archive contains duplicate member {member_name!r}"
+                    )
+                info = matches[0]
+                if info.compress_type != ZIP_STORED:
+                    raise ValueError(
+                        f"sparse member {member_name!r} must use ZIP_STORED for "
+                        "memory-bounded access"
+                    )
+                if info.compress_size != info.file_size:
+                    raise ValueError(
+                        f"stored sparse member {member_name!r} has invalid sizes"
+                    )
+                if info.flag_bits & 0x1:
+                    raise ValueError(
+                        f"encrypted sparse member {member_name!r} is unsupported"
+                    )
+                if info.flag_bits & 0x8:
+                    raise ValueError(
+                        f"sparse member {member_name!r} uses a data descriptor, "
+                        "which is unsupported for direct mapping"
+                    )
+                member_size = info.file_size
+                header_offset = info.header_offset
+                central_flags = info.flag_bits
+                central_crc = info.CRC
+                _validate_member_crc(archive, info)
+
+            archive_size = initial_stat.st_size
+            source.seek(header_offset)
+            local_header = source.read(_LOCAL_FILE_HEADER.size)
+            if len(local_header) != _LOCAL_FILE_HEADER.size:
+                raise ValueError(
+                    f"sparse member {member_name!r} has a truncated ZIP header"
+                )
+            (
+                signature,
+                _version,
+                local_flags,
+                local_compression,
+                _modified_time,
+                _modified_date,
+                local_crc,
+                local_compressed_size,
+                local_file_size,
+                filename_length,
+                extra_length,
+            ) = _LOCAL_FILE_HEADER.unpack(local_header)
+            if signature != _LOCAL_FILE_SIGNATURE:
+                raise ValueError(
+                    f"sparse member {member_name!r} has an invalid ZIP header"
+                )
+            if local_flags != central_flags or local_compression != ZIP_STORED:
+                raise ValueError(
+                    f"sparse member {member_name!r} has inconsistent ZIP metadata"
+                )
+            if local_crc != central_crc:
+                raise ValueError(
+                    f"sparse member {member_name!r} has inconsistent ZIP CRC metadata"
+                )
+            valid_sizes = {member_size, _ZIP64_SIZE_SENTINEL}
+            if local_compressed_size not in valid_sizes:
+                raise ValueError(
+                    f"sparse member {member_name!r} has an invalid local "
+                    "compressed size"
+                )
+            if local_file_size not in valid_sizes:
+                raise ValueError(
+                    f"sparse member {member_name!r} has an invalid local file size"
+                )
+            filename = source.read(filename_length)
+            if len(filename) != filename_length:
+                raise ValueError(
+                    f"sparse member {member_name!r} has a truncated filename"
+                )
+            encoding = "utf-8" if local_flags & 0x800 else "cp437"
+            try:
+                local_name = filename.decode(encoding)
+            except UnicodeDecodeError as error:
+                raise ValueError(
+                    f"sparse member {member_name!r} has an invalid encoded filename"
+                ) from error
+            if local_name != member_name:
+                raise ValueError(
+                    f"sparse member {member_name!r} has inconsistent local "
+                    "filename metadata"
+                )
+            extra = source.read(extra_length)
+            if len(extra) != extra_length:
+                raise ValueError(
+                    f"sparse member {member_name!r} has truncated ZIP metadata"
+                )
+            _validate_zip64_sizes(
+                extra,
+                member_name=member_name,
+                local_compressed_size=local_compressed_size,
+                local_file_size=local_file_size,
+                expected_size=member_size,
+            )
+            member_offset = source.tell()
+            if member_offset + member_size > archive_size:
+                raise ValueError(
+                    f"sparse member {member_name!r} extends beyond the archive"
+                )
+
+            try:
+                version = np.lib.format.read_magic(source)
+            except (EOFError, ValueError) as error:
+                raise ValueError(
+                    f"sparse member {member_name!r} has an invalid NPY header"
+                ) from error
+            if version not in {(1, 0), (2, 0)}:
+                raise ValueError(
+                    f"sparse member {member_name!r} uses unsupported NPY version "
+                    f"{version[0]}.{version[1]}"
+                )
+            try:
+                if version == (1, 0):
+                    shape, fortran_order, dtype = (
+                        np.lib.format.read_array_header_1_0(source)
+                    )
+                else:
+                    shape, fortran_order, dtype = (
+                        np.lib.format.read_array_header_2_0(source)
+                    )
+            except (EOFError, UnicodeError, ValueError) as error:
+                raise ValueError(
+                    f"sparse member {member_name!r} has an invalid NPY header"
+                ) from error
+            array_offset = source.tell()
+
+            if fortran_order:
+                raise ValueError(
+                    f"sparse member {member_name!r} must be C-contiguous; "
+                    "Fortran order is unsupported"
+                )
+            if len(shape) != 4 or not np.issubdtype(dtype, np.floating):
+                raise ValueError(
+                    "sparse data must be a floating [trajectory, time, H, W] array"
+                )
+            if any(dimension <= 0 for dimension in shape):
+                raise ValueError("sparse data dimensions must all be positive")
+            if count > shape[0]:
+                raise ValueError(
+                    "selected sparse trajectory count exceeds the archive "
+                    "trajectory axis"
+                )
+            payload_size = prod(shape) * dtype.itemsize
+            header_size = array_offset - member_offset
+            if header_size + payload_size != member_size:
+                raise ValueError(
+                    f"sparse member {member_name!r} payload size does not match "
+                    "its NPY header"
+                )
+            row_size = prod(shape[1:]) * dtype.itemsize
+            selected_offset = array_offset + (shape[0] - count) * row_size
+            mapped = np.memmap(
+                source,
+                mode="r",
+                dtype=dtype,
+                offset=selected_offset,
+                shape=(count, *shape[1:]),
+                order="C",
+            )
+            final_stat = os.fstat(source.fileno())
+            if (
+                final_stat.st_dev,
+                final_stat.st_ino,
+                final_stat.st_size,
+                final_stat.st_mtime_ns,
+                final_stat.st_ctime_ns,
+            ) != (
+                initial_stat.st_dev,
+                initial_stat.st_ino,
+                initial_stat.st_size,
+                initial_stat.st_mtime_ns,
+                initial_stat.st_ctime_ns,
+            ):
+                raise ValueError(
+                    f"sparse archive changed while validating member {member_name!r}"
+                )
+            return mapped
+    except BadZipFile as error:
+        raise ValueError(f"sparse archive is not a valid NPZ file: {path}") from error
 
 
 def _training_stats(reference: np.ndarray, stop: int) -> tuple[float, float]:
@@ -86,13 +379,11 @@ def prepare(
     reference = _trajectory_array(reference_path)
     if held_out_trajectories <= 0 or held_out_trajectories >= reference.shape[0]:
         raise ValueError("held_out_trajectories must leave at least one training row")
-    with np.load(sparse_path, allow_pickle=False) as archive:
-        if sparse_key not in archive:
-            raise KeyError(f"sparse archive has no key {sparse_key!r}")
-        sparse = np.asarray(archive[sparse_key])
-    if sparse.ndim != 4 or not np.issubdtype(sparse.dtype, np.floating):
-        raise ValueError("sparse data must be a floating [trajectory, time, H, W] array")
-    selected = sparse[-held_out_trajectories:]
+    selected = _selected_stored_npy_member(
+        sparse_path,
+        key=sparse_key,
+        count=held_out_trajectories,
+    )
     reference_selected = reference[-held_out_trajectories:]
     if selected.shape[:2] != reference_selected.shape[:2]:
         raise ValueError("sparse and reference trajectory/time axes do not align")
@@ -101,6 +392,7 @@ def prepare(
         spatial_shape=(reference.shape[2], reference.shape[3]),
         smoothing_kernel=smoothing_kernel,
     )
+    del selected
     output_dir.mkdir(parents=True, exist_ok=True)
     observation_path = output_dir / "kolmogorov_observations.npy"
     temporary = output_dir / f".{observation_path.name}.{uuid4().hex}.tmp"
