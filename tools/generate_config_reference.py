@@ -221,6 +221,14 @@ def _validate_registries(metadata: Mapping[str, Any]) -> Mapping[str, Any]:
                     f"registry entry '{registry_name}.{entry_name}' parameters "
                     "must be a mapping"
                 )
+            parameter_note = entry.get("parameter_note")
+            if parameter_note is not None and (
+                not isinstance(parameter_note, str) or not parameter_note.strip()
+            ):
+                raise ReferenceError(
+                    f"registry entry '{registry_name}.{entry_name}' parameter_note "
+                    "must be non-empty text"
+                )
             for parameter_name, parameter in parameters.items():
                 _required_text(
                     parameter,
@@ -230,6 +238,15 @@ def _validate_registries(metadata: Mapping[str, Any]) -> Mapping[str, Any]:
                     ),
                 )
             inspection = entry.get("inspect", "signature")
+            if inspection not in {
+                "signature",
+                "config_parameters",
+                "context_parameters",
+            }:
+                raise ReferenceError(
+                    f"registry entry '{registry_name}.{entry_name}' has unknown "
+                    f"inspection mode {inspection!r}"
+                )
             if inspection == "config_parameters":
                 component = registry.resolve(entry_name)
                 config_parameters = getattr(component, "config_parameters", None)
@@ -252,7 +269,23 @@ def _validate_registries(metadata: Mapping[str, Any]) -> Mapping[str, Any]:
                         f"are out of date; expected={sorted(constructor_parameters)}, "
                         f"actual={sorted(runtime_parameters)}"
                     )
-            elif inspection and not entry.get("version_dependent", False):
+            elif inspection == "context_parameters":
+                component = registry.resolve(entry_name)
+                runtime_parameters = set(entry.get("runtime_parameters", []))
+                constructor_parameters = set(inspect.signature(component).parameters)
+                if runtime_parameters != constructor_parameters:
+                    raise ReferenceError(
+                        f"runtime parameters for '{registry_name}.{entry_name}' "
+                        f"are out of date; expected={sorted(constructor_parameters)}, "
+                        f"actual={sorted(runtime_parameters)}"
+                    )
+                if not parameters and parameter_note is None:
+                    raise ReferenceError(
+                        f"context-parameter registry entry "
+                        f"'{registry_name}.{entry_name}' must document parameters "
+                        "or a parameter_note"
+                    )
+            elif not entry.get("version_dependent", False):
                 runtime_parameters = set(entry.get("runtime_parameters", []))
                 actual_parameters = _signature_parameters(
                     registry.resolve(entry_name),
@@ -403,7 +436,11 @@ def _render_registries(registry_metadata: Mapping[str, Any]) -> list[str]:
                     lines.append(f"| `{parameter_name}` | {description} |")
                 lines.append("")
             else:
-                lines.extend(["无组件级配置参数。", ""])
+                parameter_note = entry.get("parameter_note")
+                if parameter_note is not None:
+                    lines.extend([parameter_note.strip(), ""])
+                else:
+                    lines.extend(["无组件级配置参数。", ""])
     return lines
 
 

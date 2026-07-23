@@ -1,25 +1,8 @@
-# 兼容性、迁移与可移植性
+# Checkpoint、配置权威与可移植性
 
-本页描述当前 extension 架构的发布边界。它不是旧配置或旧 checkpoint 的兼容层：
-项目应迁移到当前 API 和配置后重新验证，Stochaflow 不静默猜测旧语义。
-
-## Breaking-change map
-
-| 旧边界 | 当前边界 | 迁移动作 |
-| --- | --- | --- |
-| 顶层 `data.datasets`、`data.splits`、`data.batching` 等通用数据图 | `data: {name, params}` 选择一个 `DataBuilder` | 在 Builder 中直接组装 Dataset、split、PyTorch sampler、collate 和 DataLoader；只把该 Builder 真正支持的选项放入私有 `params` |
-| `dataset_factories`、`split_strategies` 和通用 `DataPipeline` | `REGISTRIES.data_builders` 与 `DataBuilder.build() -> DataLoaders` | 注册完整数据 recipe；不要把所有 Dataset/Sampler/DataLoader 组合重新拆成全局 Registry |
-| 顶层 `diffusion` 与 `REGISTRIES.diffusions` | 可选 `process` 与 family-specific Process/Dynamics/Sampler | Gaussian 任务使用 `discrete_gaussian`；无 model-free probability path 的方法可以写 `process: null` |
-| `stochaflow.diffusion`、`GaussianDiffusion` 绑定模型与采样循环 | `stochaflow.processes`、family Dynamics、`Sampler.sample()` 和 `SamplingBuilder` 分责 | 第三方代码只从 `stochaflow.extensions` 导入公共契约；由 Builder 组合模型、condition、Dynamics、initial state 与 Sampler |
-| 顶层 `sampling.sampler`、`sampling.debug`、`grid_nrow` | `sampling.builder`、Builder 私有 sampler/trajectory 参数与 `sampling.writers` | 把求解器配置移入所选 SamplingBuilder 的 `params`，把输出格式参数移入对应 writer 的 `params` |
-| `sampling.batch_size: null` 回退到 data-loader batch size | 独立的正整数 `sampling.batch_size` | 按推理容量单独设置 sampling batch；不要假设训练数据配置会影响采样 |
-| 从图像 data/bucket 隐式推断 sample shape 与图像输出 | 可选 `sampling.shape`、Builder 自己的 initial state 和显式 writer 列表 | 固定-shape Builder 明确声明 shape；无固定 shape 的 Builder 可用 `null`；按所需 artifact 显式选择 tensor/image/custom writer |
-| 固定 Gaussian epsilon 训练路径 | `training: {name, params}` 选择 `TrainingBuilder`，其返回 `TrainingPlan` 与 `TrainingStrategy` | 在 Builder 中组装模型、可选 Process/Objective 和辅助模块；Strategy 只解释 batch 并计算 loss/metrics |
-| Stochaflow 为 PyTorch optimizer/scheduler 复制别名和参数 | `torch.optim.<Class>` 与 `torch.optim.lr_scheduler.<Class>` allowlisted native provider | 在 `params` 中直接传上游构造参数；仅真正的第三方子类需要 Registry |
-| sampler-specific CLI flags | 完整 config、sampling-only overlay 和通用 sampling CLI 覆盖 | 将 sampler-specific 选择写入 SamplingBuilder 的配置，不依赖命令级分支 |
-
-这些变更不提供旧名称、旧 import path 或旧 YAML 的兼容别名。迁移后应先运行配置解析和
-聚焦测试，再进行新的训练或采样。
+本页描述当前发布格式中 config、checkpoint、extension 代码和运行环境之间的边界。
+Stochaflow 不把 checkpoint 当作源码或环境快照，也不会静默猜测其他 checkpoint 格式的
+语义。
 
 ## Checkpoint v8
 
@@ -49,10 +32,16 @@ v8 不保存：
 - 用户私有 generator 或未声明为 managed training asset 的对象；
 - 数据集、网络资源、输出目录内容或相对路径所指向的文件。
 
-可选资产按“存在性 + state”严格配对：runtime 有 Process/Objective 时 checkpoint 必须有
-对应 state，runtime 没有时 payload 也不能含该 key。辅助资产名称、optimizer/scheduler
-class 和可加载 state 同样必须匹配。`train --resume` 是完整恢复，不是 weights-only warm
-start。
+在 `train --resume` 的完整训练恢复中，可选资产按“存在性 + state”严格配对：runtime
+有 Process/Objective 时 checkpoint 必须有对应 state，runtime 没有时 payload 也不能含
+该 key。辅助资产名称、optimizer/scheduler class 和可加载 state 同样必须匹配。因此
+strict resume 是完整恢复，不是 weights-only warm start。
+
+sampling 使用单独的 inference view：它只保留 model、可选 EMA、可选 Process 以及必要
+metadata，不构建或加载 Objective、optimizer、scheduler 和 managed training assets。
+checkpoint config 或 sampling-only overlay 会保留 checkpoint 的 Process 声明和 state
+配对；完整外部 sampling config 可以声明 `process: null` 并忽略 checkpoint 中未使用的
+Process state。无论哪条路径，实际构建的 model/Process 仍必须能严格加载所复用的 state。
 
 ## Config authority
 
@@ -123,7 +112,7 @@ force；name/distribution/target identity 不匹配会失败。即使 provenance
    不恢复 checkpoint RNG，而是按 `sampling.seed`（或 experiment seed）重新初始化。
 7. 在目标主机重新评估 RAM、accelerator memory、临时磁盘和 artifact 大小。当前 sampling
    是整体物化 contract；详细公式、基准方法和 trajectory 限制见
-   [Sampling artifact 容量边界](../development/sampling-capacity.md)。
+   [Sampling artifact 容量](sampling-capacity.md)。
 
 checkpoint 可移植表示“在满足上述显式依赖与 capability contract 的环境中可以重建并加载
 状态”，不表示 extension 源码、数据、硬件或数值执行已经被冻结。

@@ -12,6 +12,13 @@ documentation and research notes in `docs/` or `notebooks/`, and reserve
 `assets/readme/` for curated documentation images. Generated runs belong under
 `outputs/` and must not be committed.
 
+Published documentation must describe current framework behavior and user
+workflows, not implementation-stage history. Active plans and review notes may
+live under `docs/development/`, which is excluded from the Sphinx site. Before a
+feature branch merges, move stable architecture, feature, configuration, and
+usage content into the normal documentation tree, then delete or archive the
+intermediate plan without linking it from the public docs index.
+
 ## Build, Test, and Development Commands
 
 - `uv sync --extra dev` creates or updates the locked development environment.

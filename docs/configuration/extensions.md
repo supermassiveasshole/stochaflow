@@ -68,9 +68,9 @@ my-project = "my_project.stochaflow_ext"
 ```
 
 entry-point name `my-project` 是配置和 checkpoint 使用的稳定插件身份。target 必须是纯
-module，不能含 `:callable` 或 extras。聚合模块可以导入 package 内多个注册模块，但导入
-阶段只应定义类/函数并运行 decorator；不能读取数据、构建模型、加载 checkpoint 或启动
-任务。
+module，不能含 `:callable` 或 extras。聚合模块可以导入**本 distribution 内**多个注册
+模块，但导入阶段只应定义类/函数并运行 decorator；不能读取数据、构建模型、加载
+checkpoint 或启动任务。
 
 ```python
 # my_project/stochaflow_ext/__init__.py
@@ -82,7 +82,7 @@ from . import data, model, sampling, training  # noqa: F401
 from stochaflow.extensions import REGISTRIES
 
 
-@REGISTRIES.models.register("physics_operator")
+@REGISTRIES.models.register("my-project.physics-operator")
 class PhysicsOperator(...):
     ...
 ```
@@ -93,9 +93,21 @@ extensions:
     - my-project
 
 model:
-  name: physics_operator
+  name: my-project.physics-operator
   params: {}
 ```
+
+entry-point name 与 Registry component name 是两层身份：`my-project` 选择一个已安装
+distribution 的聚合注册模块，`my-project.physics-operator` 选择该模块注册的一个具体
+模型。第三方组件应使用稳定的项目 namespace，避免与其他插件或未来内置名称冲突。
+
+插件激活是 provenance 与确定性加载边界，不是 Python import sandbox。聚合模块在当前
+进程中执行普通 Python 代码，因此只应安装并选择可信 distribution。Registry 也不记录
+每个 component 的 distribution owner：不要在聚合模块中转导其他 distribution 的注册
+模块，也不要在 runtime 激活前手动 import 注册模块。这样产生的注册项可能可见，但不会
+自动进入 checkpoint 的 plugin provenance，框架不保证其恢复审计或版本检查。需要组合
+多个 distribution 时，应给每个 distribution 声明自己的 entry point，并在
+`extensions.plugins` 中显式选择它们。
 
 选择规则是：
 
@@ -201,6 +213,17 @@ python -m pip install -e ".[test]"
 stochaflow train --config experiments/example/train.yaml
 ```
 
+当前 CLI 没有单独的 plugin-list 子命令。需要确认实际 executable、Stochaflow
+distribution 版本和当前环境发现的 entry-point names 时，可以直接查询标准 packaging
+metadata：
+
+```bash
+python -c "import sys; from importlib.metadata import entry_points, version; print(sys.executable); print(version('stochaflow')); print(*(ep.name for ep in entry_points(group='stochaflow.extensions')), sep='\n')"
+```
+
+这只列出已安装 entry point，不导入扩展代码或列举其 Registry components。实际 component
+registration 在 runtime 激活 YAML 选中的插件后发生。
+
 第三方代码应从 `stochaflow.extensions` 导入稳定契约。数据层只导出 `DataBuilder`、
 `DataBuilderContext` 和 `DataLoaders`；内置 recipe 的 source、partition、transform、bucket
 与 sampler helper 均为私有实现。
@@ -271,7 +294,7 @@ from stochaflow.extensions import (
 )
 
 
-@REGISTRIES.samplers.register("project_solver")
+@REGISTRIES.samplers.register("my-project.solver")
 class ProjectSolver(Sampler):
     def __init__(self, *, tolerance: float):
         self.tolerance = tolerance
@@ -287,12 +310,14 @@ class ProjectSolver(Sampler):
         return SamplerResult(final_state, steps, diagnostics)
 
 
-@REGISTRIES.sampling_builders.register("physics_sampling")
+@REGISTRIES.sampling_builders.register("my-project.physics-sampling")
 class PhysicsSamplingBuilder(SamplingBuilder):
     def run(self) -> SamplingOutput:
         process = self.context.process
         if not isinstance(process, DiscreteGaussianDenoisingProcess):
-            raise TypeError("physics_sampling requires discrete Gaussian process")
+            raise TypeError(
+                "my-project.physics-sampling requires discrete Gaussian process"
+            )
         dynamics = GaussianModelDynamics(
             process=process,
             predict_fn=build_guided_predict_fn(...),
@@ -396,7 +421,7 @@ from stochaflow.extensions import (
 )
 
 
-@REGISTRIES.processes.register("project_flow_path")
+@REGISTRIES.processes.register("my-project.flow-path")
 class ProjectFlowPath(Process):
     ...
 
@@ -406,15 +431,15 @@ class ProjectVectorField(GenerativeDynamics):
         ...
 
 
-@REGISTRIES.samplers.register("project_ode")
+@REGISTRIES.samplers.register("my-project.ode")
 class ProjectODESampler(Sampler):
     def sample(self, dynamics, initial_state, *, generator=None, observer=None):
         if not isinstance(dynamics, ProjectVectorField):
-            raise TypeError("project_ode requires ProjectVectorField")
+            raise TypeError("my-project.ode requires ProjectVectorField")
         ...
 
 
-@REGISTRIES.sampling_builders.register("project_flow_sampling")
+@REGISTRIES.sampling_builders.register("my-project.flow-sampling")
 class ProjectFlowSamplingBuilder(SamplingBuilder):
     def run(self):
         # Validate ProjectFlowPath, assemble ProjectVectorField, then invoke
@@ -439,11 +464,11 @@ from stochaflow.extensions import (
 )
 
 
-@REGISTRIES.sampling_builders.register("direct_transform")
+@REGISTRIES.sampling_builders.register("my-project.direct-transform")
 class DirectTransformBuilder(SamplingBuilder):
     def run(self):
         if self.context.process is not None:
-            raise TypeError("direct_transform does not use a Process")
+            raise TypeError("my-project.direct-transform does not use a Process")
         model = self.context.model_provider.get("raw")
         samples = run_exact_transform(model, self.context.params)
         return SamplingOutput((SamplingBatch(samples.cpu()),), {"kind": "direct"})
@@ -470,42 +495,52 @@ batch 解释、condition、timestep sampling、模型调用和 diagnostics 仍�
 
 ```python
 from stochaflow.extensions import (
-    ManagedTrainingModule,
     REGISTRIES,
     TrainStepOutput,
     TrainingBuilder,
     TrainingPlan,
     TrainingStrategy,
+    compute_objective,
 )
 
 
-class ConditionalStrategy(TrainingStrategy):
+class PairedRegressionStrategy(TrainingStrategy):
     def __init__(self, model, objective):
         self.model = model
         self.objective = objective
 
     def training_step(self, batch):
-        high_res, conditions = batch
-        prediction = self.model(high_res, low_res=conditions["low_res"])
-        return TrainStepOutput(self.objective(prediction, high_res))
+        inputs, targets = batch
+        prediction = self.model(inputs)
+        loss, _ = compute_objective(self.objective, prediction, targets)
+        return TrainStepOutput(loss=loss)
 
 
-@REGISTRIES.training_builders.register("conditional_sr")
-class ConditionalSRBuilder(TrainingBuilder):
+@REGISTRIES.training_builders.register("my-project.paired-regression")
+class PairedRegressionBuilder(TrainingBuilder):
     def build(self):
         objective = self.context.objective
         if objective is None:
-            raise TypeError("conditional_sr requires objective")
+            raise TypeError("my-project.paired-regression requires objective")
+        if self.context.process is not None:
+            raise TypeError("my-project.paired-regression does not use a Process")
         return TrainingPlan(
-            strategy=ConditionalStrategy(self.context.primary_model, objective),
+            strategy=PairedRegressionStrategy(
+                self.context.primary_model,
+                objective,
+            ),
             primary_model=self.context.primary_model,
-            process=self.context.process,
+            process=None,
             objective=objective,
         )
 ```
 
 Strategy 不拥有 `to/train/eval`、optimizer、factory、parameter selection 或 checkpoint
-API。Plan 通过稳定名称声明辅助 `nn.Module`，核心统一管理 device、mode、优化和持久化。
+API。Plan 通过稳定名称声明辅助 `nn.Module`，核心统一管理 device、mode、优化和持久化；
+EMA 只跟踪 primary model，Process、Objective 和 auxiliary modules 始终保存 raw state。
+这个片段是普通 paired regression，不是 diffusion super-resolution。Gaussian 条件超分
+还必须由 Strategy 采样 marginal、构造 prediction target 并把 LR condition 传给模型；
+完整组合见[条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md)。
 
 ### Frozen-teacher 蒸馏
 
@@ -577,7 +612,7 @@ Strategy 内解释输出并返回单一标量总 loss。多个 teacher 或多个
 资产，核心会统一收集 `requires_grad=True` 的参数。Strategy 不选择参数，只负责返回能够
 对这些参数反传的总 loss。
 
-Stage 4 的自动生命周期只支持一个 optimizer 和一次 backward。独立 teacher optimizer、
+当前自动训练生命周期只支持一个 optimizer 和一次 backward。独立 teacher optimizer、
 交替更新、EMA teacher 或 manual backward 属于新的训练 loop family，不通过向 Strategy
 增加生命周期开关来模拟。
 
@@ -618,7 +653,7 @@ from torch.utils.data import DataLoader
 from stochaflow.extensions import DataBuilder, DataLoaders, REGISTRIES
 
 
-@REGISTRIES.data_builders.register("physics")
+@REGISTRIES.data_builders.register("my-project.physics-data")
 class PhysicsDataBuilder(DataBuilder):
     def build(self) -> DataLoaders:
         params = self.context.params
@@ -641,7 +676,7 @@ class PhysicsDataBuilder(DataBuilder):
 extensions:
   plugins: [my-project]
 data:
-  name: physics
+  name: my-project.physics-data
   params:
     path: data/simulation.zarr
     steps_per_epoch: 1000
@@ -662,7 +697,7 @@ best-effort 报告，不属于扩展契约。
 from stochaflow.extensions import REGISTRIES, SamplingArtifactWriter
 
 
-@REGISTRIES.sampling_artifact_writers.register("netcdf")
+@REGISTRIES.sampling_artifact_writers.register("my-project.netcdf")
 class NetCDFWriter(SamplingArtifactWriter):
     def __init__(self, *, variable: str):
         self.variable = variable
@@ -679,7 +714,7 @@ sampling:
   writers:
     - name: tensor
       params: {}
-    - name: netcdf
+    - name: my-project.netcdf
       params: {variable: velocity}
 ```
 

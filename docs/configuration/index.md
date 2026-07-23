@@ -13,6 +13,7 @@ data-pipeline
 extensions
 compatibility-and-migration
 reference-projects
+sampling-capacity
 workflows
 troubleshooting
 ```
@@ -21,17 +22,55 @@ troubleshooting
 
 | 任务 | 入口 |
 | --- | --- |
+| 先了解框架包含什么、各扩展角色如何协作 | [框架特性与架构](../framework.md) |
 | 查某个 YAML 字段、默认值或 CLI 覆盖 | [完整字段参考](reference.md) |
 | 配置图像、超分辨率或自定义数据构建 | [数据构建](data-pipeline.md) |
+| 实现端到端 conditional diffusion 超分辨率 | [条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md) |
 | 注册自定义 DataBuilder、writer 或其他组件 | [扩展与 Registry](extensions.md) |
-| 了解 breaking changes 并跨环境移动 checkpoint | [兼容性、迁移与可移植性](compatibility-and-migration.md) |
+| 理解 config/checkpoint 权威并跨环境移动实验 | [Checkpoint、配置权威与可移植性](compatibility-and-migration.md) |
 | 查看 Physics reconstruction 与蒸馏的完整扩展 | [纵向扩展参考项目](reference-projects.md) |
 | 训练、smoke run、恢复和 checkpoint 采样 | [常用工作流](workflows.md) |
+| 估算大规模输出与 trajectory 内存 | [Sampling artifact 容量](sampling-capacity.md) |
 | 根据错误信息定位问题 | [排错索引](troubleshooting.md) |
 
 ## 五分钟快速开始
 
-安装开发环境后，先做两个 batch 的 MNIST smoke run：
+### 使用发布包
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install stochaflow
+stochaflow init my-research-project
+cd my-research-project
+python -m pip install -e ".[test]"
+stochaflow train --config experiments/example/train.yaml
+```
+
+Windows PowerShell 使用 `.venv\Scripts\Activate.ps1` 激活环境。`stochaflow init`
+生成普通 Python distribution、一个最小 extension、测试和可运行配置；它不创建环境、
+安装依赖或要求 `uv`。生成项目的 README 继续说明 resume 和 checkpoint sampling。
+
+扩展 package 与 `stochaflow` CLI 必须安装在同一个 Python environment。若从 wheel
+安装，可将第一条安装命令替换为：
+
+```bash
+python -m pip install ./dist/stochaflow-0.1.0-py3-none-any.whl
+```
+
+可选依赖：
+
+| 安装方式 | 能力 |
+| --- | --- |
+| `stochaflow` | 核心 runtime、TensorBoard logger 和 CLI |
+| `stochaflow[wandb]` | W&B logger |
+| `stochaflow[quality]` | KID/FID diagnostic |
+| `stochaflow[docs]` | 本地构建文档 |
+| `stochaflow[dev]` | Pytest 与 Pyright；面向源码贡献 |
+
+### 从源码贡献
+
+源码 checkout 才包含仓库内的 `configs/`、tests 和文档：
 
 ```bash
 uv sync --extra dev
@@ -42,7 +81,7 @@ uv run stochaflow train \
   --skip-final-sample
 ```
 
-确认训练可用后，移除 CLI 限制运行 YAML 中声明的完整实验：
+确认 smoke run 后，移除 CLI limit 运行 YAML 声明的完整实验：
 
 ```bash
 uv run stochaflow train --config configs/ddpm_mnist.yaml
@@ -54,18 +93,6 @@ uv run stochaflow train --config configs/ddpm_mnist.yaml
 uv run stochaflow sample \
   --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt
 ```
-
-创建可安装的自定义扩展项目：
-
-```bash
-stochaflow init my-research-project
-cd my-research-project
-python -m pip install -e ".[test]"
-stochaflow train --config experiments/example/train.yaml
-```
-
-`init` 只生成普通 Python distribution，不创建环境或绑定包管理器。扩展 package 与
-`stochaflow` CLI 必须安装在同一个 Python environment。
 
 ## 最小完整配置
 
@@ -175,7 +202,7 @@ lr_scheduler:
 [LR scheduler](https://docs.pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate)
 文档为准。项目应锁定依赖版本，而不是依赖 Stochaflow 复制上游默认值。
 
-`interval` 是 Stochaflow 的训练生命周期策略，不是 PyTorch 构造参数。首版自动训练循环
+`interval` 是 Stochaflow 的训练生命周期策略，不是 PyTorch 构造参数。当前自动训练循环
 只支持能够无参数调用 `step()` 的 optimizer 与 scheduler；需要 closure 的 optimizer 或
 validation metric 的 scheduler 暂不支持。`T_max`、`total_steps` 等具体参数必须写入确定
 整数，不支持 `auto`，CLI 的 epoch 或 batch limit 覆盖也不会隐式重写这些参数。设

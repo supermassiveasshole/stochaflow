@@ -47,17 +47,19 @@ $$
 | `tensor` writer 的结构性峰值下界 | $2Q$ | $Q(1+3S)$ |
 | `samples.pt` + `trajectory.pt` raw payload | $Q$ | $Q(1+S)$ |
 
-`tensor` writer 会先拼接 sample batch。启用 trajectory 时，它还会为每个
-snapshot 拼接 batch，再将所有 snapshot `stack` 成一个 Tensor。`image`
-writer 在这个阶段还持有拼接后的 sample Tensor，因此 trajectory 路径的
-结构性下界是 $2Q+3SQ$，此外还有 PNG/GIF 编码开销。
+`tensor` writer 会先临时拼接 sample batch，并在 `torch.save()` 返回后释放该
+Tensor 引用；随后它为每个 snapshot 拼接 batch，再将所有 snapshot `stack`
+成一个 Tensor。两阶段峰值分别为 $2Q+SQ$ 和 $Q+3SQ$；因为 $S\ge 2$，
+表中 tensor 路径取后者。`image` writer 则会把拼接后的 sample Tensor 保留到
+trajectory 组装阶段，因此该路径的结构性下界是 $2Q+3SQ$，此外还有
+PNG/GIF 编码开销。
 
 这些数字是根据当前数据流得到的**逻辑 payload 和分配下界**，不是
 进程 RSS 的跨平台保证。实际 RSS 还包含 allocator、serializer、Python
 object、数据源、模型和 OS page cache。`.pt`/`.npy` 实际文件也会有
 header 和 serialization overhead。
 
-## DFSR 保守 profile
+## Physics reconstruction 参考 profile
 
 Physics AI 参考案例使用二维 Kolmogorov flow reconstruction：
 
@@ -69,16 +71,18 @@ Physics AI 参考案例使用二维 Kolmogorov flow reconstruction：
 - 只保留中心物理帧时，全量 payload 为
   `333,447,168 B = 318 MiB = 0.310546875 GiB`。
 
-主案例采用下列保守 profile：
+容量投影使用两种 solver 长度：
 
-| profile | batch size | partial-noise time | accepted steps | trajectory |
-| --- | ---: | ---: | ---: | --- |
-| DFSR | 8 | 240 | 30 | 关闭 |
-| physics-guided DFSR | 1 | 320 | 40 | 关闭 |
+| profile | partial-noise time | accepted steps | 主输出 trajectory |
+| --- | ---: | ---: | --- |
+| baseline DFSR | 240 | 30 | 关闭 |
+| physics-guided DFSR | 320 | 40 | 关闭 |
 
-batch 8 和 batch 1 的单份 device state payload 分别只是 6 MiB 和
-0.75 MiB，但这不是 accelerator 峰值；模型 activation、physics residual
-autograd 和 backend workspace 必须在目标设备上实测。
+例如 batch 8 和 batch 1 的单份 device state payload 分别只是 6 MiB 和
+0.75 MiB，但 sampling batch size 不改变全部 final output 的总 payload，也不能代表
+accelerator 峰值；模型 activation、physics residual autograd 和 backend workspace 必须在
+目标设备上实测。checked-in production config 和目标设备容量测试才是实际 batch size 的
+权威。
 
 容量验收默认按最保守的 3-channel final output 计算：Builder 结束时
 保留 0.9316 GiB，内置 `tensor` writer 的结构性峰值下界为
@@ -190,19 +194,22 @@ tool/profile SHA-256、execution override、临时文件系统空间和可获取
 | small 3D field, tensor, 5 states | 48 MiB | 48.00 MiB | 0.418/0.418 GiB | 2.61% | 0.06% | 0.06 s |
 
 该主机上 DFSR final-only 的 5 次最大 peak RSS 为 2.160 GiB，低于 70%
-参考线；high-entropy image/GIF preview 的最大 peak RSS 为 0.531 GiB。因此
-Stage 7 无需为这一真实目标先行引入 streaming API。但这不改变全量 dense
-trajectory 的结构性非支持结论：1272-sample/31-state 投影的
+参考线；high-entropy image/GIF preview 的最大 peak RSS 为 0.531 GiB。这组结果说明
+当前参考目标无需先行引入 streaming API，但不改变全量 dense trajectory 的结构性
+非支持结论：1272-sample/31-state 投影的
 `SamplingOutput` raw payload 为 29.81 GiB，当前 `tensor` writer 结构性峰值下界为
 87.57 GiB。
 
-此次结果只验收 CPU artifact lifecycle。真实模型 activation、Process/Sampler、
-MPS/CUDA allocator、physics residual 和数据源 I/O 要在 Stage 7 目标环境另行测量，
-不得用本表替代。
+这张表只验收 CPU artifact lifecycle。后续 Physics reference project 已在维护者参考
+环境记录真实 mmap 数据、一次 MPS optimizer update，以及完整 30/40-step 单样本
+sampling runtime；证据位于
+`benchmarks/results/stage7-physics-macos-arm64.json`。该记录仍不包含收敛训练、
+1272-sample 全量运行、科学精度复现或 Linux/CUDA 跨平台容量保证，因此不能把任一机器
+结果当作通用硬件承诺。
 
 final-only Tensor writer 的 5 次 lifetime RSS high-water 呈现两个分配高水位，因此
 CV 为 8.43%。容量决策使用五次中的最大值 2.160 GiB，而不用中位数缩小风险；
-由于最大值仍只占主机内存的 13.50%，该变异不改变本 Stage 的 API 决策。
+由于最大值仍只占主机内存的 13.50%，该变异不改变当前 artifact API 的容量判断。
 
 工具在启动 worker 前会将投影工作集和 raw artifact 与当前内存/临时文件系统
 预算比较，默认在超过 50% 时拒绝，并对每个 fresh worker 应用 profile timeout。
@@ -210,11 +217,11 @@ CV 为 8.43%。容量决策使用五次中的最大值 2.160 GiB，而不用中�
 磁盘预检会按 writer 数累加 input-sized raw payload；自定义格式可以产生更大的
 artifact，因此这是防误操作 guard，不是通用磁盘上界。
 
-## Physics AI 参考项目的强制约束
+## Physics AI 参考项目的使用约束
 
 1. 主采样固定为 1272 个 `[3, 256, 256]` float32 生成 state 的
-   final-only profile；DFSR 用 batch 8/30 步，physics-guided DFSR 用 batch 1/40
-   步。
+   final-only profile；baseline/guided 分别使用 30/40 个 accepted step。batch size
+   按 checked-in config 和目标 accelerator 的实测容量选择。
 2. 主配置必须关闭 trajectory，并使用领域 writer 输出场数据和指标；
    image 只是独立 preview artifact。
 3. Builder 必须逐 batch 处理 low-resolution/reference input，计算指标后只将

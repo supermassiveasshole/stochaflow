@@ -1,8 +1,13 @@
 """Registration smoke tests for the generated extension package."""
 
 from importlib import import_module
+from typing import Any, cast
 
-from stochaflow.extensions import REGISTRIES
+from stochaflow.extensions import DataBuilderContext, REGISTRIES
+
+from __STOCHAFLOW_PACKAGE_NAME__.stochaflow_ext.data import (
+    SyntheticRegressionDataBuilder,
+)
 
 import_module("__STOCHAFLOW_PACKAGE_NAME__.stochaflow_ext")
 
@@ -13,3 +18,27 @@ def test_extension_components_are_registered() -> None:
     assert f"{prefix}linear-regression" in REGISTRIES.models
     assert f"{prefix}regression" in REGISTRIES.training_builders
     assert f"{prefix}regression-predictions" in REGISTRIES.sampling_builders
+
+
+def _train_order(*, seed: int, epoch: int) -> list[int]:
+    builder = SyntheticRegressionDataBuilder(
+        DataBuilderContext(
+            params={
+                "train_samples": 32,
+                "validation_samples": 8,
+                "batch_size": 8,
+            },
+            seed=seed,
+        )
+    )
+    loader = cast(Any, builder.build().train)
+    loader.sampler.set_epoch(epoch)
+    return list(loader.sampler)
+
+
+def test_training_shuffle_is_rebuilt_from_seed_and_epoch() -> None:
+    epoch_one = _train_order(seed=42, epoch=1)
+    epoch_two = _train_order(seed=42, epoch=2)
+
+    assert epoch_one != epoch_two
+    assert _train_order(seed=42, epoch=2) == epoch_two

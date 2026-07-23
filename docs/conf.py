@@ -26,7 +26,7 @@ source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
 root_doc = "index"
 language = "zh_CN"
 html_search_language = "zh"
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "development/**", "Thumbs.db", ".DS_Store"]
 
 myst_enable_extensions = [
     "dollarmath",

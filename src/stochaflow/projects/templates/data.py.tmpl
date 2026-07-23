@@ -1,9 +1,10 @@
 """Synthetic regression data used by the generated example."""
 
+from collections.abc import Iterator
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Sampler, TensorDataset
 
 from stochaflow.extensions import (
     DataBuilder,
@@ -35,6 +36,29 @@ def _dataset(
             generator=generator,
         )
     return TensorDataset(inputs, targets)
+
+
+class _EpochShuffleSampler(Sampler[int]):
+    """Rebuild a deterministic shuffled order from the run seed and epoch."""
+
+    def __init__(self, size: int, *, seed: int) -> None:
+        self._size = size
+        self._seed = seed
+        self._epoch = 0
+
+    def __iter__(self) -> Iterator[int]:
+        generator = torch.Generator().manual_seed(self._seed + self._epoch)
+        yield from torch.randperm(self._size, generator=generator).tolist()
+
+    def __len__(self) -> int:
+        return self._size
+
+    def set_epoch(self, epoch: int) -> None:
+        """Select the deterministic shuffled order for one training epoch."""
+
+        if epoch < 0:
+            raise ValueError("epoch must be non-negative")
+        self._epoch = epoch
 
 
 @REGISTRIES.data_builders.register(
@@ -70,13 +94,14 @@ class SyntheticRegressionDataBuilder(DataBuilder):
             noise_std=float(noise_std),
             generator=generator,
         )
-        shuffle_generator = torch.Generator().manual_seed(self.context.seed + 1)
         return DataLoaders(
             train=DataLoader(
                 train,
                 batch_size=batch_size,
-                shuffle=True,
-                generator=shuffle_generator,
+                sampler=_EpochShuffleSampler(
+                    len(train),
+                    seed=self.context.seed + 1,
+                ),
             ),
             validation=DataLoader(validation, batch_size=batch_size),
         )

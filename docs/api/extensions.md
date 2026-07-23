@@ -34,6 +34,34 @@ from stochaflow.extensions import ...
 数据公共 API 不包含 Dataset、split、source、collate、bucket 或 PyTorch sampler
 抽象；这些由具体 DataBuilder 私有拥有。
 
+最小实现签名：
+
+```python
+@dataclass(frozen=True, slots=True)
+class DataBuilderContext:
+    params: dict[str, Any]  # 深复制
+    seed: int
+
+
+@dataclass(frozen=True, slots=True)
+class DataLoaders:
+    train: Iterable[Any]
+    validation: Iterable[Any] | None = None
+    test: Iterable[Any] | None = None
+    steps_per_epoch: int | None = None
+
+
+class DataBuilder(ABC):
+    def __init__(self, context: DataBuilderContext) -> None: ...
+
+    @abstractmethod
+    def build(self) -> DataLoaders: ...
+```
+
+loader 必须可重复迭代，不能是一份已经创建的 iterator。train 若没有 `len()`，必须声明
+正数 `steps_per_epoch`；若有 `len()`，显式步数不能超过它。每个 epoch 开始时，核心会对
+train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoch)`。
+
 ## Training
 
 | 符号 | 用途 |
@@ -56,6 +84,57 @@ from stochaflow.extensions import ...
 
 Strategy 不是 `nn.Module`，也不移动、冻结、选择或序列化资产；这些生命周期由
 TrainingPlan 和核心 runtime 管理。
+
+core 会在每次 `TrainingDiagnostic` public callback 外保存并恢复 Python、NumPy、
+Torch CPU 以及相关 CUDA device 的 global RNG state。一个 callback 内使用 global RNG
+不会改变训练或其他 callback 看到的随机流；若 diagnostic 需要跨 callback 延续自己的
+随机序列，它必须持有自己的 generator/state，不能依赖 global RNG 的连续推进。
+
+关键签名：
+
+```python
+@dataclass(frozen=True, slots=True)
+class TrainStepOutput:
+    loss: torch.Tensor
+    metrics: Mapping[str, float | int | torch.Tensor] = ...
+    diagnostics: Mapping[str, Any] = ...
+
+
+class TrainingStrategy(ABC):
+    @abstractmethod
+    def training_step(self, batch: Any) -> TrainStepOutput: ...
+
+    def evaluation_step(self, batch: Any) -> TrainStepOutput: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedTrainingModule:
+    module: nn.Module
+    mode: Literal["follow", "eval"] = "follow"
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingPlan:
+    strategy: TrainingStrategy
+    primary_model: nn.Module
+    process: Process | None = None
+    objective: nn.Module | None = None
+    auxiliary_modules: Mapping[str, ManagedTrainingModule] = ...
+
+
+class TrainingBuilder(ABC):
+    def __init__(self, context: TrainingBuilderContext) -> None: ...
+
+    @abstractmethod
+    def build(self) -> TrainingPlan: ...
+```
+
+`TrainingBuilderContext.params` 是深复制 mapping；`primary_model`、`process` 与
+`objective` 是 core 已构建的身份对象，返回的 Plan 必须原样保留它们。Builder 可以通过
+受控 `model_factory(ComponentConfig)`/`objective_factory(ComponentConfig)` 构建额外资产。
+Plan 中所有 state root 必须互不重叠且至少包含一个可训练参数。step loss 必须是浮点 scalar
+Tensor，metric 必须是 scalar numeric value。所有 managed module 都参与声明的
+device/mode、优化和 checkpoint 生命周期；EMA 只跟踪 primary model。
 
 ## Process 根契约
 
@@ -110,6 +189,54 @@ sigma-space solver 的 universal 接口。
 | `SamplingArtifactContext` | output directory、batches 与 Builder metadata |
 
 当前 writer 生命周期接收已经整体形成的 `SamplingOutput`，不是 streaming sink。
+
+关键签名：
+
+```python
+class Sampler(ABC):
+    @abstractmethod
+    def sample(
+        self,
+        dynamics: GenerativeDynamics,
+        initial_state: Any,
+        *,
+        generator: torch.Generator | None = None,
+        observer: SamplingObserver | None = None,
+    ) -> SamplerResult: ...
+
+
+class SamplingBuilder(ABC):
+    def __init__(self, context: SamplingBuilderContext) -> None: ...
+
+    @abstractmethod
+    def run(self) -> SamplingOutput: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SamplingBatch:
+    samples: Any
+    trajectory: tuple[SamplingObservation, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SamplingOutput:
+    batches: tuple[SamplingBatch, ...]
+    metadata: Mapping[str, Any]
+
+
+class SamplingArtifactWriter(ABC):
+    @abstractmethod
+    def write(
+        self,
+        context: SamplingArtifactContext,
+    ) -> Mapping[str, Path]: ...
+```
+
+`SamplingBuilderContext` 提供深复制的 `params`、可选 Process、InferenceModelProvider、
+device、seed、可选单样本 shape、num_samples 和 batch_size。Builder 的 batches 不能为空，
+metadata key 必须是字符串且整个 mapping 可 JSON 序列化。trajectory 的 step index 必须
+严格递增。Writer 返回值必须非空，跨 writer artifact key 必须唯一，所有路径在返回时必须
+存在。
 
 ## Plugin discovery、provenance 与 activation
 

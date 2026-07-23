@@ -279,7 +279,7 @@ output。
 Builder 的全部 output 已经物化。全量 dense trajectory 不在当前容量支持
 边界内。若任务确实要求该能力，需要先设计新的增量 sampling/writer
 lifecycle，不要让 Builder 绕过 writer 直接写 artifact。详细公式和 DFSR
-边界见 [Sampling artifact 容量边界](../development/sampling-capacity.md)。文档中的
+边界见 [Sampling artifact 容量](sampling-capacity.md)。文档中的
 RSS 和编码峰值只能视为对应主机/backend 的证据，不是跨平台保证。
 
 ### `sampling.shape is required`

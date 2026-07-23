@@ -1,0 +1,240 @@
+# 框架特性与架构
+
+Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它负责组织实验生命周期：
+组件选择、训练、采样、checkpoint、日志、diagnostic 和 artifact；任务专属的数据处理、
+模型签名、condition、guidance 与领域输出仍由具体项目拥有。
+
+当前内置算法重点是离散 Gaussian diffusion。框架同时提供稳定的扩展边界，使项目可以
+复用其中一部分组件，也可以接入具有独立数学契约的新算法 family，而不需要修改 runner。
+
+## 当前能力
+
+| 领域 | 内置能力 | 扩展边界 |
+| --- | --- | --- |
+| 数据 | 普通图像、超分辨率配对、多源多分辨率图像 recipe | `DataBuilder` 直接组装任意 Dataset、sampler、collate 和 loader |
+| 训练 | Gaussian denoising、supervised、单 optimizer 自动训练循环 | `TrainingBuilder` 组合资产，`TrainingStrategy` 只解释 batch 并计算 loss/metrics |
+| 概率过程 | 离散 VP Gaussian Process 与 linear/cosine schedule | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
+| 采样 | DDPM、DDIM、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
+| 输出 | Tensor、PNG、trajectory grid/GIF | `SamplingArtifactWriter` 可输出 NetCDF、Zarr 等领域格式 |
+| 生命周期 | EMA、checkpoint v8、resume、diagnostic、Rich/TensorBoard/W&B 日志 | 注册 Objective、diagnostic 和 logger |
+| 项目扩展 | `stochaflow init`、Python packaging entry point、插件 provenance | 普通可安装 Python distribution；不绑定 `uv` 或固定仓库布局 |
+
+内置 `super_resolution` 只负责数据配对和退化，不自动提供条件模型或训练/采样策略。
+完整超分辨率任务仍需项目实现 conditional model、TrainingBuilder/Strategy 与
+SamplingBuilder；这些组件可以继续复用离散 Gaussian Process 和 DDPM/DDIM。
+
+## 三层组织方式
+
+`Process + Dynamics + Sampler` 是组织生成算法的方式，不是一套要求所有算法数学兼容的
+万能接口。
+
+```mermaid
+flowchart TB
+    subgraph Framework["框架层"]
+        Registry["Registry / entry point"]
+        Config["Config / checkpoint"]
+        Runtime["Train / sample lifecycle"]
+    end
+
+    subgraph Family["算法 family 层"]
+        Process["可选 Process"]
+        Dynamics["family-specific Dynamics"]
+        Sampler["family-specific Sampler"]
+    end
+
+    subgraph Task["任务层"]
+        Data["DataBuilder"]
+        Training["TrainingBuilder + Strategy"]
+        Sampling["SamplingBuilder"]
+        Artifact["Artifact Writer"]
+    end
+
+    Registry --> Runtime
+    Config --> Runtime
+    Process --> Training
+    Process --> Sampling
+    Dynamics --> Sampler
+    Sampler --> Sampling
+    Data --> Training
+    Training --> Runtime
+    Sampling --> Runtime
+    Sampling --> Artifact
+```
+
+### 框架层
+
+框架统一：
+
+- Registry 和已安装 extension 的发现、选择与激活；
+- typed config、resolved config 和 workflow-specific CLI 覆盖；
+- managed training assets 的 device、mode、优化与 checkpoint 生命周期；EMA 只跟踪
+  primary model；
+- 完整的 `Sampler.sample()` 调用生命周期；
+- sampling output 验证、artifact writer 调用与 manifest。
+
+框架不维护 `process name × sampler name` 兼容矩阵，也不按任务名称在 runner 中分支。
+兼容性在拥有完整组合信息的 Builder、Strategy 或 family-specific Sampler 边界检查。
+
+### 算法 family 层
+
+每个 family 只定义自己需要的窄契约：
+
+- 离散 Gaussian family 使用 `DiscreteGaussianDenoisingProcess`、
+  `GaussianDenoisingDynamics` 和 DDPM/DDIM；
+- vector-field family 可以定义自己的 VectorField Dynamics 与 ODE solver；
+- reverse-SDE 或 sigma-space family 可以采用完全不同的 Dynamics 行为。
+
+`GenerativeDynamics` 只是“已经组装的生成方向”的语义根，没有 universal
+`predict()`、`step()`、`drift()`、`score()` 或 `denoise()`。新 family 不必假装兼容
+Gaussian 数学。
+
+离散 Gaussian family 另外公开 DDPM adjacent transition、DDIM selected-pair transition
+和 schedule resolver。这些是 family 内可复用 primitive，不是通用 `Sampler` 根接口。
+项目 Sampler 可以组合它们实现 post-transition correction 或其他求解策略，而内置
+DDPM/DDIM 也调用同一组 primitive，避免维护两份数学实现。
+
+### 任务层
+
+任务层拥有 Python 中最难被通用 YAML 正确表达的组合：
+
+- DataBuilder 决定数据来源、划分、sampler、collate 和 loader；
+- TrainingBuilder 验证并组合 core 注入的 primary model、可选 Process/Objective，同时
+  构造和声明项目辅助模块；
+- TrainingStrategy 决定怎样解释 structured batch、调用模型并计算 loss/metrics；
+- SamplingBuilder 决定 initial state、condition、guidance、模型 adapter、Sampler 和
+  writer-ready batch；
+- Writer 决定最终文件格式。
+
+condition 不属于通用 Sampler 参数。通常由 SamplingBuilder 把 condition 捕获在模型
+callable 中，再构造 family-specific Dynamics。这样同一个 DDIM 可以复用在无条件生成、
+条件生成和 classifier-free guidance 中。若任务改变的是数值 transition 本身，则应提供
+项目 Sampler，而不是给内置 DDIM 添加任务参数。
+
+## 薄数据边界
+
+核心数据契约只有：
+
+```python
+DataBuilder.build() -> DataLoaders
+```
+
+`DataLoaders` 提供 train、可选 validation/test iterable 和可选
+`steps_per_epoch`。核心不认识 Dataset 类型、split 策略、sample key、bucket metadata、
+condition 字段或图像尺寸。
+
+内置 `image`、`super_resolution` 和 `multi_resolution_image` recipe 可以提供
+holdout/K-fold 等便利功能，但这些只是对应 recipe 的私有能力。自定义 DataBuilder
+不需要、也不应被迫支持这些组合。具体配置与 batch 约定见
+[数据构建](configuration/data-pipeline.md)。
+
+## 训练组合边界
+
+训练侧的稳定数据流是：
+
+```text
+config + injected assets
+        ↓
+TrainingBuilder.build()
+        ↓
+TrainingPlan
+  ├── TrainingStrategy
+  ├── primary model
+  ├── optional Process / Objective
+  └── named managed auxiliary modules
+        ↓
+Trainer lifecycle
+```
+
+core 先构造 primary model、可选 Process/Objective，再注入 Builder；Plan 必须原样保留
+这些对象。Builder 可以构造、加载、冻结并声明 auxiliary assets，Strategy 只负责一次 batch
+的训练计算。Trainer 负责自动优化生命周期，包括全部 managed assets 的 device/mode、一次
+backward、一个 optimizer、可选 scheduler 和 checkpoint。EMA 仅跟踪 primary model；
+Process、Objective 与 auxiliary modules 只保存 raw state。
+
+冻结 teacher 蒸馏仍属于这套边界：Builder 加载并冻结 teacher，Strategy 组合
+student/teacher forward 与 Objective。独立 teacher optimizer、交替更新或 manual
+backward 属于新的训练循环 family，不应被塞入通用 Strategy mode。
+
+标准 PyTorch optimizer 与 LR scheduler 通过受限原生 target 构造，`params` 直接传给
+当前 PyTorch 版本；Stochaflow 不复制上游构造参数和默认值。第三方子类仍可注册到对应
+Registry。
+
+## 采样组合边界
+
+所有数值 Sampler 共享一个完整执行入口：
+
+```python
+result = sampler.sample(
+    dynamics,
+    initial_state,
+    generator=generator,
+    observer=observer,
+)
+```
+
+统一的是生命周期，不是单步公式。多步历史、自适应 ODE、predictor-corrector、
+rejection 或一步多次模型求值都可保留在具体 Sampler 内部。任务专属 shape、condition、
+guidance 和 artifact 不进入这个接口。
+
+没有数值求解过程的 direct transform 可以完全不构造 Process、Dynamics 或 Sampler；
+它只需由 SamplingBuilder 返回合法 `SamplingOutput`。完整例子见
+[自定义生成算法 family](tutorials/custom-generation-family.md)。
+
+当前 artifact 生命周期是整体物化式：Builder 先返回所有 batch 和保留的 trajectory，
+writer 才开始工作。它适合有界离线采样，但不是 streaming contract。容量估算和安全使用
+方式见 [Sampling artifact 容量](configuration/sampling-capacity.md)。
+
+## 配置、checkpoint 与 extension
+
+每个 workflow 只有一个权威 base config：
+
+| Workflow | Base config | 允许的覆盖 |
+| --- | --- | --- |
+| 新训练 | `train --config` 指向的完整 YAML | 文档化的训练 CLI runtime options |
+| Strict resume | checkpoint 内保存的完整 config | device/output/epoch/limit 等明确 runtime options |
+| Checkpoint sampling | checkpoint config | sampling-only overlay 和 sampling CLI runtime options |
+| 外部完整 sampling | `sample --config` 指向的完整 config | checkpoint 只提供可加载 state |
+
+checkpoint 保存 resolved config 和 managed state，但不冻结 extension 的 Python class、
+源码、wheel、数据或环境。extension provenance 记录 entry-point name、distribution、
+version 和 module target；版本差异可以显式接受，身份或 state 不兼容仍会失败。项目应使用
+自己的 lockfile/environment specification 固定可复现实验环境。
+
+extension 是普通 Python distribution，通过标准 entry point 声明一个聚合注册模块：
+
+```toml
+[project.entry-points."stochaflow.extensions"]
+my-project = "my_project.stochaflow_ext"
+```
+
+YAML 再显式选择需要激活的插件：
+
+```yaml
+extensions:
+  plugins: [my-project]
+```
+
+这两个名称是不同层级的身份：entry-point name 选择 distribution 的聚合模块，
+组件的 Registry name 选择聚合模块注册的具体实现。组件名称应使用项目命名空间，例如
+`my-project.physics-data`，以降低进程级 Registry 冲突风险。
+
+## 有意保留的边界
+
+- 当前生产内置 family 是离散 Gaussian diffusion；flow matching、score SDE 和更快
+  solver 仍需 extension 或后续实现。
+- 自动训练循环只有单 optimizer、单 backward 生命周期。
+- DataLoader/worker/transform 的运行时随机状态不进入 checkpoint。
+- sampling output 在 writer 前整体物化；全量大样本 dense trajectory 不受支持。
+- Registry 和 provenance 不证明 extension 源码在相同版本号下没有变化。
+- `stochaflow init` 生成普通 Python 项目，但不创建环境、安装依赖、扫描 monorepo 或
+  驱动 Stochaflow 之外的实验。
+
+## 下一步
+
+- [快速开始与配置](configuration/index.md)
+- [扩展与 Registry](configuration/extensions.md)
+- [常用训练、恢复和采样工作流](configuration/workflows.md)
+- [Extension 公共 API](api/extensions.md)
+- [条件 Gaussian 超分辨率](tutorials/super-resolution.md)
+- [复用离散 Gaussian 组件](tutorials/reuse-gaussian-components.md)
+- [纵向参考项目](configuration/reference-projects.md)

@@ -5,19 +5,21 @@ from __future__ import annotations
 from importlib import metadata, resources
 import os
 from pathlib import Path
+from runpy import run_path
 import shutil
 import site
 import subprocess
 import sys
 import tarfile
 import tomllib
-from typing import TextIO, cast
+from typing import Any, TextIO, cast
 import zipfile
 
 from packaging.version import Version
 import pytest
 import yaml
 
+from stochaflow.extensions import DataBuilderContext
 from stochaflow.projects import (
     ProjectScaffoldError,
     create_project,
@@ -153,6 +155,69 @@ def test_create_project_writes_deterministic_installable_distribution(
         if relative_path.endswith(".py"):
             source = (first / relative_path).read_text(encoding="utf-8")
             compile(source, str(first / relative_path), "exec")
+
+
+def test_generated_readme_documents_the_complete_user_path(tmp_path: Path) -> None:
+    project = create_project("workflow-lab", cwd=tmp_path)
+    readme = (project / "README.md").read_text(encoding="utf-8")
+
+    for generated_path in (
+        "pyproject.toml",
+        "stochaflow_ext/__init__.py",
+        "stochaflow_ext/data.py",
+        "stochaflow_ext/model.py",
+        "stochaflow_ext/training.py",
+        "stochaflow_ext/sampling.py",
+        "experiments/example/train.yaml",
+        "tests/test_extensions.py",
+    ):
+        assert generated_path in readme
+    for command in (
+        'python -m pip install -e ".[test]"',
+        "python -m pytest",
+        "stochaflow train --config experiments/example/train.yaml",
+        "stochaflow train \\",
+        "--resume outputs/example/<run-id>",
+        "stochaflow sample \\",
+        "--checkpoint outputs/example/<run-id>/checkpoints/best.pt",
+    ):
+        assert command in readme
+    assert "strict resume" in readme.lower()
+    assert "outputs/example/<run-id>/" in readme
+    assert "samples.pt" in readme
+    assert "resolved_sampling.yaml" in readme
+
+
+def test_generated_training_shuffle_is_rebuilt_from_seed_and_epoch(
+    tmp_path: Path,
+) -> None:
+    project = create_project("epoch-aware-lab", cwd=tmp_path)
+    namespace = run_path(
+        str(project / "src/epoch_aware_lab/stochaflow_ext/data.py"),
+        run_name="epoch_aware_lab_generated_data",
+    )
+    builder_type = cast(Any, namespace["SyntheticRegressionDataBuilder"])
+
+    def order(epoch: int) -> list[int]:
+        builder = builder_type(
+            DataBuilderContext(
+                params={
+                    "train_samples": 32,
+                    "validation_samples": 8,
+                    "batch_size": 8,
+                },
+                seed=42,
+            )
+        )
+        loader = cast(Any, builder.build().train)
+        loader.sampler.set_epoch(epoch)
+        return list(loader.sampler)
+
+    epoch_one = order(1)
+    epoch_two = order(2)
+
+    assert epoch_one != epoch_two
+    assert order(2) == epoch_two
 
 
 def test_generated_wheel_is_discovered_and_activated_by_entry_point(

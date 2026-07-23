@@ -1,4 +1,4 @@
-"""Installed-wheel acceptance tests for the Stage 7 reference projects."""
+"""Installed-wheel acceptance tests for the extension reference projects."""
 
 from __future__ import annotations
 

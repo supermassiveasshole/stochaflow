@@ -75,6 +75,14 @@ batch 为 `(images, {})`。
 
 ## `super_resolution` recipe
 
+这个 recipe **只构建数据**：它把每个 batch 组织为
+`(high_res, {"low_res": low_res})`，不提供开箱即用的端到端超分辨率训练或采样。
+内置 `gaussian_denoising` TrainingBuilder 只接受空 condition mapping，因此不能直接消费
+这里的 `low_res`。条件 Gaussian 超分辨率还需要项目自己提供 condition-aware model、
+TrainingBuilder/TrainingStrategy 和 SamplingBuilder；它们可以继续复用内置离散 Gaussian
+Process 以及 DDPM/DDIM。完整组合见
+[条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md)。
+
 在线 bicubic 模式从 HR 图像生成 LR condition：
 
 ```yaml
@@ -181,7 +189,7 @@ from stochaflow.extensions import (
 )
 
 
-@REGISTRIES.data_builders.register("physics")
+@REGISTRIES.data_builders.register("my-project.physics-data")
 class PhysicsDataBuilder(DataBuilder):
     def build(self) -> DataLoaders:
         dataset = StreamingPhysicsDataset(**self.context.params)
@@ -197,7 +205,7 @@ class PhysicsDataBuilder(DataBuilder):
 extensions:
   plugins: [my-project]
 data:
-  name: physics
+  name: my-project.physics-data
   params:
     path: data/simulation.zarr
 ```

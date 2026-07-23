@@ -5,11 +5,13 @@
 通用入口是：
 
 ```bash
-uv run stochaflow train --config configs/ddpm_mnist.yaml
+stochaflow train --config path/to/train.yaml
 ```
 
 runner 加载配置、应用 CLI 覆盖、创建一个时间戳 run 目录，调用一次 DataBuilder，
 然后构建一套训练组件。所有训练参数见[CLI 参数索引](reference.md#cli-参数索引)。
+源码 checkout 中可以把命令写成 `uv run stochaflow ...`，并直接使用仓库内
+`configs/` 示例；发布 wheel 不包含这些 repo-local 配置。
 
 配置解析本身不会导入 extension。runner 先根据 `extensions.plugins` 发现并预检已安装的
 `stochaflow.extensions` entry points，再激活聚合注册模块、执行跨组件校验并开始构建。
@@ -92,6 +94,18 @@ config 字段覆盖进入 resolved config；`limit-batches`、deterministic、�
 skip-final-sample 和插件 version acceptance 等 invocation 事实进入独立 manifest，而不是
 扩张组件 schema。
 
+目录输入和默认输出遵循下表；显式 checkpoint 文件始终按原路径使用：
+
+| 调用 | 目录中选择的 checkpoint | 默认输出 |
+| --- | --- | --- |
+| `train --resume <run-or-root>` | 递归查找最近修改的 `checkpoints/latest.pt` | 在原 run 的 output root 下创建新的兄弟 run |
+| `sample --checkpoint <run-or-root>` | 递归查找最近修改的 `checkpoints/best.pt` | `<checkpoint-run>/samples/<timestamp>/` |
+| `sample --config <complete-config>` | 在 `experiment.output_dir` 下查找最近修改的 `best.pt` | `<checkpoint-run>/samples/<timestamp>/` |
+
+`--output-dir` 会覆盖对应命令的输出位置。sampling 目录总会写
+`resolved_sampling.yaml`；训练 run 总会写 `resolved_config.yaml` 和
+`run_manifest.yaml`。
+
 ## 输出目录
 
 新训练在 `experiment.output_dir` 下创建唯一时间戳目录：
@@ -135,7 +149,7 @@ invocation 实际构建了训练或数据组件。完整 config 仍是重建权�
 严格恢复必须显式指定 checkpoint 文件或 run directory：
 
 ```bash
-uv run stochaflow train \
+stochaflow train \
   --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt
 ```
 
@@ -296,7 +310,7 @@ Local logger 记录 artifact 路径，TensorBoard 和 W&B 同时显示 PNG。启
 checkpoint 内含模型和训练配置，所以可以只给 checkpoint：
 
 ```bash
-uv run stochaflow sample \
+stochaflow sample \
   --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt
 ```
 
@@ -323,7 +337,7 @@ sampling:
 ```
 
 ```bash
-uv run stochaflow sample \
+stochaflow sample \
   --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt \
   --config path/to/sampling.yaml
 ```
@@ -334,7 +348,7 @@ CLI 不提供 sampler-specific flags；Sampler 参数完全属于 Builder。这�
 也可以只给外部配置，让 runner 在 `experiment.output_dir` 下寻找最新 `best.pt`：
 
 ```bash
-uv run stochaflow sample --config configs/ddpm_mnist.yaml
+stochaflow sample --config path/to/complete-config.yaml
 ```
 
 同时给出两者时，有两种明确输入形态：
@@ -391,46 +405,25 @@ Tensor 转存到 CPU；公共 contract 不强制自定义 Builder 的设备。�
 不会减少 writer 前的全量 CPU output。当前 writer contract 也不是 streaming
 contract。
 
-Physics AI reconstruction 参考项目的主配置必须遵守：
+规划大规模 sampling 时应分别估算：
 
-- 1272 个 float32 state，生成 state shape 为 `[3, 256, 256]`；
-- DFSR 用 batch 8、partial-noise time 240 和 30 个 accepted step；
-- physics-guided DFSR 用 batch 1、partial-noise time 320 和 40 个 accepted
-  step；
-- 主运行必须关闭 trajectory；
-- Builder 在每个 batch 上完成场指标计算后，可只把中心物理帧作为
-  writer-ready sample；领域 writer 输出场数据和指标，不必保存只为
-  PDE 中心差分服务的两个边界帧。
+1. 单个 device batch 的 model/solver 工作集；
+2. 所有 final sample 在 Builder 返回前的整体驻留；
+3. 每个保留 observation 带来的 trajectory 倍数；
+4. writer 拼接、stack、编码和序列化的临时副本；
+5. 最终文件与临时目录空间。
 
-下面是用户扩展中主采样 Builder 的配置轮廓；`physics_reconstruction`、
-`physics_field` 及其 params 属于该扩展，不是核心内置 schema：
+主运行若只需要 final state，应关闭 trajectory。可视化 trajectory 应使用独立的小样本
+调用，并增大 `every_steps`。领域 Builder 可以先逐 batch 计算指标，再只把 writer
+真正需要的场或通道放入 `SamplingOutput`；这会减少 payload，但仍不会把 lifecycle 变成
+streaming。
 
-```yaml
-sampling:
-  shape: [3, 256, 256]
-  num_samples: 1272
-  batch_size: 8  # physics-guided profile 使用 1
-  builder:
-    name: physics_reconstruction
-    params:
-      partial_noise_time: 240  # physics-guided profile 使用 320
-      num_inference_steps: 30  # physics-guided profile 使用 40
-      trajectory: {enabled: false, every_steps: 10}
-  writers:
-    - {name: physics_field, params: {field: center}}
-```
-
-trajectory 只能在与主重建分开的 preview 调用中开启。preview 必须满足
-`num_samples <= 8`、`every_steps >= 10` 和 accepted steps 不超过 40，可以另外
-声明 tensor/image writer。
-不要在 1272-sample 主配置中临时开启 trajectory：30/40 步 dense
-trajectory 的 raw artifact 已约为 29.8/39.1 GiB，而当前 `tensor` writer
-还需要更大的拼接/stack 临时工作集。
-
-完整公式、preview 的 8-sample 上限和验收证据分级见
-[Sampling artifact 容量边界](../development/sampling-capacity.md)。其中 RSS、
-accelerator peak、编码开销和耗时只是指定参考主机的证据，不是
-跨平台容量保证。
+Physics reconstruction 参考项目提供了一个具体例子：1272 个
+`[3, 256, 256] float32` state 的 dense 30/40-step trajectory 会达到数十 GiB，因此正式
+配置采用 final-only，preview 与主输出分离。不要把这些任务数值当作其他数据的通用上限。
+完整公式、benchmark profile、安全预检和证据分级见
+[Sampling artifact 容量](sampling-capacity.md)。其中 RSS、accelerator peak、编码开销
+和耗时只属于指定参考主机，不是跨平台容量保证。
 
 ## 本地文档
 

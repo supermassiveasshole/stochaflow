@@ -713,7 +713,31 @@ native provider，扩展 Registry 不能占用。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
-无组件级配置参数。
+| 参数 | 含义与约束 |
+| --- | --- |
+| `source` | 必填 mapping；仅接受所选 `source.kind` 对应的下列字段，未知字段拒绝。 |
+| `source.kind` | 必填字符串；`torchvision` 或 `image_folder`。 |
+| `source.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
+| `source.root` | `torchvision` 数据根目录；默认 `./data`。 |
+| `source.download` | `torchvision` 是否允许下载；默认 `true`，必须为布尔值。 |
+| `source.path` | `image_folder` 时必填的非空目录路径；非 `official` 时递归读取该目录，`official` 时要求 `<path>/train` 并可读取 `validation\|val` 与 `test` 子目录。 |
+| `image` | 必填 mapping；`size` 必填，其余字段使用下列默认值。 |
+| `image.size` | 必填 `[height, width]`；两个维度均为正整数。 |
+| `image.channels` | 输出通道数；默认 `3`，仅支持 `1` 或 `3`。 |
+| `image.normalize` | 是否将 `[0, 1]` 映射到 `[-1, 1]`；默认 `true`，必须为布尔值。 |
+| `image.random_horizontal_flip` | 训练时是否以 0.5 概率水平翻转；默认 `false`，必须为布尔值。 |
+| `partition.mode` | 划分模式；默认 `none`，支持 `none`、`official`、`holdout`、`kfold`。 |
+| `partition.validation_size` | 默认 `null`；`holdout` 时必填，可为 `(0, 1)` 比例或正整数，并须同时留下训练和验证样本；其他模式禁止。 |
+| `partition.num_folds` | 默认 `null`；`kfold` 时必填，至少为 2 且不得超过训练集大小；其他模式禁止。 |
+| `partition.fold_index` | 默认 `null`；`kfold` 时必填，范围为 `[0, num_folds)`；其他模式禁止。 |
+| `loader.batch_size` | 训练 DataLoader batch size；默认 `128`，必须为正整数。 |
+| `loader.num_workers` | DataLoader worker 数；默认 `4`，必须为非负整数。 |
+| `loader.shuffle` | 训练集是否按 `(seed, epoch)` 确定性 shuffle；默认 `true`，必须为布尔值。 |
+| `loader.drop_last` | 训练集是否丢弃不足一个 batch 的尾部；默认 `true`，必须为布尔值。 |
+| `loader.pin_memory` | 是否启用 DataLoader pinned memory；默认 `true`，必须为布尔值。 |
+| `loader.persistent_workers` | 是否保持 worker；默认 `true`，必须为布尔值，启用时 `num_workers > 0`。 |
+| `loader.prefetch_factor` | 每个 worker 的预取因子；配置默认 `null`（不覆盖 PyTorch 默认值），非 null 时为正整数且要求 `num_workers > 0`。 |
+| `loader.steps_per_epoch` | 训练 epoch 的显式 batch 上限；默认 `auto`（使用 loader 长度），或填写正整数且不得超过 sized loader 长度。 |
 
 (config-component-data_builders-multi-resolution-image)=
 #### `multi_resolution_image`
@@ -722,7 +746,39 @@ native provider，扩展 Registry 不能占用。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
-无组件级配置参数。
+| 参数 | 含义与约束 |
+| --- | --- |
+| `sources` | 必填的非空 source mapping 列表；每项只接受下列字段。 |
+| `sources[].id` | 每个来源必填的非空唯一标识。 |
+| `sources[].sampling_weight` | 默认 `null`；若任一来源设置，则所有来源都必须设置正数权重，无需归一化为和 1。 |
+| `sources[].source.kind` | 必填字符串；`torchvision` 或 `image_folder`。 |
+| `sources[].source.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
+| `sources[].source.root` | `torchvision` 数据根目录；默认 `./data`。 |
+| `sources[].source.download` | `torchvision` 是否允许下载；默认 `true`，必须为布尔值。 |
+| `sources[].source.path` | `image_folder` 时必填的非空目录路径；`official` 模式要求 train 子目录。 |
+| `image` | 必填 mapping；内部字段均使用下列默认值。 |
+| `image.channels` | 输出通道数；默认 `3`，仅支持 `1` 或 `3`。 |
+| `image.normalize` | 是否将 `[0, 1]` 映射到 `[-1, 1]`；默认 `true`，必须为布尔值。 |
+| `image.random_horizontal_flip` | 训练时是否以 0.5 概率水平翻转；默认 `false`，必须为布尔值。 |
+| `batching` | 必填 mapping；声明非空 buckets、base bucket 和动态 batch 策略。 |
+| `batching.buckets` | 必填的非空 bucket mapping 列表。 |
+| `batching.buckets[].name` | 每个 bucket 的必填非空唯一名称。 |
+| `batching.buckets[].height` | bucket 高度；必填正整数。 |
+| `batching.buckets[].width` | bucket 宽度；必填正整数。 |
+| `batching.base_bucket` | 必填；必须命名 `batching.buckets` 中的一个 bucket，其像素量定义基础 batch 预算。 |
+| `batching.dynamic_batch_size` | 是否按 bucket 像素量调整 batch size；默认 `true`，必须为布尔值。 |
+| `partition.mode` | 划分模式；默认 `none`，支持 `none`、`official`、`holdout`、`kfold`；任一组合 role 必须由全部 source 提供或全部不提供。 |
+| `partition.validation_size` | 默认 `null`；`holdout` 时必填，可为 `(0, 1)` 比例或正整数，并须同时留下训练和验证样本；其他模式禁止。 |
+| `partition.num_folds` | 默认 `null`；`kfold` 时必填，至少为 2 且不得超过训练集大小；其他模式禁止。 |
+| `partition.fold_index` | 默认 `null`；`kfold` 时必填，范围为 `[0, num_folds)`；其他模式禁止。 |
+| `loader.batch_size` | 基础 batch size；默认 `128`，必须为正整数。 |
+| `loader.num_workers` | DataLoader worker 数；默认 `4`，必须为非负整数。 |
+| `loader.shuffle` | 训练 batch 是否按 `(seed, epoch)` 确定性 shuffle；默认 `true`，必须为布尔值。 |
+| `loader.drop_last` | 训练集是否丢弃不足 bucket batch 的尾部；默认 `true`，必须为布尔值。 |
+| `loader.pin_memory` | 是否启用 DataLoader pinned memory；默认 `true`，必须为布尔值。 |
+| `loader.persistent_workers` | 是否保持 worker；默认 `true`，必须为布尔值，启用时 `num_workers > 0`。 |
+| `loader.prefetch_factor` | 每个 worker 的预取因子；配置默认 `null`（不覆盖 PyTorch 默认值），非 null 时为正整数且要求 `num_workers > 0`。 |
+| `loader.steps_per_epoch` | 训练 epoch 的 batch 数；默认 `auto`（自然 bucket batch 数），或填写正整数。 |
 
 (config-component-data_builders-super-resolution)=
 #### `super_resolution`
@@ -731,7 +787,35 @@ native provider，扩展 Registry 不能占用。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
-无组件级配置参数。
+| 参数 | 含义与约束 |
+| --- | --- |
+| `source` | 必填 mapping；只接受所选 `source.kind` 对应的下列字段，未知字段拒绝。 |
+| `source.kind` | 必填；在线模式为 `torchvision` 或 `image_folder`，配对模式为 `paired_folders`，并必须与 `low_resolution.kind` 一致。 |
+| `source.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
+| `source.root` | `torchvision` 数据根目录；默认 `./data`。 |
+| `source.download` | `torchvision` 是否允许下载；默认 `true`，必须为布尔值。 |
+| `source.path` | `image_folder` 时必填的非空 HR 目录路径；`official` 模式要求 train 子目录并可读取 validation\|val/test。 |
+| `source.high_resolution_path` | `paired_folders` 时必填的非空 HR 根目录；`official` 模式要求 train 子目录。 |
+| `source.low_resolution_path` | `paired_folders` 时必填的非空 LR 根目录；与 HR 按相对路径 stem 配对，`official` split 必须与 HR 成对存在。 |
+| `image` | 必填 mapping；HR/LR size 必填，其余字段使用下列默认值。 |
+| `image.high_resolution` | 必填 HR `[height, width]`；两个维度均为正整数。 |
+| `image.low_resolution` | 必填 LR `[height, width]`；两个维度均为正整数；paired 模式要求每轴 HR/LR 缩放比为整数。 |
+| `image.channels` | HR/LR 输出通道数；默认 `3`，仅支持 `1` 或 `3`。 |
+| `image.normalize` | 是否将 HR/LR 从 `[0, 1]` 映射到 `[-1, 1]`；默认 `true`，必须为布尔值。 |
+| `image.random_horizontal_flip` | 训练时是否对 HR/LR 同步水平翻转；默认 `false`，必须为布尔值。 |
+| `low_resolution.kind` | LR 来源；默认 `bicubic`，支持 `bicubic` 或 `paired`。 |
+| `partition.mode` | 划分模式；默认 `none`，支持 `none`、`official`、`holdout`、`kfold`。 |
+| `partition.validation_size` | 默认 `null`；`holdout` 时必填，可为 `(0, 1)` 比例或正整数，并须同时留下训练和验证样本；其他模式禁止。 |
+| `partition.num_folds` | 默认 `null`；`kfold` 时必填，至少为 2 且不得超过训练集大小；其他模式禁止。 |
+| `partition.fold_index` | 默认 `null`；`kfold` 时必填，范围为 `[0, num_folds)`；其他模式禁止。 |
+| `loader.batch_size` | 训练 DataLoader batch size；默认 `128`，必须为正整数。 |
+| `loader.num_workers` | DataLoader worker 数；默认 `4`，必须为非负整数。 |
+| `loader.shuffle` | 训练集是否按 `(seed, epoch)` 确定性 shuffle；默认 `true`，必须为布尔值。 |
+| `loader.drop_last` | 训练集是否丢弃不足一个 batch 的尾部；默认 `true`，必须为布尔值。 |
+| `loader.pin_memory` | 是否启用 DataLoader pinned memory；默认 `true`，必须为布尔值。 |
+| `loader.persistent_workers` | 是否保持 worker；默认 `true`，必须为布尔值，启用时 `num_workers > 0`。 |
+| `loader.prefetch_factor` | 每个 worker 的预取因子；配置默认 `null`（不覆盖 PyTorch 默认值），非 null 时为正整数且要求 `num_workers > 0`。 |
+| `loader.steps_per_epoch` | 训练 epoch 的显式 batch 上限；默认 `auto`（使用 loader 长度），或填写正整数且不得超过 sized loader 长度。 |
 
 (config-registry-name-sampling-artifact-writers)=
 ### `sampling_artifact_writers`
@@ -848,11 +932,19 @@ native provider，扩展 Registry 不能占用。
 (config-component-sampling_builders-standard-denoising)=
 #### `standard_denoising`
 
-固定 Tensor shape 的标准 Gaussian denoising sampling recipe。
+固定 Tensor shape 的标准 Gaussian denoising sampling recipe；要求 sampling.shape、离散 Gaussian Process，以及返回 Tensor 的 model(state, model_time)。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
-无组件级配置参数。
+| 参数 | 含义与约束 |
+| --- | --- |
+| `weights` | 模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`；选择 `ema` 时 checkpoint 必须含 EMA state。 |
+| `prediction_type` | 模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。 |
+| `clip_denoised` | 是否把预测 clean state 裁剪到 `[-1, 1]`；默认 `true`，必须为布尔值。 |
+| `sampler.name` | 必填的 samplers Registry 名称；Sampler 必须兼容离散 Gaussian Dynamics，并在此 Builder 中发出 terminal-to-clean 的完整 observation lifecycle；partial 路径需自定义 Builder。 |
+| `sampler.params` | 传给所选 Sampler 构造器的 mapping；默认 `{}`。 |
+| `trajectory.enabled` | 是否保留 trajectory observations；默认 `false`，必须为布尔值。 |
+| `trajectory.every_steps` | trajectory 的 accepted-step 保留间隔；默认 `1`，必须为正整数；initial/final 始终保留。 |
 
 (config-registry-name-training-builders)=
 ### `training_builders`
@@ -865,11 +957,13 @@ native provider，扩展 Registry 不能占用。
 (config-component-training_builders-gaussian-denoising)=
 #### `gaussian_denoising`
 
-使用离散 Gaussian marginal 和指定 prediction target 训练去噪模型。
+使用离散 Gaussian marginal 和指定 prediction target 训练无条件去噪模型；batch 必须为 Tensor 或 (Tensor, {})。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
-无组件级配置参数。
+| 参数 | 含义与约束 |
+| --- | --- |
+| `prediction_type` | 训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`；要求注入离散 Gaussian Process 和 Objective。 |
 
 (config-component-training_builders-supervised)=
 #### `supervised`
@@ -878,7 +972,7 @@ native provider，扩展 Registry 不能占用。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
-无组件级配置参数。
+`params` 必须是空 mapping（默认 `{}`）；未知字段会被拒绝。该 Builder 要求注入 Objective，batch 必须为 `(inputs, targets)`，且 target 与模型输出都必须为 Tensor。
 
 (config-registry-name-objectives)=
 ### `objectives`

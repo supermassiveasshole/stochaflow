@@ -7,31 +7,89 @@ extension through Python package metadata; it does not scan this directory.
 Run commands from this project root so relative `data/` and `outputs/` paths in
 experiment configuration resolve predictably.
 
-## Install with pip
+## What was generated
+
+| Path | Responsibility |
+| --- | --- |
+| `pyproject.toml` | Declares the installable distribution and its `stochaflow.extensions` entry point. |
+| `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/__init__.py` | Imports the registration modules; keep it free of data loading and task execution. |
+| `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/data.py` | Builds the synthetic datasets and epoch-aware training DataLoader. |
+| `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/model.py` | Defines and registers the example model. |
+| `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/training.py` | Composes the model and objective and defines one training step. |
+| `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/sampling.py` | Produces predictions with a direct-transform SamplingBuilder. |
+| `experiments/example/train.yaml` | Selects the installed plugin and configures the example run. |
+| `tests/test_extensions.py` | Checks registration and deterministic epoch shuffle behavior. |
+| `data/` | Reserved for project-owned data; the generated synthetic example does not read it. |
+
+The example reuses Stochaflow's MSE objective and tensor artifact writer. Its
+custom components remain ordinary Python code instead of a YAML object graph.
+
+## Install, test, and train with pip
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[test]"
+python -m pytest
 stochaflow train --config experiments/example/train.yaml
 ```
 
-On Windows, activate the environment with `.venv\Scripts\activate`.
+On Windows PowerShell, activate the environment with
+`.venv\Scripts\Activate.ps1`.
 
-## Install with uv
+The equivalent `uv` workflow is:
 
 ```bash
 uv sync --extra test
+uv run pytest
 uv run stochaflow train --config experiments/example/train.yaml
 ```
 
-The generated configuration trains a tiny synthetic regression model in a few
-steps. It demonstrates a custom `DataBuilder`, model, `TrainingBuilder` and
-`TrainingStrategy`, plus a direct-transform `SamplingBuilder`. The built-in MSE
-objective and tensor artifact writer are reused.
+The generated configuration trains a tiny synthetic regression model for two
+epochs. A run is written below `outputs/example/`:
 
-The package entry point imports `__STOCHAFLOW_PACKAGE_NAME__.stochaflow_ext`.
-Keep that aggregation module free of data loading, model construction, and task
-execution: importing it should only define and register extension components.
+```text
+outputs/example/<run-id>/
+  checkpoints/
+    best.pt
+    latest.pt
+  metrics.jsonl
+  resolved_config.yaml
+  run_manifest.yaml
+  samples/final/samples.pt
+```
 
-Run the extension tests with either `python -m pytest` or `uv run pytest`.
+## Strict resume
+
+Resume from a run directory so Stochaflow can validate and inherit both
+`latest.pt` and `best.pt`. The checkpoint config and complete training state are
+authoritative; do not pass `--config` to a strict resume. `--epochs` is the new
+total target, not a number of extra epochs:
+
+```bash
+stochaflow train \
+  --resume outputs/example/<run-id> \
+  --epochs 4
+```
+
+Resume creates a new sibling run directory and records its checkpoint lineage.
+The generated epoch-aware sampler rebuilds each shuffled training order from the
+experiment seed and absolute epoch, so an epoch resumed in a new process uses
+the same index order as an uninterrupted run.
+
+With `uv`, prefix the command with `uv run`.
+
+## Sample from a checkpoint
+
+Run the registered direct-transform SamplingBuilder with the trained model:
+
+```bash
+stochaflow sample \
+  --checkpoint outputs/example/<run-id>/checkpoints/best.pt \
+  --output-dir outputs/checkpoint-sample
+```
+
+The command writes `samples.pt` and `resolved_sampling.yaml` to the selected
+output directory. With no external sampling config, the checkpoint's saved
+configuration is the base; sampling CLI flags may still override supported
+runtime values.
