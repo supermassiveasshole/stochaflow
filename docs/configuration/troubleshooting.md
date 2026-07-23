@@ -31,6 +31,18 @@ dotted path。schema 不忽略未知字段。
 扩展 distribution 与 `stochaflow` CLI 必须安装在同一 Python environment；错误信息中的
 Python executable 可以帮助确认实际运行环境。
 
+错误上下文取决于 provenance 来源：
+
+- fresh config 只知道请求的 entry-point name，因此 distribution/target 会明确显示为
+  unavailable；entry-point name 不保证等于 distribution name；
+- checkpoint-backed resume/sampling 已保存 expected provenance，因此还会显示 expected
+  distribution、version 和 target。
+
+使用任意 Python package manager，把“声明该
+`stochaflow.extensions` entry point 的 distribution”安装到错误中所示 Python executable
+对应的 environment，再重试。不要根据 entry-point name 猜包名，也不需要改用某个指定的
+包管理器。
+
 `load_config()`/`load_config_dict()` 不会导入插件，所以“配置可以解析”不代表当前环境已经
 安装或成功激活 extension。先在 CLI 所在环境执行对应包管理器的包列表/metadata 检查，再
 确认 entry-point target 的依赖均可导入。

@@ -120,9 +120,13 @@ outputs/<experiment>/<YYYYMMDD_HHMMSS>/
 ```
 
 `resolved_config.yaml` 只保存最终可重建组件配置；`run_manifest.yaml` 另外记录 config
-来源、实际插件 provenance、version acceptance、启动 cwd、runtime-only CLI options 和
-checkpoint lineage。启用 TensorBoard、W&B、diagnostic 或 trajectory 后会增加对应
-子目录/artifact。
+来源、实际插件 provenance、version acceptance、启动 cwd、runtime-only CLI options、
+checkpoint lineage 和 `selected_components`。同一 component identity 摘要也写入 checkpoint
+metadata；sampling 的 `resolved_sampling.yaml` 根据最终 sampling config 写入同样的字段。
+它只列出 typed 顶层配置所选择的 framework component names（可选项显式为 `null`，列表
+保持声明顺序），不会递归解释 Builder/Process 的私有 `params`，也不表示 sampling
+invocation 实际构建了训练或数据组件。完整 config 仍是重建权威，摘要只用于审计。
+启用 TensorBoard、W&B、diagnostic 或 trajectory 后会增加对应子目录/artifact。
 `artifacts.checkpoint_every` 控制编号 checkpoint 的频率；`latest.pt` 和 `best.pt`
 按恢复与模型选择规则更新。
 

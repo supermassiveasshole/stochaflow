@@ -347,6 +347,8 @@ def _entry_point_provenance(entry_point: metadata.EntryPoint) -> ExtensionPlugin
 
 def _discover_selected_plugins(
     selected_names: tuple[str, ...] | None,
+    *,
+    expected_by_name: Mapping[str, ExtensionPluginProvenance] | None = None,
 ) -> tuple[ExtensionPluginProvenance, ...]:
     if selected_names == ():
         return ()
@@ -387,12 +389,51 @@ def _discover_selected_plugins(
         missing = sorted(set(selected_names) - set(by_name))
         if missing:
             raise ExtensionDiscoveryError(
-                "requested extension plugin(s) are not installed in the current "
-                f"Python environment ({sys.executable}): {', '.join(missing)}"
+                _missing_plugin_message(
+                    missing,
+                    expected_by_name=expected_by_name or {},
+                )
             )
 
     provenance = tuple(_entry_point_provenance(entry) for entry in candidates)
     return tuple(sorted(provenance, key=_provenance_sort_key))
+
+
+def _missing_plugin_message(
+    missing: Sequence[str],
+    *,
+    expected_by_name: Mapping[str, ExtensionPluginProvenance],
+) -> str:
+    """Return package-manager-neutral diagnostics for missing entry points."""
+
+    details: list[str] = ["requested extension plugin(s) are not installed:"]
+    suggestions: list[str] = []
+    for name in missing:
+        expected = expected_by_name.get(name)
+        if expected is None:
+            details.append(
+                f"- entry-point name={name!r}, distribution=<unavailable>, "
+                "target=<unavailable> (no checkpoint provenance)"
+            )
+            suggestions.append(
+                f"Install the distribution that declares entry point {name!r} "
+                f"in group {EXTENSION_ENTRY_POINT_GROUP!r} into this Python "
+                "environment, then retry."
+            )
+        else:
+            details.append(
+                f"- entry-point name={name!r}, expected "
+                f"distribution={expected.distribution!r}, "
+                f"version={expected.version!r}, target={expected.target!r}"
+            )
+            suggestions.append(
+                f"Install distribution {expected.distribution!r} into the Python "
+                "environment used by this Stochaflow CLI so it provides entry "
+                f"point {name!r}, then retry."
+            )
+    details.append(f"Current Python executable: {sys.executable}")
+    details.extend(suggestions)
+    return "\n".join(details)
 
 
 def _compare_expected_provenance(
@@ -465,14 +506,36 @@ def prepare_extension_plugins(
     config_copy.validate()
     declared = config_copy.extensions.plugins
     selected_names = None if declared is None else tuple(declared)
-    current = _discover_selected_plugins(selected_names)
-
-    mismatches: tuple[ExtensionVersionMismatch, ...] = ()
+    expected: tuple[ExtensionPluginProvenance, ...] | None = None
     if expected_provenance is not None:
         expected = _validate_provenance_sequence(
             expected_provenance,
             context="expected_provenance",
         )
+    current = _discover_selected_plugins(
+        selected_names,
+        expected_by_name=(
+            {item.name: item for item in expected} if expected is not None else None
+        ),
+    )
+    if (
+        selected_names is None
+        and expected is not None
+        and selection_policy is ExtensionSelectionPolicy.EXACT
+    ):
+        expected_by_name = {item.name: item for item in expected}
+        current_names = {item.name for item in current}
+        missing = sorted(set(expected_by_name) - current_names)
+        if missing:
+            raise ExtensionDiscoveryError(
+                _missing_plugin_message(
+                    missing,
+                    expected_by_name=expected_by_name,
+                )
+            )
+
+    mismatches: tuple[ExtensionVersionMismatch, ...] = ()
+    if expected is not None:
         mismatches = _compare_expected_provenance(
             current,
             expected,

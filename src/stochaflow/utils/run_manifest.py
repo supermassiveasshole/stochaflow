@@ -7,11 +7,40 @@ from typing import Any
 
 import yaml
 
+from stochaflow.utils.config import StochaflowConfig
 from stochaflow.utils.plugins import (
     ExtensionPluginProvenance,
     ResolvedExtensions,
     extension_plugin_provenance_to_dicts,
 )
+
+
+def selected_component_identities(
+    config: StochaflowConfig,
+) -> dict[str, str | None | list[str]]:
+    """Summarize selected framework-level components without inspecting params."""
+
+    return {
+        "data_builder": config.data.name,
+        "model": config.model.name,
+        "training_builder": config.training.name,
+        "objective": config.objective.name if config.objective is not None else None,
+        "process": config.process.name if config.process is not None else None,
+        "optimizer": config.optimizer.name,
+        "lr_scheduler": (
+            config.lr_scheduler.name if config.lr_scheduler is not None else None
+        ),
+        "sampling_builder": (
+            config.sampling.builder.name
+            if config.sampling.builder is not None
+            else None
+        ),
+        "sampling_artifact_writers": [
+            writer.name for writer in config.sampling.writers
+        ],
+        "loggers": [backend.name for backend in config.logging.backends],
+        "diagnostics": [diagnostic.name for diagnostic in config.diagnostics],
+    }
 
 
 def _provenance_dict(value: ExtensionPluginProvenance) -> dict[str, str]:
@@ -50,4 +79,8 @@ def write_yaml_manifest(path: str | Path, manifest: dict[str, Any]) -> Path:
     return destination
 
 
-__all__ = ["extension_runtime_metadata", "write_yaml_manifest"]
+__all__ = [
+    "extension_runtime_metadata",
+    "selected_component_identities",
+    "write_yaml_manifest",
+]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Generator
 from dataclasses import dataclass
+import sys
 from typing import Any
 
 import pytest
@@ -183,8 +184,128 @@ def test_selected_duplicate_and_missing_names_fail(
         prepare_extension_plugins(_config(plugins=["duplicate"]))
 
     _install_entry_points(monkeypatch)
-    with pytest.raises(ExtensionDiscoveryError, match="current Python environment"):
+    with pytest.raises(ExtensionDiscoveryError, match="not installed"):
         prepare_extension_plugins(_config(plugins=["missing"]))
+
+
+def test_fresh_missing_plugin_reports_unknown_identity_and_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_entry_points(monkeypatch)
+
+    with pytest.raises(ExtensionDiscoveryError) as captured:
+        prepare_extension_plugins(_config(plugins=["missing"]))
+
+    message = str(captured.value)
+    assert "entry-point name='missing'" in message
+    assert "distribution=<unavailable>" in message
+    assert "target=<unavailable> (no checkpoint provenance)" in message
+    assert f"Current Python executable: {sys.executable}" in message
+    assert "distribution that declares entry point 'missing'" in message
+    assert "pip install" not in message
+    assert "uv add" not in message
+
+
+def test_checkpoint_missing_plugin_reports_expected_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_entry_points(monkeypatch)
+    expected = _provenance(
+        name="physics",
+        distribution="physics-extension",
+        version="2.4",
+        target="physics_extension.stochaflow_ext",
+    )
+
+    with pytest.raises(ExtensionDiscoveryError) as captured:
+        prepare_extension_plugins(
+            _config(plugins=["physics"]),
+            expected_provenance=[expected],
+        )
+
+    message = str(captured.value)
+    assert "entry-point name='physics'" in message
+    assert "expected distribution='physics-extension'" in message
+    assert "version='2.4'" in message
+    assert "target='physics_extension.stochaflow_ext'" in message
+    assert f"Current Python executable: {sys.executable}" in message
+    assert "Install distribution 'physics-extension'" in message
+
+
+def test_discover_all_exact_reports_missing_checkpoint_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_entry_points(monkeypatch)
+    expected = _provenance(
+        name="physics",
+        distribution="physics-extension",
+        version="2.4",
+        target="physics_extension.stochaflow_ext",
+    )
+
+    with pytest.raises(ExtensionDiscoveryError) as captured:
+        prepare_extension_plugins(
+            _config(plugins=None),
+            expected_provenance=[expected],
+            selection_policy=ExtensionSelectionPolicy.EXACT,
+        )
+
+    message = str(captured.value)
+    assert "entry-point name='physics'" in message
+    assert "expected distribution='physics-extension'" in message
+    assert f"Current Python executable: {sys.executable}" in message
+
+
+def test_discover_all_intersection_allows_absent_checkpoint_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_entry_points(monkeypatch)
+    expected = _provenance(
+        name="physics",
+        distribution="physics-extension",
+        target="physics_extension.stochaflow_ext",
+    )
+
+    plan = prepare_extension_plugins(
+        _config(plugins=None),
+        expected_provenance=[expected],
+        selection_policy=ExtensionSelectionPolicy.INTERSECTION,
+    )
+
+    assert plan.provenance == ()
+    assert plan.version_mismatches == ()
+
+
+def test_intersection_missing_plugins_use_only_matching_checkpoint_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_entry_points(monkeypatch)
+    expected = [
+        _provenance(
+            name="shared",
+            distribution="shared-extension",
+            target="shared_extension.stochaflow_ext",
+        ),
+        _provenance(
+            name="removed",
+            distribution="removed-extension",
+            target="removed_extension.stochaflow_ext",
+        ),
+    ]
+
+    with pytest.raises(ExtensionDiscoveryError) as captured:
+        prepare_extension_plugins(
+            _config(plugins=["shared", "new"]),
+            expected_provenance=expected,
+            selection_policy=ExtensionSelectionPolicy.INTERSECTION,
+        )
+
+    message = str(captured.value)
+    assert "entry-point name='shared'" in message
+    assert "expected distribution='shared-extension'" in message
+    assert "entry-point name='new'" in message
+    assert "distribution=<unavailable>" in message
+    assert "removed-extension" not in message
 
 
 @pytest.mark.parametrize(

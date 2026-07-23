@@ -1,6 +1,6 @@
 # 自定义代码扩展支持实施计划
 
-- 状态：Stage 7 完成，Stage 8 待实施
+- 状态：Stage 8 完成，最终整分支验收待执行
 - 制定日期：2026-07-17
 - 最近修订：2026-07-23
 - 目标分支：`feature/custom-code-extension-support`
@@ -1932,24 +1932,110 @@ Sphinx `-W` 和全分支静态检查仍按仓库规则留到 Stage 8/final merge
 
 `Stage 7: Add extension reference projects`
 
-## Stage 8：可复现性与文档收尾
+## Stage 8：可复现性与文档收尾（已完成）
 
-### 实施内容
+### 目标与边界
 
-- resolved config 与 checkpoint metadata 记录已选择的插件 identity、provenance 和所有
-  注册组件名，包括显式的 `process: null`；项目和完整依赖锁定由 `pyproject.toml` 与
-  用户选择的 lockfile 记录；
-- 缺失扩展时报告 entry-point name、distribution、target 和当前 Python executable，
-  并建议将对应 extension 安装到 CLI 所在环境；
-- 文档覆盖项目创建、自定义 DataBuilder、structured batch、可选 Process、family Dynamics、
-  Sampler、SamplingBuilder、模型、Objective、TrainingBuilder/Plan 和 TrainingStrategy；
-- 单独提供“复用内置 Process/Sampler 完成新任务”和“不使用 Process 的自定义 family”
-  最小教程；
-- 记录破坏性变更、checkpoint 可移植性、capability compatibility 和 sampling 容量边界；
-- 更新 README、配置参考、故障排查与 API reference；
-- 完成构建与质量检查。
+在不增加新算法抽象、checkpoint state 或 package-manager 耦合的前提下，闭合用户能够审计、
+迁移和排查 extension runtime 的信息。Stage 8 不再修改 DataBuilder、TrainingBuilder、
+Process/Dynamics/Sampler 或 Writer 契约，也不为 Builder 私有参数建立通用 schema。
 
-### 最终验证
+resolved config 继续是可直接重新加载的标准 `StochaflowConfig`，其中已经显式保存顶层
+component name、确定的 plugin selection 和 `process: null`。训练/sampling manifest 与
+checkpoint metadata 另外保存不可由配置单独证明的 installed plugin provenance，以及从
+typed 顶层配置直接提取的 component identity 摘要。
+
+### Component identity metadata
+
+新增唯一纯函数，从最终 `StochaflowConfig` 生成：
+
+```yaml
+selected_components:
+  data_builder: image
+  model: unet
+  training_builder: gaussian_denoising
+  objective: mse
+  process: discrete_gaussian
+  optimizer: torch.optim.Adam
+  lr_scheduler: null
+  sampling_builder: standard_denoising
+  sampling_artifact_writers: [tensor]
+  loggers: [local]
+  diagnostics: []
+```
+
+- 可选 role 始终显式保存 `null`；有序列表保持配置声明顺序；
+- 只读取框架级 typed fields 的 `.name`，不遍历任何 `params`；
+- sampler、noise schedule、teacher、source、condition 等仍属于具体 Builder/Process 的
+  私有拓扑，不能因 reproducibility metadata 被核心解释；
+- 同一 schema/纯函数用于训练 `run_manifest.yaml`、训练 checkpoint metadata 和 sampling
+  `resolved_sampling.yaml`；前两者在同一次训练中值相同，sampling 则从本次最终配置重新
+  生成，因此合法 overlay 可以改变 Builder/writer identity；resolved config 本身不增加
+  无法重新加载的旁路字段；
+- checkpoint 继续使用 v8，不复制 class/source，不把 identity 摘要当作运行时 dispatch
+  或兼容矩阵。
+
+### 缺失 extension 诊断
+
+- fresh config 缺失插件时，错误记录请求的 entry-point name、当前 `sys.executable`，并明确
+  distribution/target 因没有 checkpoint provenance 而未知；
+- checkpoint 已保存 expected provenance 时，错误同时记录 entry-point name、distribution
+  和 target；
+- 建议使用任意 Python package manager 将“提供该 entry point 的 distribution”安装到 CLI
+  所在 environment，不假设 distribution 等于 entry-point name，也不硬编码 pip/uv；
+- 诊断上下文不改变 EXACT/INTERSECTION selection、identity/version preflight 或 activation
+  顺序。
+
+### 文档与最终报告
+
+- 确认扩展手册覆盖项目创建、自定义 DataBuilder、structured batch、可选 Process、
+  family Dynamics、Sampler、SamplingBuilder、模型、Objective、TrainingBuilder/Plan 和
+  TrainingStrategy；
+- 保留两条独立教程：复用内置 Gaussian Process/Sampler 完成新任务；定义不与 Gaussian
+  数学兼容的自定义 family，或在没有 probability path/solver 时直接使用无 Process
+  SamplingBuilder；
+- 新增发布前 migration/portability 说明，记录相对原基线的破坏性配置/API/checkpoint
+  变化、extension 源码不被冻结、capability compatibility、依赖锁定责任和 sampling 容量
+  边界；
+- 创建 `docs/development/extension-refactor-report.md`，汇总目标、Before/After、核心决策、
+  rejected alternatives、breaking changes、migration、known limitations 和 roadmap；
+- 更新 README、配置索引、故障排查、配置参考元数据与 Sphinx toctree；重新生成
+  `reference.md`。
+
+### 测试与文件范围
+
+- component identity helper 覆盖全部字段、显式 null、列表顺序，以及 nested fake name 不
+  泄漏；训练/采样测试验证 manifest 与 checkpoint metadata 使用同一摘要；
+- missing plugin 覆盖 fresh、checkpoint EXACT、checkpoint INTERSECTION 与未知 identity，
+  并断言当前 Python executable 和 package-manager-neutral 建议；
+- 回归 extension discovery、checkpoint-only sampling、strict resume、project scaffold 和
+  reference projects；
+- 预计代码修改仅限 `utils/run_manifest.py`、`utils/plugins.py` 与训练/采样 runtime 调用点；
+  其余是聚焦测试和文档，不改变 RegistryCatalog 或公共扩展契约。
+
+### 设计取舍
+
+- 选择小而稳定的顶层 identity 摘要，而不是复制完整 config 或递归猜测 Builder params；
+- 选择 installed distribution metadata + 用户 lockfile，而不是把 Python class/source
+  freeze 进 checkpoint；
+- 选择包管理器中立的安装建议，而不是让 Stochaflow 管理 pip、uv、conda、Poetry 或 PDM；
+- 选择记录当前 v8 事实，不为尚未发布的历史草案增加迁移层。
+
+### 实施、验证与独立审查
+
+- 新增顶层 component identity 纯函数，并在训练 manifest/checkpoint metadata 与 sampling
+  manifest 的各自最终配置边界调用；reference-project CLI 测试直接比较同一次训练的
+  manifest 与 checkpoint metadata；
+- missing-plugin 诊断区分 fresh config 与 checkpoint provenance，并补齐
+  `plugins: null` 在 EXACT/INTERSECTION 下的行为；
+- 新增两篇 sampling-side 扩展教程、迁移/可移植性页面、70 个稳定扩展导出的 API 索引和
+  最终报告草案；教程 Python 块通过语法检查和 tiny runtime smoke；
+- 聚焦 Stage 8 + 完整 reference-project 文件共 `119 passed`（最终修复后 108 个相关测试
+  复跑通过），Ruff、Pyright、配置 reference check 与 Sphinx `-W` 均通过；
+- 三个独立 reviewer 均未发现 Critical/High。发现的 `plugins: null + EXACT` 诊断缺口、
+  sampling summary 等值措辞和教程前置 checkpoint 边界均已修复并复审关闭。
+
+### 整分支最终验证
 
 ```bash
 uv run python tools/generate_config_reference.py
@@ -1960,6 +2046,11 @@ uv run pyright
 uv build
 uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 ```
+
+这些命令在 Stage checkpoint 后按 Final Refactor Completion Loop 统一执行并写回最终报告，
+不能用本节的聚焦结果代替。
+
+Stage checkpoint 逻辑提交主题：`Stage 8: Complete extension reproducibility`。
 
 ## Open–Closed 验收矩阵
 

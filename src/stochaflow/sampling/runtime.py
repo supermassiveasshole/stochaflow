@@ -49,6 +49,7 @@ from stochaflow.utils.plugins import (
 from stochaflow.utils.registry import REGISTRIES
 from stochaflow.utils.run_manifest import (
     extension_runtime_metadata,
+    selected_component_identities,
     write_yaml_manifest,
 )
 from stochaflow.utils.seed import set_seed
@@ -273,6 +274,7 @@ def run_resolved_sampling(
         "checkpoint": str(inputs.checkpoint_path),
         "checkpoint_format_version": inputs.checkpoint.get("format_version"),
         **extension_runtime_metadata(extensions),
+        "selected_components": selected_component_identities(config),
         "lineage": {"checkpoint": str(inputs.checkpoint_path)},
         "startup_cwd": str(
             Path.cwd().resolve() if startup_cwd is None else Path(startup_cwd).resolve()

@@ -37,6 +37,7 @@ from stochaflow.utils.plugins import (
 )
 from stochaflow.utils.run_manifest import (
     extension_runtime_metadata,
+    selected_component_identities,
     write_yaml_manifest,
 )
 from stochaflow.utils.seed import set_seed
@@ -719,8 +720,10 @@ def _run_single_run(
         )
     }
     extension_metadata = extension_runtime_metadata(extensions)
+    selected_components = selected_component_identities(config)
     checkpoint_metadata = {
         **extension_metadata,
+        "selected_components": selected_components,
         "config_source": config_source,
         "lineage": lineage,
         "startup_cwd": str(startup_cwd),
@@ -733,6 +736,7 @@ def _run_single_run(
             "config_source": config_source,
             "config": config.to_dict(),
             **extension_metadata,
+            "selected_components": selected_components,
             "lineage": lineage,
             "startup_cwd": str(startup_cwd),
             "runtime_options": runtime_options,

@@ -659,3 +659,53 @@ target-aware 通用 Dynamics，以及把 physics 参数加入内置 DDIM。
 
 实现、聚焦回归、Ruff、Pyright 与两轮独立审查均已完成。Stage 7 重新启用
 `src/stochaflow/**` no-change gate，项目扩展必须只依赖本检查点公开的 family primitive。
+
+## Stage 8 实施检查点（已完成）
+
+状态：可复现性 metadata、缺失插件诊断、迁移/教程/API 文档、最终报告草案、聚焦验证和
+独立审查均已完成；最终整分支 diff、完整测试/build 和最终架构审查留给 Final Refactor
+Completion Loop。
+
+### 收口边界
+
+1. resolved config 仍是可重新加载的组件图权威；`selected_components` 只从 typed 顶层
+   role 提取 name，不递归解释 Builder/Process 私有 `params`；
+2. 同一次训练的 run manifest 与 checkpoint metadata 复用同一份摘要；sampling manifest
+   使用相同 schema/纯函数，但从本次最终 sampling config 重新生成，因此 overlay 可以合法
+   改变 Builder/writer identity；
+3. 摘要不参与 Registry dispatch、plugin ownership、state compatibility 或 family 矩阵；
+4. fresh missing plugin 只能报告 name 与当前 Python executable；checkpoint-backed 路径
+   使用 expected provenance 补充 distribution/version/target，安装建议保持包管理器中立；
+5. `plugins: null + EXACT` 缺少 expected plugin 时也走同一丰富诊断；
+   `INTERSECTION` 仍允许 checkpoint 中不再选择的插件缺失；
+6. public API 页面以 `stochaflow.extensions.__all__` 为唯一清单，第三方不依赖内部模块路径；
+7. 自定义 family 教程明确是 sampling-side integration，列出 checkpoint/model/config
+   前置契约并链接完整可执行 reference projects，不把片段冒充端到端训练。
+
+### 独立审查与解决
+
+三个只读 reviewer 均报告 Critical/High 为零。发现并关闭：
+
+- **Medium：** `plugins: null + EXACT` 原先在 expected plugin 缺失时退化成通用 identity
+  error；修复后输出 expected identity、当前 executable 和可操作安装建议，并新增
+  EXACT/INTERSECTION 回归；
+- **Medium：** 文档原先可能暗示 sampling summary 必须与训练 checkpoint 相等；改为同一
+  schema、各自最终 config，只有同次训练 manifest/checkpoint 保证值相同；
+- **Medium：** custom-family 页面不足以单独产生 checkpoint；页面收缩为 sampling-side
+  contract，显式列出前置 checkpoint 并链接完整 train→resume→sample 项目；
+- **Suggestion：** 修正教程内部链接，并以 Sphinx `-W` 验证。
+
+### Stage 验证
+
+- `uv run pytest tests/test_run_manifest.py tests/test_extension_plugins.py
+  tests/test_experiment_runner.py tests/test_sampling_runtime.py
+  tests/test_extension_reference_projects.py`：最终合计 `119 passed`；
+- review 修复后的相关集：`108 passed`；
+- 两个 reference distribution 的 wheel CLI 路径完成 train→resume→sample，并验证
+  checkpoint metadata 与 run manifest 摘要相等；
+- 教程 Python block 语法检查、Gaussian/custom-family/direct-transform tiny runtime smoke
+  通过；
+- `uv run ruff check .`、`uv run pyright`、配置 reference `--check` 与
+  Sphinx `-W --keep-going` 通过。
+
+逻辑提交主题：`Stage 8: Complete extension reproducibility`。

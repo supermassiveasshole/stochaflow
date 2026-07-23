@@ -362,6 +362,22 @@ def _assert_manifest_provenance(
     assert manifest["extension_plugins"] == _expected_provenance(project)
 
 
+def _assert_component_metadata_persisted(
+    manifest_path: Path,
+    checkpoint_path: Path,
+) -> None:
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    payload: object = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=True,
+    )
+    assert isinstance(payload, dict)
+    metadata = payload.get("metadata")
+    assert isinstance(metadata, dict)
+    assert metadata["selected_components"] == manifest["selected_components"]
+
+
 def _checkpoint_assets(path: Path) -> dict[str, dict[str, object]]:
     payload: object = torch.load(path, map_location="cpu", weights_only=True)
     assert isinstance(payload, dict)
@@ -744,6 +760,10 @@ def test_distillation_cli_train_resume_and_student_only_sample(
     first_checkpoint = first_run / "checkpoints/latest.pt"
     assert first_checkpoint.is_file()
     _assert_manifest_provenance(first_run / "run_manifest.yaml", _DISTILLATION)
+    _assert_component_metadata_persisted(
+        first_run / "run_manifest.yaml",
+        first_checkpoint,
+    )
     first_assets = _checkpoint_assets(first_checkpoint)
     assert set(first_assets) == {"distillation_objective", "teacher"}
     assert set(first_assets["distillation_objective"]) == {"temperature"}
@@ -795,6 +815,10 @@ def test_distillation_cli_train_resume_and_student_only_sample(
     _assert_manifest_provenance(
         resumed_run / "run_manifest.yaml",
         _DISTILLATION,
+    )
+    _assert_component_metadata_persisted(
+        resumed_run / "run_manifest.yaml",
+        resumed_checkpoint,
     )
 
     teacher_state.unlink()
@@ -871,6 +895,10 @@ def test_physics_cli_train_resume_and_sample_variants(
     first_checkpoint = first_run / "checkpoints/latest.pt"
     assert first_checkpoint.is_file()
     _assert_manifest_provenance(first_run / "run_manifest.yaml", _PHYSICS)
+    _assert_component_metadata_persisted(
+        first_run / "run_manifest.yaml",
+        first_checkpoint,
+    )
 
     resumed_root = project_root / "outputs/resumed"
     _run_cli(
@@ -893,8 +921,13 @@ def test_physics_cli_train_resume_and_sample_variants(
         "--no-progress",
     )
     resumed_run = _only_run(resumed_root)
-    assert (resumed_run / "checkpoints/latest.pt").is_file()
+    resumed_checkpoint = resumed_run / "checkpoints/latest.pt"
+    assert resumed_checkpoint.is_file()
     _assert_manifest_provenance(resumed_run / "run_manifest.yaml", _PHYSICS)
+    _assert_component_metadata_persisted(
+        resumed_run / "run_manifest.yaml",
+        resumed_checkpoint,
+    )
 
     variants = (
         ("sample-baseline-ddim.yaml", "ddim"),

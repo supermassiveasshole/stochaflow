@@ -433,6 +433,14 @@ def test_direct_transform_runs_without_process_or_sampler(tmp_path: Path) -> Non
     assert DirectTransformBuilder.calls == 1
     assert result.metadata == {"kind": "direct_transform"}
     assert manifest["process"] is None
+    assert manifest["selected_components"]["process"] is None
+    assert (
+        manifest["selected_components"]["sampling_builder"]
+        == "stage3_direct_transform"
+    )
+    assert manifest["selected_components"]["sampling_artifact_writers"] == [
+        "tensor"
+    ]
     assert torch.equal(
         torch.load(result.artifacts["samples"]),
         torch.full((3, 1), 3.0),
@@ -853,6 +861,7 @@ def test_sampling_only_config_can_override_checkpoint(tmp_path: Path) -> None:
     manifest = yaml.safe_load(result.artifacts["config"].read_text())
     assert result.builder_name == "stage3_no_shape"
     assert manifest["builder"]["params"] == {"external": True}
+    assert manifest["selected_components"]["sampling_builder"] == "stage3_no_shape"
 
 
 def test_sampling_overlay_rejects_unknown_extension_fields(tmp_path: Path) -> None:

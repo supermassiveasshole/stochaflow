@@ -145,6 +145,15 @@ editable install 在版本号不变时修改源码无法由 distribution metadat
 变化导致的 state shape、资产拓扑或运行逻辑不兼容，会在既有构建/加载边界报错，核心不为
 任意第三方实现提供源码兼容保证。
 
+训练 manifest、checkpoint metadata 和 sampling manifest 还保存
+`selected_components`，列出最终 typed config 选择的 DataBuilder、model、
+TrainingBuilder、Objective、Process、optimizer、scheduler、SamplingBuilder、writers、
+loggers 和 diagnostics。这个摘要保留显式 `null` 与列表顺序，但不会遍历任何 `params`：
+具体 sampler、noise schedule、teacher、source 或 condition 仍由其 Builder/Process
+私有拥有。它用于快速审计，不冻结 class/source，不参与 Registry dispatch、plugin
+ownership 推断或 compatibility 判断；checkpoint 中的完整 config 与 runtime state
+仍是恢复权威。
+
 checkpoint v8 使用 `torch.load(..., weights_only=True)`，payload 只允许 Tensor、primitive
 和普通 container。扩展组件的 `state_dict` 或 extra state 也必须编码为这些数据类型；不能
 要求 `safe_globals`、保存自定义 class instance 或 custom Tensor subclass。这个约束让 runtime

@@ -11,6 +11,7 @@
 reference
 data-pipeline
 extensions
+compatibility-and-migration
 reference-projects
 workflows
 troubleshooting
@@ -23,6 +24,7 @@ troubleshooting
 | 查某个 YAML 字段、默认值或 CLI 覆盖 | [完整字段参考](reference.md) |
 | 配置图像、超分辨率或自定义数据构建 | [数据构建](data-pipeline.md) |
 | 注册自定义 DataBuilder、writer 或其他组件 | [扩展与 Registry](extensions.md) |
+| 了解 breaking changes 并跨环境移动 checkpoint | [兼容性、迁移与可移植性](compatibility-and-migration.md) |
 | 查看 Physics reconstruction 与蒸馏的完整扩展 | [纵向扩展参考项目](reference-projects.md) |
 | 训练、smoke run、恢复和 checkpoint 采样 | [常用工作流](workflows.md) |
 | 根据错误信息定位问题 | [排错索引](troubleshooting.md) |

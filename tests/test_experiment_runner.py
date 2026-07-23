@@ -287,6 +287,18 @@ def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
     assert manifest["config_source"] == "external"
     assert manifest["extension_plugins"] == []
     assert manifest["config"] == resolved
+    selected = manifest["selected_components"]
+    assert build_kwargs["checkpoint_metadata"]["selected_components"] == selected
+    assert config.process is not None
+    assert config.sampling.builder is not None
+    assert selected["data_builder"] == config.data.name
+    assert selected["model"] == config.model.name
+    assert selected["training_builder"] == config.training.name
+    assert selected["process"] == config.process.name
+    assert selected["sampling_builder"] == config.sampling.builder.name
+    assert selected["sampling_artifact_writers"] == [
+        writer.name for writer in config.sampling.writers
+    ]
 
 
 def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):

@@ -243,6 +243,16 @@ multi-source mixing, buckets, K-fold, logging, and CLI overrides, see the
 [Configuration handbook](docs/configuration/index.md). Native optimizer and LR
 scheduler constructor parameters follow the installed PyTorch version.
 
+Extension authors can follow the independent tutorials for
+[reusing the Gaussian family](docs/tutorials/reuse-gaussian-components.md) or
+[adding a custom generation family/direct transform](docs/tutorials/custom-generation-family.md).
+The [migration and portability guide](docs/configuration/compatibility-and-migration.md)
+collects breaking changes and checkpoint/environment boundaries, while the
+[public extension API reference](docs/api/extensions.md) lists the supported
+third-party import surface. The
+[extension refactor report](docs/development/extension-refactor-report.md)
+records the complete architecture and verification evidence.
+
 If `--epochs` is omitted, the runner uses `trainer.num_epochs` from the YAML
 config. Passing `--epochs` is an explicit run-time override.
 
