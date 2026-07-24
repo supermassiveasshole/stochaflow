@@ -36,6 +36,7 @@ from stochaflow.utils.config import (
     coerce_config_section,
     load_config_dict,
 )
+from stochaflow.utils.device import move_module_to_device
 from stochaflow.utils.factory import build_model, build_process, resolve_device
 from stochaflow.utils.plugins import (
     ExtensionActivationPlan,
@@ -414,7 +415,7 @@ def _build_checkpointed_process(
         raise TypeError("checkpoint process_state_dict must be a mapping")
     process = build_process(config.process)
     process.load_state_dict(state)
-    process.to(device)
+    move_module_to_device(process, device, role="sampling process")
     process.eval()
     return process
 

@@ -8,6 +8,8 @@ import gc
 import math
 from pathlib import Path
 from typing import Any, cast
+import warnings
+
 import torch
 import yaml
 
@@ -380,9 +382,11 @@ def _restore_training_state(
     if payload is None:
         raise ValueError("checkpoint payload is required when resuming training")
     restore_cuda_rng = training.trainer.device.type == "cuda"
+    restore_mps_rng = training.trainer.device.type == "mps"
     selected_epoch, selected_global_step, rng_state = _parse_strict_resume_state(
         payload,
         require_cuda_compatibility=restore_cuda_rng,
+        require_mps_compatibility=restore_mps_rng,
     )
     loaded = training.checkpoint_manager.restore_payload(payload, path=checkpoint)
     if training.ema is not None:
@@ -425,7 +429,19 @@ def _restore_training_state(
         training_loop_state=training_loop_state,
     )
     training.trainer.best_checkpoint_path = previous_best
-    restore_rng_state(rng_state, restore_cuda=restore_cuda_rng)
+    if restore_mps_rng and rng_state.torch_mps is None:
+        warnings.warn(
+            "checkpoint does not contain MPS RNG state; strict resume will "
+            "continue without restoring the MPS random stream, so stochastic "
+            "results may diverge from an uninterrupted run",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    restore_rng_state(
+        rng_state,
+        restore_cuda=restore_cuda_rng,
+        restore_mps=restore_mps_rng,
+    )
     return start_epoch
 
 
@@ -433,6 +449,7 @@ def _parse_strict_resume_state(
     payload: CheckpointState,
     *,
     require_cuda_compatibility: bool,
+    require_mps_compatibility: bool = False,
 ) -> tuple[int, int, ParsedRNGState]:
     """Validate resume-only progress and RNG fields before mutating runtime state."""
 
@@ -447,6 +464,7 @@ def _parse_strict_resume_state(
     rng_state = parse_rng_state(
         payload.get("rng_state"),
         require_cuda_compatibility=require_cuda_compatibility,
+        require_mps_compatibility=require_mps_compatibility,
     )
     return cast(int, epoch), cast(int, global_step), rng_state
 
@@ -800,6 +818,8 @@ def _run_single_run(
             gc.collect()
             if sampling_device.startswith("cuda"):
                 torch.cuda.empty_cache()
+            elif sampling_device.startswith("mps"):
+                torch.mps.empty_cache()
             sampling_result = run_sampling(
                 checkpoint=result.best_checkpoint,
                 output_dir=Path(config.experiment.output_dir) / "samples" / "final",

@@ -82,6 +82,17 @@ def test_image_folder_is_stable_and_emits_standard_batch(tmp_path: Path) -> None
     assert list(paths) == sorted(paths)
 
 
+def test_image_loader_omits_pinned_memory_by_default(tmp_path: Path) -> None:
+    _write_image(tmp_path / "sample.png")
+    component = _image_component(tmp_path)
+    loader_params = cast(dict[str, Any], component.params["loader"])
+    loader_params.pop("pin_memory")
+
+    loaders = build_data_loaders(component, seed=3)
+
+    assert not cast(Any, loaders.train).pin_memory
+
+
 def test_image_holdout_and_single_kfold_are_deterministic(tmp_path: Path) -> None:
     _folder(tmp_path, 12)
     holdout = build_data_loaders(

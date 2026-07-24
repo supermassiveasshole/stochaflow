@@ -40,31 +40,40 @@ class FIDReferenceMetricProvider(ReferenceMetricProvider):
         feature: int = 2048,
     ) -> None:
         del num_real, num_fake
+        metric_device = (
+            torch.device("cpu") if device.type == "mps" else torch.device(device)
+        )
         try:
             module = importlib.import_module("torchmetrics.image.fid")
             metric_cls = getattr(module, "FrechetInceptionDistance")
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+            raise _quality_dependency_error("FID") from exc
+        try:
             metric = metric_cls(
                 feature=feature,
                 normalize=True,
                 reset_real_features=False,
                 sync_on_compute=False,
-            ).to(device)
+            ).to(metric_device)
             metric.set_dtype(torch.float64)
-        except (
-            ImportError,
-            ModuleNotFoundError,
-            AttributeError,
-            RuntimeError,
-            ValueError,
-        ) as exc:
+        except (ImportError, ModuleNotFoundError) as exc:
             raise _quality_dependency_error("FID") from exc
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "failed to initialize FID reference metric on "
+                f"{metric_device.type}: {exc}"
+            ) from exc
+        self._metric_device = metric_device
         self.metric = metric
 
     def update(self, images: torch.Tensor, *, real: bool) -> None:
-        self.metric.update(images, real=real)
+        self.metric.update(images.to(self._metric_device), real=real)
 
     def compute(self) -> Mapping[str, float]:
-        return {"fid": float(self.metric.compute())}
+        value = self.metric.compute()
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu()
+        return {"fid": float(value)}
 
     def reset_fake(self) -> None:
         self.metric.reset()

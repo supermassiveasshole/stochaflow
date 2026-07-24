@@ -71,6 +71,7 @@ class ParsedRNGState:
     numpy: tuple[str, np.ndarray[Any, np.dtype[np.uint32]], int, int, float]
     torch_cpu: torch.Tensor
     torch_cuda: tuple[torch.Tensor, ...]
+    torch_mps: torch.Tensor | None
 
 
 @dataclass(slots=True)
@@ -418,10 +419,14 @@ class CheckpointManager:
 def capture_rng_state() -> dict[str, Any]:
     """Capture process-global RNG streams using the v8 data-only contract."""
 
-    return _capture_rng_state(include_cuda=True)
+    return _capture_rng_state(include_cuda=True, include_mps=True)
 
 
-def _capture_rng_state(*, include_cuda: bool) -> dict[str, Any]:
+def _capture_rng_state(
+    *,
+    include_cuda: bool,
+    include_mps: bool,
+) -> dict[str, Any]:
     python_version, python_state, python_gaussian = random.getstate()
     (
         numpy_generator,
@@ -434,6 +439,11 @@ def _capture_rng_state(*, include_cuda: bool) -> dict[str, Any]:
         torch.cuda.get_rng_state_all()
         if include_cuda and torch.cuda.is_available()
         else []
+    )
+    mps_state = (
+        torch.mps.get_rng_state()
+        if include_mps and torch.backends.mps.is_available()
+        else None
     )
     return {
         "python": {
@@ -450,6 +460,9 @@ def _capture_rng_state(*, include_cuda: bool) -> dict[str, Any]:
         },
         "torch_cpu": torch.random.get_rng_state().detach().cpu().clone(),
         "torch_cuda": [state.detach().cpu().clone() for state in cuda_states],
+        "torch_mps": (
+            None if mps_state is None else mps_state.detach().cpu().clone()
+        ),
     }
 
 
@@ -457,6 +470,7 @@ def parse_rng_state(
     value: object,
     *,
     require_cuda_compatibility: bool = False,
+    require_mps_compatibility: bool = False,
 ) -> ParsedRNGState:
     """Validate and normalize one v8 RNG snapshot without changing global RNGs."""
 
@@ -464,6 +478,7 @@ def parse_rng_state(
         value,
         path="checkpoint.rng_state",
         fields={"python", "numpy", "torch_cpu", "torch_cuda"},
+        optional_fields={"torch_mps"},
     )
     python_value = _exact_dict(
         root["python"],
@@ -588,11 +603,31 @@ def parse_rng_state(
                     f"checkpoint.rng_state.torch_cuda[{index}] is invalid"
                 ) from exc
 
+    torch_mps_value = root.get("torch_mps")
+    torch_mps = (
+        None
+        if torch_mps_value is None
+        else _parse_rng_tensor(
+            torch_mps_value,
+            path="checkpoint.rng_state.torch_mps",
+        )
+    )
+    if require_mps_compatibility and torch_mps is not None:
+        if not torch.backends.mps.is_available():
+            raise RuntimeError(
+                "checkpoint contains MPS RNG state but MPS is unavailable"
+            )
+        try:
+            torch.Generator(device="mps").set_state(torch_mps)
+        except RuntimeError as exc:
+            raise ValueError("checkpoint.rng_state.torch_mps is invalid") from exc
+
     return ParsedRNGState(
         python=python_state,
         numpy=numpy_state,
         torch_cpu=torch_cpu,
         torch_cuda=torch_cuda,
+        torch_mps=torch_mps,
     )
 
 
@@ -600,6 +635,7 @@ def restore_rng_state(
     state: object,
     *,
     restore_cuda: bool = True,
+    restore_mps: bool = True,
 ) -> None:
     """Restore a fully parsed RNG snapshot, rolling back on runtime failure."""
 
@@ -607,31 +643,61 @@ def restore_rng_state(
         raise TypeError("state must be a ParsedRNGState")
     parsed_state = state
     previous = parse_rng_state(
-        _capture_rng_state(include_cuda=restore_cuda),
+        _capture_rng_state(
+            include_cuda=restore_cuda,
+            include_mps=restore_mps,
+        ),
         require_cuda_compatibility=restore_cuda and bool(parsed_state.torch_cuda),
+        require_mps_compatibility=restore_mps
+        and parsed_state.torch_mps is not None,
     )
     try:
-        _apply_rng_state(parsed_state, restore_cuda=restore_cuda)
+        _apply_rng_state(
+            parsed_state,
+            restore_cuda=restore_cuda,
+            restore_mps=restore_mps,
+        )
     except Exception:
-        _apply_rng_state(previous, restore_cuda=restore_cuda)
+        _apply_rng_state(
+            previous,
+            restore_cuda=restore_cuda,
+            restore_mps=restore_mps,
+        )
         raise
 
 
-def _apply_rng_state(state: ParsedRNGState, *, restore_cuda: bool) -> None:
+def _apply_rng_state(
+    state: ParsedRNGState,
+    *,
+    restore_cuda: bool,
+    restore_mps: bool,
+) -> None:
     random.setstate(state.python)
     np.random.set_state(state.numpy)
     torch.random.set_rng_state(state.torch_cpu)
     if restore_cuda and state.torch_cuda:
         torch.cuda.set_rng_state_all(list(state.torch_cuda))
+    if restore_mps and state.torch_mps is not None:
+        torch.mps.set_rng_state(state.torch_mps)
+        if not torch.equal(torch.mps.get_rng_state(), state.torch_mps):
+            raise RuntimeError("MPS RNG state did not match after restoration")
 
 
-def _exact_dict(value: object, *, path: str, fields: set[str]) -> dict[str, object]:
+def _exact_dict(
+    value: object,
+    *,
+    path: str,
+    fields: set[str],
+    optional_fields: set[str] | None = None,
+) -> dict[str, object]:
     if type(value) is not dict:
         raise TypeError(f"{path} must be an exact dictionary")
     result = cast(dict[object, object], value)
-    if set(result) != fields:
+    optional = optional_fields or set()
+    actual = set(result)
+    if not fields.issubset(actual) or not actual.issubset(fields | optional):
         missing = sorted(fields - set(result))
-        unknown = sorted(set(result) - fields, key=str)
+        unknown = sorted(set(result) - fields - optional, key=str)
         raise ValueError(
             f"{path} has invalid fields: missing={missing or '<none>'}, "
             f"unknown={unknown or '<none>'}"

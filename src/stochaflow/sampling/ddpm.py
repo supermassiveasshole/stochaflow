@@ -127,13 +127,18 @@ class DDPMAncestralSampler(Sampler):
             )
             prediction = dynamics.predict(state, times)
             evaluations += 1
-            state = self.transition(
+            transition = self.transition(
                 process,
                 state,
                 times,
                 prediction,
-            ).sample(generator=generator)
+            )
             coordinate = state_time - 1
+            state = (
+                transition.mean
+                if coordinate == process.clean_time
+                else transition.sample(generator=generator)
+            )
             if observer is not None:
                 observer.observe(
                     SamplingObservation(

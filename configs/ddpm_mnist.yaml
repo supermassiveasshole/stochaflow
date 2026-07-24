@@ -96,13 +96,11 @@ sampling:
       prediction_type: epsilon
       clip_denoised: true
       sampler:
-        name: ddim
-        params:
-          num_inference_steps: 100
-          eta: 0.0
+        name: ddpm
+        params: {}
       trajectory:
         enabled: true
-        every_steps: 5
+        every_steps: 50
   writers:
     - name: tensor
       params: {}

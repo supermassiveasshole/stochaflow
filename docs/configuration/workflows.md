@@ -68,8 +68,9 @@ uv run stochaflow train \
 3. `--device`、`--output-dir`、`--epochs` 等 CLI 覆盖；
 4. runner 为本次 run 生成的 `experiment.exp_id` 和时间戳输出目录。
 
-`--no-progress` 会关闭本次运行的进度条；`--deterministic` 启用 Torch 支持的确定性
-行为。配置随机 seed 仍应固定，但跨设备、PyTorch 版本和第三方算子不保证逐位一致。
+`--no-progress` 会关闭本次运行的进度条；`--deterministic` 启用 PyTorch 的严格
+deterministic-algorithm 模式，遇到没有确定性实现的算子会报错，而不是静默使用非确定性
+kernel。配置随机 seed 仍应固定，但跨设备、PyTorch 版本和第三方算子不保证逐位一致。
 同理，`--epochs` 和 `--limit-batches` 不会按参数名猜测并改写 optimizer/scheduler
 constructor kwargs。
 
@@ -177,10 +178,12 @@ monitor、mode、resolved config 和 extension provenance 必须与所选 checkp
 `checkpoints/best.pt`，并记录当前 resolved config/provenance；后续恢复和 sampling 不依赖
 父 run。
 Strict resume 还要求合法的 `epoch`、`global_step` 和 v8 RNG snapshot，并在 selected state
-与 inherited-best 全部验证后恢复 Python、NumPy、Torch CPU 及适用的 CUDA RNG。普通
-checkpoint load 不修改全局 RNG。sampling 不恢复 checkpoint RNG snapshot，而是按
+与 inherited-best 全部验证后恢复 Python、NumPy、Torch CPU 及适用的 CUDA/MPS RNG。
+早期 v8 checkpoint 若缺少 MPS RNG 字段，在 MPS resume 时会警告并继续，但不能保证该
+随机流精确延续。普通 checkpoint load 不修改全局 RNG。sampling 不恢复 checkpoint RNG snapshot，而是按
 `sampling.seed`（为 `null` 时使用 `experiment.seed`）重新初始化 Python、NumPy 与 Torch
-全局 RNG。device override 仍受支持，但跨设备或 CUDA topology 不保证逐位一致。
+全局 RNG。device override 仍受支持，但跨设备、CUDA topology 或 backend 版本不保证逐位
+一致。
 
 checkpoint 不保存 DataBuilder、Dataset、DataLoader iterator/worker、Sampler 或用户私有
 generator 的 runtime state。内置图像 recipe 会由 experiment seed 与 epoch 重建索引顺序，
@@ -298,7 +301,9 @@ diagnostics:
 
 Local logger 记录 artifact 路径，TensorBoard 和 W&B 同时显示 PNG。启用 KID/FID
 前需要 `uv sync --extra quality`，并且本次训练必须有 validation DataLoader。参考指标
-只用于监控，不参与 best checkpoint 或 early stopping。
+只用于监控，不参与 best checkpoint 或 early stopping。MPS 运行中，FID 会把 feature
+accumulation 与距离计算放到 CPU，以避开 MPS 不支持的 double-precision linear algebra；
+KID 仍使用配置的 runtime device。
 
 `failure_policy: raise` 会让采样或 provider 异常终止训练；`warn` 按 provider/profile
 隔离失败、继续执行其余组件，并把错误同时写入 `diagnostics/system/error_count`、日志

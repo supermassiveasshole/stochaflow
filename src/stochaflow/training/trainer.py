@@ -33,6 +33,7 @@ from stochaflow.training.strategy import (
     validate_train_step_output,
 )
 from stochaflow.utils.checkpoint import CheckpointManager
+from stochaflow.utils.device import move_module_to_device
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
 from stochaflow.utils.seed import preserve_global_rng_state
 
@@ -272,8 +273,12 @@ class Trainer:
         if self.lr_scheduler_interval not in {"step", "epoch"}:
             raise ValueError("lr_scheduler_interval must be 'step' or 'epoch'")
 
-        for asset in self.managed_modules.values():
-            asset.module.to(self.device)
+        for name, asset in self.managed_modules.items():
+            move_module_to_device(
+                asset.module,
+                self.device,
+                role=f"training module '{name}'",
+            )
         if self.ema is not None:
             self.ema.to(self.device)
 

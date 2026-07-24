@@ -177,10 +177,14 @@ class DDIMSampler(Sampler):
         process = process_value
         if device is None:
             device = torch.device("cpu")
+        schedule_device = torch.device("cpu")
         clean_time = process.clean_time
         terminal_time = process.terminal_time
         if self.explicit_schedule is not None:
-            states = torch.as_tensor(self.explicit_schedule, device=device)
+            states = torch.as_tensor(
+                self.explicit_schedule,
+                device=schedule_device,
+            )
             if states.ndim != 1 or states.numel() < 2:
                 raise ValueError("DDIM schedule must contain at least two states")
             if states.dtype == torch.bool or torch.is_floating_point(states):
@@ -197,7 +201,7 @@ class DDIMSampler(Sampler):
                 terminal_time,
                 clean_time,
                 steps=steps + 1,
-                device=device,
+                device=schedule_device,
                 dtype=torch.float64,
             ).round().to(dtype=torch.long)
         if int(states[0]) > terminal_time or int(states[-1]) < clean_time:
@@ -206,7 +210,7 @@ class DDIMSampler(Sampler):
             )
         if not torch.all(states[:-1] > states[1:]):
             raise ValueError("DDIM schedule must be strictly descending and unique")
-        return states
+        return states.to(device=device)
 
     def sample(
         self,
@@ -223,7 +227,7 @@ class DDIMSampler(Sampler):
         if not isinstance(initial_state, torch.Tensor):
             raise TypeError("ddim initial_state must be a Tensor")
         process = dynamics.process
-        states = self.resolve_schedule(process, device=initial_state.device)
+        states = self.resolve_schedule(process)
         num_steps = states.numel() - 1
         current = initial_state
         if observer is not None:
@@ -240,22 +244,39 @@ class DDIMSampler(Sampler):
         for step_index, (source, target) in enumerate(
             zip(states[:-1], states[1:]), start=1
         ):
-            source_times = source.expand(current.shape[0])
-            target_times = target.expand(current.shape[0])
+            source_coordinate = int(source)
+            target_coordinate = int(target)
+            source_times = torch.full(
+                (current.shape[0],),
+                source_coordinate,
+                device=current.device,
+                dtype=torch.long,
+            )
+            target_times = torch.full(
+                (current.shape[0],),
+                target_coordinate,
+                device=current.device,
+                dtype=torch.long,
+            )
             prediction = dynamics.predict(current, source_times)
             evaluations += 1
-            current = self.transition(
+            transition = self.transition(
                 process,
                 current,
                 source_times,
                 target_times,
                 prediction,
-            ).sample(generator=generator)
+            )
+            current = (
+                transition.mean
+                if self.eta == 0.0 or target_coordinate == process.clean_time
+                else transition.sample(generator=generator)
+            )
             if observer is not None:
                 observer.observe(
                     SamplingObservation(
                         step_index=step_index,
-                        coordinate=int(target),
+                        coordinate=target_coordinate,
                         state=current,
                         is_final=step_index == num_steps,
                         diagnostics={"num_dynamics_evaluations": evaluations},

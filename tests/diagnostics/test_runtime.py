@@ -10,6 +10,7 @@ import torch.nn as nn
 
 from stochaflow.sampling import PredictionType
 from stochaflow.training import TrainStepOutput, TrainingStrategy
+from stochaflow.training.diagnostics import runtime as diagnostic_runtime
 from stochaflow.training.diagnostics.runtime import (
     EvaluationGuard,
     GaussianTrainingRuntime,
@@ -69,12 +70,14 @@ class PredictionOnlyGaussianStrategy(TrainingStrategy):
         return TrainStepOutput(torch.zeros((), requires_grad=True))
 
 
-@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+@pytest.mark.parametrize("device_name", ["cpu", "cuda", "mps"])
 def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
     device_name,
 ) -> None:
     if device_name == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
+    if device_name == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("MPS is unavailable")
     device = torch.device(device_name)
     model = gaussian_system(TinyDenoiser(), num_timesteps=2).to(device)
     ema = ExponentialMovingAverage(model.inference_model, decay=0.5)
@@ -97,6 +100,9 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
     cuda_rng_before = (
         torch.cuda.get_rng_state(device).clone() if device.type == "cuda" else None
     )
+    mps_rng_before = (
+        torch.mps.get_rng_state().clone() if device.type == "mps" else None
+    )
 
     with EvaluationGuard(runtime, seed=123, use_ema=True):
         assert not model.inference_model.training
@@ -110,6 +116,8 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
     assert torch.equal(torch.random.get_rng_state(), cpu_rng_before)
     if cuda_rng_before is not None:
         assert torch.equal(torch.cuda.get_rng_state(device), cuda_rng_before)
+    if mps_rng_before is not None:
+        assert torch.equal(torch.mps.get_rng_state(), mps_rng_before)
     for name, value in model.named_parameters():
         assert torch.equal(value, parameters_before[name])
 
@@ -126,6 +134,8 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
     assert torch.equal(torch.random.get_rng_state(), cpu_rng_before)
     if cuda_rng_before is not None:
         assert torch.equal(torch.cuda.get_rng_state(device), cuda_rng_before)
+    if mps_rng_before is not None:
+        assert torch.equal(torch.mps.get_rng_state(), mps_rng_before)
     for name, value in model.named_parameters():
         assert torch.equal(value, parameters_before[name])
 
@@ -178,6 +188,31 @@ def test_prepare_reference_images_expands_grayscale_and_normalizes() -> None:
     assert prepared.shape == (1, 3, 2, 2)
     assert prepared.min() == 0.0
     assert prepared.max() == 1.0
+
+
+def test_synchronize_dispatches_to_mps_without_requiring_mps(
+    monkeypatch,
+) -> None:
+    calls = 0
+
+    def synchronize() -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(torch.mps, "synchronize", synchronize)
+
+    diagnostic_runtime._synchronize(torch.device("mps"))
+
+    assert calls == 1
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS is unavailable")
+def test_synchronize_waits_for_real_mps_work() -> None:
+    value = torch.ones(4, device="mps").square()
+
+    diagnostic_runtime._synchronize(value.device)
+
+    assert value.cpu().tolist() == [1.0, 1.0, 1.0, 1.0]
 
 
 def test_diagnostic_sampler_rejects_nonterminal_start() -> None:

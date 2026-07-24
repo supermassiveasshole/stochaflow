@@ -38,11 +38,8 @@ def test_load_ddpm_mnist_config() -> None:
     }
     assert config.sampling.builder is not None
     sampler = config.sampling.builder.params["sampler"]
-    assert sampler["name"] == "ddim"
-    assert sampler["params"] == {
-        "num_inference_steps": 100,
-        "eta": 0.0,
-    }
+    assert sampler["name"] == "ddpm"
+    assert sampler["params"] == {}
     assert config.ema.enabled
     assert config.ema.decay == 0.9995
     assert config.ema.update_after_step == 100
@@ -56,7 +53,7 @@ def test_load_ddpm_mnist_config() -> None:
     ]
     assert config.sampling.builder.params["trajectory"] == {
         "enabled": True,
-        "every_steps": 5,
+        "every_steps": 50,
     }
     assert config.trainer.num_epochs == 30
     assert config.trainer.early_stopping.patience == 7
@@ -74,6 +71,36 @@ def test_load_ddpm_mnist_config() -> None:
         "tensorboard",
     ]
     assert config.artifacts.checkpoint_every == 5
+
+
+def test_load_ddim_mnist_config() -> None:
+    ddpm = load_config(Path("configs/ddpm_mnist.yaml"))
+    ddim = load_config(Path("configs/ddim_mnist.yaml"))
+
+    assert ddim.experiment.name == "ddim_mnist"
+    assert ddim.experiment.output_dir == "outputs/ddim_mnist"
+    assert ddim.data == ddpm.data
+    assert ddim.model == ddpm.model
+    assert ddim.process == ddpm.process
+    assert ddim.training == ddpm.training
+    assert ddim.objective == ddpm.objective
+    assert ddim.optimizer == ddpm.optimizer
+    assert ddim.lr_scheduler == ddpm.lr_scheduler
+    assert ddim.ema == ddpm.ema
+    assert ddim.diagnostics == ddpm.diagnostics
+    assert ddim.logging == ddpm.logging
+    assert ddim.sampling.builder is not None
+    assert ddim.sampling.builder.params["sampler"] == {
+        "name": "ddim",
+        "params": {
+            "num_inference_steps": 100,
+            "eta": 0.0,
+        },
+    }
+    assert ddim.sampling.builder.params["trajectory"] == {
+        "enabled": True,
+        "every_steps": 5,
+    }
 
 
 def test_config_parsing_does_not_import_declared_plugins(

@@ -51,7 +51,7 @@ data:
       num_workers: 4
       shuffle: true
       drop_last: true
-      pin_memory: true
+      pin_memory: false
       persistent_workers: true
       prefetch_factor: null
       steps_per_epoch: auto
@@ -71,7 +71,8 @@ partition 是这个 recipe 的私有能力：
 | `kfold` | 使用指定的 `num_folds` 和 `fold_index` 构建一个 fold。 |
 
 K-fold 配置只代表一次独立运行；需要五折时执行五次配置或由外部 sweep 展开。默认
-batch 为 `(images, {})`。
+batch 为 `(images, {})`。`loader.pin_memory` 的可移植默认值为 `false`；CUDA 用户可在
+测量吞吐后显式开启，MPS 用户应保持关闭。
 
 ## `super_resolution` recipe
 

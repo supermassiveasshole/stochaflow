@@ -1,7 +1,7 @@
 experiment:
-  name: ddpm_flowers102
+  name: ddim_mnist
   seed: 42
-  output_dir: outputs/ddpm_flowers102
+  output_dir: outputs/ddim_mnist
 
 extensions:
   plugins: []
@@ -11,37 +11,36 @@ data:
   params:
     source:
       kind: torchvision
-      dataset: Flowers102
+      dataset: MNIST
       root: ./data
       download: true
     image:
-      size: [64, 64]
-      channels: 3
+      size: [32, 32]
+      channels: 1
       normalize: true
-      random_horizontal_flip: true
+      random_horizontal_flip: false
     loader:
-      batch_size: 64
-      num_workers: 4
+      batch_size: 128
+      num_workers: 0
       shuffle: true
       drop_last: true
       pin_memory: false
-      persistent_workers: true
+      persistent_workers: false
       steps_per_epoch: auto
     partition:
-      mode: official
+      mode: holdout
+      validation_size: 10000
 
 model:
   name: unet
   params:
-    in_channels: 3
-    out_channels: 3
-    base_channels: 128
-    channel_multipliers: [1, 2, 4, 4]
+    in_channels: 1
+    out_channels: 1
+    base_channels: 64
+    channel_multipliers: [1, 2, 4]
     num_res_blocks: 2
     time_embedding_dim: 128
     dropout: 0.1
-    attention_levels: [2, 3]
-    attention_heads: 4
 
 process:
   name: discrete_gaussian
@@ -50,8 +49,8 @@ process:
       name: linear_beta
       params:
         num_timesteps: 1000
-        beta_start: 1.0e-4
-        beta_end: 2.0e-2
+        beta_start: 0.0001
+        beta_end: 0.02
 
 training:
   name: gaussian_denoising
@@ -66,30 +65,29 @@ objective:
 optimizer:
   name: torch.optim.Adam
   params:
-    lr: 0.0001
-    weight_decay: 0.0001
+    lr: 0.0002
+    weight_decay: 0.0
     betas: [0.9, 0.999]
     eps: 1.0e-8
 
 lr_scheduler:
-  name: warmup_cosine
-  interval: step
+  name: torch.optim.lr_scheduler.CosineAnnealingLR
+  interval: epoch
   params:
-    warmup_steps: 500
-    total_steps: 10500
-    min_lr_ratio: 0.05
+    T_max: 30
+    eta_min: 0.00002
 
 ema:
   enabled: true
-  decay: 0.999
-  update_after_step: 0
+  decay: 0.9995
+  update_after_step: 100
   update_every: 1
   use_for_sampling: true
 
 sampling:
-  shape: [3, 64, 64]
+  shape: [1, 32, 32]
   num_samples: 64
-  batch_size: 16
+  batch_size: 64
   seed: null
   builder:
     name: standard_denoising
@@ -97,8 +95,14 @@ sampling:
       weights: auto
       prediction_type: epsilon
       clip_denoised: true
-      sampler: {name: ddpm, params: {}}
-      trajectory: {enabled: false, every_steps: 1}
+      sampler:
+        name: ddim
+        params:
+          num_inference_steps: 100
+          eta: 0.0
+      trajectory:
+        enabled: true
+        every_steps: 5
   writers:
     - name: tensor
       params: {}
@@ -113,27 +117,20 @@ diagnostics:
         step_every: 100
         artifact_every_epochs: 5
       sampling:
-        sample_num: 16
-        batch_size: 16
+        sample_num: 8
+        batch_size: 8
         seed: 123
       use_ema: true
       failure_policy: raise
       samplers:
-        - id: ddpm_full
-          name: ddpm
-          params: {}
-          trajectory:
-            enabled: true
-            every_steps: 100
-            gif_fps: 8
-        - id: ddim_50
+        - id: ddim_20
           name: ddim
           params:
-            num_inference_steps: 50
+            num_inference_steps: 20
             eta: 0.0
           trajectory:
             enabled: true
-            every_steps: 5
+            every_steps: 2
             gif_fps: 8
       providers:
         step_metrics:
@@ -141,8 +138,6 @@ diagnostics:
             params: {buckets: 10}
           - name: noise_alignment
             params: {}
-          - name: x0_reconstruction
-            params: {timesteps: [50, 250, 500, 900]}
         sampler_metrics:
           - name: sample_statistics
             params: {}
@@ -151,8 +146,8 @@ diagnostics:
         denoiser_artifacts:
           - name: reconstruction_panel
             params:
-              timesteps: [50, 250, 500, 900]
-              max_samples: 16
+              timesteps: [100, 500, 900]
+              max_samples: 8
         sampler_artifacts:
           - name: sample_grid
             params: {nrow: 4}
@@ -160,27 +155,18 @@ diagnostics:
             params: {}
       reference:
         enabled: false
-        every_epochs: 20
-        num_real: 2048
-        num_fake: 2048
-        batch_size: 64
-        metrics:
-          - name: kid
-            params: {subsets: 100, subset_size: 1000}
-          - name: fid
-            params: {}
 
 trainer:
-  num_epochs: 700
+  num_epochs: 30
   device: auto
   max_grad_norm: 1.0
   show_progress: true
   early_stopping:
-    enabled: false
-    monitor: train_loss
+    enabled: true
+    monitor: valid_loss
     mode: min
-    patience: 20
-    min_delta: 0.0
+    patience: 7
+    min_delta: 0.00001
 
 logging:
   log_every: 100

@@ -19,7 +19,7 @@ Parameter、primitive 和普通 `dict`、`OrderedDict`、`list`、`tuple`。训�
 - 存在时的 Process、Objective、EMA model 与 EMA runtime state；
 - optimizer/scheduler 的 concrete class identity 与 state；
 - 按名称保存的 managed auxiliary module state；
-- Python、NumPy、Torch CPU 及可用 CUDA 的 epoch-boundary RNG snapshot；
+- Python、NumPy、Torch CPU 及可用 CUDA/MPS 的 epoch-boundary RNG snapshot；
 - extension entry-point provenance、version acceptance、lineage 和
   `selected_components` 等审计信息。
 
@@ -31,6 +31,11 @@ v8 不保存：
 - Sampler、Observer、solver history、sampling trajectory 等临时采样状态；
 - 用户私有 generator 或未声明为 managed training asset 的对象；
 - 数据集、网络资源、输出目录内容或相对路径所指向的文件。
+
+当前 v8 写入 MPS RNG state。早期实现生成、仍标记为 v8 的 checkpoint 可能没有这个
+字段；它们在 MPS strict resume 时会发出警告并继续加载，但无法保证 MPS 随机流与未中断
+运行精确衔接。CPU/CUDA/MPS RNG snapshot 都只覆盖相应的全局 generator，不扩展
+DataLoader worker 或用户私有 generator 的持久化边界。
 
 在 `train --resume` 的完整训练恢复中，可选资产按“存在性 + state”严格配对：runtime
 有 Process/Objective 时 checkpoint 必须有对应 state，runtime 没有时 payload 也不能含
@@ -106,8 +111,8 @@ force；name/distribution/target identity 不匹配会失败。即使 provenance
    `metadata.checkpoint_kind: best` checkpoint 才可独立恢复。
 4. 同步数据、模型外部资产和配置中引用的文件。相对 data/output 路径与 Builder 私有
    path 都以目标进程启动 cwd 解释；必要时从项目根运行并显式覆盖 output dir。
-5. 核对 device/backend。strict resume 若恢复 CUDA RNG，目标 CUDA 可用性和 device count
-   必须兼容；跨 device、PyTorch 版本或第三方 kernel 不保证逐位一致。
+5. 核对 device/backend。strict resume 若恢复 CUDA/MPS RNG，目标 backend 必须可用；
+   CUDA device count 也必须兼容。跨 device、PyTorch 版本或第三方 kernel 不保证逐位一致。
 6. 先用小 batch 和有限 step 做 data/model/state-load smoke，再运行完整作业。sampling
    不恢复 checkpoint RNG，而是按 `sampling.seed`（或 experiment seed）重新初始化。
 7. 在目标主机重新评估 RAM、accelerator memory、临时磁盘和 artifact 大小。当前 sampling

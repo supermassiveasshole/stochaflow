@@ -18,6 +18,7 @@ def set_seed(seed: int, *, deterministic: bool = False) -> None:
         torch.cuda.manual_seed_all(seed)
 
     if deterministic:
+        torch.use_deterministic_algorithms(True)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
@@ -37,11 +38,19 @@ def preserve_global_rng_state(
         ]
     else:
         cuda_devices = []
+    preserve_mps = (
+        target is not None
+        and target.type == "mps"
+        and torch.backends.mps.is_available()
+    )
     python_state = random.getstate()
     numpy_state = np.random.get_state()
+    mps_state = torch.mps.get_rng_state().clone() if preserve_mps else None
     try:
         with torch.random.fork_rng(devices=cuda_devices):
             yield
     finally:
         random.setstate(python_state)
         np.random.set_state(numpy_state)
+        if mps_state is not None:
+            torch.mps.set_rng_state(mps_state)

@@ -74,6 +74,7 @@ def test_all_builtin_yaml_configs_load() -> None:
     assert [path.name for path in paths] == [
         "ddim_cifar10.yaml",
         "ddim_flowers102.yaml",
+        "ddim_mnist.yaml",
         "ddpm_cifar10.yaml",
         "ddpm_flowers102.yaml",
         "ddpm_mnist.yaml",

@@ -734,7 +734,7 @@ native provider，扩展 Registry 不能占用。
 | `loader.num_workers` | DataLoader worker 数；默认 `4`，必须为非负整数。 |
 | `loader.shuffle` | 训练集是否按 `(seed, epoch)` 确定性 shuffle；默认 `true`，必须为布尔值。 |
 | `loader.drop_last` | 训练集是否丢弃不足一个 batch 的尾部；默认 `true`，必须为布尔值。 |
-| `loader.pin_memory` | 是否启用 DataLoader pinned memory；默认 `true`，必须为布尔值。 |
+| `loader.pin_memory` | 是否启用 DataLoader pinned memory；默认 `false`，必须为布尔值。CUDA 用户可显式开启，MPS 不支持 pinned memory。 |
 | `loader.persistent_workers` | 是否保持 worker；默认 `true`，必须为布尔值，启用时 `num_workers > 0`。 |
 | `loader.prefetch_factor` | 每个 worker 的预取因子；配置默认 `null`（不覆盖 PyTorch 默认值），非 null 时为正整数且要求 `num_workers > 0`。 |
 | `loader.steps_per_epoch` | 训练 epoch 的显式 batch 上限；默认 `auto`（使用 loader 长度），或填写正整数且不得超过 sized loader 长度。 |
@@ -775,7 +775,7 @@ native provider，扩展 Registry 不能占用。
 | `loader.num_workers` | DataLoader worker 数；默认 `4`，必须为非负整数。 |
 | `loader.shuffle` | 训练 batch 是否按 `(seed, epoch)` 确定性 shuffle；默认 `true`，必须为布尔值。 |
 | `loader.drop_last` | 训练集是否丢弃不足 bucket batch 的尾部；默认 `true`，必须为布尔值。 |
-| `loader.pin_memory` | 是否启用 DataLoader pinned memory；默认 `true`，必须为布尔值。 |
+| `loader.pin_memory` | 是否启用 DataLoader pinned memory；默认 `false`，必须为布尔值。CUDA 用户可显式开启，MPS 不支持 pinned memory。 |
 | `loader.persistent_workers` | 是否保持 worker；默认 `true`，必须为布尔值，启用时 `num_workers > 0`。 |
 | `loader.prefetch_factor` | 每个 worker 的预取因子；配置默认 `null`（不覆盖 PyTorch 默认值），非 null 时为正整数且要求 `num_workers > 0`。 |
 | `loader.steps_per_epoch` | 训练 epoch 的 batch 数；默认 `auto`（自然 bucket batch 数），或填写正整数。 |
@@ -812,7 +812,7 @@ native provider，扩展 Registry 不能占用。
 | `loader.num_workers` | DataLoader worker 数；默认 `4`，必须为非负整数。 |
 | `loader.shuffle` | 训练集是否按 `(seed, epoch)` 确定性 shuffle；默认 `true`，必须为布尔值。 |
 | `loader.drop_last` | 训练集是否丢弃不足一个 batch 的尾部；默认 `true`，必须为布尔值。 |
-| `loader.pin_memory` | 是否启用 DataLoader pinned memory；默认 `true`，必须为布尔值。 |
+| `loader.pin_memory` | 是否启用 DataLoader pinned memory；默认 `false`，必须为布尔值。CUDA 用户可显式开启，MPS 不支持 pinned memory。 |
 | `loader.persistent_workers` | 是否保持 worker；默认 `true`，必须为布尔值，启用时 `num_workers > 0`。 |
 | `loader.prefetch_factor` | 每个 worker 的预取因子；配置默认 `null`（不覆盖 PyTorch 默认值），非 null 时为正整数且要求 `num_workers > 0`。 |
 | `loader.steps_per_epoch` | 训练 epoch 的显式 batch 上限；默认 `auto`（使用 loader 长度），或填写正整数且不得超过 sized loader 长度。 |
@@ -1109,7 +1109,7 @@ native provider，扩展 Registry 不能占用。
 | `--limit-batches` | 否 | `—` | 每个 epoch 最多执行的训练 batch 数，用于 smoke/debug。 |
 | `--limit-validation-batches` | 否 | `—` | 每个 epoch 最多执行的验证 batch 数。 |
 | `--limit-test-batches` | 否 | `—` | 最终测试最多执行的 batch 数。 |
-| `--deterministic` | 否 | `false` | 在 Torch 支持的范围内启用确定性算法。 |
+| `--deterministic` | 否 | `false` | 启用 PyTorch 严格确定性算法；没有确定性实现的算子会报错。 |
 | `--no-progress` | 否 | `false` | 禁用 Rich 进度条。 |
 | `--force-extension-version-mismatch` | 否 | `false` | 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。 |
 | `--skip-final-sample` | 否 | `false` | 跳过训练完成后的最佳 checkpoint 验收采样。 |

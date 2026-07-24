@@ -10,7 +10,11 @@ import torch
 from stochaflow.training.diagnostics import DiffusionQualityDiagnostic
 from stochaflow.training.diagnostics.config import ReferencePipelineConfig
 from stochaflow.training.diagnostics.contracts import ReferenceMetricProvider
-from stochaflow.training.diagnostics.providers.reference import ReferenceMetricSuite
+from stochaflow.training.diagnostics.providers.reference import (
+    FIDReferenceMetricProvider,
+    KIDReferenceMetricProvider,
+    ReferenceMetricSuite,
+)
 from stochaflow.training.diagnostics.runtime import BoundSampler, SeedPolicy
 
 from .helpers import (
@@ -69,9 +73,12 @@ def _install_fake_torchmetrics(monkeypatch):
             del kwargs
             self.real_count = 0
             self.fake_count = 0
+            self.device = torch.device("cpu")
+            self.update_devices: list[torch.device] = []
+            self.compute_device: torch.device | None = None
 
         def to(self, device):
-            del device
+            self.device = torch.device(device)
             return self
 
         def set_dtype(self, dtype) -> None:
@@ -79,6 +86,7 @@ def _install_fake_torchmetrics(monkeypatch):
 
         def update(self, images: torch.Tensor, *, real: bool) -> None:
             torch.rand(1)
+            self.update_devices.append(images.device)
             assert images.shape[1] == 3
             assert 0.0 <= float(images.min()) <= float(images.max()) <= 1.0
             if real:
@@ -91,6 +99,7 @@ def _install_fake_torchmetrics(monkeypatch):
 
     class FakeFID(FakeMetric):
         def compute(self) -> torch.Tensor:
+            self.compute_device = self.device
             return torch.tensor(float(self.real_count + self.fake_count))
 
     class FakeKID(FakeMetric):
@@ -107,6 +116,66 @@ def _install_fake_torchmetrics(monkeypatch):
     monkeypatch.setitem(sys.modules, "torchmetrics.image", image_module)
     monkeypatch.setitem(sys.modules, "torchmetrics.image.fid", fid_module)
     monkeypatch.setitem(sys.modules, "torchmetrics.image.kid", kid_module)
+
+
+def test_fid_uses_cpu_for_mps_without_changing_kid_device(monkeypatch) -> None:
+    _install_fake_torchmetrics(monkeypatch)
+
+    fid = FIDReferenceMetricProvider(
+        device=torch.device("mps"),
+        num_real=2,
+        num_fake=2,
+    )
+    kid = KIDReferenceMetricProvider(
+        device=torch.device("mps"),
+        num_real=2,
+        num_fake=2,
+        subsets=1,
+        subset_size=2,
+    )
+    images = torch.zeros(2, 3, 4, 4)
+
+    fid.update(images, real=True)
+    fid.update(images, real=False)
+
+    assert fid.metric.device == torch.device("cpu")
+    assert fid.metric.update_devices == [torch.device("cpu"), torch.device("cpu")]
+    assert fid.compute() == {"fid": 4.0}
+    assert fid.metric.compute_device == torch.device("cpu")
+    assert kid.metric.device == torch.device("mps")
+
+
+def test_fid_preserves_parameter_validation_errors(monkeypatch) -> None:
+    _install_fake_torchmetrics(monkeypatch)
+    fid_module = sys.modules["torchmetrics.image.fid"]
+
+    class InvalidFID:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            raise ValueError("feature must identify a supported extractor")
+
+    setattr(fid_module, "FrechetInceptionDistance", InvalidFID)
+
+    with pytest.raises(ValueError, match="supported extractor"):
+        FIDReferenceMetricProvider(
+            device=torch.device("mps"),
+            num_real=2,
+            num_fake=2,
+        )
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS is unavailable")
+def test_fid_cpu_fallback_accepts_real_mps_images(monkeypatch) -> None:
+    _install_fake_torchmetrics(monkeypatch)
+    provider = FIDReferenceMetricProvider(
+        device=torch.device("mps"),
+        num_real=2,
+        num_fake=2,
+    )
+
+    provider.update(torch.zeros(2, 3, 4, 4, device="mps"), real=True)
+
+    assert provider.metric.update_devices == [torch.device("cpu")]
 
 
 def test_reference_metrics_require_validation_data(monkeypatch, tmp_path) -> None:

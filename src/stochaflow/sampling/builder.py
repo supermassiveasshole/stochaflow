@@ -20,6 +20,7 @@ from stochaflow.sampling.sampler import (
 )
 from stochaflow.sampling.writers import SamplingBatch
 from stochaflow.utils.config import ComponentConfig
+from stochaflow.utils.device import move_module_to_device
 from stochaflow.utils.registry import REGISTRIES
 
 WeightSelection = Literal["auto", "raw", "ema"]
@@ -60,7 +61,11 @@ class InferenceModelProvider:
         if not isinstance(model_value, nn.Module):
             raise TypeError("inference model factory must return nn.Module")
         model_value.load_state_dict(state)
-        model_value.to(self.device)
+        move_module_to_device(
+            model_value,
+            self.device,
+            role="inference model",
+        )
         model_value.eval()
         return model_value, resolved
 

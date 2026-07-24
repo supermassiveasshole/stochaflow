@@ -12,7 +12,7 @@ class LoaderRecipeConfig:
     num_workers: int = 4
     shuffle: bool = True
     drop_last: bool = True
-    pin_memory: bool = True
+    pin_memory: bool = False
     persistent_workers: bool = True
     prefetch_factor: int | None = None
     steps_per_epoch: int | str = "auto"

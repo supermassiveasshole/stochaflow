@@ -87,13 +87,23 @@ uv run stochaflow train \
 uv run stochaflow train --config configs/ddpm_mnist.yaml
 ```
 
-该示例同时启用原生 PyTorch LR scheduler、EMA、TensorBoard 和轻量
-`diffusion_quality` diagnostic；reference KID/FID 默认关闭，因此不需要
-`quality` extra。查看训练与 diagnostic 指标：
+也可以直接选择完整的 DDIM 版本：
+
+```bash
+uv run stochaflow train --config configs/ddim_mnist.yaml
+```
+
+两份配置共享数据、模型、训练目标和高级特性；`ddpm_mnist.yaml` 的主采样器是
+DDPM，`ddim_mnist.yaml` 的主采样器是 100 步确定性 DDIM。两者都启用原生
+PyTorch LR scheduler、EMA、TensorBoard 和轻量 DDIM `diffusion_quality`
+对照；reference KID/FID 默认关闭，因此不需要 `quality` extra。查看 DDPM
+训练与 diagnostic 指标：
 
 ```bash
 tensorboard --logdir outputs/ddpm_mnist/<run>/tensorboard
 ```
+
+查看 DDIM 运行时，将路径根替换为 `outputs/ddim_mnist`。
 
 从最佳 checkpoint 采样：
 

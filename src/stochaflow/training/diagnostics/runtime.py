@@ -88,6 +88,8 @@ def _manual_seed(seed: int, device: torch.device) -> None:
 def _synchronize(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(device)
+    elif device.type == "mps":
+        torch.mps.synchronize()
 
 
 def _cpu_tensor_snapshot(state: Any) -> torch.Tensor:

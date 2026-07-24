@@ -74,6 +74,19 @@ def test_ddim_public_schedule_resolver_supports_uniform_and_partial_paths() -> N
     ]
 
 
+def test_ddim_schedule_is_validated_before_target_device_transfer() -> None:
+    process = _process(10)
+
+    states = DDIMSampler(num_inference_steps=4).resolve_schedule(
+        process,
+        device=torch.device("meta"),
+    )
+
+    assert states.device.type == "meta"
+    assert states.dtype == torch.long
+    assert states.shape == (5,)
+
+
 def test_ddim_public_transition_supports_batch_selected_pairs() -> None:
     process = _process(10)
     state = torch.randn(2, 3)

@@ -197,7 +197,25 @@ holdout 样本数为 0 或占满 train。浮点比例必须位于 0 与 1 之间
 先用 `num_workers: 0` 让真实 Dataset 异常出现在主进程，再检查 Dataset 是否可
 pickle、文件句柄是否按 worker 打开、路径是否有效。确认后逐步恢复 worker 数量。
 
+### MPS 出现 pinned-memory 警告
+
+内置 recipe 的 `loader.pin_memory` 默认是 `false`，这是 CPU、CUDA 与 MPS 间的可移植
+默认值。MPS 通常不受益于 CUDA 风格的 pinned-memory DataLoader；保持关闭即可。CUDA
+用户可以在测量输入吞吐后显式启用。
+
 ## 训练、checkpoint 与采样
+
+### MPS 拒绝 `float64` module 或 Process
+
+Apple MPS 不支持 `float64` module parameter/buffer。把模型或 Process coefficient
+构造为 `float32`；若算法确实要求 double precision，则显式改用 CPU 或 CUDA。核心不会
+静默降精度，因为这会改变扩展声明的数值语义。
+
+### `--deterministic` 因不支持的算子失败
+
+该 flag 启用 PyTorch 严格 deterministic-algorithm 模式；没有确定性实现的算子会直接
+报错。移除或替换该算子，或在接受非确定性执行时不传此 flag。固定 seed 仍是必要条件，
+但不能保证不同 backend 或 PyTorch 版本逐位一致。
 
 ### 训练时出现 state shape / channel 错误
 
@@ -224,11 +242,20 @@ epoch 旁的 mutable `best.pt` 已被后续 epoch 覆盖，当前格式无法重
 Strict resume 还要求合法的 `epoch`、`global_step` 和 RNG snapshot；缺失或损坏会在修改训练
 资产前拒绝。只有 strict training resume 会从 checkpoint 恢复 RNG snapshot。普通
 checkpoint 读取不修改全局 RNG；sampling 不恢复该 snapshot，但会按 `sampling.seed`（为
-`null` 时使用 `experiment.seed`）重置 Python、NumPy 与 Torch 全局 RNG。跨 CPU/CUDA 或
-不同 CUDA topology 不保证逐位复现。DataBuilder/DataLoader/Sampler/worker 的运行态不进入
-checkpoint。内置图像 recipe 会从 seed 与 epoch 重建 shuffle/batch 索引，但 worker 中的
-随机 crop/flip state 不恢复，因此这类增强不保证逐位连续。自定义随机 loader 应由 seed 与
-epoch 确定，并按需实现 `set_epoch(epoch)`。
+`null` 时使用 `experiment.seed`）重置 Python、NumPy 与 Torch 全局 RNG。strict resume
+恢复适用的 CPU/CUDA/MPS 全局 RNG；早期 v8 checkpoint 缺少 MPS RNG 字段时会警告，并且
+无法保证该随机流精确衔接。跨 backend 或不同 CUDA topology 不保证逐位复现。
+DataBuilder/DataLoader/Sampler/worker 的运行态不进入 checkpoint。内置图像 recipe 会从
+seed 与 epoch 重建 shuffle/batch 索引，但 worker 中的随机 crop/flip state 不恢复，因此
+这类增强不保证逐位连续。自定义随机 loader 应由 seed 与 epoch 确定，并按需实现
+`set_epoch(epoch)`。
+
+### MPS 上启用 FID 后运行在 CPU
+
+这是预期行为。FID 的距离计算需要 MPS 不支持的 double-precision linear algebra，因此
+reference provider 会在 MPS 运行中把 FID feature accumulation 和 compute 放到 CPU。
+KID 不使用这条 fallback，仍保留配置的 runtime device。CPU transfer 可能增加 diagnostic
+耗时，但不会改变训练资产所在设备。
 
 ### 完整外部 sampling config 加载 checkpoint state 失败
 

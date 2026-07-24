@@ -82,6 +82,13 @@ def test_v8_checkpoint_always_records_extension_plugin_metadata() -> None:
             "target": "example_project.stochaflow_ext",
         }
     ]
+    rng_state = default_state.get("rng_state")
+    assert rng_state is not None
+    assert "torch_mps" in rng_state
+    if torch.backends.mps.is_available():
+        assert isinstance(rng_state["torch_mps"], torch.Tensor)
+    else:
+        assert rng_state["torch_mps"] is None
 
 
 def test_checkpoint_boundary_strictly_validates_plugin_provenance() -> None:
@@ -137,6 +144,23 @@ def test_restore_payload_rejects_v7_and_missing_plugin_metadata(
         match=r"metadata\.extension_plugins must be a list",
     ):
         manager.restore_payload(missing_plugins, path=tmp_path / "missing.pt")
+
+
+def test_restore_payload_accepts_legacy_v8_rng_state_without_mps(
+    tmp_path: Path,
+) -> None:
+    manager = CheckpointManager(nn.Linear(1, 1))
+    legacy_v8 = manager.build_state()
+    rng_state = legacy_v8.get("rng_state")
+    assert rng_state is not None
+    rng_state.pop("torch_mps")
+
+    loaded = manager.restore_payload(
+        legacy_v8,
+        path=tmp_path / "legacy-v8.pt",
+    )
+
+    assert loaded.path == tmp_path / "legacy-v8.pt"
 
 
 def test_save_rejects_custom_extra_state_with_precise_path(tmp_path: Path) -> None:
@@ -264,6 +288,76 @@ def test_rng_state_round_trips_through_weights_only_checkpoint(tmp_path: Path) -
     assert actual[0] == expected[0]
     assert actual[1] == expected[1]
     assert torch.equal(actual[2], expected[2])
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(),
+    reason="MPS is unavailable",
+)
+def test_mps_rng_state_round_trips_through_checkpoint() -> None:
+    torch.mps.manual_seed(123)
+    encoded = capture_rng_state()
+    expected = torch.rand(4, device="mps").cpu()
+    torch.mps.manual_seed(456)
+
+    parsed = parse_rng_state(encoded, require_mps_compatibility=True)
+    restore_rng_state(parsed, restore_cuda=False, restore_mps=True)
+
+    actual = torch.rand(4, device="mps").cpu()
+    assert torch.equal(actual, expected)
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(),
+    reason="MPS is unavailable",
+)
+def test_mps_rng_restore_failure_rolls_back_all_rng_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    random.seed(11)
+    np.random.seed(22)
+    torch.manual_seed(33)
+    torch.mps.manual_seed(44)
+    previous_python = random.getstate()
+    previous_numpy = np.random.get_state()
+    previous_cpu = torch.random.get_rng_state().clone()
+    previous_mps = torch.mps.get_rng_state().clone()
+
+    random.seed(101)
+    np.random.seed(202)
+    torch.manual_seed(303)
+    torch.mps.manual_seed(404)
+    target = parse_rng_state(
+        capture_rng_state(),
+        require_mps_compatibility=True,
+    )
+
+    random.setstate(previous_python)
+    np.random.set_state(previous_numpy)
+    torch.random.set_rng_state(previous_cpu)
+    torch.mps.set_rng_state(previous_mps)
+    original_set_rng_state = torch.mps.set_rng_state
+    calls = 0
+
+    def fail_once(
+        state: torch.Tensor,
+        device: int | str | torch.device = "mps",
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("simulated MPS restore failure")
+        original_set_rng_state(state, device=device)
+
+    monkeypatch.setattr(torch.mps, "set_rng_state", fail_once)
+
+    with pytest.raises(RuntimeError, match="simulated MPS restore failure"):
+        restore_rng_state(target, restore_cuda=False, restore_mps=True)
+
+    assert random.getstate() == previous_python
+    np.testing.assert_equal(np.random.get_state(), previous_numpy)
+    assert torch.equal(torch.random.get_rng_state(), previous_cpu)
+    assert torch.equal(torch.mps.get_rng_state(), previous_mps)
 
 
 def test_generic_checkpoint_load_does_not_restore_rng(tmp_path: Path) -> None:

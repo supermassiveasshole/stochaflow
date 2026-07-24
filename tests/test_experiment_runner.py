@@ -822,6 +822,57 @@ def test_strict_resume_rejects_missing_or_invalid_progress(
         )
 
 
+def test_strict_mps_resume_warns_when_legacy_v8_has_no_mps_rng(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer = RecordingTrainer()
+    trainer.device = torch.device("mps")
+    trainer.best_epoch = None
+    trainer.best_metric_value = None
+    logger = RecordingLogger()
+    loop_state = {
+        "best_epoch": None,
+        "best_metric_value": None,
+        "epochs_without_improvement": 0,
+        "stopped_early": False,
+        "monitor": None,
+        "mode": None,
+    }
+    loaded = SimpleNamespace(
+        epoch=1,
+        global_step=2,
+        metadata={"checkpoint_kind": "latest", "training_loop": loop_state},
+    )
+    training = _training_components(trainer, logger)
+    training.checkpoint_manager = SimpleNamespace(
+        restore_payload=lambda *args, **kwargs: loaded
+    )
+    payload = _strict_resume_fields(epoch=1, global_step=2)
+    rng_state = payload.get("rng_state")
+    assert rng_state is not None
+    rng_state.pop("torch_mps")
+    restore_calls: list[tuple[bool, bool]] = []
+    monkeypatch.setattr(
+        experiment_runner,
+        "restore_rng_state",
+        lambda state, *, restore_cuda, restore_mps: restore_calls.append(
+            (restore_cuda, restore_mps)
+        ),
+    )
+
+    with pytest.warns(RuntimeWarning, match="does not contain MPS RNG state"):
+        start_epoch = experiment_runner._restore_training_state(
+            training,
+            tmp_path / "latest.pt",
+            payload,
+            target_epoch=2,
+        )
+
+    assert start_epoch == 2
+    assert restore_calls == [(False, True)]
+
+
 class _StochasticStrategy(TrainingStrategy):
     def __init__(self, model: nn.Module) -> None:
         self.model = model

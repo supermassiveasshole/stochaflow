@@ -86,8 +86,8 @@ Strategy 不是 `nn.Module`，也不移动、冻结、选择或序列化资产�
 TrainingPlan 和核心 runtime 管理。
 
 core 会在每次 `TrainingDiagnostic` public callback 外保存并恢复 Python、NumPy、
-Torch CPU 以及相关 CUDA device 的 global RNG state。一个 callback 内使用 global RNG
-不会改变训练或其他 callback 看到的随机流；若 diagnostic 需要跨 callback 延续自己的
+Torch CPU 以及相关 CUDA/MPS device 的 global RNG state。一个 callback 内使用 global
+RNG 不会改变训练或其他 callback 看到的随机流；若 diagnostic 需要跨 callback 延续自己的
 随机序列，它必须持有自己的 generator/state，不能依赖 global RNG 的连续推进。
 
 关键签名：

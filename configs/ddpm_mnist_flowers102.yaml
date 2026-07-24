@@ -43,7 +43,7 @@ data:
       num_workers: 4
       shuffle: true
       drop_last: true
-      pin_memory: true
+      pin_memory: false
       persistent_workers: true
       steps_per_epoch: auto
     partition:
