@@ -107,8 +107,8 @@ Optional dependency groups:
 | --- | --- |
 | `wandb` | Weights & Biases logging |
 | `quality` | KID/FID diagnostics and their feature model |
-| `docs` | Sphinx documentation toolchain |
-| `dev` | Pytest and Pyright for source contributors |
+| `docs` | Sphinx documentation and research-figure toolchain |
+| `dev` | Pytest, Ruff, and Pyright for source contributors |
 
 TensorBoard support is part of the base installation; it does not need a
 separate extra.
@@ -330,6 +330,9 @@ outputs/<experiment>/<YYYYMMDD_HHMMSS>/
   train.log
   resolved_config.yaml
   run_manifest.yaml
+  tensorboard/
+    <experiment-name>/
+      events.out.tfevents.*
   samples/
     final/
       samples.png
@@ -376,8 +379,15 @@ provider and enable it from `diagnostics[].params.modules` without modifying the
 
 Images are saved locally and forwarded to every configured TensorBoard or W&B
 logger. Optional KID/FID evaluation uses a fixed validation reference cache and
-is enabled with the `quality` installation extra. See the Flowers102 configs for
-a complete DDPM/DDIM comparison declaration.
+is enabled with the `quality` installation extra. The MNIST config is a
+base-installation example with a lightweight DDIM profile and no reference
+metrics; see the Flowers102 configs for a complete DDPM/DDIM comparison.
+
+Launch TensorBoard against one experiment's output root:
+
+```bash
+tensorboard --logdir outputs/ddpm_mnist/<run>/tensorboard
+```
 
 ## Sampling
 

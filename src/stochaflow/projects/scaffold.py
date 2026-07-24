@@ -94,6 +94,10 @@ _TEMPLATE_MANIFEST: Final = (
         f"src/{_PACKAGE_NAME_SENTINEL}/stochaflow_ext/model.py",
     ),
     _TemplateFile(
+        "diagnostics.py.tmpl",
+        f"src/{_PACKAGE_NAME_SENTINEL}/stochaflow_ext/diagnostics.py",
+    ),
+    _TemplateFile(
         "training.py.tmpl",
         f"src/{_PACKAGE_NAME_SENTINEL}/stochaflow_ext/training.py",
     ),

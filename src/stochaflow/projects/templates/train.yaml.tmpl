@@ -36,10 +36,19 @@ optimizer:
   params:
     lr: 0.05
 
-lr_scheduler: null
+lr_scheduler:
+  name: torch.optim.lr_scheduler.StepLR
+  interval: epoch
+  params:
+    step_size: 1
+    gamma: 0.9
 
 ema:
-  enabled: false
+  enabled: true
+  decay: 0.9
+  update_after_step: 0
+  update_every: 1
+  use_for_sampling: true
 
 sampling:
   shape: null
@@ -55,7 +64,10 @@ sampling:
     - name: tensor
       params: {}
 
-diagnostics: []
+diagnostics:
+  - name: __STOCHAFLOW_PROJECT_SLUG__.regression-quality
+    params:
+      every_steps: 1
 
 trainer:
   num_epochs: 2
@@ -69,6 +81,8 @@ logging:
     - name: local
       params:
         console: true
+    - name: tensorboard
+      params: {}
   torch_logs: {}
 
 artifacts:

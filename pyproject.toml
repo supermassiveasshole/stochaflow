@@ -20,17 +20,13 @@ dependencies = [
     "torch>=2.11,<3; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "torchvision>=0.26,<1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "rich>=13.9",
-    "tqdm>=4.67.3",
     # Torch 2.2.2 wheels were built against NumPy 1.x on Intel Macs.
     "numpy>=1.26,<2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "numpy>=2.4.4; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "pyyaml>=6.0.3",
-    "scipy>=1.16.1",
-    "matplotlib>=3.10.9",
     "pillow>=12.2.0",
     "tensorboard>=2.16",
     "packaging>=24",
-    "ruff>=0.15.13",
 ]
 
 [project.scripts]
@@ -47,8 +43,11 @@ quality = [
 dev = [
     "pyright>=1.1.400",
     "pytest>=8.3",
+    "ruff>=0.15.13",
 ]
 docs = [
+    "matplotlib>=3.10.9",
+    "scipy>=1.16.1",
     "sphinx>=9.1,<10",
     "myst-parser>=5.1,<6",
     "furo>=2025.12.19",

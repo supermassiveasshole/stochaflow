@@ -18,6 +18,7 @@ def test_extension_components_are_registered() -> None:
     assert f"{prefix}linear-regression" in REGISTRIES.models
     assert f"{prefix}regression" in REGISTRIES.training_builders
     assert f"{prefix}regression-predictions" in REGISTRIES.sampling_builders
+    assert f"{prefix}regression-quality" in REGISTRIES.diagnostics
 
 
 def _train_order(*, seed: int, epoch: int) -> list[int]:

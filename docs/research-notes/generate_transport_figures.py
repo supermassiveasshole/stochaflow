@@ -19,9 +19,17 @@ FIGURE_DIR = Path(__file__).with_name("figures")
 SEED = 17
 
 
-def _finish(fig: plt.Figure, name: str) -> None:
+def _finish(
+    fig: plt.Figure,
+    name: str,
+    *,
+    rect: tuple[float, float, float, float] | None = None,
+) -> None:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
+    if rect is None:
+        fig.tight_layout()
+    else:
+        fig.tight_layout(rect=rect)
     fig.savefig(FIGURE_DIR / name, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
@@ -202,7 +210,7 @@ def flow_matching_paths() -> None:
     random_crossings = straight_crossings(source, random_target)
     ot_crossings = straight_crossings(source, ot_target)
 
-    fig, axes = plt.subplots(1, 3, figsize=(12.2, 3.8), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, 3, figsize=(12.2, 4.3), sharex=True, sharey=True)
     specifications = [
         (
             random_target,
@@ -229,10 +237,15 @@ def flow_matching_paths() -> None:
         ax.scatter(paired[:, 0], paired[:, 1], s=16, color="#E45756", label="$p_1$")
         ax.set(xlim=(-3.0, 3.0), ylim=(-2.5, 2.7), xlabel="$x_1$")
         _style_axis(ax, title, equal=True)
+        ax.set_title(title, fontsize=10, pad=10, linespacing=1.25)
     axes[0].set_ylabel("$x_2$")
     axes[0].legend(frameon=False, loc="upper left")
-    fig.suptitle("The endpoints do not determine the coupling or the probability path")
-    _finish(fig, "flow_matching_paths.png")
+    fig.suptitle(
+        "The endpoints do not determine the coupling or the probability path",
+        fontsize=14,
+        y=0.98,
+    )
+    _finish(fig, "flow_matching_paths.png", rect=(0.0, 0.0, 1.0, 0.84))
 
 
 def flow_conditional_marginal_field() -> None:
@@ -331,7 +344,9 @@ def same_marginals_different_joint() -> None:
                 alpha=0.45,
                 zorder=3,
             )
-        ax.set(xlabel="$t$", ylim=(-3.0, 3.0))
+        # The deterministic sample contains one value just above 3.0.  Keep a
+        # small visual margin so the path and marker are not clipped.
+        ax.set(xlabel="$t$", ylim=(-3.0, 3.3))
         _style_axis(ax, title)
     axes[0].set_ylabel("$X_t$")
     fig.suptitle(
@@ -542,6 +557,8 @@ def _ddim_trajectory(
         selected_timesteps = np.arange(len(alpha_bars))
     if selected_timesteps.ndim != 1 or len(selected_timesteps) < 2:
         raise ValueError("selected_timesteps must contain at least two entries")
+    if not np.issubdtype(selected_timesteps.dtype, np.integer):
+        raise ValueError("selected_timesteps must contain integer indices")
     if selected_timesteps[0] != 0 or selected_timesteps[-1] != len(alpha_bars) - 1:
         raise ValueError(
             "selected_timesteps must include the clean and noisy endpoints"
@@ -554,8 +571,8 @@ def _ddim_trajectory(
     for timestep, previous_timestep in zip(
         selected_timesteps[:0:-1], selected_timesteps[-2::-1], strict=True
     ):
-        alpha_t = alpha_bars[timestep]
-        alpha_prev = alpha_bars[previous_timestep]
+        alpha_t = float(alpha_bars[int(timestep)])
+        alpha_prev = float(alpha_bars[int(previous_timestep)])
         epsilon = _epsilon_oracle(x, alpha_t)
         x0_hat = (x - np.sqrt(1 - alpha_t) * epsilon) / np.sqrt(alpha_t)
         sigma = eta * np.sqrt(

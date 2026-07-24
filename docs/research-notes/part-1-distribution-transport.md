@@ -913,7 +913,7 @@ Diffusion 并不要求采样时始终注入噪声。训练得到的 score 可以
 运行：
 
 ```bash
-uv run python docs/research-notes/generate_transport_figures.py
+uv run --extra docs python docs/research-notes/generate_transport_figures.py
 ```
 
 脚本只使用 `numpy`、`scipy`、`matplotlib`。扩散相关图使用解析高斯混合分布和 oracle posterior mean，用于隔离动力学概念；真实网络的训练误差没有进入这些图。

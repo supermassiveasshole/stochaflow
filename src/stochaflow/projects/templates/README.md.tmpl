@@ -15,14 +15,17 @@ experiment configuration resolve predictably.
 | `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/__init__.py` | Imports the registration modules; keep it free of data loading and task execution. |
 | `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/data.py` | Builds the synthetic datasets and epoch-aware training DataLoader. |
 | `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/model.py` | Defines and registers the example model. |
+| `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/diagnostics.py` | Registers a task-specific RMSE diagnostic. |
 | `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/training.py` | Composes the model and objective and defines one training step. |
 | `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/sampling.py` | Produces predictions with a direct-transform SamplingBuilder. |
 | `experiments/example/train.yaml` | Selects the installed plugin and configures the example run. |
 | `tests/test_extensions.py` | Checks registration and deterministic epoch shuffle behavior. |
 | `data/` | Reserved for project-owned data; the generated synthetic example does not read it. |
 
-The example reuses Stochaflow's MSE objective and tensor artifact writer. Its
-custom components remain ordinary Python code instead of a YAML object graph.
+The example reuses Stochaflow's MSE objective, native PyTorch StepLR scheduler,
+EMA lifecycle, TensorBoard logger, and tensor artifact writer. Its custom data,
+training, diagnostic, and sampling components remain ordinary Python code
+instead of a YAML object graph.
 
 ## Install, test, and train with pip
 
@@ -56,7 +59,16 @@ outputs/example/<run-id>/
   metrics.jsonl
   resolved_config.yaml
   run_manifest.yaml
+  tensorboard/
+    __STOCHAFLOW_PROJECT_SLUG__-example/
+      events.out.tfevents.*
   samples/final/samples.pt
+```
+
+Inspect the local and diagnostic metrics in TensorBoard:
+
+```bash
+tensorboard --logdir outputs/example/<run-id>/tensorboard
 ```
 
 ## Strict resume

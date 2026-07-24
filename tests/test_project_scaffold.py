@@ -39,6 +39,7 @@ EXPECTED_FILES = {
     "src/example_lab/__init__.py",
     "src/example_lab/stochaflow_ext/__init__.py",
     "src/example_lab/stochaflow_ext/data.py",
+    "src/example_lab/stochaflow_ext/diagnostics.py",
     "src/example_lab/stochaflow_ext/model.py",
     "src/example_lab/stochaflow_ext/sampling.py",
     "src/example_lab/stochaflow_ext/training.py",
@@ -150,6 +151,28 @@ def test_create_project_writes_deterministic_installable_distribution(
     )
     assert config["extensions"] == {"plugins": ["example-lab"]}
     assert config["process"] is None
+    assert config["lr_scheduler"] == {
+        "name": "torch.optim.lr_scheduler.StepLR",
+        "interval": "epoch",
+        "params": {"step_size": 1, "gamma": 0.9},
+    }
+    assert config["ema"] == {
+        "enabled": True,
+        "decay": 0.9,
+        "update_after_step": 0,
+        "update_every": 1,
+        "use_for_sampling": True,
+    }
+    assert config["diagnostics"] == [
+        {
+            "name": "example-lab.regression-quality",
+            "params": {"every_steps": 1},
+        }
+    ]
+    assert [backend["name"] for backend in config["logging"]["backends"]] == [
+        "local",
+        "tensorboard",
+    ]
     assert config["sampling"]["writers"] == [{"name": "tensor", "params": {}}]
     for relative_path in sorted(EXPECTED_FILES):
         if relative_path.endswith(".py"):
@@ -165,6 +188,7 @@ def test_generated_readme_documents_the_complete_user_path(tmp_path: Path) -> No
         "pyproject.toml",
         "stochaflow_ext/__init__.py",
         "stochaflow_ext/data.py",
+        "stochaflow_ext/diagnostics.py",
         "stochaflow_ext/model.py",
         "stochaflow_ext/training.py",
         "stochaflow_ext/sampling.py",
@@ -180,6 +204,7 @@ def test_generated_readme_documents_the_complete_user_path(tmp_path: Path) -> No
         "--resume outputs/example/<run-id>",
         "stochaflow sample \\",
         "--checkpoint outputs/example/<run-id>/checkpoints/best.pt",
+        "tensorboard --logdir outputs/example/<run-id>/tensorboard",
     ):
         assert command in readme
     assert "strict resume" in readme.lower()
@@ -253,6 +278,7 @@ assert "example-lab.synthetic-regression" in REGISTRIES.data_builders.names()
 assert "example-lab.linear-regression" in REGISTRIES.models.names()
 assert "example-lab.regression" in REGISTRIES.training_builders.names()
 assert "example-lab.regression-predictions" in REGISTRIES.sampling_builders.names()
+assert "example-lab.regression-quality" in REGISTRIES.diagnostics.names()
 """
     environment = dict(os.environ)
     existing_pythonpath = environment.get("PYTHONPATH")
@@ -440,6 +466,17 @@ def test_generated_wheel_runs_train_resume_and_checkpoint_sampling(
     assert (initial_run / "checkpoints/latest.pt").is_file()
     assert (initial_run / "checkpoints/best.pt").is_file()
     assert (initial_run / "run_manifest.yaml").is_file()
+    assert "diagnostics/regression/rmse" in (
+        initial_run / "metrics.jsonl"
+    ).read_text(encoding="utf-8")
+    tensorboard_events = tuple(
+        (
+            initial_run
+            / "tensorboard"
+            / "example-lab-example"
+        ).glob("events.out.tfevents.*")
+    )
+    assert len(tensorboard_events) == 1
 
     resumed_root = project / "outputs/resumed"
     _run_generated_cli(
@@ -507,6 +544,25 @@ def test_generated_wheel_runs_train_resume_and_checkpoint_sampling(
     )
     assert (sample_output / "samples.pt").is_file()
     assert (sample_output / "resolved_sampling.yaml").is_file()
+
+
+def test_runtime_dependencies_exclude_development_and_research_tools() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    project = tomllib.loads(
+        (repository / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    dependencies = project["project"]["dependencies"]
+    extras = project["project"]["optional-dependencies"]
+
+    assert "tensorboard>=2.16" in dependencies
+    assert not any(
+        dependency.startswith(("matplotlib", "ruff", "scipy", "tqdm"))
+        for dependency in dependencies
+    )
+    assert {"pyright>=1.1.400", "pytest>=8.3", "ruff>=0.15.13"} <= set(
+        extras["dev"]
+    )
+    assert {"matplotlib>=3.10.9", "scipy>=1.16.1"} <= set(extras["docs"])
 
 
 @pytest.mark.parametrize(

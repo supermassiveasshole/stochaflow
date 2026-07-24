@@ -109,6 +109,53 @@ sampling:
     - name: image
       params: {grid_nrow: 8, gif_fps: 8, denormalize: true}
 
+diagnostics:
+  - name: diffusion_quality
+    params:
+      modules: []
+      cadence:
+        step_every: 100
+        artifact_every_epochs: 5
+      sampling:
+        sample_num: 8
+        batch_size: 8
+        seed: 123
+      use_ema: true
+      failure_policy: raise
+      samplers:
+        - id: ddim_20
+          name: ddim
+          params:
+            num_inference_steps: 20
+            eta: 0.0
+          trajectory:
+            enabled: true
+            every_steps: 2
+            gif_fps: 8
+      providers:
+        step_metrics:
+          - name: timestep_bucket_loss
+            params: {buckets: 10}
+          - name: noise_alignment
+            params: {}
+        sampler_metrics:
+          - name: sample_statistics
+            params: {}
+          - name: sampling_performance
+            params: {}
+        denoiser_artifacts:
+          - name: reconstruction_panel
+            params:
+              timesteps: [100, 500, 900]
+              max_samples: 8
+        sampler_artifacts:
+          - name: sample_grid
+            params: {nrow: 4}
+          - name: trajectory
+            params: {}
+      reference:
+        enabled: false
+
 trainer:
   num_epochs: 30
   device: auto
@@ -128,6 +175,8 @@ logging:
       params:
         console: false
         append: false
+    - name: tensorboard
+      params: {}
   torch_logs: {}
 
 artifacts:

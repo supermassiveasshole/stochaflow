@@ -61,6 +61,18 @@ def test_load_ddpm_mnist_config() -> None:
     assert config.trainer.num_epochs == 30
     assert config.trainer.early_stopping.patience == 7
     assert config.trainer.early_stopping.min_delta == 0.00001
+    assert [diagnostic.name for diagnostic in config.diagnostics] == [
+        "diffusion_quality"
+    ]
+    diagnostic_params = config.diagnostics[0].params
+    assert [profile["id"] for profile in diagnostic_params["samplers"]] == [
+        "ddim_20"
+    ]
+    assert diagnostic_params["reference"] == {"enabled": False}
+    assert [backend.name for backend in config.logging.backends] == [
+        "local",
+        "tensorboard",
+    ]
     assert config.artifacts.checkpoint_every == 5
 
 

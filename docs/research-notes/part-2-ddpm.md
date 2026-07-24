@@ -1080,7 +1080,7 @@ $$
 运行：
 
 ```bash
-uv run python docs/research-notes/generate_transport_figures.py
+uv run --extra docs python docs/research-notes/generate_transport_figures.py
 ```
 
 ## 主要文献

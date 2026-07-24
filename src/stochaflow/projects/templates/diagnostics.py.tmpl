@@ -1,0 +1,50 @@
+"""Lightweight training diagnostics registered by the generated extension."""
+
+from math import sqrt
+from pathlib import Path
+
+from stochaflow.extensions import (
+    ExperimentLogger,
+    REGISTRIES,
+    TrainBatchEndEvent,
+    TrainingDiagnostic,
+)
+
+
+@REGISTRIES.diagnostics.register(
+    "__STOCHAFLOW_PROJECT_SLUG__.regression-quality"
+)
+class RegressionQualityDiagnostic(TrainingDiagnostic):
+    """Report regression RMSE without adding task logic to the core runtime."""
+
+    def __init__(
+        self,
+        *,
+        logger: ExperimentLogger,
+        output_dir: str | Path,
+        every_steps: int = 1,
+    ) -> None:
+        del output_dir
+        if (
+            isinstance(every_steps, bool)
+            or not isinstance(every_steps, int)
+            or every_steps <= 0
+        ):
+            raise ValueError("every_steps must be a positive integer")
+        self.logger = logger
+        self.every_steps = every_steps
+
+    def on_train_batch_end(self, event: TrainBatchEndEvent) -> None:
+        """Log RMSE at the configured optimizer-step cadence."""
+
+        if event.global_step % self.every_steps != 0:
+            return
+        if event.loss < 0:
+            raise ValueError("regression MSE must be non-negative")
+        self.logger.log_metrics(
+            {"diagnostics/regression/rmse": sqrt(event.loss)},
+            step=event.global_step,
+        )
+
+
+__all__ = ["RegressionQualityDiagnostic"]

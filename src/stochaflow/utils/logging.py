@@ -236,7 +236,7 @@ class TensorBoardLogger(ExperimentLogger):
         run_name: str,
         subdir: str = "tensorboard",
     ) -> None:
-        from torch.utils.tensorboard.writer import SummaryWriter
+        from torch.utils.tensorboard import SummaryWriter
 
         log_dir = Path(output_dir) / subdir / run_name
         log_dir.mkdir(parents=True, exist_ok=True)

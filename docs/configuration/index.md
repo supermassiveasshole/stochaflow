@@ -65,8 +65,8 @@ python -m pip install ./dist/stochaflow-0.1.0-py3-none-any.whl
 | `stochaflow` | 核心 runtime、TensorBoard logger 和 CLI |
 | `stochaflow[wandb]` | W&B logger |
 | `stochaflow[quality]` | KID/FID diagnostic |
-| `stochaflow[docs]` | 本地构建文档 |
-| `stochaflow[dev]` | Pytest 与 Pyright；面向源码贡献 |
+| `stochaflow[docs]` | 本地构建文档与研究图表 |
+| `stochaflow[dev]` | Pytest、Ruff 与 Pyright；面向源码贡献 |
 
 ### 从源码贡献
 
@@ -85,6 +85,14 @@ uv run stochaflow train \
 
 ```bash
 uv run stochaflow train --config configs/ddpm_mnist.yaml
+```
+
+该示例同时启用原生 PyTorch LR scheduler、EMA、TensorBoard 和轻量
+`diffusion_quality` diagnostic；reference KID/FID 默认关闭，因此不需要
+`quality` extra。查看训练与 diagnostic 指标：
+
+```bash
+tensorboard --logdir outputs/ddpm_mnist/<run>/tensorboard
 ```
 
 从最佳 checkpoint 采样：
