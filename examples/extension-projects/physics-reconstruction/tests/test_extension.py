@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from mmap import mmap
 from pathlib import Path
 import struct
 from typing import Any, cast
@@ -377,6 +378,7 @@ def test_writer_publishes_memmap_and_cleans_partial_commit(
     writer = ReconstructionArtifactWriter()
     artifacts = writer.write(context)
     saved = np.load(artifacts["reconstructions"], mmap_mode="r")
+    assert isinstance(saved, np.memmap)
     assert saved.shape == (3, 3, 8, 8)
     assert saved.dtype == np.float32
     assert np.array_equal(saved[:2], first.numpy().astype(np.float32))
@@ -384,6 +386,9 @@ def test_writer_publishes_memmap_and_cleans_partial_commit(
     with pytest.raises(FileExistsError, match="refuses to replace"):
         writer.write(context)
 
+    mapping = saved.base
+    assert isinstance(mapping, mmap)
+    mapping.close()
     artifacts["reconstructions"].unlink()
     artifacts["reconstruction_metrics"].unlink()
     replace = writers.os.replace

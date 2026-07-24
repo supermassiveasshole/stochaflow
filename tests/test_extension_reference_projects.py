@@ -27,6 +27,9 @@ import yaml
 
 _REPOSITORY: Final = Path(__file__).resolve().parents[1]
 _REFERENCE_ROOT: Final = _REPOSITORY / "examples/extension-projects"
+_EVIDENCE_TEXT_SUFFIXES: Final = frozenset(
+    {".json", ".md", ".py", ".toml", ".yaml", ".yml"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,11 +155,19 @@ def _copy_reference_project(project: _ReferenceProject, destination: Path) -> Pa
                 ".pytest_cache",
                 ".ruff_cache",
                 "build",
+                "data",
                 "dist",
                 "outputs",
             ),
         )
     )
+
+
+def _evidence_sha256(path: Path) -> str:
+    payload = path.read_bytes()
+    if path.suffix.lower() in _EVIDENCE_TEXT_SUFFIXES:
+        payload = payload.replace(b"\r\n", b"\n")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _build_wheel(source: Path, output: Path) -> Path:
@@ -452,6 +463,29 @@ def test_reference_projects_are_independent_installable_distributions() -> None:
         assert (project.source / project.train_config).is_file()
 
 
+@pytest.mark.parametrize("project", _PROJECTS, ids=lambda item: item.directory)
+def test_reference_project_acceptance_copy_excludes_local_data(
+    tmp_path: Path,
+    project: _ReferenceProject,
+) -> None:
+    project_copy = _copy_reference_project(
+        project,
+        tmp_path / project.directory,
+    )
+
+    assert not (project_copy / "data").exists()
+    assert not (project_copy / "outputs").exists()
+
+
+def test_evidence_hash_normalizes_checkout_line_endings(tmp_path: Path) -> None:
+    unix_source = tmp_path / "unix.py"
+    windows_source = tmp_path / "windows.py"
+    unix_source.write_bytes(b"first line\nsecond line\n")
+    windows_source.write_bytes(b"first line\r\nsecond line\r\n")
+
+    assert _evidence_sha256(unix_source) == _evidence_sha256(windows_source)
+
+
 @pytest.mark.parametrize(
     ("profile", "accepted_steps", "partial_noise_time", "sampler_name"),
     (
@@ -515,8 +549,7 @@ def test_physics_stage7_evidence_matches_versioned_sources_and_configs() -> None
     for relative_path, expected_hash in evidence["repository"][
         "relevant_files_sha256"
     ].items():
-        with (_REPOSITORY / relative_path).open("rb") as source:
-            assert hashlib.file_digest(source, "sha256").hexdigest() == expected_hash
+        assert _evidence_sha256(_REPOSITORY / relative_path) == expected_hash
 
     for source in evidence["sources"].values():
         assert len(bytes.fromhex(source["sha256"])) == 32

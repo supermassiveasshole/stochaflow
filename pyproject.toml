@@ -43,7 +43,7 @@ quality = [
 dev = [
     "pyright>=1.1.400",
     "pytest>=8.3",
-    "ruff>=0.15.13",
+    "ruff==0.16.0",
 ]
 docs = [
     "matplotlib>=3.10.9",
@@ -82,6 +82,14 @@ torch = [
 torchvision = [
     { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
 ]
+
+[tool.ruff]
+required-version = "==0.16.0"
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

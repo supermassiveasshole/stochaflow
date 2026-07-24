@@ -559,7 +559,7 @@ def test_runtime_dependencies_exclude_development_and_research_tools() -> None:
         dependency.startswith(("matplotlib", "ruff", "scipy", "tqdm"))
         for dependency in dependencies
     )
-    assert {"pyright>=1.1.400", "pytest>=8.3", "ruff>=0.15.13"} <= set(
+    assert {"pyright>=1.1.400", "pytest>=8.3", "ruff==0.16.0"} <= set(
         extras["dev"]
     )
     assert {"matplotlib>=3.10.9", "scipy>=1.16.1"} <= set(extras["docs"])
