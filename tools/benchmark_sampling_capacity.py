@@ -55,6 +55,23 @@ _DTYPES = {
 }
 
 
+class _WindowsProcessMemoryCounters(ctypes.Structure):
+    """ctypes representation of the Win32 PROCESS_MEMORY_COUNTERS structure."""
+
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("page_fault_count", wintypes.DWORD),
+        ("peak_working_set_size", ctypes.c_size_t),
+        ("working_set_size", ctypes.c_size_t),
+        ("quota_peak_paged_pool_usage", ctypes.c_size_t),
+        ("quota_paged_pool_usage", ctypes.c_size_t),
+        ("quota_peak_non_paged_pool_usage", ctypes.c_size_t),
+        ("quota_non_paged_pool_usage", ctypes.c_size_t),
+        ("pagefile_usage", ctypes.c_size_t),
+        ("peak_pagefile_usage", ctypes.c_size_t),
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class CapacityProfile:
     """One executable or projection-only sampling-capacity workload."""
@@ -274,31 +291,30 @@ def _peak_rss_bytes() -> int:
 def _windows_peak_rss_bytes() -> int:
     """Return PeakWorkingSetSize without adding a benchmark dependency."""
 
-    class _ProcessMemoryCounters(ctypes.Structure):
-        _fields_ = [
-            ("cb", wintypes.DWORD),
-            ("page_fault_count", wintypes.DWORD),
-            ("peak_working_set_size", ctypes.c_size_t),
-            ("working_set_size", ctypes.c_size_t),
-            ("quota_peak_paged_pool_usage", ctypes.c_size_t),
-            ("quota_paged_pool_usage", ctypes.c_size_t),
-            ("quota_peak_non_paged_pool_usage", ctypes.c_size_t),
-            ("quota_non_paged_pool_usage", ctypes.c_size_t),
-            ("pagefile_usage", ctypes.c_size_t),
-            ("peak_pagefile_usage", ctypes.c_size_t),
-        ]
+    windows_ctypes = cast(Any, ctypes)
+    kernel32 = windows_ctypes.WinDLL("kernel32", use_last_error=True)
+    get_current_process = kernel32.GetCurrentProcess
+    get_current_process.argtypes = ()
+    get_current_process.restype = wintypes.HANDLE
+    get_process_memory_info = kernel32.K32GetProcessMemoryInfo
+    get_process_memory_info.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_WindowsProcessMemoryCounters),
+        wintypes.DWORD,
+    )
+    get_process_memory_info.restype = wintypes.BOOL
 
-    libraries = cast(Any, ctypes).windll
-    counters = _ProcessMemoryCounters()
+    counters = _WindowsProcessMemoryCounters()
     counters.cb = ctypes.sizeof(counters)
-    process = libraries.kernel32.GetCurrentProcess()
-    succeeded = libraries.psapi.GetProcessMemoryInfo(
+    process = get_current_process()
+    succeeded = get_process_memory_info(
         process,
         ctypes.byref(counters),
         counters.cb,
     )
     if not succeeded:
-        raise OSError("GetProcessMemoryInfo failed")
+        error_code = windows_ctypes.get_last_error()
+        raise OSError(error_code, "K32GetProcessMemoryInfo failed")
     return int(counters.peak_working_set_size)
 
 

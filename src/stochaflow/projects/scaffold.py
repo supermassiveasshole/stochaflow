@@ -48,6 +48,12 @@ class _AnchoredEntry:
     inode: int
 
 
+@dataclass(frozen=True, slots=True)
+class _AnchoredFile:
+    entry: _AnchoredEntry
+    identity_descriptor: int
+
+
 _PROJECT_NAME_PATTERN: Final = re.compile(
     r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
     flags=re.ASCII,
@@ -406,33 +412,47 @@ def _exclusive_write_at(
     content: str,
     *,
     parent: tuple[str, ...],
-) -> _AnchoredEntry:
-    descriptor = os.open(
+) -> _AnchoredFile:
+    identity_descriptor = os.open(
         name,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
         0o666,
         dir_fd=parent_descriptor,
     )
-    entry_stat = os.fstat(descriptor)
+    entry_stat = os.fstat(identity_descriptor)
     entry = _AnchoredEntry(
         parent=parent,
         name=name,
         device=entry_stat.st_dev,
         inode=entry_stat.st_ino,
     )
+    anchored_file = _AnchoredFile(
+        entry=entry,
+        identity_descriptor=identity_descriptor,
+    )
+    write_descriptor: int | None = None
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+        write_descriptor = os.dup(identity_descriptor)
+        with os.fdopen(
+            write_descriptor,
+            "w",
+            encoding="utf-8",
+            newline="\n",
+        ) as handle:
             handle.write(content)
+        write_descriptor = None
     except BaseException:
-        with suppress(OSError):
-            os.close(descriptor)
+        if write_descriptor is not None:
+            with suppress(OSError):
+                os.close(write_descriptor)
         try:
             if _entry_matches(parent_descriptor, entry):
                 os.unlink(name, dir_fd=parent_descriptor)
         except OSError:
             pass
+        os.close(identity_descriptor)
         raise
-    return entry
+    return anchored_file
 
 
 def _entry_matches(
@@ -556,7 +576,7 @@ def _publish_to_existing_empty_directory(
     root_descriptor = _open_existing_directory(target, expected)
     directory_descriptors: dict[tuple[str, ...], int] = {(): root_descriptor}
     created_directories: list[_AnchoredEntry] = []
-    created_files: list[_AnchoredEntry] = []
+    created_files: list[_AnchoredFile] = []
     try:
         for rendered in files:
             parts = rendered.relative_path.parts
@@ -604,7 +624,16 @@ def _publish_to_existing_empty_directory(
                 )
             )
 
-        for entry in (*created_files, *created_directories):
+        for anchored_file in created_files:
+            entry = anchored_file.entry
+            if not _entry_matches(
+                directory_descriptors[entry.parent],
+                entry,
+            ):
+                raise ProjectScaffoldError(
+                    "target directory changed while the project was being created"
+                )
+        for entry in created_directories:
             if not _entry_matches(
                 directory_descriptors[entry.parent],
                 entry,
@@ -623,7 +652,8 @@ def _publish_to_existing_empty_directory(
                 "target changed while the project was being created"
             )
     except BaseException:
-        for entry in reversed(created_files):
+        for anchored_file in reversed(created_files):
+            entry = anchored_file.entry
             parent_descriptor = directory_descriptors[entry.parent]
             if _entry_matches(parent_descriptor, entry):
                 os.unlink(entry.name, dir_fd=parent_descriptor)
@@ -634,6 +664,8 @@ def _publish_to_existing_empty_directory(
                     os.rmdir(entry.name, dir_fd=parent_descriptor)
         raise
     finally:
+        for anchored_file in created_files:
+            os.close(anchored_file.identity_descriptor)
         for parts, descriptor in reversed(tuple(directory_descriptors.items())):
             del parts
             os.close(descriptor)

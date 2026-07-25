@@ -209,14 +209,20 @@ def test_load_payload_does_not_execute_pickle_globals(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
-def test_load_payload_rejects_weights_only_safe_but_non_contract_container(
+def test_load_payload_rejects_non_contract_set_across_torch_versions(
     tmp_path: Path,
 ) -> None:
     checkpoint = tmp_path / "set.pt"
     torch.save({"value": {1, 2}}, checkpoint)
 
-    with pytest.raises(TypeError, match=r"checkpoint\['value'\].*builtins\.set"):
+    with pytest.raises((TypeError, pickle.UnpicklingError)) as error:
         CheckpointManager.load_payload(checkpoint)
+    if isinstance(error.value, TypeError):
+        assert "checkpoint['value']" in str(error.value)
+        assert "builtins.set" in str(error.value)
+    else:
+        assert "Weights only load failed" in str(error.value)
+        assert "set" in str(error.value)
 
 
 def test_data_only_extra_state_round_trips(tmp_path: Path) -> None:

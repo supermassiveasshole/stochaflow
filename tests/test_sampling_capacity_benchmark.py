@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -10,8 +11,10 @@ import statistics
 import subprocess
 import sys
 from collections.abc import Callable
+from ctypes import wintypes
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -31,6 +34,21 @@ _CGROUP_AVAILABLE = cast(
     Callable[[Path], int | None],
     _TOOL_API["_cgroup_available_memory_bytes"],
 )
+_WINDOWS_PEAK_RSS = cast(Callable[[], int], _TOOL_API["_windows_peak_rss_bytes"])
+_WINDOWS_COUNTERS = cast(
+    type[ctypes.Structure],
+    _TOOL_API["_WindowsProcessMemoryCounters"],
+)
+
+
+class _FakeWin32Function:
+    def __init__(self, implementation: Callable[..., object]) -> None:
+        self._implementation = implementation
+        self.argtypes: tuple[object, ...] | None = None
+        self.restype: object = None
+
+    def __call__(self, *args: object) -> object:
+        return self._implementation(*args)
 
 
 def _canonical_sha256(path: Path) -> str:
@@ -243,6 +261,68 @@ def test_cgroup_available_memory_uses_limit_minus_current(
         )
 
     assert _CGROUP_AVAILABLE(tmp_path) == 2**30
+
+
+def test_windows_peak_rss_declares_pointer_sized_win32_abi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_handle = object()
+    get_current_process = _FakeWin32Function(lambda: process_handle)
+
+    def get_process_memory_info(
+        received_process: object,
+        counters_pointer: object,
+        size: object,
+    ) -> int:
+        assert received_process is process_handle
+        assert size == ctypes.sizeof(_WINDOWS_COUNTERS)
+        counters = cast(Any, counters_pointer)._obj
+        counters.peak_working_set_size = 123_456
+        return 1
+
+    get_memory_info = _FakeWin32Function(get_process_memory_info)
+    kernel32 = SimpleNamespace(
+        GetCurrentProcess=get_current_process,
+        K32GetProcessMemoryInfo=get_memory_info,
+    )
+
+    def load_library(name: str, *, use_last_error: bool) -> object:
+        assert name == "kernel32"
+        assert use_last_error
+        return kernel32
+
+    monkeypatch.setattr(ctypes, "WinDLL", load_library, raising=False)
+
+    assert _WINDOWS_PEAK_RSS() == 123_456
+    assert get_current_process.argtypes == ()
+    assert get_current_process.restype is wintypes.HANDLE
+    assert get_memory_info.argtypes == (
+        wintypes.HANDLE,
+        ctypes.POINTER(_WINDOWS_COUNTERS),
+        wintypes.DWORD,
+    )
+    assert get_memory_info.restype is wintypes.BOOL
+
+
+def test_windows_peak_rss_reports_win32_error_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel32 = SimpleNamespace(
+        GetCurrentProcess=_FakeWin32Function(object),
+        K32GetProcessMemoryInfo=_FakeWin32Function(lambda *_args: 0),
+    )
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda _name, *, use_last_error: kernel32,
+        raising=False,
+    )
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
+
+    with pytest.raises(OSError, match="K32GetProcessMemoryInfo failed") as error:
+        _WINDOWS_PEAK_RSS()
+
+    assert error.value.errno == 5
 
 
 def test_reference_result_matches_current_tool_profiles_and_statistics() -> None:

@@ -714,7 +714,7 @@ def test_existing_empty_target_rolls_back_only_created_items(
         content: str,
         *,
         parent: tuple[str, ...],
-    ) -> scaffold._AnchoredEntry:
+    ) -> scaffold._AnchoredFile:
         nonlocal calls
         calls += 1
         if calls == 2:
@@ -811,7 +811,7 @@ def test_concurrently_replaced_generated_file_fails_without_deleting_replacement
         content: str,
         *,
         parent: tuple[str, ...],
-    ) -> scaffold._AnchoredEntry:
+    ) -> scaffold._AnchoredFile:
         nonlocal replaced
         entry = original_write(
             parent_descriptor,
@@ -982,7 +982,16 @@ def test_absent_target_publish_does_not_replace_concurrent_empty_directory(
 
     assert target.is_dir()
     assert list(target.iterdir()) == []
-    assert list(tmp_path.iterdir()) == [target]
+    children = list(tmp_path.iterdir())
+    if scaffold._supports_anchored_publication():
+        assert children == [target]
+    else:
+        staging_directories = [child for child in children if child != target]
+        assert len(staging_directories) == 1
+        staging = staging_directories[0]
+        assert staging.is_dir()
+        assert staging.name.startswith(".example-lab.stochaflow-init-")
+        assert set(_generated_files(staging)) == EXPECTED_FILES
 
 
 def test_successful_publish_does_not_touch_reused_staging_name(
