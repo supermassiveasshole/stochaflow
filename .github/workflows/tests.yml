@@ -1,0 +1,79 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install locked development environment
+        run: uv sync --frozen --extra dev
+
+      - name: Check Ruff
+        run: uv run --frozen ruff check .
+
+      - name: Check types
+        run: uv run --frozen pyright
+
+      - name: Check generated configuration reference
+        run: uv run --frozen python tools/generate_config_reference.py --check
+
+      - name: Build distributions
+        run: uv build
+
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.14"
+          - os: windows-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.14"
+          - os: macos-15-intel
+            python-version: "3.12"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install locked development environment
+        run: uv sync --frozen --extra dev
+
+      - name: Run tests
+        run: uv run --frozen pytest
