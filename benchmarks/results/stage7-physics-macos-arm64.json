@@ -1,9 +1,9 @@
 {
   "format_version": 1,
   "evidence_kind": "stage7-real-data-production-path-smoke",
-  "created_at": "2026-07-23T07:54:23Z",
+  "created_at": "2026-07-25T09:07:04Z",
   "repository": {
-    "head_at_run": "d9f0855d67e1f21efcc4bb0ab82bab3fa4413e7b",
+    "head_at_run": "40cd5943e66234ba40078ce9105d408ae0bd6bf6",
     "working_tree_dirty": true,
     "relevant_files_sha256": {
       "examples/extension-projects/physics-reconstruction/experiments/production/sample-baseline-ddim.yaml": "11565eb1ab3cd82f3713fb7ea71f84e4a865849af8485251fcf8202e2d94dd13",
@@ -12,20 +12,20 @@
       "examples/extension-projects/physics-reconstruction/experiments/real-smoke/sample-baseline-ddim.yaml": "ec302ddd9ee24e1f81d4ce03a62d04e092baa7ae271725e8d8eee6a91b56763b",
       "examples/extension-projects/physics-reconstruction/experiments/real-smoke/sample-guided-ddim.yaml": "da3d60b5dd98b7b96d9c0af45dfa6c454742f3916ba978e3679be3bd5b2bbfe0",
       "examples/extension-projects/physics-reconstruction/pyproject.toml": "74e7b8c8d1d584d232e5458c3e49b0336694417d451e44260f33b5a474449030",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/data.py": "13b3fafcf1007f34643c57aa08a60161a412ab3415141a05c9d60fd63f455c23",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/model.py": "1f43be26c8e52137dd85e58da3725b8a27647dd17c8583a96b9e9425b2b9a148",
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/data.py": "28d0ac14fedd236383a01b249e744104c34c02fcd5aa65918862f562d898dfbc",
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/model.py": "adc027e6a5a3b548d40d15c07e01d03cbecf3f6180b476ce8b247d5aa19f9f28",
       "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/physics.py": "83f50d5c3da99c150c223e4df85b0d59b3773e95c9df16ecedb208311fc8b2be",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/sampling.py": "f123bcdb780259aa6f48b7a86d91ab90716dfdf7f9c344c6187846571c1450db",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/training.py": "2e2a4ce9f54250b6dc18a567ffce1a80fab735ecaf2ed3ff7751ef7b41b0803c",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/writers.py": "5cea568a84f4e364991111defce6d9140c8179d337645467d4e9da6d163d3f3b",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/tools/capacity_check.py": "b5253d607ce2ee57e2130853faf0577e243c4690442058281007f89f2ae9e839",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/tools/prepare_kolmogorov.py": "6bc7012aaac48455a348eaad10c536317c81a384da9820710d37dd078ef9c455"
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/sampling.py": "fde0c5a34d97e719943de074b766755837beaf0a83309b7b0a235f196d924b27",
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/training.py": "d6e9e0e4ae67bcb347014f5d8460036ac9bbeaf45eea499b5eb37b87565c72ec",
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/writers.py": "d3d670b16a6b1dfebf00998588494b480ea6ba14ce1e7999ee479dd148f5b2dc",
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/tools/capacity_check.py": "c01a78c2dfedbea8dcd0c754548914edbcf35bf7bd08c46cabad767fa49081ef",
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/tools/prepare_kolmogorov.py": "41c713dc03a473ca72a224ac1fa709c71890cdaa744f93849f088e4b69b5a4ba"
     }
   },
   "software": {
     "python": "3.14.3",
-    "python_executable_observed_for_version_probe": "/Users/waldron/.cache/uv/builds-v0/.tmpbnRf9J/bin/python",
-    "torch": "2.11.0",
+    "python_executable_observed_for_version_probe": "$REPOSITORY/.venv/bin/python",
+    "torch": "2.13.0",
     "stochaflow": "0.1.0",
     "stochaflow_physics_reconstruction": "0.1.0"
   },
@@ -60,7 +60,7 @@
         "--smoothing-kernel",
         "7"
       ],
-      "completed_at": "2026-07-23T07:54:01Z",
+      "completed_at": "2026-07-25T09:05:12Z",
       "exit_code": 0
     },
     "capacity": {
@@ -94,7 +94,7 @@
         "--output",
         "capacity-report.json"
       ],
-      "completed_at": "2026-07-23T07:48:36Z",
+      "completed_at": "2026-07-25T09:05:48Z",
       "exit_code": 0
     },
     "train": {
@@ -119,7 +119,7 @@
         "--skip-final-sample",
         "--no-progress"
       ],
-      "completed_at": "2026-07-23T07:48:51Z",
+      "completed_at": "2026-07-25T09:06:12Z",
       "exit_code": 0
     },
     "sample_baseline_ddim": {
@@ -128,15 +128,15 @@
         "stochaflow",
         "sample",
         "--checkpoint",
-        "runs/production/20260723_154851/checkpoints/latest.pt",
+        "runs/production/20260725_170607/checkpoints/latest.pt",
         "--config",
         "$REPOSITORY/examples/extension-projects/physics-reconstruction/experiments/real-smoke/sample-baseline-ddim.yaml",
         "--device",
         "mps",
         "--output-dir",
-        "runs/real-smoke-baseline"
+        "runs/real-smoke-baseline-20260725_170607"
       ],
-      "completed_at": "2026-07-23T07:49:56Z",
+      "completed_at": "2026-07-25T09:06:47Z",
       "exit_code": 0
     },
     "sample_guided_ddim": {
@@ -145,15 +145,15 @@
         "stochaflow",
         "sample",
         "--checkpoint",
-        "runs/production/20260723_154851/checkpoints/latest.pt",
+        "runs/production/20260725_170607/checkpoints/latest.pt",
         "--config",
         "$REPOSITORY/examples/extension-projects/physics-reconstruction/experiments/real-smoke/sample-guided-ddim.yaml",
         "--device",
         "mps",
         "--output-dir",
-        "runs/real-smoke-guided"
+        "runs/real-smoke-guided-20260725_170607"
       ],
-      "completed_at": "2026-07-23T07:50:12Z",
+      "completed_at": "2026-07-25T09:07:04Z",
       "exit_code": 0
     }
   },
@@ -180,8 +180,8 @@
   "artifacts": {
     "capacity_report": {
       "path": "outputs/stage7-production-revalidation/capacity-report.json",
-      "bytes": 1640,
-      "sha256": "796ea8a011b4fae5defa4ed4364d2736c986d43bd26979ca3915448c65ad1298"
+      "bytes": 1639,
+      "sha256": "573f0879b67bc9d58fe958d7c9ae918146e24a580552a6acff21ac763c012440"
     },
     "prepared_alignment": {
       "path": "outputs/stage7-production-revalidation/data/kolmogorov-alignment.json",
@@ -199,54 +199,54 @@
       "sha256": "235be61c4fc975fbf84d3ea33717a6d9143237fec1a5364591bfb6773ef65980"
     },
     "checkpoint": {
-      "path": "outputs/stage7-production-revalidation/runs/production/20260723_154851/checkpoints/latest.pt",
-      "bytes": 10826419,
-      "sha256": "c953a6d2f14b7736fb6f5970c0764f86d707ae097666a9b6ccd97ef99653af6f"
+      "path": "outputs/stage7-production-revalidation/runs/production/20260725_170607/checkpoints/latest.pt",
+      "bytes": 10827005,
+      "sha256": "06dc14268b7cded278c85dfcae4b78ef5dc1c4bfa3c7bb0ad27f7bfba7696524"
     },
     "training_resolved_config": {
-      "path": "outputs/stage7-production-revalidation/runs/production/20260723_154851/resolved_config.yaml",
+      "path": "outputs/stage7-production-revalidation/runs/production/20260725_170607/resolved_config.yaml",
       "bytes": 3309,
-      "sha256": "d324c152673fe50e841a08f93bebb971ae06e665a37ef194ee871907b714a145"
+      "sha256": "14635c75eb6e30c7b84d26ff7a82201dd5f8841c628eae2c08922b4aee9d0889"
     },
     "training_manifest": {
-      "path": "outputs/stage7-production-revalidation/runs/production/20260723_154851/run_manifest.yaml",
-      "bytes": 4277,
-      "sha256": "ee052ce445da5587b89ba1a20a793384194c5715d6db594199c92df4365e01d5"
+      "path": "outputs/stage7-production-revalidation/runs/production/20260725_170607/run_manifest.yaml",
+      "bytes": 4789,
+      "sha256": "33cc44bdad479ae2a42fe07daf45c33a3626d9e8a470a24d10a35fe6757cfbb4"
     },
     "training_metrics": {
-      "path": "outputs/stage7-production-revalidation/runs/production/20260723_154851/metrics.jsonl",
-      "bytes": 387,
-      "sha256": "94402cbed6001dafbe917e28c201c1c43df7e548ba3f0f52e0b333040518268d"
+      "path": "outputs/stage7-production-revalidation/runs/production/20260725_170607/metrics.jsonl",
+      "bytes": 388,
+      "sha256": "ae2ebd77efa89d345940b3c1907ab70a60bc4fa0a43b3623612a4b322652ea30"
     },
     "baseline_reconstruction": {
-      "path": "outputs/stage7-production-revalidation/runs/real-smoke-baseline/reconstructions.npy",
+      "path": "outputs/stage7-production-revalidation/runs/real-smoke-baseline-20260725_170607/reconstructions.npy",
       "bytes": 786560,
-      "sha256": "cdf78921f9e977e41b04d4b0759e4ae10456af91c3a912b7270bce6ade386053"
+      "sha256": "b4c78f0b78707892ed75a154e5acfeaefb04b597fd73082af82fbad7ef0fb4a0"
     },
     "baseline_metrics": {
-      "path": "outputs/stage7-production-revalidation/runs/real-smoke-baseline/metrics.json",
-      "bytes": 165,
-      "sha256": "65ae2dc3bd8bf6396c2827ab557dc879160486971e9120ba6493e3dc1f5596a5"
+      "path": "outputs/stage7-production-revalidation/runs/real-smoke-baseline-20260725_170607/metrics.json",
+      "bytes": 163,
+      "sha256": "42a9b3444d39a585a64197ba525611a7c06bc40972a32f1fe26d47fe2fb725d7"
     },
     "baseline_sampling_manifest": {
-      "path": "outputs/stage7-production-revalidation/runs/real-smoke-baseline/resolved_sampling.yaml",
-      "bytes": 7820,
-      "sha256": "4554a2d00e690f906e488d51896a44ce2850f1fa217c6a097b30c792c7a2175c"
+      "path": "outputs/stage7-production-revalidation/runs/real-smoke-baseline-20260725_170607/resolved_sampling.yaml",
+      "bytes": 8378,
+      "sha256": "1c430bc98d7a0addd778631006d481a1b1d6712ebbe1a66955cf54d1a6f9c511"
     },
     "guided_reconstruction": {
-      "path": "outputs/stage7-production-revalidation/runs/real-smoke-guided/reconstructions.npy",
+      "path": "outputs/stage7-production-revalidation/runs/real-smoke-guided-20260725_170607/reconstructions.npy",
       "bytes": 786560,
-      "sha256": "35d374b67d8c99551e17369f4c89004f9165ac7b822e9b2ff9403d8c916d81af"
+      "sha256": "5d760a54de60db4ff3454f49348b7f54bfeabd136277568c4acf09a71d2c4bdb"
     },
     "guided_metrics": {
-      "path": "outputs/stage7-production-revalidation/runs/real-smoke-guided/metrics.json",
-      "bytes": 161,
-      "sha256": "e53864d0bcc3bb21c114be654587f1fa2b3f6ff48c64ae2784da9f9d1ab9b4fe"
+      "path": "outputs/stage7-production-revalidation/runs/real-smoke-guided-20260725_170607/metrics.json",
+      "bytes": 164,
+      "sha256": "1af94483ec0a5c630ebc5871fdf4f59190a28e4e12c0f09980bcf6eeb09ee6ed"
     },
     "guided_sampling_manifest": {
-      "path": "outputs/stage7-production-revalidation/runs/real-smoke-guided/resolved_sampling.yaml",
-      "bytes": 8614,
-      "sha256": "826bdef557794afe3c716fa7b0ae0aa6d87cfc6542703ebb11668636de7f0088"
+      "path": "outputs/stage7-production-revalidation/runs/real-smoke-guided-20260725_170607/resolved_sampling.yaml",
+      "bytes": 9177,
+      "sha256": "840788de23c43b455cc726052d14a576b975ef7d68acebc2e2b959dbc61df488"
     }
   },
   "preparation": {
@@ -267,26 +267,26 @@
       "scale": 4.786953449708109,
       "trajectories": [0, 36]
     },
-    "provenance_note": "The stricter CRC/ZIP64 preparer was rerun after the retained train/sample smoke; it reproduced the exact observation bytes and SHA256 consumed by those runs."
+    "provenance_note": "The current preparer completed before the capacity, training, and sampling commands recorded by this evidence."
   },
   "capacity_helper": {
     "batch_shape": [1, 3, 256, 256],
     "num_timesteps": 1000,
     "partial_noise_time": 240,
     "sample_steps": 2,
-    "cumulative_lifetime_peak_rss_bytes": 395608064,
+    "cumulative_lifetime_peak_rss_bytes": 445235200,
     "train": {
       "backward_gradients_present": true,
-      "mps_current_allocated_after_bytes": 16060416,
-      "mps_driver_allocated_after_bytes": 1153433600
+      "mps_current_allocated_after_bytes": 20136192,
+      "mps_driver_allocated_after_bytes": 1143898112
     },
     "baseline_ddim": {
-      "mps_current_allocated_after_bytes": 6086400,
-      "mps_driver_allocated_after_bytes": 1153433600
+      "mps_current_allocated_after_bytes": 6872576,
+      "mps_driver_allocated_after_bytes": 1143799808
     },
     "guided_ddim": {
-      "mps_current_allocated_after_bytes": 6086400,
-      "mps_driver_allocated_after_bytes": 1153466368
+      "mps_current_allocated_after_bytes": 6872576,
+      "mps_driver_allocated_after_bytes": 1143783424
     }
   },
   "training_cli": {
@@ -305,8 +305,8 @@
     "optimizer_class": "torch.optim.adam.Adam",
     "optimizer_state_count": 70,
     "optimizer_steps": [1],
-    "test_loss": 1.0290124416351318,
-    "train_loss": 1.187657356262207
+    "test_loss": 1.0641158819198608,
+    "train_loss": 1.181077480316162
   },
   "sampling_cli": {
     "baseline_ddim": {
@@ -314,29 +314,29 @@
       "config": "examples/extension-projects/physics-reconstruction/experiments/real-smoke/sample-baseline-ddim.yaml",
       "finite": true,
       "metrics": {
-        "mean_mse_to_observation": 19.138635635375977,
-        "mean_mse_to_reference": 20.545413970947266,
-        "mean_physics_residual": 3759.473876953125
+        "mean_mse_to_observation": 19.95530891418457,
+        "mean_mse_to_reference": 21.30735206604004,
+        "mean_physics_residual": 3910.542236328125
       },
       "num_dynamics_evaluations": 30,
       "partial_noise_time": 240,
-      "reconstruction_sha256": "cdf78921f9e977e41b04d4b0759e4ae10456af91c3a912b7270bce6ade386053",
+      "reconstruction_sha256": "b4c78f0b78707892ed75a154e5acfeaefb04b597fd73082af82fbad7ef0fb4a0",
       "sampler": "ddim"
     },
     "guided_ddim": {
       "accepted_steps": 40,
       "config": "examples/extension-projects/physics-reconstruction/experiments/real-smoke/sample-guided-ddim.yaml",
       "finite": true,
-      "mean_correction_residual": 2553.6307739257813,
+      "mean_correction_residual": 2619.8725830078124,
       "metrics": {
-        "mean_mse_to_observation": 43.7024040222168,
-        "mean_mse_to_reference": 45.19317626953125,
-        "mean_physics_residual": 2431.92626953125
+        "mean_mse_to_observation": 45.75174331665039,
+        "mean_mse_to_reference": 47.160430908203125,
+        "mean_physics_residual": 2595.616943359375
       },
       "num_correction_evaluations": 40,
       "num_dynamics_evaluations": 40,
       "partial_noise_time": 320,
-      "reconstruction_sha256": "35d374b67d8c99551e17369f4c89004f9165ac7b822e9b2ff9403d8c916d81af",
+      "reconstruction_sha256": "5d760a54de60db4ff3454f49348b7f54bfeabd136277568c4acf09a71d2c4bdb",
       "sampler": "physics-reconstruction.guided-ddim"
     },
     "output_dtype": "float32",
@@ -354,7 +354,7 @@
     "One reconstruction per solver is not the 1272-sample production job.",
     "Random initialized weights do not provide scientific accuracy evidence.",
     "The two-step capacity helper is separate from the full-schedule CLI smoke.",
-    "The final preparer integrity-validation rerun postdates the retained train/sample artifacts but reproduced their exact prepared-input hash.",
+    "The preparation, capacity, training, and sampling commands were rerun in order against the current dirty working tree.",
     "Sampling manifests infer accepted DDIM transitions from the fixed schedule; they do not yet persist SamplerResult.num_steps separately.",
     "Ignored runtime artifacts are retained for review but are not committed."
   ]

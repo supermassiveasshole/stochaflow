@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TypeVar
-
 import torch
-import torch.nn as nn
-
-ModuleT = TypeVar("ModuleT", bound=nn.Module)
+from torch import nn
 
 _MPS_UNSUPPORTED_DTYPES = frozenset({torch.float64, torch.complex128})
 
 
-def move_module_to_device(
+def move_module_to_device[ModuleT: nn.Module](
     module: ModuleT,
     device: torch.device | str,
     *,

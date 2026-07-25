@@ -6,6 +6,7 @@ from typing import ClassVar
 import pytest
 import torch
 
+from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.processes.noise_schedules import (
     CosineAlphaBarSchedule,
     DiscreteVPCoefficients,
@@ -15,7 +16,6 @@ from stochaflow.processes.noise_schedules import (
     LinearBetaSchedule,
     TabulatedDiscreteVPSchedule,
 )
-from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.utils.registry import REGISTRIES
 
 

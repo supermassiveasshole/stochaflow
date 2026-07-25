@@ -6,7 +6,7 @@ from importlib import import_module
 from typing import Any, cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -29,9 +29,12 @@ from stochaflow.utils.config import (
     LoggingConfig,
     StochaflowConfig,
 )
-from stochaflow.utils.logging import CompositeLogger, ExperimentLogger, configure_torch_logging
+from stochaflow.utils.logging import (
+    CompositeLogger,
+    ExperimentLogger,
+    configure_torch_logging,
+)
 from stochaflow.utils.registry import REGISTRIES, Registry, RegistryError
-
 
 BUILTIN_COMPONENT_MODULES = (
     "stochaflow.data",
@@ -130,11 +133,9 @@ def build_logger(
         )
         backends.append(backend)
 
-    logger: ExperimentLogger
-    if len(backends) == 1:
-        logger = backends[0]
-    else:
-        logger = CompositeLogger(backends)
+    logger: ExperimentLogger = (
+        backends[0] if len(backends) == 1 else CompositeLogger(backends)
+    )
     logger.log_config(resolved_config.to_dict())
     return logger
 

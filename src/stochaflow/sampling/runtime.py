@@ -1,10 +1,10 @@
 """Config-driven checkpoint sampling orchestration."""
 
+import json
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from datetime import datetime
-import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
@@ -370,9 +370,11 @@ def _load_checkpoint_config(payload: CheckpointState) -> StochaflowConfig:
             f"checkpoint format version {version!r} is unsupported; "
             f"expected version {CHECKPOINT_FORMAT_VERSION}"
         )
-    raw = payload.get("config")
-    if not isinstance(raw, dict):
+    raw = cast(object, payload.get("config"))
+    if raw is None:
         raise ValueError("checkpoint does not contain a Stochaflow config")
+    if not isinstance(raw, dict):
+        raise TypeError("checkpoint config must be a mapping")
     return load_config_dict(raw)
 
 
@@ -427,8 +429,10 @@ def _build_model_provider(
     device: torch.device,
 ) -> InferenceModelProvider:
     raw = cast(object, payload.get("model_state_dict"))
-    if not isinstance(raw, dict):
+    if raw is None:
         raise ValueError("checkpoint is missing required 'model_state_dict'")
+    if not isinstance(raw, dict):
+        raise TypeError("checkpoint model_state_dict must be a mapping")
     ema = cast(object, payload.get("ema_model_state_dict"))
     if ema is not None and not isinstance(ema, dict):
         raise TypeError("checkpoint ema_model_state_dict must be a mapping")
@@ -442,7 +446,7 @@ def _build_model_provider(
 
 
 def _default_sampling_output_dir(checkpoint_path: Path) -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).astimezone().strftime("%Y%m%d_%H%M%S")
     root = checkpoint_path.parent.parent / "samples"
     result = root / timestamp
     suffix = 1

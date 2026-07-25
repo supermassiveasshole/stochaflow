@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
+from types import UnionType
 from typing import Any, Union, cast, get_args, get_origin, get_type_hints
 
 import yaml
@@ -278,14 +279,7 @@ def _unwrap_optional(annotation: Any) -> Any:
     origin = get_origin(annotation)
     if origin is None:
         return annotation
-    union_types: set[Any] = {Union}
-    try:
-        from types import UnionType
-
-        union_types.add(UnionType)
-    except ImportError:
-        pass
-    if origin not in union_types:
+    if origin not in (Union, UnionType):
         return annotation
     args = [arg for arg in get_args(annotation) if arg is not type(None)]
     if len(args) == 1:
@@ -297,14 +291,7 @@ def _allows_none(annotation: Any) -> bool:
     origin = get_origin(annotation)
     if origin is None:
         return annotation is Any
-    union_types: set[Any] = {Union}
-    try:
-        from types import UnionType
-
-        union_types.add(UnionType)
-    except ImportError:
-        pass
-    return origin in union_types and type(None) in get_args(annotation)
+    return origin in (Union, UnionType) and type(None) in get_args(annotation)
 
 
 def _coerce_value(annotation: Any, value: Any, path: str) -> Any:

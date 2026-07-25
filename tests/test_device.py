@@ -2,7 +2,7 @@
 
 import pytest
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.utils.device import move_module_to_device
 

@@ -6,11 +6,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.sampling import PredictionType
-from stochaflow.training import TrainStepOutput, TrainingStrategy
+from stochaflow.training import TrainingStrategy, TrainStepOutput
 from stochaflow.training.diagnostics import runtime as diagnostic_runtime
+from stochaflow.training.diagnostics.config import (
+    SamplerProfileConfig,
+    TrajectoryProviderConfig,
+)
 from stochaflow.training.diagnostics.runtime import (
     EvaluationGuard,
     GaussianTrainingRuntime,
@@ -19,10 +23,6 @@ from stochaflow.training.diagnostics.runtime import (
     SeedPolicy,
     gaussian_training_runtime,
     prepare_reference_images,
-)
-from stochaflow.training.diagnostics.config import (
-    SamplerProfileConfig,
-    TrajectoryProviderConfig,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
 
@@ -121,12 +121,15 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
     for name, value in model.named_parameters():
         assert torch.equal(value, parameters_before[name])
 
-    with pytest.raises(RuntimeError, match="guard failure"):
+    def fail_inside_guard() -> None:
         with EvaluationGuard(runtime, seed=456, use_ema=True):
             random.random()
             np.random.random()
             torch.rand(4, device=device)
             raise RuntimeError("guard failure")
+
+    with pytest.raises(RuntimeError, match="guard failure"):
+        fail_inside_guard()
 
     assert model.training
     assert random.getstate() == python_rng_before

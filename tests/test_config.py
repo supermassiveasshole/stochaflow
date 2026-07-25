@@ -267,7 +267,7 @@ def test_config_rejects_empty_process_name_when_present() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
     raw["process"]["name"] = ""
 
-    with pytest.raises(ConfigError, match="process.name"):
+    with pytest.raises(ConfigError, match=r"process\.name"):
         load_config_dict(raw)
 
 
@@ -311,7 +311,7 @@ def test_config_rejects_empty_training_name() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
     raw["training"]["name"] = ""
 
-    with pytest.raises(ConfigError, match="training.name"):
+    with pytest.raises(ConfigError, match=r"training\.name"):
         load_config_dict(raw)
 
 
@@ -345,8 +345,8 @@ def test_config_requires_all_or_no_source_weights() -> None:
     raw = load_config(Path("configs/ddpm_mnist_flowers102.yaml")).to_dict()
     raw["data"]["params"]["sources"][0]["sampling_weight"] = None
 
+    config = load_config_dict(raw)
     with pytest.raises(ConfigError, match="sampling_weight"):
-        config = load_config_dict(raw)
         build_data_loaders(config.data, seed=config.experiment.seed)
 
 
@@ -354,8 +354,8 @@ def test_config_rejects_bucket_incompatible_with_unet_depth() -> None:
     raw = load_config(Path("configs/ddpm_mnist_flowers102.yaml")).to_dict()
     raw["data"]["params"]["batching"]["buckets"][0]["height"] = 0
 
+    config = load_config_dict(raw)
     with pytest.raises(ConfigError, match="dimensions must be positive"):
-        config = load_config_dict(raw)
         build_data_loaders(config.data, seed=config.experiment.seed)
 
 
@@ -377,7 +377,7 @@ def test_lr_scheduler_config_rejects_invalid_interval() -> None:
         "params": {"step_size": 1},
     }
 
-    with pytest.raises(ConfigError, match="lr_scheduler.interval"):
+    with pytest.raises(ConfigError, match=r"lr_scheduler\.interval"):
         load_config_dict(raw)
 
 
@@ -403,7 +403,7 @@ def test_lr_scheduler_rejects_legacy_null_name_form() -> None:
         "params": {},
     }
 
-    with pytest.raises(ConfigError, match="lr_scheduler.name"):
+    with pytest.raises(ConfigError, match=r"lr_scheduler\.name"):
         load_config_dict(raw)
 
 
@@ -441,7 +441,7 @@ def test_ema_config_rejects_invalid_decay() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
     raw["ema"] = {"enabled": True, "decay": 1.0}
 
-    with pytest.raises(ConfigError, match="ema.decay"):
+    with pytest.raises(ConfigError, match=r"ema\.decay"):
         load_config_dict(raw)
 
 

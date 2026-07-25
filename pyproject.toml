@@ -87,9 +87,66 @@ torchvision = [
 required-version = "==0.16.0"
 target-version = "py312"
 line-length = 88
+src = ["src", "examples/extension-projects/*/src"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+select = [
+    # Curated strict baseline for a typed framework.
+    "B",
+    "C4",
+    "E",
+    "F",
+    "I",
+    "UP",
+    "W291",
+    "W292",
+    "W293",
+    "W605",
+    # Additional correctness and modernization checks for a typed framework.
+    "ASYNC",
+    "BLE",
+    "DTZ",
+    "ERA",
+    "FURB",
+    "G",
+    "LOG",
+    "PERF",
+    "PGH",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLW",
+    "PT",
+    "PTH",
+    "PYI",
+    "RET",
+    "RUF",
+    "SIM",
+    "T10",
+    "YTT",
+    # Selected high-signal rules from otherwise opinionated families.
+    "D419",
+    "ISC004",
+    "PLR0402",
+    "PLR1714",
+    "S102",
+    "S110",
+    "S112",
+    "TRY002",
+    "TRY004",
+    "TRY201",
+    "TRY203",
+    "TRY401",
+]
+ignore = [
+    # Ruff's formatter only makes a best effort at line length.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Chinese reference prose intentionally uses full-width Chinese punctuation.
+"tests/test_config_reference.py" = ["RUF001"]
+"tools/generate_config_reference.py" = ["RUF001"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

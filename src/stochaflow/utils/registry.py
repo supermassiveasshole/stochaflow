@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, TypeVar, cast
 
-import torch.nn as nn
+from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-T = TypeVar("T")
 U = TypeVar("U")
 
 
@@ -23,7 +22,7 @@ def _component_name(component: object) -> str:
     return f"{module}.{name}"
 
 
-class Registry(Mapping[str, T], Generic[T]):
+class Registry[T](Mapping[str, T]):
     """Store and construct named components of one semantic kind.
 
     A registry is deliberately a small object instead of a public dictionary:

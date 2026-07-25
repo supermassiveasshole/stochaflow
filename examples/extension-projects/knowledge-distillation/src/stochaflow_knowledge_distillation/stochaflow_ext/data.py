@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sized
 import math
+from collections.abc import Iterator, Mapping, Sized
+from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
 
 import torch
 from torch.utils.data import DataLoader, Dataset, Sampler, TensorDataset, random_split
 
-from stochaflow.extensions import DataBuilder, DataLoaders, REGISTRIES
+from stochaflow.extensions import REGISTRIES, DataBuilder, DataLoaders
 
 _PREFIX = "stochaflow-knowledge-distillation"
 _MAX_SEED = (1 << 63) - 1
@@ -164,7 +165,8 @@ def _torchvision_splits(
     _unknown(params, "torchvision source")
 
     try:
-        from torchvision import datasets, transforms
+        datasets = import_module("torchvision.datasets")
+        transforms = import_module("torchvision.transforms")
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise RuntimeError(
             "torchvision source requires the project's 'vision' extra"

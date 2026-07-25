@@ -21,9 +21,9 @@ from .diagnostics import (
 )
 from .ema import ExponentialMovingAverage
 from .gaussian import (
-    GaussianDiagnosticSemantics,
     GaussianDenoisingTrainingBuilder,
     GaussianDenoisingTrainingStrategy,
+    GaussianDiagnosticSemantics,
     gaussian_training_target,
 )
 from .objectives import MSEObjective, PerSampleObjective, compute_objective
@@ -32,8 +32,8 @@ from .reporting import FinalSummary, RichTrainingReporter, RunSummary
 from .strategy import (
     Batch,
     ScalarMetric,
-    TrainStepOutput,
     TrainingStrategy,
+    TrainStepOutput,
     validate_train_step_output,
 )
 from .trainer import Trainer
@@ -45,9 +45,9 @@ __all__ = [
     "ExponentialMovingAverage",
     "FinalSummary",
     "FitStartEvent",
-    "GaussianDiagnosticSemantics",
     "GaussianDenoisingTrainingBuilder",
     "GaussianDenoisingTrainingStrategy",
+    "GaussianDiagnosticSemantics",
     "MSEObjective",
     "ManagedTrainingModule",
     "PerSampleObjective",

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.processes import DiscreteGaussianDenoisingProcess, Process
 from stochaflow.sampling.gaussian import GaussianModelDynamics, PredictionType
@@ -252,7 +252,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
         )
         dynamics = GaussianModelDynamics(
             process,
-            lambda state, model_time: model(state, model_time),
+            model,
             prediction_type=config.prediction_type,
             clip_denoised=config.clip_denoised,
         )

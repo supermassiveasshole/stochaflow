@@ -9,7 +9,7 @@ import struct
 from math import prod
 from pathlib import Path
 from uuid import uuid4
-from zipfile import BadZipFile, ZIP_STORED, ZipFile, ZipInfo
+from zipfile import ZIP_STORED, BadZipFile, ZipFile, ZipInfo
 
 import numpy as np
 import torch
@@ -406,7 +406,7 @@ def prepare(
         mapped[:] = processed
         mapped.flush()
         del mapped
-        os.replace(temporary, observation_path)
+        temporary.replace(observation_path)
     finally:
         temporary.unlink(missing_ok=True)
     reference_range = (

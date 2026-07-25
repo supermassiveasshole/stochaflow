@@ -1,5 +1,6 @@
 """Tests for DDIM on the unified complete-sampler interface."""
 
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -269,7 +270,7 @@ def test_ddim_rejects_invalid_explicit_schedules(schedule: list[int]) -> None:
         process,
         lambda state, time: torch.zeros_like(state)
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="DDIM schedule"):
         DDIMSampler(schedule=schedule).sample(dynamics, torch.randn(1, 2))
 
 
@@ -474,7 +475,7 @@ class _PhysicsCorrectedDDIMSampler(Sampler):
                 SamplingObservation(0, int(states[0]), current, False, {})
             )
         for step_index, (source, target) in enumerate(
-            zip(states[:-1], states[1:]),
+            pairwise(states),
             start=1,
         ):
             source_times = source.expand(current.shape[0])

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -300,7 +299,7 @@ def main() -> None:
             json.dumps(report, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        os.replace(temporary, args.output)
+        temporary.replace(args.output)
     finally:
         temporary.unlink(missing_ok=True)
     print(args.output)

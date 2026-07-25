@@ -1,7 +1,7 @@
 """Experiment logging backends and runtime logging helpers."""
 
-import json
 import importlib
+import json
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 from PIL import Image
+from torch.utils.tensorboard import SummaryWriter
 
 from stochaflow.utils.registry import REGISTRIES
 
@@ -236,8 +237,6 @@ class TensorBoardLogger(ExperimentLogger):
         run_name: str,
         subdir: str = "tensorboard",
     ) -> None:
-        from torch.utils.tensorboard import SummaryWriter
-
         log_dir = Path(output_dir) / subdir / run_name
         log_dir.mkdir(parents=True, exist_ok=True)
         self.writer = SummaryWriter(log_dir=str(log_dir))
@@ -353,8 +352,12 @@ def configure_torch_logging(settings: dict[str, Any] | None) -> None:
         raise RuntimeError("torch._logging is not available in this PyTorch build") from exc
 
     set_logs = getattr(torch_logging, "set_logs", None)
+    if set_logs is None:
+        raise RuntimeError(
+            "torch._logging.set_logs is not available in this PyTorch build"
+        )
     if not callable(set_logs):
-        raise RuntimeError("torch._logging.set_logs is not available in this PyTorch build")
+        raise TypeError("torch._logging.set_logs must be callable")
 
     converted: dict[str, Any] = {}
     for name, value in settings.items():

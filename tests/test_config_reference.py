@@ -1,8 +1,8 @@
 """Contract tests for generated configuration documentation."""
 
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 from stochaflow.utils.config import StochaflowConfig, load_config
 

@@ -4,7 +4,7 @@ from collections import OrderedDict
 from typing import TypedDict, cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 class EMAStateDict(TypedDict):

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-import re
 from typing import Any
-
 
 _PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 PROVIDER_CATEGORIES = (
@@ -394,10 +393,10 @@ def parse_diffusion_quality_config(
 
 
 __all__ = [
+    "PROVIDER_CATEGORIES",
     "DiagnosticCadenceConfig",
     "DiagnosticSamplingConfig",
     "DiffusionQualityConfig",
-    "PROVIDER_CATEGORIES",
     "ProviderPipelineConfig",
     "ProviderSpec",
     "ReferencePipelineConfig",

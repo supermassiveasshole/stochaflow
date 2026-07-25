@@ -6,12 +6,12 @@ imported from that module directly to avoid package-level import cycles.
 
 from .checkpoint import CheckpointManager, CheckpointState, LoadedCheckpoint
 from .config import (
-    ConfigError,
     ComponentConfig,
-    EMAConfig,
+    ConfigError,
     EarlyStoppingConfig,
-    LRSchedulerConfig,
+    EMAConfig,
     LoggingConfig,
+    LRSchedulerConfig,
     StochaflowConfig,
     coerce_config_section,
     load_config,
@@ -41,13 +41,14 @@ from .plugins import (
 from .registry import REGISTRIES, Registry, RegistryCatalog, RegistryError
 
 __all__ = [
+    "EXTENSION_ENTRY_POINT_GROUP",
+    "REGISTRIES",
     "CheckpointManager",
     "CheckpointState",
-    "ConfigError",
     "ComponentConfig",
+    "ConfigError",
     "EMAConfig",
     "EarlyStoppingConfig",
-    "EXTENSION_ENTRY_POINT_GROUP",
     "ExperimentLogger",
     "ExtensionActivationError",
     "ExtensionActivationPlan",
@@ -64,7 +65,6 @@ __all__ = [
     "LRSchedulerConfig",
     "LoadedCheckpoint",
     "LoggingConfig",
-    "REGISTRIES",
     "Registry",
     "RegistryCatalog",
     "RegistryError",
@@ -72,9 +72,9 @@ __all__ = [
     "StochaflowConfig",
     "activate_extension_plugins",
     "coerce_config_section",
+    "extension_plugin_provenance_to_dicts",
     "load_config",
     "load_config_dict",
-    "extension_plugin_provenance_to_dicts",
     "parse_extension_plugin_provenance",
     "prepare_extension_plugins",
 ]

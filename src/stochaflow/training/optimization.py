@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 import inspect
 import math
+from copy import deepcopy
 from typing import Any, cast
 
 import torch
@@ -13,7 +13,6 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from stochaflow.utils.config import ComponentConfig, LRSchedulerConfig
 from stochaflow.utils.registry import REGISTRIES, RegistryError
-
 
 _TORCH_OPTIMIZER_PREFIX = "torch.optim."
 _TORCH_LR_SCHEDULER_PREFIX = "torch.optim.lr_scheduler."
@@ -50,7 +49,7 @@ class WarmupCosineLR(LRScheduler):
             min_lr_ratio_value,
             (int, float),
         ):
-            raise ValueError("min_lr_ratio must be numeric")
+            raise TypeError("min_lr_ratio must be numeric")
         self.min_lr_ratio = float(min_lr_ratio_value)
         if not 0.0 <= self.min_lr_ratio <= 1.0:
             raise ValueError("min_lr_ratio must be between 0 and 1")

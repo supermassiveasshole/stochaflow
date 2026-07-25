@@ -2,7 +2,7 @@
   "budgets": {
     "host_fraction": 0.7
   },
-  "created_at": "2026-07-22T09:45:12.029498+00:00",
+  "created_at": "2026-07-25T09:03:40.186109+00:00",
   "environment": {
     "available_host_memory_bytes": null,
     "cuda_available": false,
@@ -10,10 +10,10 @@
     "effective_host_memory_bytes": 17179869184,
     "machine": "arm64",
     "mps_available": true,
-    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
     "python": "3.14.3",
-    "temporary_filesystem_free_bytes": 218486796288,
-    "torch": "2.11.0"
+    "temporary_filesystem_free_bytes": 239061962752,
+    "torch": "2.13.0"
   },
   "format_version": 1,
   "profiles": [
@@ -48,12 +48,12 @@
       "measured_runs": [
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 1319010304,
+          "after_output_lifetime_peak_rss_bytes": 1336639488,
           "artifact_bytes": 1000343081,
-          "baseline_lifetime_peak_rss_bytes": 308510720,
+          "baseline_lifetime_peak_rss_bytes": 326189056,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 1933869056,
-          "wall_seconds": 1.3097994169802405,
+          "final_lifetime_peak_rss_bytes": 2301329408,
+          "wall_seconds": 1.229381540993927,
           "writers": [
             {
               "artifact_bytes": 1000343081,
@@ -61,21 +61,21 @@
                 "samples"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 1933869056,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 2301329408,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 1.2485204999684356
+              "wall_seconds": 1.158284207995166
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 1318731776,
+          "after_output_lifetime_peak_rss_bytes": 1336606720,
           "artifact_bytes": 1000343081,
-          "baseline_lifetime_peak_rss_bytes": 308232192,
+          "baseline_lifetime_peak_rss_bytes": 326090752,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 2078031872,
-          "wall_seconds": 1.3056230830261484,
+          "final_lifetime_peak_rss_bytes": 2337456128,
+          "wall_seconds": 0.9810997499880614,
           "writers": [
             {
               "artifact_bytes": 1000343081,
@@ -83,21 +83,21 @@
                 "samples"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 2078031872,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 2337456128,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 1.241622917004861
+              "wall_seconds": 0.9294799589988543
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 1318928384,
+          "after_output_lifetime_peak_rss_bytes": 1336721408,
           "artifact_bytes": 1000343081,
-          "baseline_lifetime_peak_rss_bytes": 308445184,
+          "baseline_lifetime_peak_rss_bytes": 326270976,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 1912799232,
-          "wall_seconds": 1.4905440419679508,
+          "final_lifetime_peak_rss_bytes": 2337603584,
+          "wall_seconds": 1.0483894999924814,
           "writers": [
             {
               "artifact_bytes": 1000343081,
@@ -105,21 +105,21 @@
                 "samples"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 1912750080,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 2337603584,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 1.4296657500090078
+              "wall_seconds": 0.9973353749956004
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 1318830080,
+          "after_output_lifetime_peak_rss_bytes": 1336836096,
           "artifact_bytes": 1000343081,
-          "baseline_lifetime_peak_rss_bytes": 308346880,
+          "baseline_lifetime_peak_rss_bytes": 326336512,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 2319695872,
-          "wall_seconds": 1.1493381659965962,
+          "final_lifetime_peak_rss_bytes": 2337701888,
+          "wall_seconds": 1.0134038329997566,
           "writers": [
             {
               "artifact_bytes": 1000343081,
@@ -127,21 +127,21 @@
                 "samples"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 2319695872,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 2337701888,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 1.091294125013519
+              "wall_seconds": 0.9585781669884454
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 1318223872,
+          "after_output_lifetime_peak_rss_bytes": 1336721408,
           "artifact_bytes": 1000343081,
-          "baseline_lifetime_peak_rss_bytes": 307707904,
+          "baseline_lifetime_peak_rss_bytes": 326238208,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 2319106048,
-          "wall_seconds": 1.1665642079897225,
+          "final_lifetime_peak_rss_bytes": 2337570816,
+          "wall_seconds": 1.0255050830019172,
           "writers": [
             {
               "artifact_bytes": 1000343081,
@@ -149,10 +149,10 @@
                 "samples"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 2319106048,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 2337570816,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 1.1101921669906005
+              "wall_seconds": 0.9737280830013333
             }
           ]
         }
@@ -168,11 +168,11 @@
       },
       "summary": {
         "max_cuda_reserved_bytes": null,
-        "max_peak_rss_bytes": 2319695872,
-        "max_peak_rss_host_fraction": 0.1350240707397461,
-        "median_peak_rss_bytes": 2078031872,
+        "max_peak_rss_bytes": 2337701888,
+        "max_peak_rss_host_fraction": 0.13607215881347656,
+        "median_peak_rss_bytes": 2337570816,
         "passes_host_budget": true,
-        "peak_rss_coefficient_of_variation": 0.08429847223587236
+        "peak_rss_coefficient_of_variation": 0.006223013948612304
       },
       "warmup_runs": 1
     },
@@ -207,12 +207,12 @@
       "measured_runs": [
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 347160576,
+          "after_output_lifetime_peak_rss_bytes": 365445120,
           "artifact_bytes": 31460583,
-          "baseline_lifetime_peak_rss_bytes": 308150272,
+          "baseline_lifetime_peak_rss_bytes": 326402048,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 391905280,
-          "wall_seconds": 0.03522125002928078,
+          "final_lifetime_peak_rss_bytes": 410238976,
+          "wall_seconds": 0.03173162500024773,
           "writers": [
             {
               "artifact_bytes": 31460583,
@@ -221,21 +221,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 391905280,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 410238976,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.03280091698979959
+              "wall_seconds": 0.029357291001360863
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 346865664,
+          "after_output_lifetime_peak_rss_bytes": 365281280,
           "artifact_bytes": 31460583,
-          "baseline_lifetime_peak_rss_bytes": 307871744,
+          "baseline_lifetime_peak_rss_bytes": 326270976,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 391659520,
-          "wall_seconds": 0.03630808397429064,
+          "final_lifetime_peak_rss_bytes": 410091520,
+          "wall_seconds": 0.031342832997324876,
           "writers": [
             {
               "artifact_bytes": 31460583,
@@ -244,21 +244,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 391659520,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 410091520,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.033676000020932406
+              "wall_seconds": 0.028996125009143725
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 347176960,
+          "after_output_lifetime_peak_rss_bytes": 365150208,
           "artifact_bytes": 31460583,
-          "baseline_lifetime_peak_rss_bytes": 308117504,
+          "baseline_lifetime_peak_rss_bytes": 326123520,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 391970816,
-          "wall_seconds": 0.03794399998150766,
+          "final_lifetime_peak_rss_bytes": 409927680,
+          "wall_seconds": 0.0363060840027174,
           "writers": [
             {
               "artifact_bytes": 31460583,
@@ -267,21 +267,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 391970816,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 409927680,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.03504208300728351
+              "wall_seconds": 0.033900374997756444
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 347144192,
+          "after_output_lifetime_peak_rss_bytes": 364969984,
           "artifact_bytes": 31460583,
-          "baseline_lifetime_peak_rss_bytes": 308101120,
+          "baseline_lifetime_peak_rss_bytes": 325976064,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 391938048,
-          "wall_seconds": 0.03798712498974055,
+          "final_lifetime_peak_rss_bytes": 409763840,
+          "wall_seconds": 0.03680366699700244,
           "writers": [
             {
               "artifact_bytes": 31460583,
@@ -290,21 +290,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 391938048,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 409763840,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.03467170899966732
+              "wall_seconds": 0.03423083300003782
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 346849280,
+          "after_output_lifetime_peak_rss_bytes": 365166592,
           "artifact_bytes": 31460583,
-          "baseline_lifetime_peak_rss_bytes": 307806208,
+          "baseline_lifetime_peak_rss_bytes": 326123520,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 391610368,
-          "wall_seconds": 0.0393646250013262,
+          "final_lifetime_peak_rss_bytes": 409960448,
+          "wall_seconds": 0.03314200000022538,
           "writers": [
             {
               "artifact_bytes": 31460583,
@@ -313,10 +313,10 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 391610368,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 409960448,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.037001583026722074
+              "wall_seconds": 0.030841291998513043
             }
           ]
         }
@@ -332,11 +332,11 @@
       },
       "summary": {
         "max_cuda_reserved_bytes": null,
-        "max_peak_rss_bytes": 391970816,
-        "max_peak_rss_host_fraction": 0.022815704345703125,
-        "median_peak_rss_bytes": 391905280,
+        "max_peak_rss_bytes": 410238976,
+        "max_peak_rss_host_fraction": 0.023879051208496094,
+        "median_peak_rss_bytes": 409960448,
         "passes_host_budget": true,
-        "peak_rss_coefficient_of_variation": 0.00038470223210925543
+        "peak_rss_coefficient_of_variation": 0.000390232035093508
       },
       "warmup_runs": 1
     },
@@ -375,12 +375,12 @@
       "measured_runs": [
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 347570176,
+          "after_output_lifetime_peak_rss_bytes": 365117440,
           "artifact_bytes": 10784911,
-          "baseline_lifetime_peak_rss_bytes": 308543488,
+          "baseline_lifetime_peak_rss_bytes": 326139904,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 570064896,
-          "wall_seconds": 0.5892350829672068,
+          "final_lifetime_peak_rss_bytes": 590905344,
+          "wall_seconds": 0.5392612919968087,
           "writers": [
             {
               "artifact_bytes": 10784911,
@@ -390,25 +390,25 @@
                 "trajectory_grid"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 570064896,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 590905344,
               "name": "image",
               "params": {
                 "denormalize": true,
                 "gif_fps": 8,
                 "grid_nrow": 4
               },
-              "wall_seconds": 0.57712591602467
+              "wall_seconds": 0.5289315829868428
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 347242496,
+          "after_output_lifetime_peak_rss_bytes": 365101056,
           "artifact_bytes": 10784911,
-          "baseline_lifetime_peak_rss_bytes": 308215808,
+          "baseline_lifetime_peak_rss_bytes": 326107136,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 569278464,
-          "wall_seconds": 0.55939158401452,
+          "final_lifetime_peak_rss_bytes": 590987264,
+          "wall_seconds": 0.5416637500020443,
           "writers": [
             {
               "artifact_bytes": 10784911,
@@ -418,25 +418,25 @@
                 "trajectory_grid"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 569278464,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 590987264,
               "name": "image",
               "params": {
                 "denormalize": true,
                 "gif_fps": 8,
                 "grid_nrow": 4
               },
-              "wall_seconds": 0.5495658749714494
+              "wall_seconds": 0.5313140840007691
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 347406336,
+          "after_output_lifetime_peak_rss_bytes": 365182976,
           "artifact_bytes": 10784911,
-          "baseline_lifetime_peak_rss_bytes": 308396032,
+          "baseline_lifetime_peak_rss_bytes": 326189056,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 569999360,
-          "wall_seconds": 0.5936238339636475,
+          "final_lifetime_peak_rss_bytes": 590954496,
+          "wall_seconds": 0.536045999993803,
           "writers": [
             {
               "artifact_bytes": 10784911,
@@ -446,25 +446,25 @@
                 "trajectory_grid"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 569999360,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 590954496,
               "name": "image",
               "params": {
                 "denormalize": true,
                 "gif_fps": 8,
                 "grid_nrow": 4
               },
-              "wall_seconds": 0.5830074169789441
+              "wall_seconds": 0.5257149999961257
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 346767360,
+          "after_output_lifetime_peak_rss_bytes": 365133824,
           "artifact_bytes": 10784911,
-          "baseline_lifetime_peak_rss_bytes": 307724288,
+          "baseline_lifetime_peak_rss_bytes": 326107136,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 569344000,
-          "wall_seconds": 0.6069386669551022,
+          "final_lifetime_peak_rss_bytes": 590938112,
+          "wall_seconds": 0.537482458006707,
           "writers": [
             {
               "artifact_bytes": 10784911,
@@ -474,25 +474,25 @@
                 "trajectory_grid"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 569344000,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 590938112,
               "name": "image",
               "params": {
                 "denormalize": true,
                 "gif_fps": 8,
                 "grid_nrow": 4
               },
-              "wall_seconds": 0.5951679999707267
+              "wall_seconds": 0.5274605419981526
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 346669056,
+          "after_output_lifetime_peak_rss_bytes": 364756992,
           "artifact_bytes": 10784911,
-          "baseline_lifetime_peak_rss_bytes": 307658752,
+          "baseline_lifetime_peak_rss_bytes": 325763072,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 569278464,
-          "wall_seconds": 0.5933550000190735,
+          "final_lifetime_peak_rss_bytes": 590495744,
+          "wall_seconds": 0.5499947079952108,
           "writers": [
             {
               "artifact_bytes": 10784911,
@@ -502,14 +502,14 @@
                 "trajectory_grid"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 569278464,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 590495744,
               "name": "image",
               "params": {
                 "denormalize": true,
                 "gif_fps": 8,
                 "grid_nrow": 4
               },
-              "wall_seconds": 0.5816783329937607
+              "wall_seconds": 0.5384559170051944
             }
           ]
         }
@@ -525,11 +525,11 @@
       },
       "summary": {
         "max_cuda_reserved_bytes": null,
-        "max_peak_rss_bytes": 570064896,
-        "max_peak_rss_host_fraction": 0.03318214416503906,
-        "median_peak_rss_bytes": 569344000,
+        "max_peak_rss_bytes": 590987264,
+        "max_peak_rss_host_fraction": 0.034399986267089844,
+        "median_peak_rss_bytes": 590938112,
         "passes_host_budget": true,
-        "peak_rss_coefficient_of_variation": 0.0006318746432752745
+        "peak_rss_coefficient_of_variation": 0.00030828144324514977
       },
       "warmup_runs": 1
     },
@@ -564,12 +564,12 @@
       "measured_runs": [
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 517636096,
+          "after_output_lifetime_peak_rss_bytes": 535691264,
           "artifact_bytes": 201329959,
-          "baseline_lifetime_peak_rss_bytes": 308297728,
+          "baseline_lifetime_peak_rss_bytes": 326369280,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 902643712,
-          "wall_seconds": 0.23545220796950161,
+          "final_lifetime_peak_rss_bytes": 920666112,
+          "wall_seconds": 0.19169808299920987,
           "writers": [
             {
               "artifact_bytes": 201329959,
@@ -578,21 +578,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 902643712,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 920666112,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.22163954202551395
+              "wall_seconds": 0.1803295830031857
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 517505024,
+          "after_output_lifetime_peak_rss_bytes": 535543808,
           "artifact_bytes": 201329959,
-          "baseline_lifetime_peak_rss_bytes": 308166656,
+          "baseline_lifetime_peak_rss_bytes": 326189056,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 902447104,
-          "wall_seconds": 0.24577375000808388,
+          "final_lifetime_peak_rss_bytes": 920551424,
+          "wall_seconds": 0.19315466600528453,
           "writers": [
             {
               "artifact_bytes": 201329959,
@@ -601,21 +601,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 902447104,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 920551424,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.23189333296613768
+              "wall_seconds": 0.1824591250042431
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 517144576,
+          "after_output_lifetime_peak_rss_bytes": 535724032,
           "artifact_bytes": 201329959,
-          "baseline_lifetime_peak_rss_bytes": 307773440,
+          "baseline_lifetime_peak_rss_bytes": 326402048,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 902103040,
-          "wall_seconds": 0.23584379197563976,
+          "final_lifetime_peak_rss_bytes": 920748032,
+          "wall_seconds": 0.21784833299170714,
           "writers": [
             {
               "artifact_bytes": 201329959,
@@ -624,21 +624,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 902103040,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 920748032,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.22347254201304168
+              "wall_seconds": 0.20223904099839274
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 517390336,
+          "after_output_lifetime_peak_rss_bytes": 535216128,
           "artifact_bytes": 201329959,
-          "baseline_lifetime_peak_rss_bytes": 308019200,
+          "baseline_lifetime_peak_rss_bytes": 325877760,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 902316032,
-          "wall_seconds": 0.2551450419705361,
+          "final_lifetime_peak_rss_bytes": 920240128,
+          "wall_seconds": 0.20583237500977702,
           "writers": [
             {
               "artifact_bytes": 201329959,
@@ -647,21 +647,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 902316032,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 920240128,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.24111337499925867
+              "wall_seconds": 0.19360037498699967
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 517652480,
+          "after_output_lifetime_peak_rss_bytes": 535658496,
           "artifact_bytes": 201329959,
-          "baseline_lifetime_peak_rss_bytes": 308314112,
+          "baseline_lifetime_peak_rss_bytes": 326336512,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 902627328,
-          "wall_seconds": 0.2305978749645874,
+          "final_lifetime_peak_rss_bytes": 920649728,
+          "wall_seconds": 0.19748533300298732,
           "writers": [
             {
               "artifact_bytes": 201329959,
@@ -670,10 +670,10 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 902627328,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 920649728,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.21706912497757003
+              "wall_seconds": 0.18614854199404363
             }
           ]
         }
@@ -689,11 +689,11 @@
       },
       "summary": {
         "max_cuda_reserved_bytes": null,
-        "max_peak_rss_bytes": 902643712,
-        "max_peak_rss_host_fraction": 0.05254077911376953,
-        "median_peak_rss_bytes": 902447104,
+        "max_peak_rss_bytes": 920748032,
+        "max_peak_rss_host_fraction": 0.05359458923339844,
+        "median_peak_rss_bytes": 920649728,
         "passes_host_budget": true,
-        "peak_rss_coefficient_of_variation": 0.00022424769380636111
+        "peak_rss_coefficient_of_variation": 0.00019214866839800923
       },
       "warmup_runs": 1
     },
@@ -729,12 +729,12 @@
       "measured_runs": [
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 363692032,
+          "after_output_lifetime_peak_rss_bytes": 381861888,
           "artifact_bytes": 50334951,
-          "baseline_lifetime_peak_rss_bytes": 307789824,
+          "baseline_lifetime_peak_rss_bytes": 325959680,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 448315392,
-          "wall_seconds": 0.05370624997885898,
+          "final_lifetime_peak_rss_bytes": 466550784,
+          "wall_seconds": 0.05069516699586529,
           "writers": [
             {
               "artifact_bytes": 50334951,
@@ -743,21 +743,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 448315392,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 466550784,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.0501172500080429
+              "wall_seconds": 0.04722779199073557
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 364199936,
+          "after_output_lifetime_peak_rss_bytes": 381812736,
           "artifact_bytes": 50334951,
-          "baseline_lifetime_peak_rss_bytes": 308281344,
+          "baseline_lifetime_peak_rss_bytes": 325910528,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 448823296,
-          "wall_seconds": 0.05613283300772309,
+          "final_lifetime_peak_rss_bytes": 466468864,
+          "wall_seconds": 0.04931854200549424,
           "writers": [
             {
               "artifact_bytes": 50334951,
@@ -766,21 +766,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 448823296,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 466468864,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.05245904199546203
+              "wall_seconds": 0.04595083401363809
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 363560960,
+          "after_output_lifetime_peak_rss_bytes": 381698048,
           "artifact_bytes": 50334951,
-          "baseline_lifetime_peak_rss_bytes": 307625984,
+          "baseline_lifetime_peak_rss_bytes": 325795840,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 448217088,
-          "wall_seconds": 0.06259454099927098,
+          "final_lifetime_peak_rss_bytes": 466386944,
+          "wall_seconds": 0.04882620899297763,
           "writers": [
             {
               "artifact_bytes": 50334951,
@@ -789,21 +789,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 448217088,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 466386944,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.05707620800239965
+              "wall_seconds": 0.04550770799687598
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 364249088,
+          "after_output_lifetime_peak_rss_bytes": 382025728,
           "artifact_bytes": 50334951,
-          "baseline_lifetime_peak_rss_bytes": 308314112,
+          "baseline_lifetime_peak_rss_bytes": 326139904,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 448888832,
-          "wall_seconds": 0.057075582968536764,
+          "final_lifetime_peak_rss_bytes": 466698240,
+          "wall_seconds": 0.05186670798866544,
           "writers": [
             {
               "artifact_bytes": 50334951,
@@ -812,21 +812,21 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 448888832,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 466698240,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.05340016703121364
+              "wall_seconds": 0.04756400000769645
             }
           ]
         },
         {
           "after_output_cuda_peak": null,
-          "after_output_lifetime_peak_rss_bytes": 363724800,
+          "after_output_lifetime_peak_rss_bytes": 381943808,
           "artifact_bytes": 50334951,
-          "baseline_lifetime_peak_rss_bytes": 307806208,
+          "baseline_lifetime_peak_rss_bytes": 326041600,
           "final_cuda_peak": null,
-          "final_lifetime_peak_rss_bytes": 448380928,
-          "wall_seconds": 0.05894729099236429,
+          "final_lifetime_peak_rss_bytes": 466616320,
+          "wall_seconds": 0.048896332998992875,
           "writers": [
             {
               "artifact_bytes": 50334951,
@@ -835,10 +835,10 @@
                 "trajectory"
               ],
               "cuda_peak": null,
-              "cumulative_lifetime_peak_rss_bytes_after_writer": 448380928,
+              "cumulative_lifetime_peak_rss_bytes_after_writer": 466616320,
               "name": "tensor",
               "params": {},
-              "wall_seconds": 0.05482104100519791
+              "wall_seconds": 0.045527166992542334
             }
           ]
         }
@@ -854,11 +854,11 @@
       },
       "summary": {
         "max_cuda_reserved_bytes": null,
-        "max_peak_rss_bytes": 448888832,
-        "max_peak_rss_host_fraction": 0.026128768920898438,
-        "median_peak_rss_bytes": 448380928,
+        "max_peak_rss_bytes": 466698240,
+        "max_peak_rss_host_fraction": 0.02716541290283203,
+        "median_peak_rss_bytes": 466550784,
         "passes_host_budget": true,
-        "peak_rss_coefficient_of_variation": 0.0006153309620685588
+        "peak_rss_coefficient_of_variation": 0.0002335794736309808
       },
       "warmup_runs": 1
     },
@@ -993,7 +993,7 @@
       "field3d_dense_projection",
       "dfsr_full_trajectory_projection"
     ],
-    "tool_sha256": "52fe973aac9eaeb835f562dcd8ee2be03c8b554606ad8f524be027d35843bc97",
+    "tool_sha256": "65e1882e27c602cffbe788766199c22da8e51b255b3386afa87d313f2c3cd165",
     "warmup_override": null
   }
 }

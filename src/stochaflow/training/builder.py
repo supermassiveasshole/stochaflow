@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.processes import Process
 from stochaflow.training.strategy import TrainingStrategy

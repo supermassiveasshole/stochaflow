@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.sampling import Sampler, SamplerResult, SamplingObservation
 from stochaflow.training import (
     FitStartEvent,
     GaussianDenoisingTrainingStrategy,
-    MSEObjective,
     ManagedTrainingModule,
+    MSEObjective,
     TrainBatchEndEvent,
     TrainEpochEndEvent,
     TrainStepOutput,
@@ -96,7 +96,7 @@ class GaussianTestAssets(nn.Module):
 
 
 class RecordingSampler(Sampler):
-    records: dict[str, list[torch.Tensor]] = {}
+    records: ClassVar[dict[str, list[torch.Tensor]]] = {}
 
     def __init__(self, *, marker: str) -> None:
         self.marker = marker

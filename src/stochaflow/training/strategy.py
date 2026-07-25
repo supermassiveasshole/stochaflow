@@ -5,12 +5,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, TypeAlias, cast
+from typing import Any, cast
 
 import torch
 
-Batch: TypeAlias = Any
-ScalarMetric: TypeAlias = float | int | torch.Tensor
+type Batch = Any
+type ScalarMetric = float | int | torch.Tensor
 
 
 @dataclass(frozen=True, slots=True)

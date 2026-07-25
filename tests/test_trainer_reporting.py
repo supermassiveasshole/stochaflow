@@ -5,7 +5,7 @@ from typing import Any, NamedTuple, cast
 
 import pytest
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -13,13 +13,13 @@ from stochaflow.training import (
     FitStartEvent,
     ManagedTrainingModule,
     SupervisedTrainingStrategy,
-    Trainer,
     TrainBatchEndEvent,
     TrainEpochEndEvent,
-    TrainStepOutput,
+    Trainer,
     TrainingDiagnostic,
     TrainingPlan,
     TrainingStrategy,
+    TrainStepOutput,
     trainable_parameters,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
@@ -251,7 +251,7 @@ def test_trainer_rejects_optimizer_with_parameters_outside_plan(tmp_path) -> Non
     unrelated_model = TinyRegressor()
     optimizer = torch.optim.SGD(unrelated_model.parameters(), lr=0.01)
 
-    with pytest.raises(ValueError, match="optimizer parameters.*TrainingPlan"):
+    with pytest.raises(ValueError, match=r"optimizer parameters.*TrainingPlan"):
         _build_trainer(tmp_path, model=model, optimizer=optimizer)
 
 
@@ -264,7 +264,10 @@ def test_trainer_rejects_checkpoint_manager_outside_plan(tmp_path) -> None:
         optimizer=optimizer,
     )
 
-    with pytest.raises(ValueError, match="CheckpointManager model.*TrainingPlan"):
+    with pytest.raises(
+        ValueError,
+        match=r"CheckpointManager model.*TrainingPlan",
+    ):
         _build_trainer(
             tmp_path,
             model=model,

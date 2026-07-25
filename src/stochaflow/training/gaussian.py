@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import Any, Protocol, cast, runtime_checkable
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.processes import DiscreteGaussianDenoisingProcess
 from stochaflow.sampling import GaussianModelDynamics, PredictionType
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
 from stochaflow.training.objectives import compute_objective
-from stochaflow.training.strategy import TrainStepOutput, TrainingStrategy
+from stochaflow.training.strategy import TrainingStrategy, TrainStepOutput
 from stochaflow.utils.registry import REGISTRIES
 
 
@@ -244,8 +244,8 @@ def gaussian_training_target(
 
 
 __all__ = [
-    "GaussianDiagnosticSemantics",
     "GaussianDenoisingTrainingBuilder",
     "GaussianDenoisingTrainingStrategy",
+    "GaussianDiagnosticSemantics",
     "gaussian_training_target",
 ]

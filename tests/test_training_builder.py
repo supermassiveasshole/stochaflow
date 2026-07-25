@@ -8,22 +8,26 @@ from typing import Any, cast
 
 import pytest
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.training import (
     ManagedTrainingModule,
-    TrainStepOutput,
     TrainingBuilder,
     TrainingPlan,
     TrainingStrategy,
+    TrainStepOutput,
     build_training_plan,
     compute_objective,
     trainable_parameters,
     validate_training_plan,
 )
-from stochaflow.utils.config import ComponentConfig, load_config, load_config_dict
 from stochaflow.utils.checkpoint import CheckpointManager
-from stochaflow.utils.factory import build_model, build_objective, build_training_components
+from stochaflow.utils.config import ComponentConfig, load_config, load_config_dict
+from stochaflow.utils.factory import (
+    build_model,
+    build_objective,
+    build_training_components,
+)
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog, RegistryError
 
 
@@ -292,7 +296,7 @@ def test_plan_rejects_reserved_auxiliary_names(name: str) -> None:
 
 def test_plan_rejects_module_strategy_and_snapshots_auxiliaries() -> None:
     model = nn.Linear(1, 1)
-    with pytest.raises(TypeError, match="must not inherit nn.Module"):
+    with pytest.raises(TypeError, match=r"must not inherit nn\.Module"):
         validate_training_plan(TrainingPlan(ModuleStrategy(), model))
 
     auxiliaries = {"teacher": ManagedTrainingModule(nn.Linear(1, 1))}

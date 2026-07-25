@@ -6,6 +6,7 @@ from copy import deepcopy
 
 import pytest
 
+from stochaflow import data
 from stochaflow.data import (
     DataBuilder,
     DataBuilderContext,
@@ -103,8 +104,6 @@ def test_builder_errors_report_registry_and_return_contract() -> None:
 
 
 def test_only_new_data_contract_is_public() -> None:
-    import stochaflow.data as data
-
     assert set(data.__all__) == {
         "DataBuilder",
         "DataBuilderContext",

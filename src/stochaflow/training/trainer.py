@@ -9,10 +9,18 @@ from types import MappingProxyType
 from typing import Any, cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
+from stochaflow.training.builder import (
+    ManagedTrainingModule,
+    TrainingPlan,
+    validate_training_plan,
+)
+from stochaflow.training.builder import (
+    trainable_parameters as plan_trainable_parameters,
+)
 from stochaflow.training.diagnostics.contracts import (
     FitStartEvent,
     TrainBatchEndEvent,
@@ -20,12 +28,6 @@ from stochaflow.training.diagnostics.contracts import (
     TrainingDiagnostic,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
-from stochaflow.training.builder import (
-    ManagedTrainingModule,
-    TrainingPlan,
-    trainable_parameters as plan_trainable_parameters,
-    validate_training_plan,
-)
 from stochaflow.training.strategy import (
     Batch,
     ScalarMetric,

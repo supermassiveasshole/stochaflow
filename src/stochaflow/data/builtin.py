@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import random
 from bisect import bisect_right
 from collections.abc import Callable, Iterator, Sequence, Sized
-import random
 from typing import Any, cast
 
 import numpy as np

@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-import math
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import torch
 
 from stochaflow.extensions import (
+    REGISTRIES,
     ComponentConfig,
     DDIMSampler,
     DiscreteGaussianDenoisingProcess,
@@ -20,7 +22,6 @@ from stochaflow.extensions import (
     GaussianPrediction,
     GenerativeDynamics,
     PredictionType,
-    REGISTRIES,
     Sampler,
     SamplerResult,
     SamplingBatch,
@@ -31,6 +32,7 @@ from stochaflow.extensions import (
     normalize_gaussian_prediction,
 )
 
+from ._alignment import load_alignment
 from ._config import (
     copied_mapping,
     optional_mapping,
@@ -43,7 +45,6 @@ from ._config import (
     reject_unknown,
     required_mapping,
 )
-from ._alignment import load_alignment
 from .data import TrajectoryTripletDataset
 from .model import ConditionalDenoiser
 from .physics import (
@@ -185,7 +186,7 @@ class GuidedDDIMSampler(Sampler):
             )
         residuals: list[float] = []
         for step_index, (source, target) in enumerate(
-            zip(states[:-1], states[1:]),
+            pairwise(states),
             start=1,
         ):
             source_state = current

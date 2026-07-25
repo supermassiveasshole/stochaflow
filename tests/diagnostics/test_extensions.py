@@ -22,7 +22,6 @@ from .helpers import (
     trainer,
 )
 
-
 MODULE_SOURCE = '''
 from stochaflow.training.diagnostics import (
     ArtifactRecord,

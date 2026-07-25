@@ -17,7 +17,7 @@ from stochaflow.utils.plugins import (
 
 def selected_component_identities(
     config: StochaflowConfig,
-) -> dict[str, str | None | list[str]]:
+) -> dict[str, str | list[str] | None]:
     """Summarize selected framework-level components without inspecting params."""
 
     return {

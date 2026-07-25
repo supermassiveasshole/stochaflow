@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
 import importlib
 import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 import torch
@@ -45,7 +45,7 @@ class FIDReferenceMetricProvider(ReferenceMetricProvider):
         )
         try:
             module = importlib.import_module("torchmetrics.image.fid")
-            metric_cls = getattr(module, "FrechetInceptionDistance")
+            metric_cls = module.FrechetInceptionDistance
         except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             raise _quality_dependency_error("FID") from exc
         try:
@@ -106,7 +106,7 @@ class KIDReferenceMetricProvider(ReferenceMetricProvider):
             )
         try:
             module = importlib.import_module("torchmetrics.image.kid")
-            metric_cls = getattr(module, "KernelInceptionDistance")
+            metric_cls = module.KernelInceptionDistance
             metric = metric_cls(
                 normalize=True,
                 reset_real_features=False,
@@ -178,7 +178,8 @@ class ReferenceMetricSuite:
                         continue
                     try:
                         provider.update(prepared, real=True)
-                    except Exception as exc:
+                    # Reference providers are extensions with no shared exception type.
+                    except Exception as exc:  # noqa: BLE001
                         self._unavailable.add(name)
                         self.handle_error("reference_real_update", name, exc)
                 seen += prepared.shape[0]
@@ -217,7 +218,8 @@ class ReferenceMetricSuite:
                     continue
                 try:
                     provider.update(prepared, real=False)
-                except Exception as exc:
+                # Reference providers are extensions with no shared exception type.
+                except Exception as exc:  # noqa: BLE001
                     failed.add(name)
                     self.handle_error("reference_update", name, exc)
 
@@ -267,7 +269,8 @@ class ReferenceMetricSuite:
                         if tag in metrics:
                             raise ValueError(f"reference metric tag collision: {tag}")
                         metrics[tag] = float(value)
-                except Exception as exc:
+                # Reference providers are extensions with no shared exception type.
+                except Exception as exc:  # noqa: BLE001
                     failed.add(name)
                     self.handle_error("reference_compute", name, exc)
             metrics[f"{prefix}/reference_metric_seconds"] = (
@@ -280,7 +283,8 @@ class ReferenceMetricSuite:
                     continue
                 try:
                     provider.reset_fake()
-                except Exception as exc:
+                # Cleanup must isolate failures from each independent provider.
+                except Exception as exc:  # noqa: BLE001
                     self.handle_error("reference_reset", name, exc)
 
 

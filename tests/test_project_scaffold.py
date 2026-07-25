@@ -2,32 +2,31 @@
 
 from __future__ import annotations
 
-from importlib import metadata, resources
 import os
-from pathlib import Path
-from runpy import run_path
 import shutil
 import site
 import subprocess
 import sys
 import tarfile
 import tomllib
-from typing import Any, TextIO, cast
 import zipfile
+from importlib import metadata, resources
+from pathlib import Path
+from runpy import run_path
+from typing import Any, Self, TextIO, cast
 
-from packaging.version import Version
 import pytest
 import yaml
+from packaging.version import Version
 
 from stochaflow.extensions import DataBuilderContext
 from stochaflow.projects import (
     ProjectScaffoldError,
     create_project,
+    scaffold,
     validate_project_name,
 )
-from stochaflow.projects import scaffold
 from stochaflow.scripts.cli import build_argument_parser, main
-
 
 EXPECTED_FILES = {
     ".gitignore",
@@ -752,7 +751,7 @@ def test_existing_empty_target_removes_partial_file_after_write_failure(
         def __init__(self, handle: TextIO) -> None:
             self._handle = handle
 
-        def __enter__(self) -> FailingTextHandle:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(
@@ -909,7 +908,8 @@ def test_mode_probe_cleanup_does_not_traverse_reused_staging_name(
     with pytest.raises(ProjectScaffoldError, match="simulated mode probe failure"):
         create_project("example-lab", cwd=tmp_path)
 
-    assert original_staging is not None and original_staging.is_dir()
+    assert original_staging is not None
+    assert original_staging.is_dir()
     assert replacement is not None
     assert (replacement / "foreign.txt").read_text(encoding="utf-8") == "foreign"
 

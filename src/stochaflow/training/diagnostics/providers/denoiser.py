@@ -75,7 +75,7 @@ class TimestepBucketLossProvider(StepMetricProvider):
             per_sample_loss,
             torch.Tensor,
         ):
-            raise ValueError(
+            raise TypeError(
                 "timestep_bucket_loss requires timesteps and per_sample_loss tensors"
             )
         timesteps = timesteps.detach().flatten().cpu()
@@ -115,7 +115,7 @@ class NoiseAlignmentProvider(StepMetricProvider):
             target,
             torch.Tensor,
         ):
-            raise ValueError(
+            raise TypeError(
                 "noise_alignment requires predicted_noise and target_noise tensors"
             )
         if predicted.shape != target.shape or predicted.ndim < 2:

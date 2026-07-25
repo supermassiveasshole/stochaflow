@@ -2,7 +2,7 @@
 
 from abc import ABC
 
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.utils.registry import REGISTRIES
 

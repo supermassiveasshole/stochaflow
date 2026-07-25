@@ -5,16 +5,16 @@ from __future__ import annotations
 from typing import Any, cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.extensions import (
+    REGISTRIES,
     DiscreteGaussianDenoisingProcess,
     PredictionType,
-    REGISTRIES,
-    TrainStepOutput,
     TrainingBuilder,
     TrainingPlan,
     TrainingStrategy,
+    TrainStepOutput,
     compute_objective,
     gaussian_training_target,
 )

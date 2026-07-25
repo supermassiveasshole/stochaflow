@@ -9,9 +9,9 @@ import torch
 from torch.utils.data import DataLoader, SequentialSampler
 
 from stochaflow.extensions import (
+    REGISTRIES,
     DataBuilderContext,
     InferenceModelProvider,
-    REGISTRIES,
     SamplingBuilderContext,
     TrainingBuilderContext,
     TrainingPlan,

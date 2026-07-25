@@ -3,7 +3,7 @@
 from typing import cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.models.blocks import AttentionBlock, Downsample, ResidualBlock, Upsample
 from stochaflow.models.embeddings import TimeEmbedding
@@ -179,5 +179,4 @@ class UNet(nn.Module):
             if level < len(self.upsamples):
                 h = self.upsamples[level](h)
 
-        h = self.output_projection(self.output_act(self.output_norm(h)))
-        return h
+        return self.output_projection(self.output_act(self.output_norm(h)))

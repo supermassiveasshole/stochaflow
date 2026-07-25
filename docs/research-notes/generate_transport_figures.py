@@ -7,13 +7,14 @@ mathematical object rather than on the quality of a trained neural network.
 
 from __future__ import annotations
 
+from itertools import pairwise
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 from scipy.optimize import linear_sum_assignment
-
+from scipy.stats import wasserstein_distance
 
 FIGURE_DIR = Path(__file__).with_name("figures")
 SEED = 17
@@ -225,7 +226,7 @@ def flow_matching_paths() -> None:
         ),
     ]
     for ax, (paired, curved, title) in zip(axes, specifications, strict=True):
-        for i, (start, end) in enumerate(zip(source, paired, strict=True)):
+        for start, end in zip(source, paired, strict=True):
             path = (1 - ts[:, None]) * start + ts[:, None] * end
             if curved:
                 delta = end - start
@@ -525,7 +526,7 @@ def ddpm_information_structure() -> None:
                     "ec": "#555555",
                 },
             )
-        for left, right in zip(boxes[:-1], boxes[1:], strict=True):
+        for left, right in pairwise(boxes):
             ax.annotate(
                 "",
                 xy=(right[0] - 0.08, 0.45),
@@ -736,8 +737,6 @@ def ddim_step_skipping() -> None:
     directions /= np.linalg.norm(directions, axis=1, keepdims=True)
 
     def sliced_wasserstein(samples: np.ndarray) -> float:
-        from scipy.stats import wasserstein_distance
-
         distances = [
             wasserstein_distance(samples @ direction, target @ direction)
             for direction in directions
@@ -749,7 +748,7 @@ def ddim_step_skipping() -> None:
     initial = rng.normal(size=(7_000, 2))
     step_counts = np.array([6, 10, 18, 32, 56, 90])
     errors = {0.0: [], 1.0: []}
-    for eta in errors:
+    for eta, eta_errors in errors.items():
         for count in step_counts:
             selected_timesteps = np.linspace(0, num_train_steps, count + 1, dtype=int)
             generated = _ddim_trajectory(
@@ -759,7 +758,7 @@ def ddim_step_skipping() -> None:
                 rng=np.random.default_rng(SEED + int(eta * 1_000) + int(count)),
                 selected_timesteps=selected_timesteps,
             )[-1]
-            errors[eta].append(sliced_wasserstein(generated))
+            eta_errors.append(sliced_wasserstein(generated))
 
     fig, ax = plt.subplots(figsize=(6.2, 4.1))
     ax.plot(

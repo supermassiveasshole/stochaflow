@@ -3,11 +3,11 @@
 from typing import Any
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
 from stochaflow.training.objectives import compute_objective
-from stochaflow.training.strategy import TrainStepOutput, TrainingStrategy
+from stochaflow.training.strategy import TrainingStrategy, TrainStepOutput
 from stochaflow.utils.registry import REGISTRIES
 
 

@@ -1,17 +1,17 @@
 """Checkpoint save/load helpers."""
 
+import os
+import random
+import tempfile
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
-import os
 from pathlib import Path
-import random
-import tempfile
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -27,6 +27,10 @@ else:
 CHECKPOINT_FORMAT_VERSION = 8
 
 _CHECKPOINT_LEAF_TYPES = (type(None), bool, int, float, complex, str, bytes)
+
+
+class _StateDictWithMetadata(Protocol):
+    _metadata: Any
 
 
 class CheckpointState(TypedDict, total=False):
@@ -199,7 +203,7 @@ class CheckpointManager:
         temporary_path = Path(temporary_name)
         try:
             torch.save(state, temporary_path)
-            os.replace(temporary_path, checkpoint_path)
+            temporary_path.replace(checkpoint_path)
         finally:
             temporary_path.unlink(missing_ok=True)
         return checkpoint_path
@@ -815,7 +819,7 @@ def _clone_module_state(module: nn.Module) -> OrderedDict[str, Any]:
     )
     metadata = getattr(source, "_metadata", None)
     if metadata is not None:
-        setattr(cloned, "_metadata", deepcopy(metadata))
+        cast(_StateDictWithMetadata, cloned)._metadata = deepcopy(metadata)
     return cloned
 
 

@@ -1,14 +1,14 @@
 """Shared command-line runner helpers for config-driven experiments."""
 
 import argparse
-from collections.abc import Sized
-from dataclasses import dataclass, replace
-from datetime import datetime
 import gc
 import math
+import warnings
+from collections.abc import Sized
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
-import warnings
 
 import torch
 import yaml
@@ -204,7 +204,7 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.Argument
 def _make_timestamped_output_dir(base_output_dir: str) -> tuple[str, Path]:
     """Create a unique timestamp-based experiment directory."""
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).astimezone().strftime("%Y%m%d_%H%M%S")
     base_dir = Path(base_output_dir)
     output_dir = base_dir / timestamp
     suffix = 1

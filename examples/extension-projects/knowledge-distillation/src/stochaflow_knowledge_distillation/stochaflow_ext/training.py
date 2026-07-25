@@ -7,16 +7,16 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.extensions import (
+    REGISTRIES,
     ComponentConfig,
     ManagedTrainingModule,
-    REGISTRIES,
-    TrainStepOutput,
     TrainingBuilder,
     TrainingPlan,
     TrainingStrategy,
+    TrainStepOutput,
     compute_objective,
 )
 

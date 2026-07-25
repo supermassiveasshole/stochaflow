@@ -1,6 +1,7 @@
 """Denoising Diffusion Implicit Model sampler."""
 
 from collections.abc import Sequence
+from itertools import pairwise
 from typing import Any, cast
 
 import torch
@@ -241,9 +242,7 @@ class DDIMSampler(Sampler):
                 )
             )
         evaluations = 0
-        for step_index, (source, target) in enumerate(
-            zip(states[:-1], states[1:]), start=1
-        ):
+        for step_index, (source, target) in enumerate(pairwise(states), start=1):
             source_coordinate = int(source)
             target_coordinate = int(target)
             source_times = torch.full(

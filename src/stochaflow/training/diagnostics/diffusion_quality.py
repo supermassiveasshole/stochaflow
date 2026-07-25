@@ -239,7 +239,8 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
                     provider.collect(context),
                     provider=spec.name,
                 )
-            except Exception as exc:
+            # Providers are extension code and may raise any ordinary exception.
+            except Exception as exc:  # noqa: BLE001
                 self._handle_runtime_error(
                     exc,
                     step=event.global_step,
@@ -311,7 +312,8 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
                     profile_metrics,
                     provider=f"profile:{profile.id}",
                 )
-            except Exception as exc:
+            # A profile invokes registered sampler and provider extensions.
+            except Exception as exc:  # noqa: BLE001
                 self._handle_runtime_error(
                     exc,
                     step=event.trainer.global_step,
@@ -358,7 +360,8 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
         try:
             records = tuple(provider.render(context))
             self._record_artifacts(name, records, event.trainer.global_step, store)
-        except Exception as exc:
+        # Artifact providers are extension code with no shared exception type.
+        except Exception as exc:  # noqa: BLE001
             self._handle_runtime_error(
                 exc,
                 step=event.trainer.global_step,
@@ -396,7 +399,8 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
                         profile,
                         initial_noise,
                     )
-                except Exception as exc:
+                # Registered samplers may raise any ordinary exception.
+                except Exception as exc:  # noqa: BLE001
                     self._handle_runtime_error(
                         exc,
                         step=event.trainer.global_step,
@@ -421,7 +425,8 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
                             provider.collect(metric_context),
                             provider=spec.name,
                         )
-                    except Exception as exc:
+                    # Metric providers are extension code with arbitrary failures.
+                    except Exception as exc:  # noqa: BLE001
                         self._handle_runtime_error(
                             exc,
                             step=event.trainer.global_step,
@@ -450,7 +455,8 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
                             event.trainer.global_step,
                             store,
                         )
-                    except Exception as exc:
+                    # Artifact providers are extension code with arbitrary failures.
+                    except Exception as exc:  # noqa: BLE001
                         self._handle_runtime_error(
                             exc,
                             step=event.trainer.global_step,
@@ -476,7 +482,8 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
                         reference_metrics,
                         provider="reference",
                     )
-                except Exception as exc:
+                # The suite invokes registered sampler and metric extensions.
+                except Exception as exc:  # noqa: BLE001
                     self._handle_runtime_error(
                         exc,
                         step=event.trainer.global_step,

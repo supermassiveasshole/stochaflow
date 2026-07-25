@@ -35,9 +35,9 @@ from .diffusion_quality import DiffusionQualityDiagnostic
 from .registry import DIAGNOSTIC_PROVIDERS, DiagnosticProviderCatalog
 
 __all__ = [
+    "DIAGNOSTIC_PROVIDERS",
     "ArtifactRecord",
     "ContextAwareDiagnostic",
-    "DIAGNOSTIC_PROVIDERS",
     "DenoiserArtifactContext",
     "DenoiserArtifactProvider",
     "DiagnosticBuildContext",

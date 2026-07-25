@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.utils.registry import REGISTRIES
 

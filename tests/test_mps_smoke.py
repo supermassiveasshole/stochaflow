@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import pytest
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.sampling import (

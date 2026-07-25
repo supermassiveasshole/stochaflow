@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import ctypes
-from dataclasses import dataclass
-from importlib import metadata, resources
 import keyword
 import os
-from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
 import tempfile
+from contextlib import suppress
+from dataclasses import dataclass
+from importlib import metadata, resources
+from pathlib import Path, PurePosixPath
 from typing import Final, cast
 
 from packaging.version import InvalidVersion, Version
@@ -251,9 +252,9 @@ def _rename_no_replace(source: Path, destination: Path) -> None:
     """Atomically rename without replacing an entry created by another actor."""
 
     if os.name == "nt":
-        # Windows os.rename is already no-clobber and raises FileExistsError
+        # Windows rename is already no-clobber and raises FileExistsError
         # whenever the destination exists.
-        os.rename(source, destination)
+        source.rename(destination)
         return
     source_bytes = os.fsencode(source)
     destination_bytes = os.fsencode(destination)
@@ -423,10 +424,8 @@ def _exclusive_write_at(
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
     except BaseException:
-        try:
+        with suppress(OSError):
             os.close(descriptor)
-        except OSError:
-            pass
         try:
             if _entry_matches(parent_descriptor, entry):
                 os.unlink(name, dir_fd=parent_descriptor)
@@ -494,16 +493,12 @@ def _clear_directory_descriptor(descriptor: int) -> None:
             finally:
                 os.close(child_descriptor)
             if _entry_matches(descriptor, entry):
-                try:
+                with suppress(OSError):
                     os.rmdir(name, dir_fd=descriptor)
-                except OSError:
-                    pass
             continue
         if _entry_matches(descriptor, entry):
-            try:
+            with suppress(FileNotFoundError):
                 os.unlink(name, dir_fd=descriptor)
-            except FileNotFoundError:
-                pass
 
 
 def _remove_owned_staging(
@@ -517,10 +512,8 @@ def _remove_owned_staging(
         # after another actor can reuse the staging name. Never risk deleting the
         # replacement; an exceptional failure may leave the private staging tree.
         if _same_directory(staging, identity):
-            try:
+            with suppress(OSError):
                 staging.rmdir()
-            except OSError:
-                pass
         return
     try:
         descriptor = os.open(
@@ -540,10 +533,8 @@ def _remove_owned_staging(
     finally:
         os.close(descriptor)
     if _same_directory(staging, identity):
-        try:
+        with suppress(OSError):
             staging.rmdir()
-        except OSError:
-            pass
 
 
 def _expected_children(
@@ -639,10 +630,8 @@ def _publish_to_existing_empty_directory(
         for entry in reversed(created_directories):
             parent_descriptor = directory_descriptors[entry.parent]
             if _entry_matches(parent_descriptor, entry):
-                try:
+                with suppress(OSError):
                     os.rmdir(entry.name, dir_fd=parent_descriptor)
-                except OSError:
-                    pass
         raise
     finally:
         for parts, descriptor in reversed(tuple(directory_descriptors.items())):

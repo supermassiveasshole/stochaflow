@@ -25,7 +25,7 @@ class EpochArtifactStore:
         """Reserve a safe relative path and reject provider collisions."""
 
         relative = Path(relative_path)
-        if relative.is_absolute() or ".." in relative.parts or relative == Path("."):
+        if relative.is_absolute() or ".." in relative.parts or relative == Path():
             raise ValueError(f"artifact path must be a safe relative path: {relative}")
         if relative in self._reserved:
             raise ValueError(f"diagnostic artifact path collision: {relative}")

@@ -1,7 +1,7 @@
 """Building blocks for diffusion UNets."""
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 def _group_norm_groups(num_channels: int, max_groups: int = 32) -> int:

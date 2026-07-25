@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sized
 import math
 import random
+from collections.abc import Sized
 from typing import Any, cast
 
-from PIL import Image
 import torch
+from PIL import Image
 from torch.utils.data import Dataset
 from torchvision.transforms import InterpolationMode, RandomCrop
 from torchvision.transforms import functional as vision_functional

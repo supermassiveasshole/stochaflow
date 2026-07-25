@@ -9,11 +9,11 @@ from stochaflow.sampling.runtime import (
     resolve_sampling_inputs,
     run_resolved_sampling,
 )
-from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
 from stochaflow.scripts.experiment_runner import (
     add_training_arguments,
     run_experiment_from_args,
 )
+from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

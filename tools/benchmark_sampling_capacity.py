@@ -9,13 +9,11 @@ parallel benchmark-only implementation.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+import ctypes
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import platform
 import shutil
 import statistics
@@ -23,6 +21,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from ctypes import wintypes
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
 import torch
@@ -272,9 +274,6 @@ def _peak_rss_bytes() -> int:
 def _windows_peak_rss_bytes() -> int:
     """Return PeakWorkingSetSize without adding a benchmark dependency."""
 
-    import ctypes
-    from ctypes import wintypes
-
     class _ProcessMemoryCounters(ctypes.Structure):
         _fields_ = [
             ("cb", wintypes.DWORD),
@@ -289,7 +288,7 @@ def _windows_peak_rss_bytes() -> int:
             ("peak_pagefile_usage", ctypes.c_size_t),
         ]
 
-    libraries = cast(Any, getattr(ctypes, "windll"))
+    libraries = cast(Any, ctypes).windll
     counters = _ProcessMemoryCounters()
     counters.cb = ctypes.sizeof(counters)
     process = libraries.kernel32.GetCurrentProcess()
@@ -684,7 +683,7 @@ def run_benchmarks(
         results.append(profile_result)
     return {
         "format_version": PROFILE_FORMAT_VERSION,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "environment": {
             "platform": platform.platform(),
             "machine": platform.machine(),

@@ -1,8 +1,8 @@
 """Random seed helpers."""
 
+import random
 from collections.abc import Iterator
 from contextlib import contextmanager
-import random
 
 import numpy as np
 import torch

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import pickle
-from pathlib import Path
 import random
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 import torch
-import torch.nn as nn
+from torch import nn
 
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
@@ -132,7 +132,7 @@ def test_restore_payload_rejects_v7_and_missing_plugin_metadata(
     manager = CheckpointManager(nn.Linear(1, 1))
     v7 = manager.build_state()
     v7["format_version"] = 7
-    with pytest.raises(ValueError, match="version 7.*expected version 8"):
+    with pytest.raises(ValueError, match=r"version 7.*expected version 8"):
         manager.restore_payload(v7, path=tmp_path / "v7.pt")
 
     missing_plugins = manager.build_state()

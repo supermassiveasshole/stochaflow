@@ -3,27 +3,26 @@
 from __future__ import annotations
 
 import configparser
-from copy import deepcopy
-from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tomllib
-from typing import Final
 import zipfile
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Final
 
-from packaging.utils import canonicalize_name
-from packaging.version import Version
 import numpy as np
 import pytest
 import torch
 import yaml
-
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 _REPOSITORY: Final = Path(__file__).resolve().parents[1]
 _REFERENCE_ROOT: Final = _REPOSITORY / "examples/extension-projects"
@@ -198,8 +197,7 @@ print(build_wheel(sys.argv[2]))
 
 def _environment_executable(root: Path, name: str) -> Path:
     if os.name == "nt":
-        suffix = ".exe" if name != "python" else ".exe"
-        return root / "Scripts" / f"{name}{suffix}"
+        return root / "Scripts" / f"{name}.exe"
     return root / "bin" / name
 
 
@@ -488,7 +486,7 @@ def test_evidence_hash_normalizes_checkout_line_endings(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("profile", "accepted_steps", "partial_noise_time", "sampler_name"),
-    (
+    [
         ("sample-baseline-ddim.yaml", 30, 240, "ddim"),
         (
             "sample-guided-ddim.yaml",
@@ -496,7 +494,7 @@ def test_evidence_hash_normalizes_checkout_line_endings(tmp_path: Path) -> None:
             320,
             "physics-reconstruction.guided-ddim",
         ),
-    ),
+    ],
 )
 def test_physics_real_smoke_profiles_preserve_production_solver_math(
     profile: str,
@@ -543,7 +541,7 @@ def test_physics_stage7_evidence_matches_versioned_sources_and_configs() -> None
     )
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["format_version"] == 1
-    assert datetime.fromisoformat(evidence["created_at"].replace("Z", "+00:00"))
+    assert datetime.fromisoformat(evidence["created_at"])
     assert len(bytes.fromhex(evidence["repository"]["head_at_run"])) == 20
 
     for relative_path, expected_hash in evidence["repository"][

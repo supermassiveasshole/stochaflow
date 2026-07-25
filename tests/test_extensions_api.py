@@ -1,5 +1,6 @@
 """Tests for the stable third-party extension API."""
 
+import inspect
 import subprocess
 import sys
 
@@ -109,7 +110,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
     assert not hasattr(registry.REGISTRIES, "dynamics")
     assert not hasattr(processes, "GaussianDenoisingProcess")
     assert not hasattr(public, "GaussianDenoisingProcess")
-    assert public.GenerativeDynamics.__abstractmethods__ == frozenset()
+    assert not inspect.isabstract(public.GenerativeDynamics)
     assert not hasattr(public.Process, "denoising_dynamics")
     for sampling_contract in (
         "GenerativeDynamics",
@@ -122,7 +123,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
 
 @pytest.mark.parametrize(
     "component_registry",
-    (
+    [
         registry.REGISTRIES.models,
         registry.REGISTRIES.data_builders,
         registry.REGISTRIES.sampling_artifact_writers,
@@ -136,7 +137,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         registry.REGISTRIES.lr_schedulers,
         registry.REGISTRIES.loggers,
         registry.REGISTRIES.diagnostics,
-    ),
+    ],
 )
 def test_public_registries_reject_wrong_base_at_public_import_time(
     component_registry: registry.Registry,

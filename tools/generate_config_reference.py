@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
-from dataclasses import MISSING, asdict, fields, is_dataclass
 import difflib
 import inspect
-from pathlib import Path
 import re
+from collections.abc import Mapping
+from dataclasses import MISSING, asdict, fields, is_dataclass
+from pathlib import Path
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -420,8 +420,10 @@ def _render_registries(registry_metadata: Mapping[str, Any]) -> list[str]:
             if entry.get("version_dependent", False):
                 lines.extend(
                     [
-                        "> 参数由当前 PyTorch 版本透传；下表只列项目承诺的常用参数，"
-                        "最终以所安装 PyTorch 版本为准。",
+                        (
+                            "> 参数由当前 PyTorch 版本透传；下表只列项目承诺的"
+                            "常用参数，最终以所安装 PyTorch 版本为准。"
+                        ),
                         "",
                     ]
                 )

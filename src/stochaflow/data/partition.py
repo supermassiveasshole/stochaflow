@@ -63,7 +63,7 @@ def _permutation(size: int, *, seed: int) -> list[int]:
     return torch.randperm(size, generator=torch.Generator().manual_seed(seed)).tolist()
 
 
-def _validation_count(size: int, requested: int | float | None) -> int:
+def _validation_count(size: int, requested: float | None) -> int:
     assert requested is not None
     count = int(size * requested) if isinstance(requested, float) else requested
     if count <= 0 or count >= size:

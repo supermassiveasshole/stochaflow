@@ -6,11 +6,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, cast
 
-from PIL import Image
 import pytest
+from PIL import Image
 from torch.utils.data import Dataset
 
-from stochaflow.data import build_data_loaders
+from stochaflow.data import build_data_loaders, builtin, sources
 from stochaflow.data.sources import SourceDatasets, build_image_source
 from stochaflow.utils.config import ComponentConfig, ConfigError
 
@@ -230,8 +230,6 @@ def test_torchvision_sources_use_curated_adapters(
     monkeypatch: pytest.MonkeyPatch,
     dataset_name: str,
 ) -> None:
-    from stochaflow.data import sources
-
     if dataset_name == "Flowers102":
         monkeypatch.setattr(
             sources.datasets,
@@ -319,7 +317,8 @@ def test_paired_super_resolution_aligns_and_reports_missing_pairs(
     high, condition = next(iter(build_data_loaders(component, seed=9).train))
     assert high.shape == (2, 3, 8, 8)
     assert condition["low_res"].shape == (2, 3, 4, 4)
-    assert high.min() >= -1 and high.max() <= 1
+    assert high.min() >= -1
+    assert high.max() <= 1
 
     (low_root / "sample_000.png").unlink()
     with pytest.raises(ValueError, match="missing LR"):
@@ -430,8 +429,6 @@ def test_multi_resolution_batches_are_homogeneous_and_weighted(
 def test_multi_resolution_holdout_ignores_native_validation_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from stochaflow.data import builtin
-
     def source(raw, **kwargs):
         del kwargs
         validation = (

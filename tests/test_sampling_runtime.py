@@ -5,8 +5,8 @@ from typing import Any, cast
 
 import pytest
 import torch
-import torch.nn as nn
 import yaml
+from torch import nn
 
 from stochaflow.processes import DiscreteGaussianProcess, Process
 from stochaflow.sampling import (
@@ -192,7 +192,7 @@ class ToyFlowSamplingBuilder(SamplingBuilder):
         model = self.context.model_provider.get("raw")
         dynamics = ToyVectorFieldDynamics(
             process,
-            lambda state, time: model(state, time),
+            model,
         )
         initial = torch.zeros(
             (self.context.num_samples, 1), device=self.context.device
@@ -1010,7 +1010,7 @@ def test_sampling_rejects_process_state_when_config_is_null(tmp_path: Path) -> N
     payload["process_state_dict"] = {}
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="config.process is null"):
+    with pytest.raises(ValueError, match=r"config\.process is null"):
         run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
 
 

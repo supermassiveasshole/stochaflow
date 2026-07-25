@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import struct
 from io import BytesIO
 from mmap import mmap
 from pathlib import Path
-import struct
 from typing import Any, cast
 from zipfile import ZIP_STORED, ZipFile
 
@@ -14,19 +14,20 @@ import pytest
 import torch
 
 from stochaflow.extensions import (
-    DDIMSampler,
+    REGISTRIES,
     DataBuilderContext,
+    DDIMSampler,
     DiscreteGaussianProcess,
     GaussianPrediction,
     GaussianTransition,
     MSEObjective,
     PredictionType,
-    REGISTRIES,
     SamplingArtifactContext,
     SamplingBatch,
     TrajectoryObserver,
     gaussian_training_target,
 )
+from stochaflow_physics_reconstruction.stochaflow_ext import writers
 from stochaflow_physics_reconstruction.stochaflow_ext.data import (
     EpochShuffleSampler,
     KolmogorovDataBuilder,
@@ -51,11 +52,11 @@ from stochaflow_physics_reconstruction.stochaflow_ext.training import (
 from stochaflow_physics_reconstruction.stochaflow_ext.writers import (
     ReconstructionArtifactWriter,
 )
+from stochaflow_physics_reconstruction.tools import capacity_check
 from stochaflow_physics_reconstruction.tools.prepare_kolmogorov import (
     _selected_stored_npy_member,
     prepare,
 )
-from stochaflow_physics_reconstruction.tools import capacity_check
 from stochaflow_physics_reconstruction.tools.prepare_tiny_data import (
     write_tiny_data,
 )
@@ -205,7 +206,8 @@ def test_condition_and_correction_gradients_are_separate_and_detached() -> None:
         condition, condition_loss = conditioning_gradient(state, model, strength=0.5)
         correction, correction_loss = correction_gradient(state, model, strength=0.5)
     assert condition.shape == correction.shape == state.shape
-    assert not condition.requires_grad and not correction.requires_grad
+    assert not condition.requires_grad
+    assert not correction.requires_grad
     assert condition_loss.ndim == correction_loss.ndim == 0
     assert not torch.allclose(condition, correction)
 
@@ -366,8 +368,6 @@ def test_writer_publishes_memmap_and_cleans_partial_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import stochaflow_physics_reconstruction.stochaflow_ext.writers as writers
-
     first = torch.arange(2 * 3 * 8 * 8, dtype=torch.float64).reshape(2, 3, 8, 8)
     second = torch.full((1, 3, 8, 8), -3.0, dtype=torch.float64)
     context = SamplingArtifactContext(
@@ -391,17 +391,17 @@ def test_writer_publishes_memmap_and_cleans_partial_commit(
     mapping.close()
     artifacts["reconstructions"].unlink()
     artifacts["reconstruction_metrics"].unlink()
-    replace = writers.os.replace
+    replace = writers.Path.replace
     calls = 0
 
-    def fail_second(source: Any, destination: Any) -> None:
+    def fail_second(source: Path, destination: Path) -> Path:
         nonlocal calls
         calls += 1
         if calls == 2:
             raise OSError("simulated metrics publication failure")
-        replace(source, destination)
+        return replace(source, destination)
 
-    monkeypatch.setattr(writers.os, "replace", fail_second)
+    monkeypatch.setattr(writers.Path, "replace", fail_second)
     with pytest.raises(OSError, match="simulated"):
         writer.write(context)
     assert not (tmp_path / "reconstructions.npy").exists()
@@ -514,9 +514,11 @@ def test_sparse_npz_reader_accepts_and_validates_zip64_sizes(
     npy_buffer = BytesIO()
     np.save(npy_buffer, sparse, allow_pickle=False)
     archive_path = tmp_path / "zip64.npz"
-    with ZipFile(archive_path, mode="w", compression=ZIP_STORED) as archive:
-        with archive.open("u3232.npy", mode="w", force_zip64=True) as member:
-            member.write(npy_buffer.getvalue())
+    with (
+        ZipFile(archive_path, mode="w", compression=ZIP_STORED) as archive,
+        archive.open("u3232.npy", mode="w", force_zip64=True) as member,
+    ):
+        member.write(npy_buffer.getvalue())
 
     selected = _selected_stored_npy_member(
         archive_path,

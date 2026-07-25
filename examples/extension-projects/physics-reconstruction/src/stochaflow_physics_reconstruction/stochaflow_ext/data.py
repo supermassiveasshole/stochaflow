@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-import random
 from typing import Any, cast
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, Sampler
 
-from stochaflow.extensions import DataBuilder, DataLoaders, REGISTRIES
+from stochaflow.extensions import REGISTRIES, DataBuilder, DataLoaders
 
 from ._config import (
     copied_mapping,
@@ -52,7 +52,7 @@ class TrajectoryTripletDataset(Dataset[torch.Tensor]):
         self.path = path
         self.trajectory_range = trajectory_range
         array = _open_trajectories(path)
-        start, stop = trajectory_range
+        _, stop = trajectory_range
         if stop > array.shape[0]:
             raise ValueError(
                 f"trajectory range {trajectory_range} exceeds {array.shape[0]} rows"

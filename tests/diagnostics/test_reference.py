@@ -110,8 +110,18 @@ def _install_fake_torchmetrics(monkeypatch):
     image_module = ModuleType("torchmetrics.image")
     fid_module = ModuleType("torchmetrics.image.fid")
     kid_module = ModuleType("torchmetrics.image.kid")
-    setattr(fid_module, "FrechetInceptionDistance", FakeFID)
-    setattr(kid_module, "KernelInceptionDistance", FakeKID)
+    monkeypatch.setattr(
+        fid_module,
+        "FrechetInceptionDistance",
+        FakeFID,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        kid_module,
+        "KernelInceptionDistance",
+        FakeKID,
+        raising=False,
+    )
     monkeypatch.setitem(sys.modules, "torchmetrics", torchmetrics)
     monkeypatch.setitem(sys.modules, "torchmetrics.image", image_module)
     monkeypatch.setitem(sys.modules, "torchmetrics.image.fid", fid_module)
@@ -154,7 +164,7 @@ def test_fid_preserves_parameter_validation_errors(monkeypatch) -> None:
             del kwargs
             raise ValueError("feature must identify a supported extractor")
 
-    setattr(fid_module, "FrechetInceptionDistance", InvalidFID)
+    monkeypatch.setattr(fid_module, "FrechetInceptionDistance", InvalidFID)
 
     with pytest.raises(ValueError, match="supported extractor"):
         FIDReferenceMetricProvider(
@@ -230,7 +240,11 @@ def test_reference_providers_cache_multibatch_real_features_and_score_profiles(
         assert payload[f"{prefix}/reference_fake_samples"] == 3.0
     assert diagnostic._reference_suite is not None
     for _, provider in diagnostic._reference_suite.providers:
-        metric = getattr(provider, "metric")
+        assert isinstance(
+            provider,
+            (FIDReferenceMetricProvider, KIDReferenceMetricProvider),
+        )
+        metric = provider.metric
         assert metric.real_count == 2
         assert metric.fake_count == 0
 

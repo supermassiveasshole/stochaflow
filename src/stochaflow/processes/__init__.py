@@ -15,10 +15,10 @@ from .noise_schedules import (
 
 __all__ = [
     "CosineAlphaBarSchedule",
+    "DiscreteGaussianDenoisingProcess",
     "DiscreteGaussianProcess",
     "DiscreteVPCoefficients",
     "DiscreteVPSchedule",
-    "DiscreteGaussianDenoisingProcess",
     "GaussianNoiseSchedule",
     "GaussianScales",
     "LinearBetaSchedule",

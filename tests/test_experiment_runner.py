@@ -1,22 +1,22 @@
 """Tests for shared experiment runner orchestration."""
 
+import random
 from argparse import Namespace
 from pathlib import Path
-import random
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 import pytest
 import torch
-import torch.nn as nn
+import yaml
+from torch import nn
 from torch.optim import SGD
 from torch.utils.data import DataLoader, TensorDataset
-import yaml
 
 from stochaflow.data import DataLoaders
-from stochaflow.scripts.cli import build_argument_parser
 from stochaflow.scripts import experiment_runner
+from stochaflow.scripts.cli import build_argument_parser
 from stochaflow.training import (
     Trainer,
     TrainingDiagnostic,
@@ -476,7 +476,7 @@ def test_strict_resume_requires_sibling_best_for_latest_checkpoint(tmp_path):
     checkpoint.parent.mkdir()
     checkpoint.touch()
 
-    with pytest.raises(FileNotFoundError, match="sibling.*best.pt"):
+    with pytest.raises(FileNotFoundError, match=r"sibling.*best\.pt"):
         experiment_runner._restore_training_state(
             training,
             checkpoint,

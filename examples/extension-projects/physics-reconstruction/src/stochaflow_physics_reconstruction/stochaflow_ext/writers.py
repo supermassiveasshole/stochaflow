@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
@@ -105,9 +105,9 @@ class ReconstructionArtifactWriter(SamplingArtifactWriter):
                 handle.write(metrics_payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(output_temp, output_path)
+            output_temp.replace(output_path)
             committed.append(output_path)
-            os.replace(metrics_temp, metrics_path)
+            metrics_temp.replace(metrics_path)
             committed.append(metrics_path)
         except BaseException:
             for path in committed:

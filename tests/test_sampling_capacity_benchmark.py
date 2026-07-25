@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import replace
 import hashlib
 import json
 import os
-from pathlib import Path
 import runpy
 import statistics
 import subprocess
 import sys
+from collections.abc import Callable
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 import yaml
-
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "benchmark_sampling_capacity.py"

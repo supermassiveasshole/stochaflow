@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import math
+import random
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-import math
-import random
 from typing import Protocol
 
 from torch.utils.data import Sampler

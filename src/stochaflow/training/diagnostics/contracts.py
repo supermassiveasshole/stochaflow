@@ -67,7 +67,7 @@ class TrainEpochEndEvent:
     metrics: Mapping[str, float]
 
 
-class TrainingDiagnostic(ABC):
+class TrainingDiagnostic:
     """Typed lifecycle contract implemented by every training diagnostic."""
 
     def on_fit_start(self, event: FitStartEvent) -> None:
@@ -203,7 +203,7 @@ class SamplerArtifactContext:
     result: SamplingResult
 
 
-class DiagnosticProvider(ABC):
+class DiagnosticProvider:
     """Common validation contract for all diagnostic providers."""
 
     def validate(self, context: ProviderValidationContext) -> None:
@@ -212,7 +212,7 @@ class DiagnosticProvider(ABC):
         del context
 
 
-class StepMetricProvider(DiagnosticProvider):
+class StepMetricProvider(DiagnosticProvider, ABC):
     """Produce scalar metrics from one completed training step."""
 
     @abstractmethod
@@ -220,7 +220,7 @@ class StepMetricProvider(DiagnosticProvider):
         """Return a flat metric mapping."""
 
 
-class SamplerMetricProvider(DiagnosticProvider):
+class SamplerMetricProvider(DiagnosticProvider, ABC):
     """Produce scalar metrics from one shared sampler result."""
 
     @abstractmethod
@@ -228,7 +228,7 @@ class SamplerMetricProvider(DiagnosticProvider):
         """Return a flat metric mapping."""
 
 
-class DenoiserArtifactProvider(DiagnosticProvider):
+class DenoiserArtifactProvider(DiagnosticProvider, ABC):
     """Write artifacts derived from clean samples and denoiser predictions."""
 
     @abstractmethod
@@ -239,7 +239,7 @@ class DenoiserArtifactProvider(DiagnosticProvider):
         """Write and return artifact records."""
 
 
-class SamplerArtifactProvider(DiagnosticProvider):
+class SamplerArtifactProvider(DiagnosticProvider, ABC):
     """Write artifacts derived from a shared sampler result."""
 
     @abstractmethod
@@ -250,7 +250,7 @@ class SamplerArtifactProvider(DiagnosticProvider):
         """Write and return artifact records."""
 
 
-class ReferenceMetricProvider(DiagnosticProvider):
+class ReferenceMetricProvider(DiagnosticProvider, ABC):
     """Stateful reference-distribution metric adapter."""
 
     @abstractmethod

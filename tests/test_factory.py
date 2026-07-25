@@ -5,14 +5,14 @@ from typing import cast
 
 import pytest
 import torch
-from torch.optim import Optimizer, SGD
+from torch.optim import SGD, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler, StepLR
 
+from stochaflow.models import UNet
 from stochaflow.processes import (
     DiscreteGaussianProcess,
     Process,
 )
-from stochaflow.models import UNet
 from stochaflow.training import (
     GaussianDenoisingTrainingStrategy,
     MSEObjective,
@@ -71,8 +71,7 @@ class RegisteredOptimizer(Optimizer):
         super().__init__(params, {"lr": lr})
 
     def step(self, closure=None):
-        loss = closure() if closure is not None else None
-        return loss
+        return closure() if closure is not None else None
 
 
 class RegisteredScheduler(LRScheduler):
@@ -224,7 +223,7 @@ def test_gaussian_training_requires_a_configured_process() -> None:
 
     with pytest.raises(
         TypeError,
-        match="gaussian_denoising.*DiscreteGaussianDenoisingProcess",
+        match=r"gaussian_denoising.*DiscreteGaussianDenoisingProcess",
     ):
         build_training_components(config)
 
@@ -581,7 +580,7 @@ def test_native_optimizer_rejects_wrong_base(
     monkeypatch.setattr(torch.optim, "Stage41WrongBase", str, raising=False)
     parameter = torch.nn.Parameter(torch.ones(()))
 
-    with pytest.raises(RegistryError, match="must inherit.*Optimizer"):
+    with pytest.raises(RegistryError, match=r"must inherit.*Optimizer"):
         build_optimizer(
             ComponentConfig(
                 name="torch.optim.Stage41WrongBase",
@@ -605,7 +604,10 @@ def test_optimizer_and_scheduler_registries_reject_wrong_bases() -> None:
 
 
 def test_optimizer_and_scheduler_registries_reject_native_namespaces() -> None:
-    with pytest.raises(RegistryError, match="reserved namespace 'torch.optim.'"):
+    with pytest.raises(
+        RegistryError,
+        match=r"reserved namespace 'torch\.optim\.'",
+    ):
         REGISTRIES.optimizers.add(
             "torch.optim.Stage41Optimizer",
             RegisteredOptimizer,
@@ -623,7 +625,7 @@ def test_optimizer_and_scheduler_registries_reject_native_namespaces() -> None:
 def test_non_native_target_is_not_imported_as_a_python_path() -> None:
     parameter = torch.nn.Parameter(torch.ones(()))
 
-    with pytest.raises(RegistryError, match="unknown optimizer 'os.system'"):
+    with pytest.raises(RegistryError, match=r"unknown optimizer 'os\.system'"):
         build_optimizer(
             ComponentConfig(name="os.system", params={}),
             [parameter],
@@ -703,7 +705,7 @@ def test_runtime_constructor_parameters_cannot_be_overridden() -> None:
     parameter = torch.nn.Parameter(torch.ones(()))
     optimizer = SGD([parameter], lr=1.0)
 
-    with pytest.raises(RegistryError, match="cannot override.*'params'"):
+    with pytest.raises(RegistryError, match=r"cannot override.*'params'"):
         build_optimizer(
             ComponentConfig(
                 name="torch.optim.SGD",
@@ -711,7 +713,7 @@ def test_runtime_constructor_parameters_cannot_be_overridden() -> None:
             ),
             [parameter],
         )
-    with pytest.raises(RegistryError, match="cannot override.*'optimizer'"):
+    with pytest.raises(RegistryError, match=r"cannot override.*'optimizer'"):
         build_lr_scheduler(
             LRSchedulerConfig(
                 name="torch.optim.lr_scheduler.StepLR",
@@ -724,7 +726,7 @@ def test_runtime_constructor_parameters_cannot_be_overridden() -> None:
 def test_native_constructor_type_error_preserves_original_cause() -> None:
     parameter = torch.nn.Parameter(torch.ones(()))
 
-    with pytest.raises(RegistryError, match="torch.optim.SGD") as raised:
+    with pytest.raises(RegistryError, match=r"torch\.optim\.SGD") as raised:
         build_optimizer(
             ComponentConfig(
                 name="torch.optim.SGD",
