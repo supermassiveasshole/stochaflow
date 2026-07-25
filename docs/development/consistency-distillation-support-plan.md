@@ -3,8 +3,13 @@
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
 - 状态：提案，尚未进入实现
 - 制定日期：2026-07-23
+- 架构复核：2026-07-25；标准 distillation 首版改为独立 target student EMA；
+  2026-07-26；质量/性能验收接入独立 Evaluation cases
 - 首版范围：离散 VP Gaussian、无条件图像、冻结 diffusion teacher、端点一致性算子
 - 实施位置：先作为独立 extension reference project 验证；不直接扩大核心算法接口
+- 关联决策：
+  [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
+  [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)
 
 ## 1. 目标与结论
 
@@ -63,8 +68,9 @@ sampling contract，因此不进入首版。
 [Improved Techniques for Training Consistency Models](https://arxiv.org/abs/2310.14189)
 主要研究不依赖 diffusion teacher 的 consistency training，提出移除 CT target EMA、
 Pseudo-Huber metric、lognormal noise sampling 和逐步增加离散步数等改进。首版仍是
-distillation，但采用 Pseudo-Huber 作为可选 metric，并把 timestep 分布与 target
-策略显式做成实验变量。
+distillation，因此不能把 CT 的无 EMA 结论直接套到 CD。首版采用独立 target student
+EMA，同时采用 Pseudo-Huber 作为可选 distance，并把 timestep 分布和 EMA decay 做成
+显式实验变量。
 
 [Consistency Models Made Easy](https://openreview.net/forum?id=xQVxo9dSID&noteId=3skELU0A5Q)
 说明从预训练 diffusion model 初始化 student、再逐步加强 consistency 条件，可以显著
@@ -207,9 +213,9 @@ y_s^- &= \operatorname{stopgrad}
 | --- | --- |
 | clean anchor | `weight = 0, 0.01, 0.1, 1.0` |
 | anchor schedule | `constant`, `snr_gate` |
-| metric | `mse`, `pseudo_huber` |
+| distance | `mse`, `pseudo_huber` |
 | pair grid | `18`, `36`, `80` 个离散状态 |
-| target policy | `online_stopgrad`，必要时再加入 `ema_target` |
+| target policy | `ema_target`；`online_stopgrad` 只作明确命名的实验消融 |
 
 ### 3.4 单个训练 step
 
@@ -220,7 +226,7 @@ clean x0
             ├─ frozen diffusion teacher + deterministic DDIM transition -> xs_teacher
             │    └─ stop-gradient target operator -> ys
             └─ online student endpoint operator -> yt
-                 ├─ consistency metric(yt, ys)
+                 ├─ consistency distance(yt, ys)
                  └─ clean anchor metric(yt, x0)
                       └─ one scalar total loss -> existing Trainer
 ```
@@ -236,12 +242,14 @@ target student forward；当 \(s=0\) 时 target operator 是 identity，不需�
 | 数据与 batch | 现有 image `DataBuilder` | 返回 clean image；核心不知道 `x0` 字段 |
 | Gaussian probability path | 现有 `DiscreteGaussianDenoisingProcess` | 保持 model-free，不加入蒸馏逻辑 |
 | Frozen diffusion teacher | `ConsistencyDistillationTrainingBuilder` 构造的 auxiliary module | Builder 加载、冻结、声明 `mode="eval"` |
+| Target consistency student | Builder 构造的 frozen auxiliary + core-managed EMA relation | Strategy 只读；成功 optimizer step 后由 core 更新并 checkpoint |
 | Teacher transition | 现有 `DDIMSampler.transition(eta=0)` | 复用 family-specific public primitive，不复制公式 |
 | Student endpoint semantics | extension-local `EndpointConsistencyDynamics` | 组合 model、Process、prediction type 和 clean boundary |
 | Loss 计算 | `ConsistencyDistillationStrategy` | 解释 batch、调用已注入对象、合成一个 scalar loss |
-| Metric | 顶层 Objective + Builder 构造的 clean Objective | consistency metric 为顶层 Objective；clean metric 是具名 auxiliary |
+| Optimization objective | 顶层 Objective + Builder 构造的 clean Objective | consistency Objective 为顶层 Objective；clean Objective 是具名 auxiliary |
 | Optimizer/device/mode/checkpoint | 现有 core Trainer | Strategy 不移动、冻结、保存或更新资产 |
-| Consistency sampling loop | extension-local `ConsistencySampler` | 拥有 one/few-step denoise–renoise lifecycle |
+| One-step inference | `ConsistencySamplingBuilder` 直接调用 endpoint operator | 单次 student forward，报告 `NFE=1` |
+| Few-step sampling loop | extension-local `ConsistencySampler` | 拥有 denoise–renoise lifecycle |
 | Sampling composition | `ConsistencySamplingBuilder` | 只加载 student，组合 operator、sampler、writer output |
 
 禁止的实现方式：
@@ -277,10 +285,10 @@ Builder 的规则：
 3. 比较 bundle process state 与当前 Process state，schedule 不匹配立即失败；
 4. `student_init: teacher` 时对 primary model 严格加载相同权重，不做静默 partial load；
 5. student 架构不兼容时必须显式改为 `student_init: config`；
-6. teacher 与 clean Objective 作为稳定名称的 auxiliary modules 进入 checkpoint；
+6. teacher、target student 与 clean Objective 以稳定名称作为 auxiliary modules；
 7. strict resume 时，当前 checkpoint 的 auxiliary state 覆盖 fresh bootstrap；
 8. checkpoint-only sampling 只加载 primary student 与可选 inference EMA，不需要 teacher
-   bundle 存在。
+   bundle 或 target student 存在。
 
 Teacher bundle 属于本地训练输入，不提交大型权重、数据集或生成 artifact。
 
@@ -293,42 +301,43 @@ Consistency distillation 还需要区分：
   predictor。
 
 当前 Trainer 的 EMA 是 primary model 的 inference shadow，不是可在 Strategy 中调用的
-target model。首版先采用：
+target model。标准 consistency distillation 首版采用：
 
 ```text
-target_policy: online_stopgrad
+target_policy: ema_target
 ```
 
-即 lower branch 使用同一个 student 的当前参数，但在 `no_grad` 下计算。这不要求
-Strategy 更新资产，也不改变核心生命周期。
+Builder 创建与 online student 架构严格相同的 frozen target student，fresh run 时 exact
+copy online state，并把它作为具名 auxiliary 交给 Strategy 只读调用。一个窄的
+core-managed EMA relation 声明：
 
-`no_grad()` 不会关闭 dropout，也不会阻止 train-mode buffer 更新。为避免同一个
-primary model 在 online/lower 两次调用中产生隐藏状态差异，首版要求 student：
+```text
+source: primary_model
+target: target_student
+decay: constant scalar
+update: after each successful optimizer step
+```
+
+core 负责 update 时序、target state、update counter 和 checkpoint/resume；Strategy
+不得在 `training_step()` 内更新 EMA，也不能复用 inference EMA。strict resume 时
+checkpoint target 覆盖 fresh bootstrap。
+
+`no_grad()` 不会关闭 dropout，也不会阻止 train-mode buffer 更新。最小首版要求：
 
 - `dropout=0`；
 - 不包含 BatchNorm 一类会在 train mode 更新 running state 的模块；
-- 使用当前 `UNet` 的 GroupNorm 路径。
+- 使用当前 `UNet` 的 GroupNorm 路径；
+- EMA 是否覆盖 buffer、target mode 与 mixed-precision update dtype 在实现前冻结。
 
-Builder 在组合边界检查这些限制。若实验需要 non-zero dropout，则必须显式实现共享
-dropout RNG 的双分支调用，或进入独立 target model/EMA 方案，不能把随机不一致留在
-`online_stopgrad` 的名字下面。
-
-完成最小实验后设置一个明确 gate：
-
-- 若训练稳定且质量满足验收，不新增第二套 EMA 生命周期；
-- 若出现 target 抖动、collapse 或明显低于 EMA target 的文献基线，再单独评审
-  `ManagedEMAUpdate` 之类的窄核心能力；
-- 该能力必须由 core 在 optimizer step 后更新、由 checkpoint 保存 update counter 和
-  target state；Strategy 只读取 target；
-- 不允许 Strategy 在 `training_step()` 内更新 EMA，也不复用 inference EMA 造成隐式
-  双重语义。
-
-在这个 gate 通过前，不把 `ema_target` 写入公开配置参考。
+若后续支持 non-zero dropout，必须显式同步 online/target forward 的 dropout RNG。
+`online_stopgrad` 可作为明确命名的研究消融，但不能代表标准 consistency
+distillation，也不能成为默认公开配置。
 
 ## 7. Sampling 方案
 
-`ConsistencySampler` 使用 extension-local `EndpointConsistencyDynamics`，不要求
-Gaussian Sampler 或 `GenerativeDynamics` 根新增方法。
+`EndpointConsistencyDynamics` 不要求 Gaussian Sampler 或 `GenerativeDynamics` 根
+新增方法。one-step 是直接 endpoint transform；只有 few-step 使用 extension-local
+`ConsistencySampler`。
 
 ### One-step
 
@@ -337,6 +346,9 @@ x_T\sim\mathcal N(0,I),
 \qquad
 \hat x_0=F_\theta(x_T,T).
 \]
+
+SamplingBuilder 直接调用 operator，并报告 `NFE=1`；不为了统一形式构造 numerical
+Sampler。
 
 ### Few-step
 
@@ -399,7 +411,11 @@ training:
     teacher_bundle: data/mnist-teacher.pt
     prediction_type: epsilon
     student_init: teacher
-    target_policy: online_stopgrad
+    target_policy: ema_target
+    target_ema:
+      decay: 0.999
+      update_after_step: 0
+      update_every: 1
     pair_schedule:
       num_steps: 36
       sampling: uniform_adjacent
@@ -495,42 +511,47 @@ sampling:
 - `ConsistencyDistillationTrainingBuilder`；
 - `ConsistencyDistillationStrategy`；
 - consistency、clean anchor、总 loss 和 diagnostics；
-- `online_stopgrad` target policy。
+- target student 构造与 strict bootstrap；
+- core-managed target EMA relation。
 
 测试：
 
 - 只有 primary student 参数进入 optimizer；
-- teacher/lower branch 没有梯度；
-- `online_stopgrad` 拒绝 non-zero dropout 和 train-mode mutable buffers；
+- teacher/target lower branch 没有梯度；
+- target 与 online state keys/shape 严格一致；
+- target 只在成功 optimizer step 后更新；
+- target state、update counter 和 policy 可 strict resume；
+- 首版拒绝 non-zero dropout 和 train-mode mutable buffers；
 - total loss 是一个 floating scalar；
 - `clean_anchor.weight=0` 与纯 consistency 路径等价；
 - SNR schedule 单调、有限且范围正确；
 - tiny dataset 可过拟合，两个 loss 都按预期下降；
-- strict resume 后 teacher 与 auxiliary Objective state 由 checkpoint 恢复。
+- strict resume 后 teacher、target 与 auxiliary Objective state 由 checkpoint 恢复。
 
 ### Stage 4：Student-only sampling
 
 交付：
 
-- extension-local consistency sampler；
-- one-step 与 few-step schedule；
+- one-step direct endpoint path；
+- extension-local few-step consistency sampler；
 - SamplingBuilder、observer 和 metadata；
 - checkpoint-only sampling。
 
 测试：
 
-- one-step NFE 与 `num_steps` 正确；
+- one-step 精确执行一次 student forward，NFE 为 1；
 - fixed seed deterministic；
 - final shape/dtype/device 正确；
-- observer 从 terminal 到 clean 只发合法 accepted states；
+- few-step observer 从 terminal 到 clean 只发合法 accepted states；
 - sampling 时移除 teacher bundle 仍可运行；
+- sampling 不构造 target student；
 - raw/EMA student 权重选择与 manifest 一致。
 
-### Stage 5：稳定性与 target policy gate
+### Stage 5：稳定性与 target EMA policy gate
 
 实验：
 
-- `online_stopgrad` 与一个研究用 EMA target prototype 对比；
+- 比较 target EMA decay、update cadence；`online_stopgrad` 只作命名消融；
 - 记录 loss variance、gradient norm、collapse、FID/KID 与 NFE；
 - 检查 terminal timestep 的 clean conversion 放大；
 - 比较 MSE 与 Pseudo-Huber；
@@ -538,8 +559,9 @@ sampling:
 
 决策：
 
-- 不需要 EMA target：保留现有核心；
-- 需要 EMA target：先更新本计划和架构决策文档，再实现窄 core lifecycle；
+- 冻结默认 target EMA decay 与 update policy；
+- 若窄 core lifecycle 无法满足正确 checkpoint/step 时序，转为专用
+  consistency-distillation loop family，而不是由 Strategy 更新；
 - preconditioning 是瓶颈：先在 extension operator 内改进，不修改 Process/UNet。
 
 ### Stage 6：质量评估与文档
@@ -560,6 +582,13 @@ sampling:
 - NFE、batch latency、peak memory；
 - `lambda_x0=0` 与 clean anchor 各组消融；
 - 相同初始噪声的定性 sample grid。
+
+这些结果通过独立 Evaluation Operation 产生，而不是由 Metric、final sampling 或
+TrainingDiagnostic 单独冒充完整 benchmark。student 的 1/2/4/8-step 分别是预先声明的
+EvaluationCase，共用 checkpoint/weight variant、sample IDs、seed bank、metric
+provider 和硬件 profile；每个 case 同时记录实际 `forward_calls` 与
+`effective_model_evaluations`。训练期按 cadence 运行的同类 FID/KID 仍属于
+Diagnostic context，正式 test result 不参与 checkpoint 选择。
 
 文档交付：
 
@@ -611,17 +640,17 @@ baseline，再设置 promotion gate。
 | trivial/collapsed mapping | 输出接近常数 | hard identity boundary、sample diversity/recall 监控 |
 | teacher Process 不一致 | pair 数学错误但仍可运行 | bundle process fingerprint 严格比较 |
 | terminal clean conversion 不稳定 | NaN、梯度爆炸 | finite tests、grad clip、v/x0 prediction、preconditioning |
-| target 无 EMA 不稳定 | loss variance 大、训练振荡 | Stage 5 gate 后评审 core-managed EMA target |
+| target EMA lifecycle 错误 | loss variance 大、resume 漂移 | core-managed successful-step update 与 strict state |
 | teacher step discretization error | grid 加密仍无法提升 | 比较 grid/solver，必要时增加高阶 teacher stepper |
 | 多步 CM 质量不单调 | NFE 增加但质量下降 | 报告完整曲线；若需要任意跳转，转 CTM 提案 |
-| 内存占用 | teacher + student + EMA shadow | 首版避免可调用的第三个 target model；记录 peak memory |
+| 内存占用 | teacher + online + target + inference EMA | 记录 peak memory；按阶段释放无需调用的资产 |
 | extension 侵入核心 | runner 出现任务分支 | 以现有 Builder/Strategy/Sampler contract 完成纵向实现 |
 
 ## 12. 后续但不属于首版
 
 - `G(x_t,t,s)` Consistency Trajectory Model；
 - continuous-time VP/VE Process 与 Heun PF-ODE teacher stepper；
-- EMA consistency target 的通用 core lifecycle；
+- non-constant target EMA schedule 与可训练 buffer policy；
 - analytic preconditioning；
 - conditional model、classifier-free guidance 和 guided teacher；
 - latent consistency、text-to-image 和多模态 batch；

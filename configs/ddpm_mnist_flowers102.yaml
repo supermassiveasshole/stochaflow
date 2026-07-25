@@ -109,7 +109,7 @@ sampling:
       params: {grid_nrow: 4, gif_fps: 8, denormalize: true}
 
 trainer:
-  num_epochs: 100
+  num_epochs: 200
   device: auto
   max_grad_norm: 1.0
   show_progress: true

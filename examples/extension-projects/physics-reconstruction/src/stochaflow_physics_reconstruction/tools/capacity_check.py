@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 import torch
-
-try:
-    import resource
-except ImportError:  # pragma: no cover - Windows has no resource module.
-    resource = None  # type: ignore[assignment]
 
 from stochaflow.extensions import DDIMSampler, DiscreteGaussianProcess, MSEObjective
 from stochaflow_physics_reconstruction.stochaflow_ext.data import (
@@ -29,6 +25,27 @@ from stochaflow_physics_reconstruction.stochaflow_ext.sampling import (
 from stochaflow_physics_reconstruction.stochaflow_ext.training import (
     PhysicsDenoisingStrategy,
 )
+
+
+class _ResourceUsage(Protocol):
+    ru_maxrss: int
+
+
+class _ResourceModule(Protocol):
+    RUSAGE_SELF: int
+
+    def getrusage(self, who: int) -> _ResourceUsage: ...
+
+
+def _load_resource_module() -> _ResourceModule | None:
+    try:
+        module = importlib.import_module("resource")
+    except ImportError:  # pragma: no cover - Windows has no resource module.
+        return None
+    return cast(_ResourceModule, module)
+
+
+_resource = _load_resource_module()
 
 
 def _tensor_bytes(value: torch.Tensor) -> int:
@@ -52,9 +69,9 @@ def _device(name: str) -> torch.device:
 
 
 def _host_peak_rss() -> int | None:
-    if resource is None:
+    if _resource is None:
         return None
-    value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    value = int(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
     return value if sys.platform == "darwin" else value * 1024
 
 

@@ -6,6 +6,7 @@ import struct
 from io import BytesIO
 from mmap import mmap
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from zipfile import ZIP_STORED, ZipFile
 
@@ -103,6 +104,23 @@ def test_capacity_auto_device_prefers_cuda_then_mps(
     assert capacity_check._device("auto") == torch.device("mps")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     assert capacity_check._device("auto") == torch.device("cuda")
+
+
+def test_capacity_host_peak_rss_is_optional_and_normalizes_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(capacity_check, "_resource", None)
+    assert capacity_check._host_peak_rss() is None
+
+    fake_resource = SimpleNamespace(
+        RUSAGE_SELF=7,
+        getrusage=lambda _who: SimpleNamespace(ru_maxrss=123),
+    )
+    monkeypatch.setattr(capacity_check, "_resource", fake_resource)
+    monkeypatch.setattr(capacity_check.sys, "platform", "darwin")
+    assert capacity_check._host_peak_rss() == 123
+    monkeypatch.setattr(capacity_check.sys, "platform", "linux")
+    assert capacity_check._host_peak_rss() == 123 * 1024
 
 
 def test_triplet_dataset_is_raw_stable_and_memory_mapped(tmp_path: Path) -> None:

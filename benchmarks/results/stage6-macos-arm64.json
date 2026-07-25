@@ -994,6 +994,8 @@
       "dfsr_full_trajectory_projection"
     ],
     "tool_sha256": "f07611c8a1e70817ccf20176088ca8d7ad36646287bea7051bfaf8a60c2c6907",
+    "audited_compatible_tool_sha256": "f205421ad8e16fb668428c4d6e2cfd03cfdd2ac09175b59c372b2bdc1af7f10d",
+    "tool_compatibility_note": "Post-measurement cross-platform capability typing refactor; RSS units, platform dispatch, capacity projections, writer execution, and aggregation are unchanged.",
     "warmup_override": null
   }
 }

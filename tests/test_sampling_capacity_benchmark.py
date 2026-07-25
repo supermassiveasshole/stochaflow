@@ -34,6 +34,16 @@ _CGROUP_AVAILABLE = cast(
     Callable[[Path], int | None],
     _TOOL_API["_cgroup_available_memory_bytes"],
 )
+_AVAILABLE_HOST_MEMORY = cast(
+    Callable[[], int | None],
+    _TOOL_API["_available_host_memory_bytes"],
+)
+_HOST_MEMORY = cast(Callable[[], int | None], _TOOL_API["_host_memory_bytes"])
+_PEAK_RSS = cast(Callable[[], int], _TOOL_API["_peak_rss_bytes"])
+_SUMMARIZE_REPEATS = cast(
+    Callable[..., dict[str, Any]],
+    _TOOL_API["_summarize_repeats"],
+)
 _WINDOWS_PEAK_RSS = cast(Callable[[], int], _TOOL_API["_windows_peak_rss_bytes"])
 _WINDOWS_COUNTERS = cast(
     type[ctypes.Structure],
@@ -263,6 +273,71 @@ def test_cgroup_available_memory_uses_limit_minus_current(
     assert _CGROUP_AVAILABLE(tmp_path) == 2**30
 
 
+@pytest.mark.parametrize(
+    ("platform_name", "expected"),
+    [
+        ("darwin", 123),
+        ("linux", 123 * 1024),
+    ],
+)
+def test_peak_rss_normalizes_posix_units(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_name: str,
+    expected: int,
+) -> None:
+    fake_resource = SimpleNamespace(
+        RUSAGE_SELF=7,
+        getrusage=lambda _who: SimpleNamespace(ru_maxrss=123),
+    )
+    monkeypatch.setitem(_PEAK_RSS.__globals__, "_resource", fake_resource)
+    monkeypatch.setattr(sys, "platform", platform_name)
+
+    assert _PEAK_RSS() == expected
+
+
+def test_peak_rss_uses_windows_provider_without_resource(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(_PEAK_RSS.__globals__, "_resource", None)
+    monkeypatch.setitem(
+        _PEAK_RSS.__globals__,
+        "_windows_peak_rss_bytes",
+        lambda: 123_456,
+    )
+
+    assert _PEAK_RSS() == 123_456
+
+
+def test_host_memory_is_unavailable_without_sysconf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(os, "sysconf", raising=False)
+
+    assert _HOST_MEMORY() is None
+
+
+def test_available_host_memory_is_unavailable_without_procfs_or_cgroup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(_path: Path, *args: object, **kwargs: object) -> str:
+        del args, kwargs
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(Path, "read_text", unavailable)
+
+    assert _AVAILABLE_HOST_MEMORY() is None
+
+
+def test_summary_marks_host_budget_unknown_without_host_memory() -> None:
+    summary = _SUMMARIZE_REPEATS(
+        [{"final_lifetime_peak_rss_bytes": 123, "final_cuda_peak": None}],
+        host_memory_bytes=None,
+    )
+
+    assert summary["max_peak_rss_host_fraction"] is None
+    assert summary["passes_host_budget"] is None
+
+
 def test_windows_peak_rss_declares_pointer_sized_win32_abi(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -340,7 +415,15 @@ def test_reference_result_matches_current_tool_profiles_and_statistics() -> None
     ]
     assert source["selected_profiles"] == expected_names
     assert [profile["name"] for profile in report["profiles"]] == expected_names
-    assert source["tool_sha256"] == _canonical_sha256(TOOL)
+    assert source["tool_sha256"] == (
+        "f07611c8a1e70817ccf20176088ca8d7ad36646287bea7051bfaf8a60c2c6907"
+    )
+    assert source["audited_compatible_tool_sha256"] == _canonical_sha256(TOOL)
+    assert source["tool_compatibility_note"] == (
+        "Post-measurement cross-platform capability typing refactor; RSS units, "
+        "platform dispatch, capacity projections, writer execution, and aggregation "
+        "are unchanged."
+    )
     assert source["profiles_sha256"] == _canonical_sha256(PROFILES)
     profiles = _LOAD_PROFILES(PROFILES)
 

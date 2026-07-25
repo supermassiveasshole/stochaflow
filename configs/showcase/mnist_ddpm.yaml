@@ -1,0 +1,27 @@
+# README showcase overlay for the 200-epoch MNIST checkpoint.
+# Both showcase profiles use the same EMA weights, seed, and 6x6 sample grid.
+sampling:
+  shape: [1, 32, 32]
+  num_samples: 36
+  batch_size: 36
+  seed: 123
+  builder:
+    name: standard_denoising
+    params:
+      weights: ema
+      prediction_type: v
+      clip_denoised: true
+      sampler:
+        name: ddpm
+        params: {}
+      trajectory:
+        enabled: true
+        every_steps: 200
+  writers:
+    - name: tensor
+      params: {}
+    - name: image
+      params:
+        grid_nrow: 6
+        gif_fps: 3
+        denormalize: true

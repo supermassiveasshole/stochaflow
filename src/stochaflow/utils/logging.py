@@ -54,7 +54,12 @@ def _sanitize_wandb_key(name: str) -> str:
 
 
 class ExperimentLogger(ABC):
-    """Backend-agnostic interface for experiment metric/event logging."""
+    """Observation-only interface for experiment metric and artifact logging.
+
+    Logger instances, open files, and backend writers are runtime resources, not
+    checkpoint state. Every training invocation constructs and closes its own
+    logger resources in that invocation's output directory.
+    """
 
     @abstractmethod
     def log_config(self, config: dict[str, Any]) -> None:

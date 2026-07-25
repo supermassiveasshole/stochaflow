@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -25,15 +26,10 @@ from ctypes import wintypes
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import torch
 import yaml
-
-try:
-    import resource as _resource
-except ImportError:  # pragma: no cover - exercised on Windows
-    _resource = None
 
 from stochaflow.sampling import (
     SamplingArtifactContext,
@@ -44,6 +40,31 @@ from stochaflow.sampling import (
 )
 from stochaflow.sampling.runtime import validate_sampling_output
 from stochaflow.utils.config import ComponentConfig
+
+
+class _ResourceUsage(Protocol):
+    ru_maxrss: int
+
+
+class _ResourceModule(Protocol):
+    RUSAGE_SELF: int
+
+    def getrusage(self, who: int) -> _ResourceUsage: ...
+
+
+class _Sysconf(Protocol):
+    def __call__(self, name: str, /) -> int: ...
+
+
+def _load_resource_module() -> _ResourceModule | None:
+    try:
+        module = importlib.import_module("resource")
+    except ImportError:  # pragma: no cover - exercised on Windows
+        return None
+    return cast(_ResourceModule, module)
+
+
+_resource = _load_resource_module()
 
 PROFILE_FORMAT_VERSION = 1
 DEFAULT_HOST_BUDGET_FRACTION = 0.70
@@ -319,11 +340,15 @@ def _windows_peak_rss_bytes() -> int:
 
 
 def _host_memory_bytes() -> int | None:
+    sysconf = getattr(os, "sysconf", None)
+    if not callable(sysconf):
+        return None
+    typed_sysconf = cast(_Sysconf, sysconf)
     try:
-        physical = int(os.sysconf("SC_PAGE_SIZE")) * int(
-            os.sysconf("SC_PHYS_PAGES")
+        physical = int(typed_sysconf("SC_PAGE_SIZE")) * int(
+            typed_sysconf("SC_PHYS_PAGES")
         )
-    except (AttributeError, OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError):
         return None
     limits = [physical]
     for candidate in (

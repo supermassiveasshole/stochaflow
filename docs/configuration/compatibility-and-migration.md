@@ -29,6 +29,8 @@ v8 不保存：
 - DataBuilder/TrainingBuilder/Strategy/SamplingBuilder 实例；
 - Dataset、DataLoader、iterator、worker、PyTorch data sampler 或 partition runtime state；
 - Sampler、Observer、solver history、sampling trajectory 等临时采样状态；
+- TrainingDiagnostic/ExperimentLogger 实例、diagnostic cache/counter、打开的日志文件或
+  TensorBoard writer/event 文件；
 - 用户私有 generator 或未声明为 managed training asset 的对象；
 - 数据集、网络资源、输出目录内容或相对路径所指向的文件。
 
@@ -54,12 +56,17 @@ Process state。无论哪条路径，实际构建的 model/Process 仍必须能�
 
 - 新训练以 `--config` 指向的完整配置为 base；
 - strict resume 以 checkpoint 内的 config 为 base，`--config` 与 `--resume` 互斥；
+  可选 `--observability-config` 只允许原子替换 `diagnostics`，以及逐字段替换显式声明的
+  `logging` 字段；
 - checkpoint-only sampling 默认使用 checkpoint config；
 - sampling 可以改用一份完整外部 config，或在 checkpoint config 上应用
   sampling-only overlay；sampling CLI flags 最后覆盖本次调用允许的字段。
 
 因此，改变采样数量、shape、Builder、Sampler 私有参数或 writer 是 sampling workflow 的
-正常能力，不构成训练配置“冲突”。相反，resume 不接受任意模型、训练资产或 optimizer
+正常能力，不构成训练配置“冲突”。resume observability config 也只能改变没有恢复状态的
+监控表面，不能改变 extension selection，也不能引入 checkpoint 未选择的 diagnostic
+provider module。它的有效配置和 provenance 会写入新兄弟 run 及其 checkpoint，旧
+logger/event 文件不会续写。除此之外，resume 不接受任意模型、训练资产或 optimizer
 替换；需要改变它们时应启动新的训练 workflow。
 
 ## `selected_components` 的含义

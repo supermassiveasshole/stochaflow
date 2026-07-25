@@ -1,0 +1,60 @@
+# Strict-resume observability configuration for comparable MNIST quality checks.
+# Use only with: stochaflow train --resume ... --observability-config <this-file>
+diagnostics:
+  - name: diffusion_quality
+    params:
+      modules: []
+      cadence:
+        step_every: 100
+        artifact_every_epochs: 10
+      sampling:
+        sample_num: 32
+        batch_size: 32
+        seed: 123
+      use_ema: true
+      failure_policy: warn
+      samplers:
+        - id: ddim_50
+          name: ddim
+          params:
+            num_inference_steps: 50
+            eta: 0.0
+          trajectory:
+            enabled: false
+            every_steps: 5
+            gif_fps: 8
+      providers:
+        step_metrics:
+          - name: timestep_bucket_loss
+            params: {buckets: 10}
+          - name: noise_alignment
+            params: {}
+          - name: x0_reconstruction
+            params:
+              timesteps: [50, 250, 500, 750, 900]
+        sampler_metrics:
+          - name: sample_statistics
+            params: {}
+          - name: sampling_performance
+            params: {}
+        denoiser_artifacts:
+          - name: reconstruction_panel
+            params:
+              timesteps: [100, 500, 900]
+              max_samples: 8
+        sampler_artifacts:
+          - name: sample_grid
+            params: {nrow: 8}
+      reference:
+        enabled: false
+
+# backends is explicit and therefore replaces the checkpoint backend list.
+# log_every and torch_logs are omitted, so their checkpoint values are inherited.
+logging:
+  backends:
+    - name: local
+      params:
+        console: false
+        append: false
+    - name: tensorboard
+      params: {}

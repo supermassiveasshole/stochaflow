@@ -14,6 +14,17 @@ from stochaflow.utils.config import (
 )
 
 
+@pytest.mark.parametrize(
+    "config_path",
+    sorted(Path("configs").glob("*.yaml")),
+    ids=lambda path: path.name,
+)
+def test_all_builtin_configs_use_200_epochs(config_path: Path) -> None:
+    config = load_config(config_path)
+
+    assert config.trainer.num_epochs == 200
+
+
 def test_load_ddpm_mnist_config() -> None:
     config = load_config(Path("configs/ddpm_mnist.yaml"))
     assert isinstance(config, StochaflowConfig)
@@ -26,23 +37,60 @@ def test_load_ddpm_mnist_config() -> None:
     assert config.data.params["partition"]["mode"] == "holdout"
     assert config.process.name == "discrete_gaussian"
     assert len(config.logging.backends) >= 1
-    assert config.process.params["schedule"]["params"]["num_timesteps"] == 1000
-    assert config.data.params["loader"]["num_workers"] == 0
+    assert config.data.params["loader"] == {
+        "batch_size": 128,
+        "num_workers": 2,
+        "shuffle": True,
+        "drop_last": True,
+        "pin_memory": True,
+        "persistent_workers": True,
+        "prefetch_factor": 4,
+        "steps_per_epoch": "auto",
+    }
+    assert config.model.params == {
+        "in_channels": 1,
+        "out_channels": 1,
+        "base_channels": 96,
+        "channel_multipliers": [1, 2, 4],
+        "num_res_blocks": 3,
+        "time_embedding_dim": 192,
+        "dropout": 0.1,
+        "attention_levels": [2],
+        "attention_heads": 4,
+    }
+    assert config.process.params["schedule"] == {
+        "name": "cosine_alpha_bar",
+        "params": {
+            "num_timesteps": 1000,
+            "s": 0.008,
+            "max_beta": 0.999,
+        },
+    }
+    assert config.training.params == {"prediction_type": "v"}
     assert config.optimizer.name == "torch.optim.Adam"
+    assert config.optimizer.params == {
+        "lr": 0.0003,
+        "weight_decay": 0.0,
+        "betas": [0.9, 0.999],
+        "eps": 1.0e-8,
+    }
     assert config.lr_scheduler is not None
-    assert config.lr_scheduler.name == "torch.optim.lr_scheduler.CosineAnnealingLR"
-    assert config.lr_scheduler.interval == "epoch"
+    assert config.lr_scheduler.name == "warmup_cosine"
+    assert config.lr_scheduler.interval == "step"
     assert config.lr_scheduler.params == {
-        "T_max": 30,
-        "eta_min": 0.00002,
+        "warmup_steps": 2000,
+        "total_steps": 78000,
+        "min_lr_ratio": 0.05,
     }
     assert config.sampling.builder is not None
+    assert config.sampling.builder.params["prediction_type"] == "v"
     sampler = config.sampling.builder.params["sampler"]
     assert sampler["name"] == "ddpm"
     assert sampler["params"] == {}
     assert config.ema.enabled
     assert config.ema.decay == 0.9995
     assert config.ema.update_after_step == 100
+    assert config.ema.update_every == 1
     assert config.ema.use_for_sampling
     assert config.sampling.num_samples == 64
     assert config.sampling.batch_size == 64
@@ -55,22 +103,59 @@ def test_load_ddpm_mnist_config() -> None:
         "enabled": True,
         "every_steps": 50,
     }
-    assert config.trainer.num_epochs == 30
+    assert config.trainer.num_epochs == 200
+    assert not config.trainer.early_stopping.enabled
     assert config.trainer.early_stopping.patience == 7
     assert config.trainer.early_stopping.min_delta == 0.00001
     assert [diagnostic.name for diagnostic in config.diagnostics] == [
         "diffusion_quality"
     ]
     diagnostic_params = config.diagnostics[0].params
+    assert diagnostic_params["cadence"] == {
+        "step_every": 100,
+        "artifact_every_epochs": 10,
+    }
+    assert diagnostic_params["sampling"] == {
+        "sample_num": 32,
+        "batch_size": 32,
+        "seed": 123,
+    }
+    assert diagnostic_params["use_ema"] is True
+    assert diagnostic_params["failure_policy"] == "warn"
     assert [profile["id"] for profile in diagnostic_params["samplers"]] == [
-        "ddim_20"
+        "ddim_50"
+    ]
+    assert diagnostic_params["samplers"][0] == {
+        "id": "ddim_50",
+        "name": "ddim",
+        "params": {
+            "num_inference_steps": 50,
+            "eta": 0.0,
+        },
+        "trajectory": {
+            "enabled": False,
+            "every_steps": 5,
+            "gif_fps": 8,
+        },
+    }
+    providers = diagnostic_params["providers"]
+    assert providers["step_metrics"] == [
+        {"name": "timestep_bucket_loss", "params": {"buckets": 10}},
+        {"name": "noise_alignment", "params": {}},
+        {
+            "name": "x0_reconstruction",
+            "params": {"timesteps": [50, 250, 500, 750, 900]},
+        },
+    ]
+    assert providers["sampler_artifacts"] == [
+        {"name": "sample_grid", "params": {"nrow": 8}}
     ]
     assert diagnostic_params["reference"] == {"enabled": False}
     assert [backend.name for backend in config.logging.backends] == [
         "local",
         "tensorboard",
     ]
-    assert config.artifacts.checkpoint_every == 5
+    assert config.artifacts.checkpoint_every == 50
 
 
 def test_load_ddim_mnist_config() -> None:
@@ -90,6 +175,7 @@ def test_load_ddim_mnist_config() -> None:
     assert ddim.diagnostics == ddpm.diagnostics
     assert ddim.logging == ddpm.logging
     assert ddim.sampling.builder is not None
+    assert ddim.sampling.builder.params["prediction_type"] == "v"
     assert ddim.sampling.builder.params["sampler"] == {
         "name": "ddim",
         "params": {
@@ -201,7 +287,8 @@ def test_load_ddpm_flowers102_config() -> None:
     assert config.lr_scheduler is not None
     assert config.lr_scheduler.name == "warmup_cosine"
     assert config.lr_scheduler.interval == "step"
-    assert config.lr_scheduler.params["total_steps"] == 10500
+    assert config.lr_scheduler.params["warmup_steps"] == 150
+    assert config.lr_scheduler.params["total_steps"] == 3000
     assert config.ema.enabled
     assert config.ema.use_for_sampling
     assert len(config.diagnostics) == 1
@@ -211,7 +298,7 @@ def test_load_ddpm_flowers102_config() -> None:
         "ddpm_full",
         "ddim_50",
     ]
-    assert config.trainer.num_epochs == 700
+    assert config.trainer.num_epochs == 200
     assert config.trainer.early_stopping.monitor == "train_loss"
     assert not config.trainer.early_stopping.enabled
 

@@ -1,7 +1,9 @@
 """Tests for shared experiment runner orchestration."""
 
+import hashlib
 import random
 from argparse import Namespace
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -30,7 +32,7 @@ from stochaflow.utils.checkpoint import (
     CheckpointState,
     capture_rng_state,
 )
-from stochaflow.utils.config import load_config
+from stochaflow.utils.config import ConfigError, load_config
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.plugins import ResolvedExtensions
 
@@ -45,7 +47,7 @@ class RecordingTrainer:
         self.stopped_early = False
         self.restored_fit_state = None
         self.checkpoint_dir: Path | None = None
-        self.checkpoint_config = None
+        self.checkpoint_config: dict[str, Any] | None = None
         self.checkpoint_metadata = {"extension_plugins": []}
         self.fit_kwargs = {}
         self.evaluate_calls = 0
@@ -91,6 +93,7 @@ def _loaders(*, validation: bool = False, test: bool = False) -> DataLoaders:
 
 def _args() -> Namespace:
     return Namespace(
+        config=None,
         epochs=None,
         limit_batches=None,
         limit_validation_batches=None,
@@ -98,6 +101,7 @@ def _args() -> Namespace:
         deterministic=False,
         no_progress=True,
         resume=None,
+        observability_config=None,
         device=None,
         output_dir=None,
         skip_final_sample=True,
@@ -167,6 +171,45 @@ def _checkpoint_metadata(payload: CheckpointState) -> dict[str, Any]:
     metadata = payload.get("metadata")
     assert isinstance(metadata, dict)
     return metadata
+
+
+def _write_training_checkpoint(
+    path: Path,
+    config,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> Path:
+    checkpoint_metadata = {
+        "extension_plugins": [],
+        **({} if metadata is None else metadata),
+    }
+    torch.save(
+        {
+            "format_version": CHECKPOINT_FORMAT_VERSION,
+            "config": config.to_dict(),
+            "model_state_dict": {},
+            "rng_state": capture_rng_state(),
+            "metadata": checkpoint_metadata,
+        },
+        path,
+    )
+    return path
+
+
+def _write_observability_config(path: Path, value: Any) -> Path:
+    path.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _resume_args(
+    checkpoint: Path,
+    *,
+    observability_config: Path | None = None,
+) -> Namespace:
+    args = _args()
+    args.resume = checkpoint
+    args.observability_config = observability_config
+    return args
 
 
 def _run_single(
@@ -627,7 +670,7 @@ def test_strict_resume_rejects_mismatched_sibling_best_identity(
         )
 
 
-@pytest.mark.parametrize("mismatch", ["config", "plugins"])
+@pytest.mark.parametrize("mismatch", ["config", "plugins", "overlays"])
 def test_strict_resume_rejects_sibling_from_another_run(
     tmp_path: Path,
     mismatch: str,
@@ -660,7 +703,7 @@ def test_strict_resume_rejects_sibling_from_another_run(
     if mismatch == "config":
         candidate["config"] = {"identity": "another-run"}
         expected = "config does not match"
-    else:
+    elif mismatch == "plugins":
         _checkpoint_metadata(candidate)["extension_plugins"] = [
             {
                 "name": "other",
@@ -670,6 +713,17 @@ def test_strict_resume_rejects_sibling_from_another_run(
             }
         ]
         expected = "extension provenance does not match"
+    else:
+        _checkpoint_metadata(candidate)["config_overlays"] = [
+            {
+                "kind": "observability",
+                "source_path": str(tmp_path / "observability.yaml"),
+                "source_sha256": "a" * 64,
+                "sections": ["logging"],
+                "logging_fields": ["log_every"],
+            }
+        ]
+        expected = "config overlay history does not match"
     CheckpointManager.save_payload(candidate, checkpoint.parent / "best.pt")
     trainer.checkpoint_dir = tmp_path / "new-run" / "checkpoints"
 
@@ -720,6 +774,20 @@ def test_strict_resume_materializes_matching_sibling_best_in_new_run(tmp_path):
     CheckpointManager.save_payload(source_payload, source_best)
     new_checkpoint_dir = tmp_path / "new-run" / "checkpoints"
     trainer.checkpoint_dir = new_checkpoint_dir
+    effective_config = {
+        "identity": "selected-run",
+        "logging": {"log_every": 7},
+    }
+    config_overlays = [
+        {
+            "kind": "observability",
+            "source_path": str(tmp_path / "observability.yaml"),
+            "source_sha256": "a" * 64,
+            "sections": ["logging"],
+            "logging_fields": ["log_every"],
+        }
+    ]
+    trainer.checkpoint_config = effective_config
     trainer.checkpoint_metadata = {
         "extension_plugins": [
             {
@@ -730,6 +798,7 @@ def test_strict_resume_materializes_matching_sibling_best_in_new_run(tmp_path):
             }
         ],
         "extension_version_acceptance": [],
+        "config_overlays": config_overlays,
     }
 
     selected_payload = _best_payload(loop_state, epoch=2)
@@ -754,8 +823,10 @@ def test_strict_resume_materializes_matching_sibling_best_in_new_run(tmp_path):
         "model_state_dict"
     )
     assert inherited_payload.get("epoch") == source_payload.get("epoch")
+    assert inherited_payload.get("config") == effective_config
     inherited_metadata = _checkpoint_metadata(inherited_payload)
     assert inherited_metadata["extension_plugins"][0]["version"] == "2.0"
+    assert inherited_metadata["config_overlays"] == config_overlays
     assert inherited_metadata["inherited_from"] == str(source_best)
     assert trainer.best_checkpoint_path == inherited
     assert ema_devices == [trainer.device, trainer.device]
@@ -1224,6 +1295,7 @@ def test_resolve_training_inputs_uses_checkpoint_config_for_strict_resume(
     )
     assert inputs.checkpoint_path == checkpoint
     assert inputs.checkpoint is not None
+    assert inputs.config_overlays == []
 
 
 def test_resolve_training_inputs_rejects_config_and_resume_together(tmp_path):
@@ -1242,6 +1314,14 @@ def test_train_cli_requires_exactly_one_config_source() -> None:
         parser.parse_args(["train"])
     with pytest.raises(SystemExit):
         parser.parse_args(
+            [
+                "train",
+                "--observability-config",
+                "observability.yaml",
+            ]
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args(
             ["train", "--config", "config.yaml", "--resume", "checkpoint.pt"]
         )
 
@@ -1251,3 +1331,588 @@ def test_train_cli_requires_exactly_one_config_source() -> None:
     assert parser.parse_args(
         ["train", "--resume", "checkpoint.pt"]
     ).resume == Path("checkpoint.pt")
+
+
+def test_train_cli_accepts_observability_config_with_resume() -> None:
+    parser = build_argument_parser()
+
+    args = parser.parse_args(
+        [
+            "train",
+            "--resume",
+            "checkpoint.pt",
+            "--observability-config",
+            "observability.yaml",
+        ]
+    )
+
+    assert args.resume == Path("checkpoint.pt")
+    assert args.observability_config == Path("observability.yaml")
+
+
+def test_repository_mnist_observability_profile_is_valid() -> None:
+    checkpoint_config = load_config(Path("configs/ddpm_mnist.yaml"))
+    overlay_path = Path("configs/overlays/mnist_observability.yaml")
+
+    overlay, audit = experiment_runner._load_observability_overlay(overlay_path)
+    effective = experiment_runner._apply_observability_overlay(
+        checkpoint_config,
+        overlay,
+    )
+
+    assert [backend.name for backend in effective.logging.backends] == [
+        "local",
+        "tensorboard",
+    ]
+    assert effective.logging.log_every == checkpoint_config.logging.log_every
+    assert effective.diagnostics[0].params["sampling"] == {
+        "sample_num": 32,
+        "batch_size": 32,
+        "seed": 123,
+    }
+    assert effective.diagnostics[0].params["samplers"][0]["params"] == {
+        "num_inference_steps": 50,
+        "eta": 0.0,
+    }
+    assert audit["sections"] == ["diagnostics", "logging"]
+    assert audit["logging_fields"] == ["backends"]
+
+
+def test_observability_config_requires_strict_resume(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    overlay_path = _write_observability_config(
+        tmp_path / "observability.yaml",
+        {"logging": {"log_every": 5}},
+    )
+    args = _args()
+    args.config = config_path
+    args.observability_config = overlay_path
+
+    with pytest.raises(ValueError, match="observability"):
+        experiment_runner._resolve_training_inputs(args)
+
+
+def test_observability_config_requires_an_existing_file(tmp_path: Path) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
+
+    with pytest.raises(FileNotFoundError, match="observability config"):
+        experiment_runner._resolve_training_inputs(
+            _resume_args(
+                checkpoint,
+                observability_config=tmp_path / "missing.yaml",
+            )
+        )
+
+
+def test_observability_overlay_replaces_diagnostics_and_shallow_merges_logging(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source = load_config(Path("configs/ddpm_mnist.yaml"))
+    source.diagnostics[0].params["modules"] = ["trusted.providers"]
+    source.logging.log_every = 41
+    source.logging.torch_logs = {
+        "graph_breaks": True,
+        "recompiles": True,
+    }
+    source_before = deepcopy(source.to_dict())
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", source)
+    raw_overlay = {
+        "logging": {"log_every": 7},
+        "diagnostics": [
+            {
+                "name": "diffusion_quality",
+                "params": {
+                    "modules": ["trusted.providers"],
+                    "cadence": {"step_every": 3},
+                },
+            }
+        ],
+    }
+    overlay_path = _write_observability_config(
+        tmp_path / "observability.yaml",
+        raw_overlay,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_load_training_checkpoint_config",
+        lambda payload: source,
+    )
+
+    inputs = experiment_runner._resolve_training_inputs(
+        _resume_args(checkpoint, observability_config=overlay_path)
+    )
+
+    resolved = inputs.config.to_dict()
+    assert resolved["diagnostics"] == raw_overlay["diagnostics"]
+    assert resolved["logging"]["log_every"] == 7
+    assert resolved["logging"]["backends"] == source_before["logging"]["backends"]
+    assert (
+        resolved["logging"]["torch_logs"]
+        == source_before["logging"]["torch_logs"]
+    )
+    assert source.to_dict() == source_before
+    assert inputs.config is not source
+    assert inputs.config_source == "checkpoint"
+    assert inputs.config_overlays == [
+        {
+            "kind": "observability",
+            "source_path": str(overlay_path.resolve()),
+            "source_sha256": hashlib.sha256(overlay_path.read_bytes()).hexdigest(),
+            "sections": ["diagnostics", "logging"],
+            "logging_fields": ["log_every"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("torch_logs", "expected_torch_logs"),
+    [
+        pytest.param({}, {}, id="clear"),
+        pytest.param(
+            {"recompiles": False},
+            {"recompiles": False},
+            id="replace",
+        ),
+    ],
+)
+def test_observability_overlay_uses_atomic_collection_replacement(
+    tmp_path: Path,
+    torch_logs: dict[str, bool],
+    expected_torch_logs: dict[str, bool],
+) -> None:
+    source = load_config(Path("configs/ddpm_mnist.yaml"))
+    source.logging.log_every = 37
+    source.logging.torch_logs = {
+        "graph_breaks": True,
+        "recompiles": True,
+    }
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", source)
+    raw_backends = [
+        {
+            "name": "tensorboard",
+            "params": {"subdir": "replacement"},
+        }
+    ]
+    overlay_path = _write_observability_config(
+        tmp_path / "observability.yaml",
+        {
+            "diagnostics": [],
+            "logging": {
+                "backends": raw_backends,
+                "torch_logs": torch_logs,
+            },
+        },
+    )
+
+    inputs = experiment_runner._resolve_training_inputs(
+        _resume_args(checkpoint, observability_config=overlay_path)
+    )
+
+    resolved = inputs.config.to_dict()
+    assert resolved["diagnostics"] == []
+    assert resolved["logging"]["log_every"] == 37
+    assert resolved["logging"]["backends"] == raw_backends
+    assert resolved["logging"]["torch_logs"] == expected_torch_logs
+
+
+@pytest.mark.parametrize(
+    "raw_overlay",
+    [
+        pytest.param(None, id="null-root"),
+        pytest.param([], id="non-mapping-root"),
+        pytest.param({}, id="empty-root"),
+        pytest.param({"experiment": {"name": "other"}}, id="experiment"),
+        pytest.param(
+            {"data": {"name": "other", "params": {}}},
+            id="data",
+        ),
+        pytest.param(
+            {"model": {"name": "other", "params": {}}},
+            id="model",
+        ),
+        pytest.param(
+            {"process": {"name": "other", "params": {}}},
+            id="process",
+        ),
+        pytest.param(
+            {"training": {"name": "other", "params": {}}},
+            id="training",
+        ),
+        pytest.param(
+            {"objective": {"name": "other", "params": {}}},
+            id="objective",
+        ),
+        pytest.param({"trainer": {"num_epochs": 1}}, id="trainer"),
+        pytest.param(
+            {"optimizer": {"name": "torch.optim.SGD", "params": {}}},
+            id="optimizer",
+        ),
+        pytest.param(
+            {
+                "lr_scheduler": {
+                    "name": "torch.optim.lr_scheduler.StepLR",
+                    "interval": "epoch",
+                    "params": {"step_size": 1},
+                }
+            },
+            id="lr-scheduler",
+        ),
+        pytest.param({"ema": {"enabled": False}}, id="ema"),
+        pytest.param({"sampling": {"num_samples": 1}}, id="sampling"),
+        pytest.param({"artifacts": {"checkpoint_every": 1}}, id="artifacts"),
+        pytest.param({"extensions": {"plugins": []}}, id="extensions"),
+        pytest.param({"unknown": {}}, id="unknown-top-level"),
+        pytest.param({"diagnostics": None}, id="null-diagnostics"),
+        pytest.param({"diagnostics": {}}, id="non-list-diagnostics"),
+        pytest.param({"diagnostics": [None]}, id="malformed-diagnostic"),
+        pytest.param({"logging": None}, id="null-logging"),
+        pytest.param({"logging": []}, id="non-mapping-logging"),
+        pytest.param({"logging": {}}, id="empty-logging"),
+        pytest.param(
+            {"logging": {"unknown": True}},
+            id="unknown-logging-field",
+        ),
+        pytest.param({"logging": {"log_every": 0}}, id="invalid-log-every"),
+        pytest.param({"logging": {"backends": []}}, id="empty-backends"),
+        pytest.param({"logging": {"backends": None}}, id="null-backends"),
+        pytest.param({"logging": {"torch_logs": None}}, id="null-torch-logs"),
+        pytest.param(
+            {
+                "diagnostics": [
+                    {
+                        "name": "diffusion_quality",
+                        "params": {"modules": "not-a-list"},
+                    }
+                ]
+            },
+            id="modules-not-list",
+        ),
+        pytest.param(
+            {
+                "diagnostics": [
+                    {
+                        "name": "diffusion_quality",
+                        "params": {"modules": [""]},
+                    }
+                ]
+            },
+            id="empty-module-name",
+        ),
+        pytest.param(
+            {
+                "diagnostics": [
+                    {
+                        "name": "diffusion_quality",
+                        "params": {"modules": [1]},
+                    }
+                ]
+            },
+            id="non-string-module",
+        ),
+        pytest.param(
+            {
+                "diagnostics": [
+                    {
+                        "name": "diffusion_quality",
+                        "params": {"modules": ["new.providers"]},
+                    }
+                ]
+            },
+            id="new-module",
+        ),
+    ],
+)
+def test_invalid_observability_overlay_fails_before_run_creation(
+    monkeypatch,
+    tmp_path: Path,
+    raw_overlay: Any,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config.experiment.output_dir = str(tmp_path / "runs" / "original")
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
+    overlay_path = _write_observability_config(
+        tmp_path / "observability.yaml",
+        raw_overlay,
+    )
+    args = _resume_args(checkpoint, observability_config=overlay_path)
+    args.output_dir = tmp_path / "new-runs"
+
+    def unexpected_side_effect(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("invalid overlay reached run creation")
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_data_loaders",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_make_timestamped_output_dir",
+        unexpected_side_effect,
+    )
+
+    with pytest.raises(ConfigError):
+        experiment_runner.run_experiment_from_args(args)
+
+    assert not args.output_dir.exists()
+
+
+def test_malformed_observability_yaml_fails_before_run_creation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
+    overlay_path = tmp_path / "observability.yaml"
+    overlay_path.write_text("logging: [unterminated", encoding="utf-8")
+    args = _resume_args(checkpoint, observability_config=overlay_path)
+
+    def unexpected_side_effect(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("malformed overlay reached run creation")
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_data_loaders",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_make_timestamped_output_dir",
+        unexpected_side_effect,
+    )
+
+    with pytest.raises(ConfigError):
+        experiment_runner.run_experiment_from_args(args)
+
+
+def test_observability_overlay_audit_accumulates_and_plain_resume_inherits(
+    tmp_path: Path,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    prior_audit = {
+        "kind": "observability",
+        "source_path": str(tmp_path / "prior.yaml"),
+        "source_sha256": "0" * 64,
+        "sections": ["logging"],
+        "logging_fields": ["log_every"],
+    }
+    first_checkpoint = _write_training_checkpoint(
+        tmp_path / "first.pt",
+        config,
+        metadata={"config_overlays": [prior_audit]},
+    )
+    raw_overlay = {
+        "logging": {
+            "backends": [
+                {
+                    "name": "tensorboard",
+                    "params": {"subdir": "resumed"},
+                }
+            ]
+        }
+    }
+    overlay_path = _write_observability_config(
+        tmp_path / "observability.yaml",
+        raw_overlay,
+    )
+
+    overlaid = experiment_runner._resolve_training_inputs(
+        _resume_args(first_checkpoint, observability_config=overlay_path)
+    )
+
+    expected_new_audit = {
+        "kind": "observability",
+        "source_path": str(overlay_path.resolve()),
+        "source_sha256": hashlib.sha256(overlay_path.read_bytes()).hexdigest(),
+        "sections": ["logging"],
+        "logging_fields": ["backends"],
+    }
+    assert overlaid.config_overlays == [prior_audit, expected_new_audit]
+    assert yaml.safe_load(yaml.safe_dump(overlaid.config_overlays)) == [
+        prior_audit,
+        expected_new_audit,
+    ]
+
+    second_checkpoint = _write_training_checkpoint(
+        tmp_path / "second.pt",
+        overlaid.config,
+        metadata={"config_overlays": overlaid.config_overlays},
+    )
+    inherited = experiment_runner._resolve_training_inputs(
+        _resume_args(second_checkpoint)
+    )
+
+    assert inherited.config_overlays == overlaid.config_overlays
+    assert inherited.config_overlays is not overlaid.config_overlays
+    assert inherited.config.to_dict()["logging"]["backends"] == raw_overlay[
+        "logging"
+    ]["backends"]
+
+
+@pytest.mark.parametrize(
+    "invalid_history",
+    [
+        pytest.param({}, id="not-list"),
+        pytest.param([None], id="entry-not-mapping"),
+        pytest.param(
+            [
+                {
+                    "kind": "other",
+                    "source_path": "old.yaml",
+                    "source_sha256": "0" * 64,
+                    "sections": ["logging"],
+                    "logging_fields": ["log_every"],
+                }
+            ],
+            id="wrong-kind",
+        ),
+        pytest.param(
+            [
+                {
+                    "kind": "observability",
+                    "source_path": "old.yaml",
+                    "source_sha256": "not-a-sha256",
+                    "sections": ["logging"],
+                    "logging_fields": ["log_every"],
+                }
+            ],
+            id="invalid-sha256",
+        ),
+        pytest.param(
+            [
+                {
+                    "kind": "observability",
+                    "source_path": "old.yaml",
+                    "source_sha256": "0" * 64,
+                    "sections": ["optimizer"],
+                    "logging_fields": [],
+                }
+            ],
+            id="invalid-sections",
+        ),
+    ],
+)
+def test_strict_resume_rejects_invalid_overlay_audit_history(
+    tmp_path: Path,
+    invalid_history: Any,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    checkpoint = _write_training_checkpoint(
+        tmp_path / "resume.pt",
+        config,
+        metadata={"config_overlays": invalid_history},
+    )
+
+    with pytest.raises((TypeError, ValueError), match="config_overlays"):
+        experiment_runner._resolve_training_inputs(_resume_args(checkpoint))
+
+
+def test_run_experiment_passes_overlay_audit_and_absolute_runtime_path(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config.experiment.output_dir = str(tmp_path / "runs" / "original")
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
+    monkeypatch.chdir(tmp_path)
+    relative_overlay = Path("observability.yaml")
+    _write_observability_config(
+        relative_overlay,
+        {"logging": {"log_every": 13}},
+    )
+    observed: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_data_loaders",
+        lambda config, *, seed: _loaders(),
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_make_timestamped_output_dir",
+        lambda output_dir: ("new-run", tmp_path / "runs" / "new-run"),
+    )
+
+    def record_run(*args, **kwargs):
+        del args
+        observed.update(kwargs)
+
+    monkeypatch.setattr(experiment_runner, "_run_single_run", record_run)
+
+    experiment_runner.run_experiment_from_args(
+        _resume_args(
+            checkpoint,
+            observability_config=relative_overlay,
+        )
+    )
+
+    absolute_overlay = str(relative_overlay.resolve())
+    assert observed["runtime_options"]["observability_config"] == absolute_overlay
+    assert observed["config_overlays"] == [
+        {
+            "kind": "observability",
+            "source_path": absolute_overlay,
+            "source_sha256": hashlib.sha256(
+                relative_overlay.read_bytes()
+            ).hexdigest(),
+            "sections": ["logging"],
+            "logging_fields": ["log_every"],
+        }
+    ]
+
+
+def test_run_manifest_and_checkpoint_metadata_record_overlay_audit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "overlay-audit"
+    trainer = RecordingTrainer()
+    logger = RecordingLogger()
+    captured: dict[str, Any] = {}
+    config_overlays = [
+        {
+            "kind": "observability",
+            "source_path": str(tmp_path / "observability.yaml"),
+            "source_sha256": "a" * 64,
+            "sections": ["diagnostics", "logging"],
+            "logging_fields": ["log_every"],
+        }
+    ]
+
+    def build_training_components(config, **kwargs):
+        del config
+        captured.update(kwargs)
+        return _training_components(trainer, logger)
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        build_training_components,
+    )
+
+    experiment_runner._run_single_run(
+        config,
+        _loaders(),
+        _options(config),
+        extensions=ResolvedExtensions(config, (), ()),
+        config_source="checkpoint",
+        config_overlays=config_overlays,
+        checkpoint_payload=None,
+        startup_cwd=Path.cwd(),
+        runtime_options={
+            "observability_config": str(tmp_path / "observability.yaml")
+        },
+    )
+
+    manifest = yaml.safe_load((tmp_path / "run_manifest.yaml").read_text())
+    assert manifest["config_overlays"] == config_overlays
+    assert captured["checkpoint_metadata"]["config_overlays"] == config_overlays
+    assert manifest["runtime_options"]["observability_config"] == str(
+        tmp_path / "observability.yaml"
+    )

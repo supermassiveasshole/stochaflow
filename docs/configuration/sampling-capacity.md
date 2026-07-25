@@ -184,6 +184,8 @@ Python 3.14.3、PyTorch 2.11.0、16 GiB 有效主机内存；此次使用 CPU
 物化 synthetic writer-ready output，每个可执行 profile 运行 1 次不进入统计的
 discarded fresh-process run 和 5 个 fresh-process measured repeat。JSON 同时保存当次
 tool/profile SHA-256、execution override、临时文件系统空间和可获取的主机内存证据。
+其中 `tool_sha256` 始终保留实际测量时的工具来源；未重跑基准的跨平台兼容性维护，
+单独记录为 `audited_compatible_tool_sha256` 和说明，不冒充新的测量结果。
 
 | profile | raw output | actual artifacts | median/max peak RSS | max/host | RSS CV | median wall |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

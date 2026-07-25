@@ -307,6 +307,7 @@ Useful training options:
 
 ```bash
 --resume CHECKPOINT           Strictly resume saved config and full training state.
+--observability-config PATH   Replace resume diagnostics and selected logging fields.
 --device DEVICE               Override trainer.device for this run.
 --output-dir PATH             Use PATH as the training output root for this run.
 --deterministic               Enable PyTorch deterministic algorithms for this process.
@@ -327,6 +328,27 @@ the previous output directory. Passing a directory to `--resume` selects the
 most recently modified `latest.pt` below it. Without `--output-dir`, the new
 timestamped run is created under the resumed run's parent directory. With
 `--output-dir`, it is created under that explicit root instead.
+
+Strict resume can change only its observation surface with
+`--observability-config`; this option is invalid for fresh `--config` training.
+The file accepts exactly the top-level `diagnostics` and `logging` sections.
+`diagnostics` replaces the complete saved list. Within `logging`, only explicitly
+declared fields replace checkpoint values, and an explicit `backends` list
+replaces the complete saved backend list. For example, the repository profile
+keeps the checkpoint `log_every` while enabling local and TensorBoard output:
+
+```bash
+uv run stochaflow train \
+  --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt \
+  --observability-config configs/overlays/mnist_observability.yaml
+```
+
+Diagnostics and logger resources are observation-only and have no restored
+checkpoint state. The effective sections and overlay provenance are frozen into
+the new resolved config, manifest, and checkpoints. This is a startup-time
+configuration, not hot loading: resume creates a new sibling run with new local
+logs and TensorBoard event files, and never appends to or reopens the old run.
+
 For strict best-selection continuity, resume a run directory or keep the matching
 `best.pt` beside any `latest.pt`/epoch checkpoint you move. Its recorded best
 resolved config, extension provenance, epoch, metric, monitor, and mode must
@@ -380,23 +402,69 @@ or writer configuration.
         <sampler-profile>/
 ```
 
-The following images are illustrative artifacts from earlier long-running
-experiments; the selected epoch is recorded in each filename and need not match
+### MNIST checkpoint showcase
+
+The reference MNIST DDPM run completed 200 epochs and 78,000 optimizer steps.
+Checkpoint selection used the held-out validation denoising loss, whose minimum
+occurred at epoch 183. The test loss below was measured after restoring that
+checkpoint. These losses evaluate the v-prediction denoising objective; they are
+not perceptual-quality scores.
+
+| Evaluation | Result |
+|---|---:|
+| Selected checkpoint | `best.pt` at epoch 183 / step 71,370 |
+| Best validation loss | **0.07189** |
+| Test loss after best-checkpoint restore | **0.07363** |
+| Epoch-200 validation loss | 0.07327 |
+
+The panels below use the selected checkpoint's EMA weights, one fixed seed
+(`123`), and the complete 36-sample batch. DDPM performs 1,000 model evaluations;
+deterministic DDIM (`eta: 0`) uses 50, a 20-fold reduction. Both begin from the
+same terminal-noise batch.
+
+| DDPM (1,000 model evaluations) | DDIM (50 model evaluations) |
+|:---:|:---:|
+| <img src="assets/readme/mnist_ddpm_epoch_0183_samples.png" width="300" alt="36 MNIST samples generated with DDPM from the epoch-183 checkpoint"> | <img src="assets/readme/mnist_ddim50_epoch_0183_samples.png" width="300" alt="36 MNIST samples generated with DDIM-50 from the epoch-183 checkpoint"> |
+
+The animations retain six matched points across the reverse process, from
+terminal noise to the complete sample batch:
+
+| DDPM trajectory | DDIM-50 trajectory |
+|:---:|:---:|
+| <img src="assets/readme/mnist_ddpm_epoch_0183_trajectory.gif" width="300" alt="Animated MNIST DDPM reverse-process trajectory"> | <img src="assets/readme/mnist_ddim50_epoch_0183_trajectory.gif" width="300" alt="Animated MNIST DDIM-50 reverse-process trajectory"> |
+
+The exact showcase overlays are
+[`configs/showcase/mnist_ddpm.yaml`](configs/showcase/mnist_ddpm.yaml) and
+[`configs/showcase/mnist_ddim50.yaml`](configs/showcase/mnist_ddim50.yaml):
+
+```bash
+uv run stochaflow sample \
+  --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt \
+  --config configs/showcase/mnist_ddpm.yaml \
+  --device cuda \
+  --output-dir outputs/readme_showcase/mnist_ddpm_epoch_0183
+
+uv run stochaflow sample \
+  --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt \
+  --config configs/showcase/mnist_ddim50.yaml \
+  --device cuda \
+  --output-dir outputs/readme_showcase/mnist_ddim50_epoch_0183
+```
+
+Each panel is the complete output of its fixed-seed command rather than a
+post-generation selection.
+
+### Oxford Flowers 102 example
+
+These images are illustrative artifacts from an earlier long-running
+experiment; the selected epoch is recorded in each filename and need not match
 the current example config defaults.
 
-Example MNIST DDPM samples:
-
-![MNIST DDPM generated samples](assets/readme/mnist_ddpm_epoch_0100.png)
-
-MNIST reverse-process trajectory:
-
-![MNIST DDPM reverse trajectory](assets/readme/mnist_ddpm_epoch_0100_trajectory.png)
-
-Example Oxford Flowers 102 DDPM samples:
+DDPM samples:
 
 ![Oxford Flowers 102 DDPM generated samples](assets/readme/flowers102_ddpm_epoch_0681.png)
 
-Oxford Flowers 102 reverse-process trajectory:
+Reverse-process trajectory:
 
 ![Oxford Flowers 102 DDPM reverse trajectory](assets/readme/flowers102_ddpm_epoch_0681_trajectory.png)
 
@@ -423,15 +491,20 @@ loader, and locally available or downloadable Inception weights. On MPS, FID
 feature accumulation and distance computation run on CPU because the required
 double-precision linear algebra is not available on MPS; KID keeps the configured
 runtime device. The two MNIST configs are base-installation examples with DDPM
-and DDIM as their respective primary samplers. Both retain a lightweight DDIM
-diagnostic profile and disable reference metrics; see the Flowers102 configs for
-a complete DDPM/DDIM comparison.
+and DDIM as their respective primary samplers. They share a 41.7M-parameter
+attention UNet, cosine alpha-bar noise schedule, v-prediction target, step-wise
+warmup-cosine learning rate, and EMA. Both retain a lightweight
+DDIM diagnostic profile and disable reference metrics; see the Flowers102
+configs for a complete DDPM/DDIM comparison.
 
 Launch TensorBoard against one experiment's output root:
 
 ```bash
 tensorboard --logdir outputs/ddpm_mnist/<run>/tensorboard
 ```
+
+For run comparison, metric interpretation, diagnostic images, and troubleshooting,
+see the [TensorBoard guide](docs/tutorials/tensorboard.md).
 
 ## Sampling
 

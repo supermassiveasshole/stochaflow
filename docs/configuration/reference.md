@@ -1041,7 +1041,7 @@ native provider，扩展 Registry 不能占用。
 | `console` | 是否同时输出到终端。 |
 | `text_filename` | 文本日志文件名。 |
 | `metrics_filename` | JSONL 指标文件名。 |
-| `append` | 是否追加到已有文件；resume 时 runner 可覆盖。 |
+| `append` | 是否追加本次 run 目录中已存在的 local 文件；strict resume 不会用它续写旧 run。 |
 
 (config-component-loggers-tensorboard)=
 #### `tensorboard`
@@ -1103,6 +1103,7 @@ native provider，扩展 Registry 不能占用。
 | --- | --- | --- | --- |
 | `--config` | 否 | `—` | 新训练使用的完整实验 YAML；与 --resume 互斥且二者必须提供一个。 |
 | `--resume` | 否 | `—` | 从显式 checkpoint 文件或运行目录执行严格完整恢复；使用 checkpoint 保存的配置和训练状态，并与 --config 互斥。 |
+| `--observability-config` | 否 | `—` | 仅在 strict resume 启动时原子替换 diagnostics，并逐字段覆盖显式 logging 字段；顶层只允许 diagnostics 与 logging。 |
 | `--device` | 否 | `—` | 本次运行覆盖 trainer.device。 |
 | `--output-dir` | 否 | `—` | 本次运行覆盖 experiment.output_dir。 |
 | `--epochs` | 否 | `—` | 本次运行覆盖 trainer.num_epochs。 |

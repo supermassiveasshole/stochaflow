@@ -10,6 +10,7 @@ Gaussian diffusion、DDPM/DDIM、图像数据 recipe 和自动训练生命周期
 
 framework
 configuration/index
+tutorials/tensorboard
 tutorials/super-resolution
 tutorials/reuse-gaussian-components
 tutorials/custom-generation-family
@@ -32,6 +33,8 @@ research-notes/part-3-ddim
 - [配置手册](configuration/index.md)：从最小 YAML 到多源数据、K-fold、自定义组件、
   训练恢复与排错。
 - [完整字段参考](configuration/reference.md)：由 dataclass、Registry 和 CLI 自动生成。
+- [TensorBoard 使用指南](tutorials/tensorboard.md)：启用日志、比较多次运行、解读
+  loss/LR/diagnostic 面板并排查 event 路径。
 - [纵向扩展参考项目](configuration/reference-projects.md)：Physics reconstruction 与
   frozen-teacher distillation 的独立可安装实现。
 - [复用 Gaussian family 教程](tutorials/reuse-gaussian-components.md)与

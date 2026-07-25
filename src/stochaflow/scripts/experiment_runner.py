@@ -2,12 +2,14 @@
 
 import argparse
 import gc
+import hashlib
 import math
 import warnings
 from collections.abc import Sized
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
 import torch
@@ -28,7 +30,12 @@ from stochaflow.utils.checkpoint import (
     parse_rng_state,
     restore_rng_state,
 )
-from stochaflow.utils.config import StochaflowConfig, load_config, load_config_dict
+from stochaflow.utils.config import (
+    ConfigError,
+    StochaflowConfig,
+    load_config,
+    load_config_dict,
+)
 from stochaflow.utils.factory import TrainingComponents, build_training_components
 from stochaflow.utils.plugins import (
     ExtensionPluginProvenance,
@@ -43,6 +50,18 @@ from stochaflow.utils.run_manifest import (
     write_yaml_manifest,
 )
 from stochaflow.utils.seed import set_seed
+
+_OBSERVABILITY_SECTIONS = ("diagnostics", "logging")
+_OBSERVABILITY_LOGGING_FIELDS = ("log_every", "backends", "torch_logs")
+_CONFIG_OVERLAY_AUDIT_FIELDS = frozenset(
+    {
+        "kind",
+        "source_path",
+        "source_sha256",
+        "sections",
+        "logging_fields",
+    }
+)
 
 
 def _positive_optional(value: int | None, *, option: str) -> int | None:
@@ -117,6 +136,7 @@ class ResolvedTrainingInputs:
     checkpoint_path: Path | None
     checkpoint: CheckpointState | None
     startup_cwd: Path
+    config_overlays: list[dict[str, Any]]
 
 
 def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -137,6 +157,15 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.Argument
         help=(
             "Strictly resume from a checkpoint file or run directory using its "
             "saved training config and state."
+        ),
+    )
+    parser.add_argument(
+        "--observability-config",
+        type=Path,
+        default=None,
+        help=(
+            "Apply a diagnostics/logging-only YAML overlay while strictly "
+            "resuming from --resume."
         ),
     )
     parser.add_argument(
@@ -303,17 +332,272 @@ def _load_checkpoint_extension_provenance(
     return parse_extension_plugin_provenance(metadata.get("extension_plugins"))
 
 
+def _validate_observability_overlay(
+    raw: object,
+    *,
+    source: Path,
+) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{source} must contain a top-level mapping")
+    if not raw:
+        raise ConfigError(f"{source} must declare diagnostics and/or logging")
+    unknown = [key for key in raw if key not in _OBSERVABILITY_SECTIONS]
+    if unknown:
+        rendered = ", ".join(repr(key) for key in unknown)
+        raise ConfigError(
+            "observability config may contain only 'diagnostics' and 'logging'; "
+            f"found {rendered}"
+        )
+
+    diagnostics = raw.get("diagnostics")
+    if "diagnostics" in raw and not isinstance(diagnostics, list):
+        raise ConfigError("observability config diagnostics must be a list")
+    logging = raw.get("logging")
+    if "logging" in raw:
+        if not isinstance(logging, dict):
+            raise ConfigError("observability config logging must be a mapping")
+        if not logging:
+            raise ConfigError(
+                "observability config logging must declare at least one field"
+            )
+        unknown_logging = [
+            key for key in logging if key not in _OBSERVABILITY_LOGGING_FIELDS
+        ]
+        if unknown_logging:
+            rendered = ", ".join(repr(key) for key in unknown_logging)
+            raise ConfigError(
+                "observability config logging may contain only 'log_every', "
+                f"'backends', and 'torch_logs'; found {rendered}"
+            )
+    return raw
+
+
+def _load_observability_overlay(
+    path: str | Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    source = Path(path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"observability config does not exist: {source}")
+    encoded = source.read_bytes()
+    try:
+        document = encoded.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"observability config must be UTF-8 encoded: {source}"
+        ) from exc
+    try:
+        loaded = yaml.safe_load(document)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"invalid observability config YAML: {source}") from exc
+    raw = _validate_observability_overlay(loaded, source=source)
+    logging = cast(dict[str, Any], raw.get("logging", {}))
+    audit = {
+        "kind": "observability",
+        "source_path": str(source),
+        "source_sha256": hashlib.sha256(encoded).hexdigest(),
+        "sections": [
+            name for name in _OBSERVABILITY_SECTIONS if name in raw
+        ],
+        "logging_fields": [
+            name for name in _OBSERVABILITY_LOGGING_FIELDS if name in logging
+        ],
+    }
+    return deepcopy(raw), audit
+
+
+def _diagnostic_module_names(
+    config: StochaflowConfig,
+    *,
+    source: str,
+) -> set[str]:
+    names: set[str] = set()
+    for index, diagnostic in enumerate(config.diagnostics):
+        if "modules" not in diagnostic.params:
+            continue
+        raw_modules = cast(object, diagnostic.params["modules"])
+        if not isinstance(raw_modules, (list, tuple)):
+            raise ConfigError(
+                f"{source}.diagnostics[{index}].params.modules must be a sequence"
+            )
+        for module_index, raw_module in enumerate(raw_modules):
+            if not isinstance(raw_module, str) or not raw_module.strip():
+                raise ConfigError(
+                    f"{source}.diagnostics[{index}].params.modules"
+                    f"[{module_index}] must be a non-empty string"
+                )
+            names.add(raw_module)
+    return names
+
+
+def _apply_observability_overlay(
+    checkpoint_config: StochaflowConfig,
+    overlay: dict[str, Any],
+) -> StochaflowConfig:
+    raw_overlay = _validate_observability_overlay(
+        overlay,
+        source=Path("<observability-config>"),
+    )
+    merged = checkpoint_config.to_dict()
+    if "diagnostics" in raw_overlay:
+        merged["diagnostics"] = deepcopy(raw_overlay["diagnostics"])
+    if "logging" in raw_overlay:
+        checkpoint_logging = cast(object, merged.get("logging"))
+        if not isinstance(checkpoint_logging, dict):
+            raise TypeError("checkpoint config logging must be a mapping")
+        overlay_logging = cast(dict[str, Any], raw_overlay["logging"])
+        merged["logging"] = {
+            **deepcopy(checkpoint_logging),
+            **deepcopy(overlay_logging),
+        }
+    effective = load_config_dict(merged)
+    if "diagnostics" in raw_overlay:
+        checkpoint_modules = _diagnostic_module_names(
+            checkpoint_config,
+            source="checkpoint config",
+        )
+        effective_modules = _diagnostic_module_names(
+            effective,
+            source="observability config",
+        )
+        added_modules = sorted(effective_modules - checkpoint_modules)
+        if added_modules:
+            rendered = ", ".join(repr(name) for name in added_modules)
+            raise ConfigError(
+                "observability config cannot introduce diagnostics "
+                f"params.modules entries: {rendered}"
+            )
+    return effective
+
+
+def _canonical_audit_names(
+    raw: object,
+    *,
+    field_name: str,
+    allowed: tuple[str, ...],
+    allow_empty: bool,
+) -> list[str]:
+    if not isinstance(raw, list):
+        raise TypeError(f"checkpoint metadata.config_overlays {field_name} must be a list")
+    expected = [name for name in allowed if name in raw]
+    if raw != expected or (not allow_empty and not raw):
+        choices = ", ".join(repr(name) for name in allowed)
+        raise ValueError(
+            f"checkpoint metadata.config_overlays {field_name} must contain "
+            f"a canonical subset of {choices}"
+        )
+    return list(raw)
+
+
+def _is_absolute_audit_path(value: str) -> bool:
+    return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
+
+
+def _load_checkpoint_config_overlays(
+    payload: CheckpointState,
+) -> list[dict[str, Any]]:
+    metadata = cast(object, payload.get("metadata"))
+    if not isinstance(metadata, dict):
+        raise TypeError("checkpoint is missing valid metadata")
+    if "config_overlays" not in metadata:
+        return []
+    raw_overlays = cast(object, metadata["config_overlays"])
+    if not isinstance(raw_overlays, list):
+        raise TypeError("checkpoint metadata.config_overlays must be a list")
+
+    overlays: list[dict[str, Any]] = []
+    for index, raw_entry in enumerate(raw_overlays):
+        if not isinstance(raw_entry, dict):
+            raise TypeError(
+                f"checkpoint metadata.config_overlays[{index}] must be a mapping"
+            )
+        fields = set(raw_entry)
+        if fields != _CONFIG_OVERLAY_AUDIT_FIELDS:
+            missing = sorted(_CONFIG_OVERLAY_AUDIT_FIELDS - fields)
+            unknown = sorted(fields - _CONFIG_OVERLAY_AUDIT_FIELDS, key=str)
+            details: list[str] = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if unknown:
+                details.append("unknown " + ", ".join(map(str, unknown)))
+            raise ValueError(
+                f"checkpoint metadata.config_overlays[{index}] has invalid fields: "
+                + "; ".join(details)
+            )
+        if raw_entry["kind"] != "observability":
+            raise ValueError(
+                f"checkpoint metadata.config_overlays[{index}].kind must be "
+                "'observability'"
+            )
+        source_path = cast(object, raw_entry["source_path"])
+        if (
+            not isinstance(source_path, str)
+            or not source_path
+            or not _is_absolute_audit_path(source_path)
+        ):
+            raise ValueError(
+                f"checkpoint metadata.config_overlays[{index}].source_path "
+                "must be an absolute path string"
+            )
+        source_sha256 = cast(object, raw_entry["source_sha256"])
+        if (
+            not isinstance(source_sha256, str)
+            or len(source_sha256) != 64
+            or source_sha256 != source_sha256.lower()
+            or any(character not in "0123456789abcdef" for character in source_sha256)
+        ):
+            raise ValueError(
+                f"checkpoint metadata.config_overlays[{index}].source_sha256 "
+                "must be a lowercase SHA-256 hex digest"
+            )
+        sections = _canonical_audit_names(
+            raw_entry["sections"],
+            field_name=f"[{index}].sections",
+            allowed=_OBSERVABILITY_SECTIONS,
+            allow_empty=False,
+        )
+        logging_fields = _canonical_audit_names(
+            raw_entry["logging_fields"],
+            field_name=f"[{index}].logging_fields",
+            allowed=_OBSERVABILITY_LOGGING_FIELDS,
+            allow_empty=True,
+        )
+        if "logging" not in sections and logging_fields:
+            raise ValueError(
+                f"checkpoint metadata.config_overlays[{index}].logging_fields "
+                "must be empty when logging is not an overlaid section"
+            )
+        overlays.append(
+            deepcopy(
+                {
+                    "kind": "observability",
+                    "source_path": source_path,
+                    "source_sha256": source_sha256,
+                    "sections": sections,
+                    "logging_fields": logging_fields,
+                }
+            )
+        )
+    return overlays
+
+
 def _resolve_training_inputs(args: argparse.Namespace) -> ResolvedTrainingInputs:
     """Resolve one authoritative training config before constructing components."""
 
     config_path = cast(Path | None, args.config)
     requested_resume = cast(Path | None, args.resume)
+    observability_path = cast(
+        Path | None,
+        getattr(args, "observability_config", None),
+    )
     if (config_path is None) == (requested_resume is None):
         raise ValueError("train requires exactly one of --config or --resume")
+    if observability_path is not None and requested_resume is None:
+        raise ValueError("--observability-config requires --resume")
 
     startup_cwd = Path.cwd().resolve()
     checkpoint_path = _resolve_resume_checkpoint(requested_resume)
     checkpoint: CheckpointState | None = None
+    config_overlays: list[dict[str, Any]] = []
     if checkpoint_path is None:
         assert config_path is not None
         unresolved_config = load_config(config_path)
@@ -324,7 +608,17 @@ def _resolve_training_inputs(args: argparse.Namespace) -> ResolvedTrainingInputs
             checkpoint_path,
             map_location="cpu",
         )
-        unresolved_config = _load_training_checkpoint_config(checkpoint)
+        checkpoint_config = _load_training_checkpoint_config(checkpoint)
+        config_overlays = _load_checkpoint_config_overlays(checkpoint)
+        if observability_path is None:
+            unresolved_config = checkpoint_config
+        else:
+            overlay, audit = _load_observability_overlay(observability_path)
+            unresolved_config = _apply_observability_overlay(
+                checkpoint_config,
+                overlay,
+            )
+            config_overlays.append(audit)
         plan = prepare_extension_plugins(
             unresolved_config,
             expected_provenance=_load_checkpoint_extension_provenance(checkpoint),
@@ -347,6 +641,7 @@ def _resolve_training_inputs(args: argparse.Namespace) -> ResolvedTrainingInputs
         checkpoint_path=checkpoint_path,
         checkpoint=checkpoint,
         startup_cwd=startup_cwd,
+        config_overlays=config_overlays,
     )
 
 
@@ -513,6 +808,13 @@ def _validate_inherited_best(
     if candidate_provenance != selected_provenance:
         raise ValueError(
             f"inherited best checkpoint '{source}' extension provenance does "
+            "not match the selected checkpoint"
+        )
+    selected_overlays = _load_checkpoint_config_overlays(selected_payload)
+    candidate_overlays = _load_checkpoint_config_overlays(payload)
+    if candidate_overlays != selected_overlays:
+        raise ValueError(
+            f"inherited best checkpoint '{source}' config overlay history does "
             "not match the selected checkpoint"
         )
     candidate_epoch = cast(object, payload.get("epoch"))
@@ -724,6 +1026,7 @@ def _run_single_run(
     checkpoint_payload: CheckpointState | None,
     startup_cwd: Path,
     runtime_options: dict[str, Any],
+    config_overlays: list[dict[str, Any]] | None = None,
 ) -> None:
     config.trainer.num_epochs = options.num_epochs
     config.trainer.show_progress = options.show_progress
@@ -739,10 +1042,12 @@ def _run_single_run(
     }
     extension_metadata = extension_runtime_metadata(extensions)
     selected_components = selected_component_identities(config)
+    overlay_history = deepcopy(config_overlays or [])
     checkpoint_metadata = {
         **extension_metadata,
         "selected_components": selected_components,
         "config_source": config_source,
+        "config_overlays": deepcopy(overlay_history),
         "lineage": lineage,
         "startup_cwd": str(startup_cwd),
         "runtime_options": runtime_options,
@@ -755,6 +1060,7 @@ def _run_single_run(
             "config": config.to_dict(),
             **extension_metadata,
             "selected_components": selected_components,
+            "config_overlays": deepcopy(overlay_history),
             "lineage": lineage,
             "startup_cwd": str(startup_cwd),
             "runtime_options": runtime_options,
@@ -875,9 +1181,18 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
     config.experiment.exp_id = exp_id
     config.experiment.output_dir = str(output_dir)
     set_seed(config.experiment.seed, deterministic=options.deterministic)
+    observability_config = cast(
+        Path | None,
+        getattr(args, "observability_config", None),
+    )
     runtime_options = {
         "device": args.device,
         "output_dir": str(args.output_dir) if args.output_dir is not None else None,
+        "observability_config": (
+            str(observability_config.resolve())
+            if observability_config is not None
+            else None
+        ),
         "epochs": args.epochs,
         "limit_batches": args.limit_batches,
         "limit_validation_batches": args.limit_validation_batches,
@@ -898,4 +1213,5 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
         checkpoint_payload=inputs.checkpoint,
         startup_cwd=inputs.startup_cwd,
         runtime_options=runtime_options,
+        config_overlays=inputs.config_overlays,
     )

@@ -75,8 +75,8 @@ lr_scheduler:
   name: warmup_cosine
   interval: step
   params:
-    warmup_steps: 500
-    total_steps: 10500
+    warmup_steps: 150
+    total_steps: 3000
     min_lr_ratio: 0.05
 
 ema:
@@ -173,7 +173,7 @@ diagnostics:
             params: {}
 
 trainer:
-  num_epochs: 700
+  num_epochs: 200
   device: auto
   max_grad_norm: 1.0
   show_progress: true

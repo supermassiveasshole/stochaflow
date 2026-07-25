@@ -595,6 +595,71 @@ def test_project_name_accepts_canonical_ascii_slugs(name: str) -> None:
     assert validate_project_name(name) == name
 
 
+@pytest.mark.parametrize("flag_name", ["O_DIRECTORY", "O_NOFOLLOW"])
+def test_anchored_publication_fails_closed_without_secure_open_flags(
+    monkeypatch: pytest.MonkeyPatch,
+    flag_name: str,
+) -> None:
+    monkeypatch.delattr(scaffold.os, flag_name, raising=False)
+
+    assert scaffold._anchored_open_flags() is None
+    assert not scaffold._supports_anchored_publication()
+    with pytest.raises(ProjectScaffoldError, match="not supported on this platform"):
+        scaffold._require_anchored_open_flags()
+
+
+@pytest.mark.parametrize(
+    ("capability_name", "missing_operation"),
+    [
+        ("supports_dir_fd", os.open),
+        ("supports_fd", os.scandir),
+        ("supports_follow_symlinks", os.stat),
+    ],
+)
+def test_anchored_publication_requires_every_descriptor_capability(
+    monkeypatch: pytest.MonkeyPatch,
+    capability_name: str,
+    missing_operation: object,
+) -> None:
+    monkeypatch.setattr(scaffold.os, "O_DIRECTORY", 0x10000, raising=False)
+    monkeypatch.setattr(scaffold.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.setattr(
+        scaffold.os,
+        "supports_dir_fd",
+        {os.open, os.mkdir, os.stat, os.unlink, os.rmdir},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scaffold.os,
+        "supports_fd",
+        {os.scandir},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scaffold.os,
+        "supports_follow_symlinks",
+        {os.stat},
+        raising=False,
+    )
+    assert scaffold._supports_anchored_publication()
+
+    supported = set(getattr(scaffold.os, capability_name))
+    supported.remove(missing_operation)
+    monkeypatch.setattr(scaffold.os, capability_name, supported)
+
+    assert not scaffold._supports_anchored_publication()
+
+
+def test_anchored_publication_handles_missing_capability_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(scaffold.os, "O_DIRECTORY", 0x10000, raising=False)
+    monkeypatch.setattr(scaffold.os, "O_NOFOLLOW", 0x20000, raising=False)
+    monkeypatch.delattr(scaffold.os, "supports_dir_fd", raising=False)
+
+    assert not scaffold._supports_anchored_publication()
+
+
 @pytest.mark.skipif(
     not scaffold._supports_anchored_publication(),
     reason="secure pre-existing directory publication is unavailable",

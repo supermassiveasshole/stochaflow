@@ -27,5 +27,6 @@
     "${workspaceFolder}/.venv/bin/ruff",
     "${workspaceFolder}/.venv/Scripts/ruff.exe"
   ],
-  "ruff.configurationPreference": "filesystemFirst"
+  "ruff.configurationPreference": "filesystemFirst",
+  "markdown-preview-enhanced.breakOnSingleNewLine": false
 }

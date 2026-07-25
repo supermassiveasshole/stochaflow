@@ -54,6 +54,12 @@ class _AnchoredFile:
     identity_descriptor: int
 
 
+@dataclass(frozen=True, slots=True)
+class _AnchoredOpenFlags:
+    directory: int
+    nofollow: int
+
+
 _PROJECT_NAME_PATTERN: Final = re.compile(
     r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
     flags=re.ASCII,
@@ -362,14 +368,40 @@ def _same_directory(path: Path, identity: _DirectoryIdentity) -> bool:
 
 
 def _supports_anchored_publication() -> bool:
+    supports_dir_fd = getattr(os, "supports_dir_fd", frozenset())
+    supports_fd = getattr(os, "supports_fd", frozenset())
+    supports_follow_symlinks = getattr(
+        os,
+        "supports_follow_symlinks",
+        frozenset(),
+    )
     return (
-        hasattr(os, "O_DIRECTORY")
-        and hasattr(os, "O_NOFOLLOW")
+        _anchored_open_flags() is not None
         and all(
-            operation in os.supports_dir_fd
+            operation in supports_dir_fd
             for operation in (os.open, os.mkdir, os.stat, os.unlink, os.rmdir)
         )
+        and os.scandir in supports_fd
+        and os.stat in supports_follow_symlinks
     )
+
+
+def _anchored_open_flags() -> _AnchoredOpenFlags | None:
+    directory = getattr(os, "O_DIRECTORY", None)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if not isinstance(directory, int) or not isinstance(nofollow, int):
+        return None
+    return _AnchoredOpenFlags(directory=directory, nofollow=nofollow)
+
+
+def _require_anchored_open_flags() -> _AnchoredOpenFlags:
+    flags = _anchored_open_flags()
+    if flags is None:
+        raise ProjectScaffoldError(
+            "secure descriptor-relative directory operations are not "
+            "supported on this platform"
+        )
+    return flags
 
 
 def _open_existing_directory(
@@ -381,10 +413,11 @@ def _open_existing_directory(
             "secure publication into a pre-existing empty directory is not "
             "supported on this platform; remove the directory and retry"
         )
+    flags = _require_anchored_open_flags()
     try:
         descriptor = os.open(
             target,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            os.O_RDONLY | flags.directory | flags.nofollow,
         )
     except OSError as exc:
         raise ProjectScaffoldError(
@@ -413,9 +446,10 @@ def _exclusive_write_at(
     *,
     parent: tuple[str, ...],
 ) -> _AnchoredFile:
+    flags = _require_anchored_open_flags()
     identity_descriptor = os.open(
         name,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | flags.nofollow,
         0o666,
         dir_fd=parent_descriptor,
     )
@@ -476,6 +510,7 @@ def _entry_matches(
 def _clear_directory_descriptor(descriptor: int) -> None:
     """Remove entries through one pinned directory without following replacements."""
 
+    flags = _require_anchored_open_flags()
     with os.scandir(descriptor) as entries:
         names = tuple(entry.name for entry in entries)
     for name in names:
@@ -497,7 +532,7 @@ def _clear_directory_descriptor(descriptor: int) -> None:
             try:
                 child_descriptor = os.open(
                     name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    os.O_RDONLY | flags.directory | flags.nofollow,
                     dir_fd=descriptor,
                 )
             except OSError:
@@ -535,10 +570,11 @@ def _remove_owned_staging(
             with suppress(OSError):
                 staging.rmdir()
         return
+    flags = _require_anchored_open_flags()
     try:
         descriptor = os.open(
             staging,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            os.O_RDONLY | flags.directory | flags.nofollow,
         )
     except OSError:
         return
@@ -574,6 +610,7 @@ def _publish_to_existing_empty_directory(
 ) -> None:
     expected = _real_directory_identity(target)
     root_descriptor = _open_existing_directory(target, expected)
+    flags = _require_anchored_open_flags()
     directory_descriptors: dict[tuple[str, ...], int] = {(): root_descriptor}
     created_directories: list[_AnchoredEntry] = []
     created_files: list[_AnchoredFile] = []
@@ -601,7 +638,7 @@ def _publish_to_existing_empty_directory(
                 created_directories.append(created_entry)
                 descriptor = os.open(
                     directory_name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    os.O_RDONLY | flags.directory | flags.nofollow,
                     dir_fd=parent_descriptor,
                 )
                 directory_stat = os.fstat(descriptor)

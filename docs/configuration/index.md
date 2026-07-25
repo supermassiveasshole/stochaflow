@@ -30,6 +30,7 @@ troubleshooting
 | 理解 config/checkpoint 权威并跨环境移动实验 | [Checkpoint、配置权威与可移植性](compatibility-and-migration.md) |
 | 查看 Physics reconstruction 与蒸馏的完整扩展 | [纵向扩展参考项目](reference-projects.md) |
 | 训练、smoke run、恢复和 checkpoint 采样 | [常用工作流](workflows.md) |
+| 用 TensorBoard 查看 loss、学习率、样本网格并比较运行 | [TensorBoard 使用指南](../tutorials/tensorboard.md) |
 | 估算大规模输出与 trajectory 内存 | [Sampling artifact 容量](sampling-capacity.md) |
 | 根据错误信息定位问题 | [排错索引](troubleshooting.md) |
 
@@ -94,16 +95,37 @@ uv run stochaflow train --config configs/ddim_mnist.yaml
 ```
 
 两份配置共享数据、模型、训练目标和高级特性；`ddpm_mnist.yaml` 的主采样器是
-DDPM，`ddim_mnist.yaml` 的主采样器是 100 步确定性 DDIM。两者都启用原生
-PyTorch LR scheduler、EMA、TensorBoard 和轻量 DDIM `diffusion_quality`
-对照；reference KID/FID 默认关闭，因此不需要 `quality` extra。查看 DDPM
-训练与 diagnostic 指标：
+DDPM，`ddim_mnist.yaml` 的主采样器是 100 步确定性 DDIM。两者都启用逐 step
+warmup-cosine LR scheduler、EMA、TensorBoard 和固定 seed 的 DDIM-50
+`diffusion_quality` 对照。该对照每 100 step 记录 timestep 分桶损失、噪声对齐统计，
+并在 5 个固定噪声时刻记录 `x0` 重建 MSE/PSNR；每 10 轮用 EMA 生成固定的 32 张
+样本网格。轨迹动画默认关闭，以减少 I/O 和视觉噪声。reference KID/FID 也默认关闭：
+其 ImageNet 特征不适合直接衡量 MNIST 数字语义，因此不需要 `quality` extra。查看
+DDPM 训练与 diagnostic 指标：
+
+当前 MNIST quality profile 使用 41.7M 参数的 attention UNet、cosine alpha-bar
+噪声计划、v-prediction、batch 128 和 2 个 DataLoader worker。训练集每轮 390 个
+optimizer step，因而 200 轮 scheduler 明确配置为 78,000 step，其中前 2,000 step
+warmup；使用 `--epochs` 或 `--limit-batches` 做 smoke run 时，这条完整调度曲线只用于
+组件验证，不代表缩短实验已经完成一次等比例 LR 周期。
 
 ```bash
 tensorboard --logdir outputs/ddpm_mnist/<run>/tensorboard
 ```
 
 查看 DDIM 运行时，将路径根替换为 `outputs/ddim_mnist`。
+
+若已有 strict-resume checkpoint，只想启用同一套固定 DDIM-50、32 样本、seed 123
+的 `x0` 重建监控和 local/TensorBoard 输出，可使用仓库提供的 observation-only 配置：
+
+```bash
+uv run stochaflow train \
+  --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt \
+  --observability-config configs/overlays/mnist_observability.yaml
+```
+
+该文件只允许 `diagnostics` 与 `logging`，不会放宽模型、数据、optimizer、scheduler、
+EMA 或训练进度的严格恢复。详细替换、继承和审计语义见[恢复训练](workflows.md#恢复训练)。
 
 从最佳 checkpoint 采样：
 

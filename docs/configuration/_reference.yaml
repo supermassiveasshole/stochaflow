@@ -334,7 +334,7 @@ registries:
           console: {description: 是否同时输出到终端。}
           text_filename: {description: 文本日志文件名。}
           metrics_filename: {description: JSONL 指标文件名。}
-          append: {description: 是否追加到已有文件；resume 时 runner 可覆盖。}
+          append: {description: 是否追加本次 run 目录中已存在的 local 文件；strict resume 不会用它续写旧 run。}
       tensorboard:
         description: 将指标和图像写入 TensorBoard event 文件。
         runtime_parameters: [output_dir, run_name]
@@ -378,6 +378,7 @@ cli:
   "train.--deterministic": {description: 启用 PyTorch 严格确定性算法；没有确定性实现的算子会报错。}
   "train.--no-progress": {description: 禁用 Rich 进度条。}
   "train.--resume": {description: 从显式 checkpoint 文件或运行目录执行严格完整恢复；使用 checkpoint 保存的配置和训练状态，并与 --config 互斥。}
+  "train.--observability-config": {description: 仅在 strict resume 启动时原子替换 diagnostics，并逐字段覆盖显式 logging 字段；顶层只允许 diagnostics 与 logging。}
   "train.--skip-final-sample": {description: 跳过训练完成后的最佳 checkpoint 验收采样。}
   "train.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}
   "sample.--config": {description: 可选完整外部配置（整体权威），或在显式 checkpoint 上应用的 sampling/extensions 轻量 overlay。}

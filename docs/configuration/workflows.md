@@ -74,9 +74,11 @@ kernel。配置随机 seed 仍应固定，但跨设备、PyTorch 版本和第三
 同理，`--epochs` 和 `--limit-batches` 不会按参数名猜测并改写 optimizer/scheduler
 constructor kwargs。
 
-strict resume 不再把 checkpoint config 与外部 YAML 当作两份可合并配置；它以 checkpoint
-保存的 config/state 为唯一 base，只应用 device、output root、目标 epoch、progress 和
-batch limits 等文档化安全运行时覆盖。
+strict resume 不再把 checkpoint config 与外部完整 YAML 当作两份可合并配置；它以
+checkpoint 保存的 config/state 为唯一 base，只应用 device、output root、目标 epoch、
+progress 和 batch limits 等文档化安全运行时覆盖。可选的
+`--observability-config` 只有一个更窄的职责：在不改变任何训练资产或恢复状态的前提下，
+替换本次兄弟 run 的 diagnostics 和显式 logging 字段。
 
 ### Config 与 checkpoint 权威
 
@@ -86,7 +88,7 @@ config、checkpoint 和 CLI 当作三份对等配置做通用 merge。
 | Workflow | 权威 base config | Checkpoint 角色 | 后续覆盖 |
 | --- | --- | --- | --- |
 | `train --config ...` | 外部完整 config | 无 | train CLI flags |
-| `train --resume ...` | checkpoint config | 完整训练 state | 安全 train runtime flags |
+| `train --resume ...` | checkpoint config | 完整训练 state | 安全 train runtime flags；可选 observability config |
 | `sample --checkpoint ...` | checkpoint config | 推理 state | sample CLI flags |
 | 完整 config sampling | 外部完整 config | 推理 state | sample CLI flags |
 | sampling-only overlay | checkpoint config | 推理 state | 完整 `sampling`/显式 `extensions.plugins`，再加 sample CLI flags |
@@ -153,6 +155,52 @@ invocation 实际构建了训练或数据组件。完整 config 仍是重建权�
 stochaflow train \
   --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt
 ```
+
+### Strict Resume Observability Overlay
+
+长训练恢复时，可以保留全部 checkpoint 训练语义，只为新 invocation 配置监控：
+
+```bash
+stochaflow train \
+  --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt \
+  --observability-config configs/overlays/mnist_observability.yaml
+```
+
+`--observability-config` 只限 strict resume，与 fresh `--config` training 同用会失败。
+YAML 顶层严格只允许 `diagnostics` 和 `logging`；至少应声明其中一个，其他任何顶层字段
+都会被拒绝。这不是通用 config merge：
+
+- 显式 `diagnostics` 完整替换 checkpoint 保存的有序 diagnostic 列表；
+- `logging` 只覆盖其中显式声明的字段；显式 `backends` 完整替换 backend 列表；
+- 省略的 `logging.log_every`、`logging.backends` 或 `logging.torch_logs` 分别继承
+  checkpoint 值；
+- 模型、Process、TrainingBuilder、Objective、数据、optimizer、scheduler、EMA、
+  trainer、sampling、artifacts 和 extension selection 均不可通过该文件改变；
+- diagnostic 的 `params.modules` 不能引入 checkpoint 未选择的新 provider module。
+
+空的顶层 mapping 和空的 `logging: {}` 都会被拒绝；若只需关闭诊断，应显式使用
+`diagnostics: []`。
+
+仓库示例固定使用 EMA、确定性 DDIM-50、`seed: 123` 和 32 个样本，并记录固定 timestep
+的 `x0` 重建 MSE/PSNR、重建面板和样本网格。它显式启用 local 与 TensorBoard backends，
+但省略 `log_every`，因此沿用 checkpoint 的记录间隔。`diagnostics: []` 可显式关闭全部
+diagnostics；诊断组件和 logger 遵守只观测契约，不拥有 checkpoint-restored state。
+provider cache、错误计数、打开的文件和 TensorBoard writer 都会为本次 invocation
+重新创建。
+
+observability config 只在进程启动时读取和校验，不会监视文件变化或在训练中热加载。
+resume 仍创建新的兄弟 run，因此 local 日志和 TensorBoard event 文件写入新目录；它既不
+续写旧 event 文件，也不重开旧 logger。若要在 TensorBoard 比较恢复前后曲线，应把
+`--logdir` 指向包含两个时间戳目录的共同 output root。
+
+最终生效的 `diagnostics`/`logging` 会写入新 run 的 `resolved_config.yaml`，并成为该 run
+后续 checkpoint 的权威配置。`run_manifest.yaml` 和 checkpoint metadata 的
+`config_overlays` 审计记录会固化 `kind: observability`、`source_path`、
+`source_sha256`、生效的 `sections`，以及 `logging_fields` 中本次显式提供的字段；同时
+`runtime_options.observability_config` 记录本次 CLI 输入。源 checkpoint 与旧 run
+不会被改写。再次应用 observability config 时会继承历史记录并追加本次 entry；从新
+checkpoint 再次 resume 且不传该选项时，使用的就是先前已固化的 effective config 和
+审计链。
 
 `--resume` 与 `--config` 互斥。checkpoint v8 保存 resolved config、primary inference
 model、可选 Process/Objective、可选 EMA model、optimizer、scheduler、EMA、具名

@@ -68,7 +68,12 @@ class TrainEpochEndEvent:
 
 
 class TrainingDiagnostic:
-    """Typed lifecycle contract implemented by every training diagnostic."""
+    """Observation-only lifecycle contract for training diagnostics.
+
+    Implementations may emit metrics and artifacts, but must not mutate managed
+    training state or own checkpoint-restored state. Each training invocation
+    constructs fresh diagnostic instances; caches and counters are ephemeral.
+    """
 
     def on_fit_start(self, event: FitStartEvent) -> None:
         """Initialize resources and validate runtime capabilities."""

@@ -55,6 +55,16 @@ class MinimalDiagnostic(TrainingDiagnostic):
 
 REGISTRIES.diagnostics.add("test_minimal", MinimalDiagnostic)
 
+TINY_UNET_PARAMS = {
+    "in_channels": 1,
+    "out_channels": 1,
+    "base_channels": 16,
+    "channel_multipliers": [1, 2],
+    "num_res_blocks": 1,
+    "time_embedding_dim": 32,
+    "dropout": 0.0,
+}
+
 
 class RegisteredOptimizer(Optimizer):
     """Test extension optimizer using the native constructor convention."""
@@ -185,12 +195,19 @@ def test_build_training_components_from_ddpm_mnist_config() -> None:
     assert not hasattr(components.process, "schedule")
     assert components.process.num_timesteps == 1000
     assert isinstance(components.plan.strategy, GaussianDenoisingTrainingStrategy)
+    assert components.plan.strategy.prediction_type == "v"
     assert isinstance(components.objective, MSEObjective)
-    assert isinstance(components.optimizer, Optimizer)
+    assert isinstance(components.optimizer, torch.optim.Adam)
     assert components.ema is not None
-    assert isinstance(components.lr_scheduler, CosineAnnealingLR)
-    assert components.lr_scheduler.T_max == 30
-    assert components.trainer.lr_scheduler_interval == "epoch"
+    assert components.ema.decay == 0.9995
+    assert components.ema.update_after_step == 100
+    assert components.ema.update_every == 1
+    assert isinstance(components.lr_scheduler, WarmupCosineLR)
+    assert components.lr_scheduler.warmup_steps == 2000
+    assert components.lr_scheduler.total_steps == 78000
+    assert components.lr_scheduler.min_lr_ratio == pytest.approx(0.05)
+    assert components.lr_scheduler.optimizer is components.optimizer
+    assert components.trainer.lr_scheduler_interval == "step"
     assert isinstance(components.logger, ExperimentLogger)
     assert isinstance(components.checkpoint_manager, CheckpointManager)
     assert isinstance(components.trainer, Trainer)
@@ -208,7 +225,8 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
     assert isinstance(components.objective, MSEObjective)
     assert isinstance(components.optimizer, Optimizer)
     assert isinstance(components.lr_scheduler, WarmupCosineLR)
-    assert components.lr_scheduler.total_steps == 10500
+    assert components.lr_scheduler.warmup_steps == 150
+    assert components.lr_scheduler.total_steps == 3000
     assert components.ema is not None
     assert len(components.diagnostics) == 1
     assert isinstance(components.logger, ExperimentLogger)
@@ -218,6 +236,7 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
 
 def test_gaussian_training_requires_a_configured_process() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["process"] = None
     config = load_config_dict(raw)
 
@@ -250,6 +269,7 @@ def test_mse_objective_owns_scalar_and_per_sample_loss_semantics() -> None:
 
 def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["process"]["name"] = "test_learnable_gaussian"
     raw["experiment"]["output_dir"] = str(tmp_path)
     config = load_config_dict(raw)
@@ -828,6 +848,7 @@ def test_removed_native_aliases_are_not_compatibility_names() -> None:
 
 def test_disabled_lr_scheduler_uses_safe_trainer_interval() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["lr_scheduler"] = None
     config = load_config_dict(raw)
 
@@ -839,6 +860,7 @@ def test_disabled_lr_scheduler_uses_safe_trainer_interval() -> None:
 
 def test_unknown_diagnostic_raises_registry_error() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["diagnostics"] = [{"name": "missing", "params": {}}]
     config = load_config_dict(raw)
 

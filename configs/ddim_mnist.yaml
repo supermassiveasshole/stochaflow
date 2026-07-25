@@ -21,11 +21,12 @@ data:
       random_horizontal_flip: false
     loader:
       batch_size: 128
-      num_workers: 0
+      num_workers: 2
       shuffle: true
       drop_last: true
-      pin_memory: false
-      persistent_workers: false
+      pin_memory: true
+      persistent_workers: true
+      prefetch_factor: 4
       steps_per_epoch: auto
     partition:
       mode: holdout
@@ -36,26 +37,28 @@ model:
   params:
     in_channels: 1
     out_channels: 1
-    base_channels: 64
+    base_channels: 96
     channel_multipliers: [1, 2, 4]
-    num_res_blocks: 2
-    time_embedding_dim: 128
+    num_res_blocks: 3
+    time_embedding_dim: 192
     dropout: 0.1
+    attention_levels: [2]
+    attention_heads: 4
 
 process:
   name: discrete_gaussian
   params:
     schedule:
-      name: linear_beta
+      name: cosine_alpha_bar
       params:
         num_timesteps: 1000
-        beta_start: 0.0001
-        beta_end: 0.02
+        s: 0.008
+        max_beta: 0.999
 
 training:
   name: gaussian_denoising
   params:
-    prediction_type: epsilon
+    prediction_type: v
 
 objective:
   name: mse
@@ -65,17 +68,18 @@ objective:
 optimizer:
   name: torch.optim.Adam
   params:
-    lr: 0.0002
+    lr: 0.0003
     weight_decay: 0.0
     betas: [0.9, 0.999]
     eps: 1.0e-8
 
 lr_scheduler:
-  name: torch.optim.lr_scheduler.CosineAnnealingLR
-  interval: epoch
+  name: warmup_cosine
+  interval: step
   params:
-    T_max: 30
-    eta_min: 0.00002
+    warmup_steps: 2000
+    total_steps: 78000
+    min_lr_ratio: 0.05
 
 ema:
   enabled: true
@@ -93,7 +97,7 @@ sampling:
     name: standard_denoising
     params:
       weights: auto
-      prediction_type: epsilon
+      prediction_type: v
       clip_denoised: true
       sampler:
         name: ddim
@@ -115,22 +119,22 @@ diagnostics:
       modules: []
       cadence:
         step_every: 100
-        artifact_every_epochs: 5
+        artifact_every_epochs: 10
       sampling:
-        sample_num: 8
-        batch_size: 8
+        sample_num: 32
+        batch_size: 32
         seed: 123
       use_ema: true
-      failure_policy: raise
+      failure_policy: warn
       samplers:
-        - id: ddim_20
+        - id: ddim_50
           name: ddim
           params:
-            num_inference_steps: 20
+            num_inference_steps: 50
             eta: 0.0
           trajectory:
-            enabled: true
-            every_steps: 2
+            enabled: false
+            every_steps: 5
             gif_fps: 8
       providers:
         step_metrics:
@@ -138,6 +142,9 @@ diagnostics:
             params: {buckets: 10}
           - name: noise_alignment
             params: {}
+          - name: x0_reconstruction
+            params:
+              timesteps: [50, 250, 500, 750, 900]
         sampler_metrics:
           - name: sample_statistics
             params: {}
@@ -150,19 +157,17 @@ diagnostics:
               max_samples: 8
         sampler_artifacts:
           - name: sample_grid
-            params: {nrow: 4}
-          - name: trajectory
-            params: {}
+            params: {nrow: 8}
       reference:
         enabled: false
 
 trainer:
-  num_epochs: 30
+  num_epochs: 200
   device: auto
   max_grad_norm: 1.0
   show_progress: true
   early_stopping:
-    enabled: true
+    enabled: false
     monitor: valid_loss
     mode: min
     patience: 7
@@ -180,4 +185,4 @@ logging:
   torch_logs: {}
 
 artifacts:
-  checkpoint_every: 5
+  checkpoint_every: 50
