@@ -4,7 +4,8 @@
     "tests",
     "tools",
     "docs/conf.py",
-    "examples/extension-projects"
+    "examples/extension-projects",
+    "examples/showcases/afhq-v2/src"
   ],
   "exclude": [
     "**/node_modules",
@@ -56,6 +57,13 @@
       "extraPaths": [
         "src",
         "examples/extension-projects/knowledge-distillation/src"
+      ]
+    },
+    {
+      "root": "examples/showcases/afhq-v2",
+      "extraPaths": [
+        "src",
+        "examples/showcases/afhq-v2/src"
       ]
     }
   ],
