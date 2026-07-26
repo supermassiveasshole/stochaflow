@@ -29,7 +29,7 @@ profiles:
     measured_runs: 5
 
   dfsr_trajectory_preview:
-    description: Stage 7 sparse trajectory preview with eight samples.
+    description: Sparse trajectory preview with eight samples.
     num_samples: 8
     batch_size: 8
     shape: [3, 256, 256]
@@ -43,7 +43,7 @@ profiles:
     measured_runs: 5
 
   dfsr_image_preview:
-    description: Stage 7 sparse image-grid and GIF preview with eight samples.
+    description: Sparse image-grid and GIF preview with eight samples.
     num_samples: 8
     batch_size: 8
     shape: [3, 256, 256]

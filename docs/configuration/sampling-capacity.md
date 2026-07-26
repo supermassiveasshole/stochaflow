@@ -126,7 +126,7 @@ trajectory 可以在与主重建分开的采样调用中生成。Physics AI 参�
 preview 保留 4 份 snapshot，Builder/raw artifact payload 为 30 MiB，`tensor`
 writer 结构性峰值下界为 78 MiB。40 步 preview 保留 5 份 snapshot，
 对应为 36 MiB 和 96 MiB。image writer 的实际峰值和文件大小仍需在
-目标主机上测量；下方参考主机表已提供一组 high-entropy PNG/GIF 证据。
+目标主机上测量，并保存在本地报告或外部实验跟踪系统中。
 
 ## 验收证据的层级
 
@@ -142,7 +142,7 @@ CPU/GPU 内存、dtype、shape、sample/batch 数、accepted steps、trajectory
 间隔、writer 和产物字节数。RSS、accelerator allocated/reserved、wall time 和
 throughput 都是**参考主机证据**，不应写成通用容量保证。
 
-### 复现参考主机基准
+### 运行本地主机基准
 
 受版本控制的 profile 位于 `benchmarks/sampling_capacity_profiles.yaml`。先查看
 可执行 profile 和只做数学投影的 profile：
@@ -155,7 +155,7 @@ uv run python tools/benchmark_sampling_capacity.py \
 
 下列命令在 fresh subprocess 中分别运行 full final-only 和小样本 preview，
 同时包含 image/GIF、dense stress、3D 小样本和只做数学投影的大 profile，
-并保存与当前参考结果同构的机器可读报告：
+并保存机器可读的本地报告：
 
 ```bash
 uv run python tools/benchmark_sampling_capacity.py \
@@ -169,49 +169,30 @@ uv run python tools/benchmark_sampling_capacity.py \
   --profile field3d_dense_projection \
   --profile dfsr_full_trajectory_projection \
   --device cpu \
-  --result outputs/sampling-capacity.json
+  --result outputs/benchmarks/sampling-capacity.json
 ```
 
-更换 `--device` 会得到新的参考主机/backend 证据，不是对原报告的
-“通过性增强”。投影 profile 不分配对应的大 Tensor，只根据 shape、dtype、
-sample 数和 observation 数计算上述结构性 payload。
+更换 `--device` 会得到新的主机/backend 证据，不能把它当作对其他报告或平台的
+“通过性增强”。投影 profile 不分配对应的大 Tensor，只根据 shape、dtype、sample
+数和 observation 数计算上述结构性 payload。
 
-### 2026-07-22 参考主机结果
+### 本地结果与版本控制边界
 
-已提交的机器可读结果位于
-`benchmarks/results/stage6-macos-arm64.json`。参考环境为 macOS 26.4.1 arm64、
-Python 3.14.3、PyTorch 2.11.0、16 GiB 有效主机内存；此次使用 CPU
-物化 synthetic writer-ready output，每个可执行 profile 运行 1 次不进入统计的
-discarded fresh-process run 和 5 个 fresh-process measured repeat。JSON 同时保存当次
-tool/profile SHA-256、execution override、临时文件系统空间和可获取的主机内存证据。
-其中 `tool_sha256` 始终保留实际测量时的工具来源；未重跑基准的跨平台兼容性维护，
-单独记录为 `audited_compatible_tool_sha256` 和说明，不冒充新的测量结果。
+机器相关的 RSS、显存、wall time、throughput 和 artifact size 是运行产物，不属于
+版本化源码。请将结果写到已忽略的 `outputs/benchmarks/`，不要提交 JSON、日志或由
+特定主机测得的汇总表：
 
-| profile | raw output | actual artifacts | median/max peak RSS | max/host | RSS CV | median wall |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| DFSR final-only, tensor | 954 MiB | 954.00 MiB | 1.935/2.160 GiB | 13.50% | 8.43% | 1.31 s |
-| sparse preview, tensor, 4 states | 30 MiB | 30.00 MiB | 0.365/0.365 GiB | 2.28% | 0.04% | 0.04 s |
-| sparse preview, image/GIF, 4 states | 30 MiB | 10.29 MiB | 0.530/0.531 GiB | 3.32% | 0.06% | 0.59 s |
-| dense stress, tensor, 31 states | 192 MiB | 192.00 MiB | 0.840/0.841 GiB | 5.25% | 0.02% | 0.24 s |
-| small 3D field, tensor, 5 states | 48 MiB | 48.00 MiB | 0.418/0.418 GiB | 2.61% | 0.06% | 0.06 s |
+```bash
+uv run python tools/benchmark_sampling_capacity.py \
+  --profiles benchmarks/sampling_capacity_profiles.yaml \
+  --profile dfsr_final \
+  --device cpu \
+  --result outputs/benchmarks/sampling-capacity.json
+```
 
-该主机上 DFSR final-only 的 5 次最大 peak RSS 为 2.160 GiB，低于 70%
-参考线；high-entropy image/GIF preview 的最大 peak RSS 为 0.531 GiB。这组结果说明
-当前参考目标无需先行引入 streaming API，但不改变全量 dense trajectory 的结构性
-非支持结论：1272-sample/31-state 投影的
-`SamplingOutput` raw payload 为 29.81 GiB，当前 `tensor` writer 结构性峰值下界为
-87.57 GiB。
-
-这张表只验收 CPU artifact lifecycle。后续 Physics reference project 已在维护者参考
-环境记录真实 mmap 数据、一次 MPS optimizer update，以及完整 30/40-step 单样本
-sampling runtime；证据位于
-`benchmarks/results/stage7-physics-macos-arm64.json`。该记录仍不包含收敛训练、
-1272-sample 全量运行、科学精度复现或 Linux/CUDA 跨平台容量保证，因此不能把任一机器
-结果当作通用硬件承诺。
-
-final-only Tensor writer 的 5 次 lifetime RSS high-water 呈现两个分配高水位，因此
-CV 为 8.43%。容量决策使用五次中的最大值 2.160 GiB，而不用中位数缩小风险；
-由于最大值仍只占主机内存的 13.50%，该变异不改变当前 artifact API 的容量判断。
+仓库只版本化工具、profile 和对投影公式/执行生命周期的测试。CI 不读取历史机器结果，
+也不把某台主机的测量值作为跨平台硬阈值。需要比较两次运行时，应在同一受控环境中保留
+本地报告或交给外部实验跟踪系统，而不是把报告提交到 Git。
 
 工具在启动 worker 前会将投影工作集和 raw artifact 与当前内存/临时文件系统
 预算比较，默认在超过 50% 时拒绝，并对每个 fresh worker 应用 profile timeout。

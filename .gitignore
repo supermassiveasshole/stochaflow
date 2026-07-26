@@ -221,3 +221,6 @@ __marimo__/
 /data/
 outputs/*
 !outputs/.gitkeep
+
+# Machine-specific benchmark results are local runtime artifacts.
+/benchmarks/results/

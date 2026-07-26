@@ -131,11 +131,11 @@ python -m stochaflow_physics_reconstruction.tools.capacity_check \
 ```
 
 Do not treat a report as completed evidence unless this command was actually
-run on the target accelerator and real array. The measured maintainer-host
-record is committed at
-`../../../benchmarks/results/stage7-physics-macos-arm64.json`; it records source,
-config, implementation, command, and ignored runtime-artifact hashes rather
-than committing the datasets, checkpoint, or outputs.
+run on the target accelerator and real array. Write machine-specific reports to
+an ignored local path. The shown `capacity-report.json` is already covered by
+this project's `.gitignore`; reports may instead be sent to an external
+experiment tracker. Do not commit them with datasets, checkpoints, or other
+outputs.
 
 ## Real-data production-path smoke
 

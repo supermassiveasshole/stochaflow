@@ -23,7 +23,6 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "benchmark_sampling_capacity.py"
 PROFILES = ROOT / "benchmarks" / "sampling_capacity_profiles.yaml"
-REFERENCE_RESULT = ROOT / "benchmarks" / "results" / "stage6-macos-arm64.json"
 _TOOL_API = runpy.run_path(str(TOOL))
 _LOAD_PROFILES = cast(
     Callable[[Path], dict[str, Any]],
@@ -44,6 +43,7 @@ _SUMMARIZE_REPEATS = cast(
     Callable[..., dict[str, Any]],
     _TOOL_API["_summarize_repeats"],
 )
+_SHA256_FILE = cast(Callable[[Path], str], _TOOL_API["_sha256_file"])
 _WINDOWS_PEAK_RSS = cast(Callable[[], int], _TOOL_API["_windows_peak_rss_bytes"])
 _WINDOWS_COUNTERS = cast(
     type[ctypes.Structure],
@@ -62,7 +62,8 @@ class FakeWin32Function:
 
 
 def _canonical_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    payload = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _run_tool(*arguments: str, env: dict[str, str] | None = None):
@@ -83,6 +84,18 @@ def _run_tool(*arguments: str, env: dict[str, str] | None = None):
     )
 
 
+def test_tool_sha256_normalizes_checkout_line_endings(tmp_path: Path) -> None:
+    unix_source = tmp_path / "unix.py"
+    windows_source = tmp_path / "windows.py"
+    canonical_payload = b"first line\nsecond line\n"
+    unix_source.write_bytes(canonical_payload)
+    windows_source.write_bytes(canonical_payload.replace(b"\n", b"\r\n"))
+
+    expected = hashlib.sha256(canonical_payload).hexdigest()
+    assert _SHA256_FILE(unix_source) == expected
+    assert _SHA256_FILE(windows_source) == expected
+
+
 def test_capacity_projection_reports_exact_reference_payloads(
     tmp_path: Path,
 ) -> None:
@@ -101,6 +114,12 @@ def test_capacity_projection_reports_exact_reference_payloads(
 
     assert completed.returncode == 0, completed.stderr
     report = json.loads(result_path.read_text(encoding="utf-8"))
+    assert report["source"]["selected_profiles"] == [
+        "dfsr_full_trajectory_projection",
+        "field3d_dense_projection",
+    ]
+    assert report["source"]["tool_sha256"] == _canonical_sha256(TOOL)
+    assert report["source"]["profiles_sha256"] == _canonical_sha256(PROFILES)
     dfsr, field = report["profiles"]
     assert dfsr["projection"] == {
         "one_sample_bytes": 786432,
@@ -338,6 +357,33 @@ def test_summary_marks_host_budget_unknown_without_host_memory() -> None:
     assert summary["passes_host_budget"] is None
 
 
+def test_summary_aggregates_repeat_statistics_and_device_peaks() -> None:
+    peak_rss_values = [100, 200, 400]
+    summary = _SUMMARIZE_REPEATS(
+        [
+            {
+                "final_lifetime_peak_rss_bytes": peak_rss,
+                "final_cuda_peak": {"reserved_bytes": cuda_reserved},
+            }
+            for peak_rss, cuda_reserved in zip(
+                peak_rss_values,
+                (11, 17, 13),
+                strict=True,
+            )
+        ],
+        host_memory_bytes=500,
+    )
+
+    assert summary["median_peak_rss_bytes"] == 200
+    assert summary["max_peak_rss_bytes"] == 400
+    assert summary["peak_rss_coefficient_of_variation"] == pytest.approx(
+        statistics.pstdev(peak_rss_values) / statistics.fmean(peak_rss_values)
+    )
+    assert summary["max_peak_rss_host_fraction"] == pytest.approx(0.8)
+    assert summary["passes_host_budget"] is False
+    assert summary["max_cuda_reserved_bytes"] == 17
+
+
 def test_windows_peak_rss_declares_pointer_sized_win32_abi(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -398,53 +444,3 @@ def test_windows_peak_rss_reports_win32_error_code(
         _WINDOWS_PEAK_RSS()
 
     assert error.value.errno == 5
-
-
-def test_reference_result_matches_current_tool_profiles_and_statistics() -> None:
-    report = json.loads(REFERENCE_RESULT.read_text(encoding="utf-8"))
-    source = report["source"]
-    expected_names = [
-        "dfsr_final",
-        "dfsr_trajectory_preview",
-        "dfsr_image_preview",
-        "dfsr_dense_trajectory_stress",
-        "field3d_preview",
-        "high_resolution_1024_projection",
-        "field3d_dense_projection",
-        "dfsr_full_trajectory_projection",
-    ]
-    assert source["selected_profiles"] == expected_names
-    assert [profile["name"] for profile in report["profiles"]] == expected_names
-    assert source["tool_sha256"] == (
-        "f07611c8a1e70817ccf20176088ca8d7ad36646287bea7051bfaf8a60c2c6907"
-    )
-    assert source["audited_compatible_tool_sha256"] == _canonical_sha256(TOOL)
-    assert source["tool_compatibility_note"] == (
-        "Post-measurement cross-platform capability typing and formal class naming "
-        "refactor; RSS units, platform dispatch, capacity projections, writer "
-        "execution, and aggregation are unchanged."
-    )
-    assert source["profiles_sha256"] == _canonical_sha256(PROFILES)
-    profiles = _LOAD_PROFILES(PROFILES)
-
-    for result in report["profiles"]:
-        profile = profiles[result["name"]]
-        assert result["projection"] == profile.projection()
-        if not result["executed"]:
-            continue
-        repeats = result["measured_runs"]
-        assert len(repeats) == profile.measured_runs == 5
-        peaks = [repeat["final_lifetime_peak_rss_bytes"] for repeat in repeats]
-        summary = result["summary"]
-        assert summary["median_peak_rss_bytes"] == statistics.median(peaks)
-        assert summary["max_peak_rss_bytes"] == max(peaks)
-        assert summary["peak_rss_coefficient_of_variation"] == pytest.approx(
-            statistics.pstdev(peaks) / statistics.fmean(peaks)
-        )
-        if result["name"] == "dfsr_image_preview":
-            for repeat in repeats:
-                assert repeat["writers"][0]["artifact_keys"] == [
-                    "image_grid",
-                    "trajectory_gif",
-                    "trajectory_grid",
-                ]

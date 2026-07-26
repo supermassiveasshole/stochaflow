@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import configparser
-import hashlib
 import json
 import os
 import shutil
@@ -13,7 +12,6 @@ import tomllib
 import zipfile
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Final
 
@@ -26,9 +24,6 @@ from packaging.version import Version
 
 _REPOSITORY: Final = Path(__file__).resolve().parents[1]
 _REFERENCE_ROOT: Final = _REPOSITORY / "examples/extension-projects"
-_EVIDENCE_TEXT_SUFFIXES: Final = frozenset(
-    {".json", ".md", ".py", ".toml", ".yaml", ".yml"}
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,13 +155,6 @@ def _copy_reference_project(project: FixtureReferenceProject, destination: Path)
             ),
         )
     )
-
-
-def _evidence_sha256(path: Path) -> str:
-    payload = path.read_bytes()
-    if path.suffix.lower() in _EVIDENCE_TEXT_SUFFIXES:
-        payload = payload.replace(b"\r\n", b"\n")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _build_wheel(source: Path, output: Path) -> Path:
@@ -475,15 +463,6 @@ def test_reference_project_acceptance_copy_excludes_local_data(
     assert not (project_copy / "outputs").exists()
 
 
-def test_evidence_hash_normalizes_checkout_line_endings(tmp_path: Path) -> None:
-    unix_source = tmp_path / "unix.py"
-    windows_source = tmp_path / "windows.py"
-    unix_source.write_bytes(b"first line\nsecond line\n")
-    windows_source.write_bytes(b"first line\r\nsecond line\r\n")
-
-    assert _evidence_sha256(unix_source) == _evidence_sha256(windows_source)
-
-
 @pytest.mark.parametrize(
     ("profile", "accepted_steps", "partial_noise_time", "sampler_name"),
     [
@@ -533,83 +512,6 @@ def test_physics_real_smoke_profiles_preserve_production_solver_math(
     assert len(schedule) - 1 == accepted_steps
     assert schedule[0] == partial_noise_time
     assert schedule[-1] == 0
-
-
-def test_physics_stage7_evidence_matches_versioned_sources_and_configs() -> None:
-    evidence_path = (
-        _REPOSITORY / "benchmarks/results/stage7-physics-macos-arm64.json"
-    )
-    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert evidence["format_version"] == 1
-    assert datetime.fromisoformat(evidence["created_at"])
-    assert len(bytes.fromhex(evidence["repository"]["head_at_run"])) == 20
-
-    for relative_path, expected_hash in evidence["repository"][
-        "relevant_files_sha256"
-    ].items():
-        assert _evidence_sha256(_REPOSITORY / relative_path) == expected_hash
-
-    for source in evidence["sources"].values():
-        assert len(bytes.fromhex(source["sha256"])) == 32
-        assert source["bytes"] > 0
-    for artifact in evidence["artifacts"].values():
-        assert not Path(artifact["path"]).is_absolute()
-        assert len(bytes.fromhex(artifact["sha256"])) == 32
-        assert artifact["bytes"] > 0
-    prepared = evidence["preparation"]["observation"]
-    prepared_artifact = evidence["artifacts"]["prepared_observations"]
-    assert prepared["bytes"] == prepared_artifact["bytes"]
-    assert prepared["sha256"] == prepared_artifact["sha256"]
-
-    training = evidence["training_cli"]
-    training_config = yaml.safe_load(
-        (_REPOSITORY / training["config"]).read_text(encoding="utf-8")
-    )
-    assert training["checkpoint_format_version"] == 8
-    assert training["batch_size"] == training_config["data"]["params"]["loader"][
-        "batch_size"
-    ]
-    assert training["model"] == {
-        name: training_config["model"]["params"][name]
-        for name in ("hidden_channels", "num_blocks", "time_embedding_dim")
-    }
-    assert training["num_timesteps"] == training_config["process"]["params"][
-        "schedule"
-    ]["params"]["num_timesteps"]
-    assert training_config["optimizer"]["name"] == "torch.optim.Adam"
-
-    sampling = evidence["sampling_cli"]
-    for name in ("baseline_ddim", "guided_ddim"):
-        result = sampling[name]
-        config = yaml.safe_load(
-            (_REPOSITORY / result["config"]).read_text(encoding="utf-8")
-        )["sampling"]
-        params = config["builder"]["params"]
-        schedule = params["sampler"]["params"]["schedule"]
-        assert result["sampler"] == params["sampler"]["name"]
-        assert result["partial_noise_time"] == params["partial_noise_time"]
-        assert result["accepted_steps"] == len(schedule) - 1
-        assert result["num_dynamics_evaluations"] == result["accepted_steps"]
-        assert schedule == list(
-            range(result["partial_noise_time"], -1, -8)
-        )
-        assert sampling["output_shape"] == [config["num_samples"], *config["shape"]]
-        assert sampling["weights"] == params["weights"]
-        assert result["finite"] is True
-        assert result["reconstruction_sha256"] == evidence["artifacts"][
-            f"{name.removesuffix('_ddim')}_reconstruction"
-        ]["sha256"]
-    assert sampling["output_dtype"] == "float32"
-
-    project = tomllib.loads(
-        (_PHYSICS.source / "pyproject.toml").read_text(encoding="utf-8")
-    )
-    plugin = evidence["extension_plugin"]
-    assert plugin["distribution"] == project["project"]["name"]
-    assert plugin["version"] == project["project"]["version"]
-    assert project["project"]["entry-points"]["stochaflow.extensions"] == {
-        plugin["name"]: plugin["target"]
-    }
 
 
 def test_reference_project_wheels_have_isolated_entry_points(
@@ -726,6 +628,104 @@ for registry_name, component_name in arguments["other_registry_names"]:
     _run(
         [installed.python, "-c", script, json.dumps(arguments)],
         cwd=installed.root / "harness",
+        environment=installed.environment,
+    )
+
+
+def test_physics_production_training_config_composes_installed_extension(
+    installed_reference_environment: FixtureInstalledReferenceEnvironment,
+) -> None:
+    installed = installed_reference_environment
+    script = r"""
+import json
+import sys
+
+from stochaflow.extensions import (
+    REGISTRIES,
+    activate_extension_plugins,
+    prepare_extension_plugins,
+)
+from stochaflow.training.builder import build_training_plan
+from stochaflow.utils.config import load_config
+from stochaflow.utils.factory import build_model, build_objective, build_process
+
+arguments = json.loads(sys.argv[1])
+config = load_config(arguments["config"])
+plugin_plan = prepare_extension_plugins(config)
+assert [
+    (item.name, item.distribution, item.target)
+    for item in plugin_plan.provenance
+] == [
+    (
+        arguments["plugin"],
+        arguments["distribution"],
+        arguments["target"],
+    )
+]
+activate_extension_plugins(plugin_plan)
+
+for registry_name, component_name in arguments["registry_names"]:
+    assert component_name in getattr(REGISTRIES, registry_name).names()
+
+assert config.extensions.plugins == [arguments["plugin"]]
+assert config.data.name == "physics-reconstruction.kolmogorov-trajectories"
+assert config.data.params["path"] == "data/kolmogorov.npy"
+assert config.data.params["loader"]["batch_size"] == 4
+assert config.model.name == "physics-reconstruction.conditional-denoiser"
+assert {
+    name: config.model.params[name]
+    for name in ("hidden_channels", "num_blocks", "time_embedding_dim")
+} == {
+    "hidden_channels": 64,
+    "num_blocks": 6,
+    "time_embedding_dim": 128,
+}
+assert config.training.name == "physics-reconstruction.gaussian-denoising"
+assert config.process is not None
+assert config.process.name == "discrete_gaussian"
+assert config.process.params["schedule"]["params"]["num_timesteps"] == 1000
+assert config.objective is not None
+assert config.objective.name == "mse"
+assert config.optimizer.name == "torch.optim.Adam"
+assert config.lr_scheduler is not None
+assert config.lr_scheduler.name == "torch.optim.lr_scheduler.CosineAnnealingLR"
+assert config.sampling.builder is not None
+assert config.sampling.builder.name == "physics-reconstruction.reconstruction"
+assert [writer.name for writer in config.sampling.writers] == [
+    "physics-reconstruction.reconstruction-artifacts"
+]
+
+model = build_model(config.model)
+process = build_process(config.process)
+objective = build_objective(config.objective)
+training_plan = build_training_plan(
+    config.training,
+    primary_model=model,
+    process=process,
+    objective=objective,
+    model_factory=build_model,
+    objective_factory=build_objective,
+)
+assert training_plan.primary_model is model
+assert training_plan.process is process
+assert training_plan.objective is objective
+assert type(model).__name__ == "ConditionalDenoiser"
+assert type(training_plan.strategy).__name__ == "PhysicsDenoisingStrategy"
+assert training_plan.auxiliary_modules == {}
+"""
+    arguments = {
+        "config": str(
+            installed.projects[_PHYSICS.directory]
+            / "experiments/production/train.yaml"
+        ),
+        "plugin": _PHYSICS.plugin,
+        "distribution": _PHYSICS.distribution,
+        "target": _PHYSICS.target,
+        "registry_names": _PHYSICS.registry_names,
+    }
+    _run(
+        [installed.python, "-c", script, json.dumps(arguments)],
+        cwd=installed.projects[_PHYSICS.directory],
         environment=installed.environment,
     )
 

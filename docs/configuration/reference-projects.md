@@ -84,11 +84,12 @@ python tools/prepare_kolmogorov.py \
   --smoothing-kernel 7
 ```
 
-仓库不分发数据、checkpoint 或训练输出。维护者参考环境曾使用真实 mmap 输入完成一次
-optimizer update，以及 baseline/guided 的完整 30/40-step 单样本 runtime smoke；机器可读
-记录位于 `benchmarks/results/stage7-physics-macos-arm64.json`。它只证明该环境中的
-production path 可以执行，不代表收敛训练、1272-sample 全量运行、科学精度或跨平台容量。
-大规模 output 与 trajectory 的限制见
+仓库不分发数据、checkpoint、训练输出或机器相关 benchmark 报告。真实 mmap 输入上的
+optimizer update 与 baseline/guided runtime smoke 应由维护者在目标环境本地运行，报告
+写到被 Git 忽略的本地路径；仓库级 benchmark 可使用 `outputs/benchmarks/`，Physics
+项目的默认 `capacity-report.json` 也已由项目自身忽略。本地通过只证明该环境中的
+production path 可以执行，不代表收敛训练、1272-sample 全量运行、科学精度或跨平台
+容量。大规模 output 与 trajectory 的限制见
 [Sampling artifact 容量](sampling-capacity.md)。
 
 ## Frozen-teacher distillation
