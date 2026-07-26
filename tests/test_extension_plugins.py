@@ -29,7 +29,7 @@ from stochaflow.utils.plugins import (
 
 
 @dataclass
-class _Distribution:
+class FakeDistribution:
     name: str
     version: str
 
@@ -39,15 +39,15 @@ class _Distribution:
 
 
 @dataclass
-class _EntryPoint:
+class FakeEntryPoint:
     name: str
     value: str
     distribution: str = "example-project"
     version: str = "1.0"
 
     @property
-    def dist(self) -> _Distribution:
-        return _Distribution(self.distribution, self.version)
+    def dist(self) -> FakeDistribution:
+        return FakeDistribution(self.distribution, self.version)
 
 
 @pytest.fixture(autouse=True)
@@ -71,9 +71,9 @@ def _config(*, plugins: list[str] | None) -> Any:
 
 def _install_entry_points(
     monkeypatch: pytest.MonkeyPatch,
-    *entry_points: _EntryPoint,
+    *entry_points: FakeEntryPoint,
 ) -> None:
-    def discover(*, group: str) -> tuple[_EntryPoint, ...]:
+    def discover(*, group: str) -> tuple[FakeEntryPoint, ...]:
         assert group == "stochaflow.extensions"
         return tuple(entry_points)
 
@@ -123,8 +123,8 @@ def test_null_discovers_all_and_materializes_deterministic_names(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("zeta", "zeta.extension", "Zeta_Project", "2.0"),
-        _EntryPoint("alpha", "alpha.extension", "Alpha.Project", "1.0"),
+        FakeEntryPoint("zeta", "zeta.extension", "Zeta_Project", "2.0"),
+        FakeEntryPoint("alpha", "alpha.extension", "Alpha.Project", "1.0"),
     )
     imported: list[str] = []
     monkeypatch.setattr(plugin_runtime, "import_module", imported.append)
@@ -148,10 +148,10 @@ def test_explicit_selection_ignores_unselected_broken_and_duplicate_metadata(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("selected", "selected.extension"),
-        _EntryPoint("broken", "not-a-module:factory"),
-        _EntryPoint("duplicate", "one.extension"),
-        _EntryPoint("duplicate", "two.extension"),
+        FakeEntryPoint("selected", "selected.extension"),
+        FakeEntryPoint("broken", "not-a-module:factory"),
+        FakeEntryPoint("duplicate", "one.extension"),
+        FakeEntryPoint("duplicate", "two.extension"),
     )
 
     plan = prepare_extension_plugins(_config(plugins=["selected"]))
@@ -164,8 +164,8 @@ def test_all_selection_validates_every_candidate(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("selected", "selected.extension"),
-        _EntryPoint("broken", "not-a-module:factory"),
+        FakeEntryPoint("selected", "selected.extension"),
+        FakeEntryPoint("broken", "not-a-module:factory"),
     )
 
     with pytest.raises(ExtensionDiscoveryError, match="pure Python module"):
@@ -177,8 +177,8 @@ def test_selected_duplicate_and_missing_names_fail(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("duplicate", "one.extension", "one"),
-        _EntryPoint("duplicate", "two.extension", "two"),
+        FakeEntryPoint("duplicate", "one.extension", "one"),
+        FakeEntryPoint("duplicate", "two.extension", "two"),
     )
     with pytest.raises(ExtensionDiscoveryError, match="multiple installed"):
         prepare_extension_plugins(_config(plugins=["duplicate"]))
@@ -316,7 +316,7 @@ def test_selected_target_must_be_a_pure_module(
     monkeypatch: pytest.MonkeyPatch,
     target: str,
 ) -> None:
-    _install_entry_points(monkeypatch, _EntryPoint("example", target))
+    _install_entry_points(monkeypatch, FakeEntryPoint("example", target))
 
     with pytest.raises(ExtensionDiscoveryError, match="pure Python module"):
         prepare_extension_plugins(_config(plugins=["example"]))
@@ -327,7 +327,7 @@ def test_prepare_validates_exact_identity_and_pep440_version(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("example", "example_project.extension", version="1.0.0"),
+        FakeEntryPoint("example", "example_project.extension", version="1.0.0"),
     )
     equivalent = _provenance(version="1.0")
 
@@ -351,8 +351,8 @@ def test_exact_and_intersection_selection_policies(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("current", "current.extension", "current", "1"),
-        _EntryPoint("shared", "shared.extension", "shared", "2"),
+        FakeEntryPoint("current", "current.extension", "current", "1"),
+        FakeEntryPoint("shared", "shared.extension", "shared", "2"),
     )
     expected = [
         _provenance(
@@ -387,7 +387,7 @@ def test_version_policy_rejects_or_records_controlled_acceptance(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("example", "example_project.extension", version="2.0"),
+        FakeEntryPoint("example", "example_project.extension", version="2.0"),
     )
     monkeypatch.setattr(plugin_runtime, "import_module", lambda _: None)
     plan = prepare_extension_plugins(
@@ -413,7 +413,7 @@ def test_allow_policy_defaults_to_library_audit_and_rejects_unknown_method(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("example", "example_project.extension", version="2.0"),
+        FakeEntryPoint("example", "example_project.extension", version="2.0"),
     )
     monkeypatch.setattr(plugin_runtime, "import_module", lambda _: None)
     plan = prepare_extension_plugins(
@@ -441,7 +441,7 @@ def test_same_selection_activation_is_idempotent(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("example", "example_project.extension"),
+        FakeEntryPoint("example", "example_project.extension"),
     )
     imports: list[str] = []
     monkeypatch.setattr(plugin_runtime, "import_module", imports.append)
@@ -459,8 +459,8 @@ def test_active_process_rejects_different_selection(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("first", "first.extension", "first"),
-        _EntryPoint("second", "second.extension", "second"),
+        FakeEntryPoint("first", "first.extension", "first"),
+        FakeEntryPoint("second", "second.extension", "second"),
     )
     monkeypatch.setattr(plugin_runtime, "import_module", lambda _: None)
     activate_extension_plugins(
@@ -478,7 +478,7 @@ def test_import_failure_is_terminal(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("example", "example_project.extension"),
+        FakeEntryPoint("example", "example_project.extension"),
     )
 
     def fail(_: str) -> None:
@@ -498,7 +498,7 @@ def test_reentrant_activation_is_terminal(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("example", "example_project.extension"),
+        FakeEntryPoint("example", "example_project.extension"),
     )
     plan = prepare_extension_plugins(_config(plugins=["example"]))
 
@@ -518,7 +518,7 @@ def test_concurrent_same_selection_imports_once(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("example", "example_project.extension"),
+        FakeEntryPoint("example", "example_project.extension"),
     )
     imports: list[str] = []
     monkeypatch.setattr(plugin_runtime, "import_module", imports.append)
@@ -577,7 +577,7 @@ def test_prepare_and_resolve_deep_copy_config(
 ) -> None:
     _install_entry_points(
         monkeypatch,
-        _EntryPoint("example", "example_project.extension"),
+        FakeEntryPoint("example", "example_project.extension"),
     )
     monkeypatch.setattr(plugin_runtime, "import_module", lambda _: None)
     config = _config(plugins=["example"])

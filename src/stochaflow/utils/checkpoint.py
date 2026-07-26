@@ -29,7 +29,7 @@ CHECKPOINT_FORMAT_VERSION = 8
 _CHECKPOINT_LEAF_TYPES = (type(None), bool, int, float, complex, str, bytes)
 
 
-class _StateDictWithMetadata(Protocol):
+class StateDictWithMetadata(Protocol):
     _metadata: Any
 
 
@@ -819,7 +819,7 @@ def _clone_module_state(module: nn.Module) -> OrderedDict[str, Any]:
     )
     metadata = getattr(source, "_metadata", None)
     if metadata is not None:
-        cast(_StateDictWithMetadata, cloned)._metadata = deepcopy(metadata)
+        cast(StateDictWithMetadata, cloned)._metadata = deepcopy(metadata)
     return cloned
 
 

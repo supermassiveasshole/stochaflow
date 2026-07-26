@@ -42,26 +42,26 @@ from stochaflow.sampling.runtime import validate_sampling_output
 from stochaflow.utils.config import ComponentConfig
 
 
-class _ResourceUsage(Protocol):
+class ResourceUsage(Protocol):
     ru_maxrss: int
 
 
-class _ResourceModule(Protocol):
+class ResourceModule(Protocol):
     RUSAGE_SELF: int
 
-    def getrusage(self, who: int) -> _ResourceUsage: ...
+    def getrusage(self, who: int) -> ResourceUsage: ...
 
 
-class _Sysconf(Protocol):
+class SysconfProvider(Protocol):
     def __call__(self, name: str, /) -> int: ...
 
 
-def _load_resource_module() -> _ResourceModule | None:
+def _load_resource_module() -> ResourceModule | None:
     try:
         module = importlib.import_module("resource")
     except ImportError:  # pragma: no cover - exercised on Windows
         return None
-    return cast(_ResourceModule, module)
+    return cast(ResourceModule, module)
 
 
 _resource = _load_resource_module()
@@ -76,7 +76,7 @@ _DTYPES = {
 }
 
 
-class _WindowsProcessMemoryCounters(ctypes.Structure):
+class WindowsProcessMemoryCounters(ctypes.Structure):
     """ctypes representation of the Win32 PROCESS_MEMORY_COUNTERS structure."""
 
     _fields_ = [
@@ -320,12 +320,12 @@ def _windows_peak_rss_bytes() -> int:
     get_process_memory_info = kernel32.K32GetProcessMemoryInfo
     get_process_memory_info.argtypes = (
         wintypes.HANDLE,
-        ctypes.POINTER(_WindowsProcessMemoryCounters),
+        ctypes.POINTER(WindowsProcessMemoryCounters),
         wintypes.DWORD,
     )
     get_process_memory_info.restype = wintypes.BOOL
 
-    counters = _WindowsProcessMemoryCounters()
+    counters = WindowsProcessMemoryCounters()
     counters.cb = ctypes.sizeof(counters)
     process = get_current_process()
     succeeded = get_process_memory_info(
@@ -343,7 +343,7 @@ def _host_memory_bytes() -> int | None:
     sysconf = getattr(os, "sysconf", None)
     if not callable(sysconf):
         return None
-    typed_sysconf = cast(_Sysconf, sysconf)
+    typed_sysconf = cast(SysconfProvider, sysconf)
     try:
         physical = int(typed_sysconf("SC_PAGE_SIZE")) * int(
             typed_sysconf("SC_PHYS_PAGES")

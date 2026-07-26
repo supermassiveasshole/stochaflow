@@ -27,22 +27,22 @@ from stochaflow_physics_reconstruction.stochaflow_ext.training import (
 )
 
 
-class _ResourceUsage(Protocol):
+class ResourceUsage(Protocol):
     ru_maxrss: int
 
 
-class _ResourceModule(Protocol):
+class ResourceModule(Protocol):
     RUSAGE_SELF: int
 
-    def getrusage(self, who: int) -> _ResourceUsage: ...
+    def getrusage(self, who: int) -> ResourceUsage: ...
 
 
-def _load_resource_module() -> _ResourceModule | None:
+def _load_resource_module() -> ResourceModule | None:
     try:
         module = importlib.import_module("resource")
     except ImportError:  # pragma: no cover - Windows has no resource module.
         return None
-    return cast(_ResourceModule, module)
+    return cast(ResourceModule, module)
 
 
 _resource = _load_resource_module()

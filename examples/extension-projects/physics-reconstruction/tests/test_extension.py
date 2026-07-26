@@ -271,7 +271,7 @@ def test_all_gaussian_training_targets_follow_public_semantics(
     assert torch.allclose(target, expected)
 
 
-class _AtomicDynamics(PhysicsCorrectionDynamics):
+class FakeAtomicDynamics(PhysicsCorrectionDynamics):
     def __init__(self, process: DiscreteGaussianProcess) -> None:
         self._process = process
         self.calls = 0
@@ -299,7 +299,7 @@ class _AtomicDynamics(PhysicsCorrectionDynamics):
         return prediction, torch.full_like(state, 0.25), {"correction_residual": 1.0}
 
 
-class _BroadcastCorrectionDynamics(_AtomicDynamics):
+class FakeBroadcastCorrectionDynamics(FakeAtomicDynamics):
     def evaluate(
         self, state: torch.Tensor, state_times: torch.Tensor
     ) -> tuple[GaussianPrediction, torch.Tensor, dict[str, float]]:
@@ -310,7 +310,7 @@ class _BroadcastCorrectionDynamics(_AtomicDynamics):
 def test_guided_ddim_applies_atomic_correction_after_public_transition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    dynamics = _AtomicDynamics(_process(2))
+    dynamics = FakeAtomicDynamics(_process(2))
     sampler = GuidedDDIMSampler(schedule=[2, 0], eta=0.0)
 
     def transition(
@@ -331,7 +331,7 @@ def test_guided_ddim_applies_atomic_correction_after_public_transition(
 
 
 def test_guided_ddim_rejects_broadcast_correction() -> None:
-    dynamics = _BroadcastCorrectionDynamics(_process(2))
+    dynamics = FakeBroadcastCorrectionDynamics(_process(2))
     sampler = GuidedDDIMSampler(schedule=[2, 0], eta=0.0)
     with pytest.raises(ValueError, match="match the source state shape"):
         sampler.sample(dynamics, torch.zeros(1, 3, 8, 8))

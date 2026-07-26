@@ -32,7 +32,7 @@ _EVIDENCE_TEXT_SUFFIXES: Final = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
-class _ReferenceProject:
+class FixtureReferenceProject:
     directory: str
     distribution: str
     plugin: str
@@ -46,7 +46,7 @@ class _ReferenceProject:
         return _REFERENCE_ROOT / self.directory
 
 
-_PHYSICS: Final = _ReferenceProject(
+_PHYSICS: Final = FixtureReferenceProject(
     directory="physics-reconstruction",
     distribution="stochaflow-physics-reconstruction",
     plugin="physics-reconstruction",
@@ -66,7 +66,7 @@ _PHYSICS: Final = _ReferenceProject(
     ),
 )
 
-_DISTILLATION: Final = _ReferenceProject(
+_DISTILLATION: Final = FixtureReferenceProject(
     directory="knowledge-distillation",
     distribution="stochaflow-knowledge-distillation",
     plugin="stochaflow-knowledge-distillation",
@@ -97,7 +97,7 @@ _PROJECTS: Final = (_PHYSICS, _DISTILLATION)
 
 
 @dataclass(frozen=True, slots=True)
-class _InstalledReferenceEnvironment:
+class FixtureInstalledReferenceEnvironment:
     root: Path
     python: Path
     cli: Path
@@ -141,7 +141,7 @@ def _copy_stochaflow_source(destination: Path) -> Path:
     return destination
 
 
-def _copy_reference_project(project: _ReferenceProject, destination: Path) -> Path:
+def _copy_reference_project(project: FixtureReferenceProject, destination: Path) -> Path:
     return Path(
         shutil.copytree(
             project.source,
@@ -280,7 +280,7 @@ def _create_installed_environment(
 @pytest.fixture(scope="module")
 def installed_reference_environment(
     tmp_path_factory: pytest.TempPathFactory,
-) -> _InstalledReferenceEnvironment:
+) -> FixtureInstalledReferenceEnvironment:
     root = tmp_path_factory.mktemp("installed-reference-projects")
     source_root = root / "sources"
     source_root.mkdir()
@@ -310,7 +310,7 @@ def installed_reference_environment(
     )
     assert python.is_file()
     assert cli.is_file()
-    return _InstalledReferenceEnvironment(
+    return FixtureInstalledReferenceEnvironment(
         root=root,
         python=python,
         cli=cli,
@@ -338,7 +338,7 @@ def _only_run(output_root: Path) -> Path:
 
 
 def _run_cli(
-    installed: _InstalledReferenceEnvironment,
+    installed: FixtureInstalledReferenceEnvironment,
     project_root: Path,
     *arguments: str | Path,
 ) -> subprocess.CompletedProcess[str]:
@@ -349,7 +349,7 @@ def _run_cli(
     )
 
 
-def _expected_provenance(project: _ReferenceProject) -> list[dict[str, str]]:
+def _expected_provenance(project: FixtureReferenceProject) -> list[dict[str, str]]:
     declaration = tomllib.loads(
         (project.source / "pyproject.toml").read_text(encoding="utf-8")
     )
@@ -365,7 +365,7 @@ def _expected_provenance(project: _ReferenceProject) -> list[dict[str, str]]:
 
 def _assert_manifest_provenance(
     manifest_path: Path,
-    project: _ReferenceProject,
+    project: FixtureReferenceProject,
 ) -> None:
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert manifest["extension_plugins"] == _expected_provenance(project)
@@ -464,7 +464,7 @@ def test_reference_projects_are_independent_installable_distributions() -> None:
 @pytest.mark.parametrize("project", _PROJECTS, ids=lambda item: item.directory)
 def test_reference_project_acceptance_copy_excludes_local_data(
     tmp_path: Path,
-    project: _ReferenceProject,
+    project: FixtureReferenceProject,
 ) -> None:
     project_copy = _copy_reference_project(
         project,
@@ -613,7 +613,7 @@ def test_physics_stage7_evidence_matches_versioned_sources_and_configs() -> None
 
 
 def test_reference_project_wheels_have_isolated_entry_points(
-    installed_reference_environment: _InstalledReferenceEnvironment,
+    installed_reference_environment: FixtureInstalledReferenceEnvironment,
 ) -> None:
     installed = installed_reference_environment
     with zipfile.ZipFile(installed.wheels["stochaflow"]) as archive:
@@ -641,8 +641,8 @@ def test_reference_project_wheels_have_isolated_entry_points(
 
 @pytest.mark.parametrize("project", _PROJECTS, ids=lambda item: item.directory)
 def test_installed_entry_point_is_the_only_activation_path(
-    installed_reference_environment: _InstalledReferenceEnvironment,
-    project: _ReferenceProject,
+    installed_reference_environment: FixtureInstalledReferenceEnvironment,
+    project: FixtureReferenceProject,
 ) -> None:
     installed = installed_reference_environment
     other_registry_names = [
@@ -732,8 +732,8 @@ for registry_name, component_name in arguments["other_registry_names"]:
 
 @pytest.mark.parametrize("project", _PROJECTS, ids=lambda item: item.directory)
 def test_reference_project_unit_suite_uses_installed_wheel(
-    installed_reference_environment: _InstalledReferenceEnvironment,
-    project: _ReferenceProject,
+    installed_reference_environment: FixtureInstalledReferenceEnvironment,
+    project: FixtureReferenceProject,
 ) -> None:
     installed = installed_reference_environment
     project_copy = installed.projects[project.directory]
@@ -752,7 +752,7 @@ def test_reference_project_unit_suite_uses_installed_wheel(
 
 
 def test_distillation_cli_train_resume_and_student_only_sample(
-    installed_reference_environment: _InstalledReferenceEnvironment,
+    installed_reference_environment: FixtureInstalledReferenceEnvironment,
 ) -> None:
     installed = installed_reference_environment
     project_root = installed.projects[_DISTILLATION.directory]
@@ -886,7 +886,7 @@ def test_distillation_cli_train_resume_and_student_only_sample(
 
 
 def test_physics_cli_train_resume_and_sample_variants(
-    installed_reference_environment: _InstalledReferenceEnvironment,
+    installed_reference_environment: FixtureInstalledReferenceEnvironment,
 ) -> None:
     installed = installed_reference_environment
     project_root = installed.projects[_PHYSICS.directory]

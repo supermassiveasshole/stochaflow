@@ -285,7 +285,7 @@ class SamplerPool:
             ) from exc
 
 
-class _DiagnosticSamplingObserver:
+class DiagnosticSamplingObserver:
     """Validate a diagnostic denoising lifecycle and optionally retain it."""
 
     def __init__(
@@ -395,7 +395,7 @@ class SamplerRunner:
         started_at = time.perf_counter()
         for start in range(0, initial_noise.shape[0], self.batch_size):
             noise_batch = initial_noise[start : start + self.batch_size]
-            lifecycle = _DiagnosticSamplingObserver(
+            lifecycle = DiagnosticSamplingObserver(
                 process=sampler.dynamics.process,
                 expected_shape=noise_batch.shape,
                 retain=profile.trajectory.enabled,

@@ -944,7 +944,7 @@ def test_strict_mps_resume_warns_when_legacy_v8_has_no_mps_rng(
     assert restore_calls == [(False, True)]
 
 
-class _StochasticStrategy(TrainingStrategy):
+class StochasticTestStrategy(TrainingStrategy):
     def __init__(self, model: nn.Module) -> None:
         self.model = model
 
@@ -959,7 +959,7 @@ class _StochasticStrategy(TrainingStrategy):
         return TrainStepOutput(loss=loss)
 
 
-class _RNGConsumingDiagnostic(TrainingDiagnostic):
+class RNGConsumingTestDiagnostic(TrainingDiagnostic):
     @staticmethod
     def _consume_rng() -> None:
         random.random()
@@ -979,20 +979,20 @@ class _RNGConsumingDiagnostic(TrainingDiagnostic):
         self._consume_rng()
 
 
-class _BestRNGConsumingLogger(ExperimentLogger):
+class BestRNGConsumingTestLogger(ExperimentLogger):
     def log_config(self, config: dict[str, Any]) -> None:
         del config
 
     def log_metrics(self, metrics: dict[str, Any], *, step: int) -> None:
         del step
         if "best/epoch" in metrics:
-            _RNGConsumingDiagnostic._consume_rng()
+            RNGConsumingTestDiagnostic._consume_rng()
 
     def close(self) -> None:
         return None
 
 
-class _EpochEndRNGConsumingReporter:
+class EpochEndRNGConsumingTestReporter:
     def on_epoch_start(self, *args: Any, **kwargs: Any) -> None:
         del args, kwargs
 
@@ -1007,7 +1007,7 @@ class _EpochEndRNGConsumingReporter:
 
     def on_epoch_end(self, *args: Any, **kwargs: Any) -> None:
         del args, kwargs
-        _RNGConsumingDiagnostic._consume_rng()
+        RNGConsumingTestDiagnostic._consume_rng()
 
 
 def _stochastic_trainer(
@@ -1017,7 +1017,7 @@ def _stochastic_trainer(
 ) -> Trainer:
     model = nn.Linear(1, 1)
     plan = TrainingPlan(
-        strategy=_StochasticStrategy(model),
+        strategy=StochasticTestStrategy(model),
         primary_model=model,
     )
     optimizer = SGD(model.parameters(), lr=0.05, momentum=0.9)
@@ -1026,7 +1026,7 @@ def _stochastic_trainer(
         plan,
         optimizer,
         device="cpu",
-        diagnostics=[_RNGConsumingDiagnostic()],
+        diagnostics=[RNGConsumingTestDiagnostic()],
         checkpoint_manager=manager,
         checkpoint_dir=checkpoint_dir,
         checkpoint_config={"identity": "rng-resume"},
@@ -1084,7 +1084,7 @@ def test_strict_resume_matches_uninterrupted_stochastic_training(
         loader,
         num_epochs=2,
         show_progress=False,
-        reporter=_EpochEndRNGConsumingReporter(),
+        reporter=EpochEndRNGConsumingTestReporter(),
     )
     expected_state = {
         name: value.detach().clone()
@@ -1097,7 +1097,7 @@ def test_strict_resume_matches_uninterrupted_stochastic_training(
         loader,
         num_epochs=1,
         show_progress=False,
-        reporter=_EpochEndRNGConsumingReporter(),
+        reporter=EpochEndRNGConsumingTestReporter(),
     )
     checkpoint = tmp_path / "interrupted" / "latest.pt"
     payload = CheckpointManager.load_payload(checkpoint, map_location="cpu")
@@ -1122,7 +1122,7 @@ def test_strict_resume_matches_uninterrupted_stochastic_training(
         num_epochs=2,
         start_epoch=start_epoch,
         show_progress=False,
-        reporter=_EpochEndRNGConsumingReporter(),
+        reporter=EpochEndRNGConsumingTestReporter(),
     )
 
     assert resumed.global_step == uninterrupted.global_step
@@ -1137,7 +1137,7 @@ def test_strict_resume_from_best_isolates_post_checkpoint_logger_rng(
     _seed_stochastic_test()
     uninterrupted = _stochastic_trainer(
         tmp_path / "uninterrupted-best",
-        logger=_BestRNGConsumingLogger(),
+        logger=BestRNGConsumingTestLogger(),
     )
     uninterrupted.fit(
         loader,
@@ -1154,7 +1154,7 @@ def test_strict_resume_from_best_isolates_post_checkpoint_logger_rng(
     _seed_stochastic_test()
     interrupted = _stochastic_trainer(
         tmp_path / "interrupted-best",
-        logger=_BestRNGConsumingLogger(),
+        logger=BestRNGConsumingTestLogger(),
     )
     interrupted.fit(
         loader,
@@ -1168,7 +1168,7 @@ def test_strict_resume_from_best_isolates_post_checkpoint_logger_rng(
 
     resumed = _stochastic_trainer(
         tmp_path / "resumed-best",
-        logger=_BestRNGConsumingLogger(),
+        logger=BestRNGConsumingTestLogger(),
     )
     training: Any = SimpleNamespace(
         trainer=resumed,

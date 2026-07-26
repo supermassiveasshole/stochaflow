@@ -23,7 +23,7 @@ def _positive_int(value: int, name: str) -> int:
     return runtime_value
 
 
-class _FlattenClassifier(nn.Module):
+class FlattenClassifier(nn.Module):
     """Small MLP base that accepts either vectors or image-shaped inputs."""
 
     def __init__(
@@ -71,7 +71,7 @@ class _FlattenClassifier(nn.Module):
 
 
 @REGISTRIES.models.register(f"{_PREFIX}.student")
-class StudentClassifier(_FlattenClassifier):
+class StudentClassifier(FlattenClassifier):
     """Compact classifier optimized by the training loop."""
 
     def __init__(
@@ -89,7 +89,7 @@ class StudentClassifier(_FlattenClassifier):
 
 
 @REGISTRIES.models.register(f"{_PREFIX}.teacher")
-class TeacherClassifier(_FlattenClassifier):
+class TeacherClassifier(FlattenClassifier):
     """Larger classifier loaded from a plain PyTorch state dictionary."""
 
     def __init__(

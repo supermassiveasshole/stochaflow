@@ -27,7 +27,7 @@ def _write_load_marker(path: str) -> object:
     return object()
 
 
-class _ExecutablePickleValue:
+class FixtureExecutablePickleValue:
     def __init__(self, marker: Path) -> None:
         self.marker = marker
 
@@ -35,19 +35,19 @@ class _ExecutablePickleValue:
         return _write_load_marker, (str(self.marker),)
 
 
-class _UnsafeExtraState:
+class FixtureUnsafeExtraState:
     pass
 
 
-class _UnsafeExtraStateModule(nn.Module):
+class FixtureUnsafeExtraStateModule(nn.Module):
     def get_extra_state(self) -> object:
-        return _UnsafeExtraState()
+        return FixtureUnsafeExtraState()
 
     def set_extra_state(self, state: object) -> None:
         del state
 
 
-class _TensorSubclass(torch.Tensor):
+class FixtureTensorSubclass(torch.Tensor):
     pass
 
 
@@ -167,14 +167,14 @@ def test_save_rejects_custom_extra_state_with_precise_path(tmp_path: Path) -> No
     checkpoint = tmp_path / "nested" / "unsafe.pt"
     manager = CheckpointManager(
         nn.Linear(1, 1),
-        auxiliary_modules={"asset": _UnsafeExtraStateModule()},
+        auxiliary_modules={"asset": FixtureUnsafeExtraStateModule()},
     )
 
     with pytest.raises(
         TypeError,
         match=(
             r"checkpoint\['training_assets_state_dict'\]\['asset'\]"
-            r"\['_extra_state'\].*_UnsafeExtraState"
+            r"\['_extra_state'\].*FixtureUnsafeExtraState"
         ),
     ):
         manager.save(checkpoint)
@@ -185,7 +185,7 @@ def test_save_rejects_custom_extra_state_with_precise_path(tmp_path: Path) -> No
 def test_save_rejects_tensor_subclasses_with_precise_path(tmp_path: Path) -> None:
     model = nn.Module()
     value = torch.Tensor._make_subclass(
-        _TensorSubclass,
+        FixtureTensorSubclass,
         torch.ones(1),
         require_grad=False,
     )
@@ -193,7 +193,7 @@ def test_save_rejects_tensor_subclasses_with_precise_path(tmp_path: Path) -> Non
 
     with pytest.raises(
         TypeError,
-        match=r"checkpoint\['model_state_dict'\]\['state'\].*_TensorSubclass",
+        match=r"checkpoint\['model_state_dict'\]\['state'\].*FixtureTensorSubclass",
     ):
         CheckpointManager(model).save(tmp_path / "tensor-subclass.pt")
 
@@ -201,7 +201,7 @@ def test_save_rejects_tensor_subclasses_with_precise_path(tmp_path: Path) -> Non
 def test_load_payload_does_not_execute_pickle_globals(tmp_path: Path) -> None:
     marker = tmp_path / "executed.txt"
     checkpoint = tmp_path / "unsafe-pickle.pt"
-    torch.save({"value": _ExecutablePickleValue(marker)}, checkpoint)
+    torch.save({"value": FixtureExecutablePickleValue(marker)}, checkpoint)
 
     with pytest.raises(pickle.UnpicklingError, match="Weights only load failed"):
         CheckpointManager.load_payload(checkpoint)

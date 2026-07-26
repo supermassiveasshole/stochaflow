@@ -38,7 +38,7 @@ def _dataset(
     return TensorDataset(inputs, targets)
 
 
-class _EpochShuffleSampler(Sampler[int]):
+class EpochShuffleSampler(Sampler[int]):
     """Rebuild a deterministic shuffled order from the run seed and epoch."""
 
     def __init__(self, size: int, *, seed: int) -> None:
@@ -98,7 +98,7 @@ class SyntheticRegressionDataBuilder(DataBuilder):
             train=DataLoader(
                 train,
                 batch_size=batch_size,
-                sampler=_EpochShuffleSampler(
+                sampler=EpochShuffleSampler(
                     len(train),
                     seed=self.context.seed + 1,
                 ),

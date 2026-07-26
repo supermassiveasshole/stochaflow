@@ -274,7 +274,7 @@ from stochaflow.extensions import (
 from .model import ConditionalDenoiser
 
 
-class _CompleteDenoisingObserver:
+class CompleteDenoisingObserver:
     """Validate the full terminal-to-clean lifecycle without retaining states."""
 
     def __init__(
@@ -431,7 +431,7 @@ class ConditionalSRSamplingBuilder(SamplingBuilder):
                 prediction_type=prediction_type,
                 clip_denoised=clip_denoised,
             )
-            lifecycle = _CompleteDenoisingObserver(process, initial.shape)
+            lifecycle = CompleteDenoisingObserver(process, initial.shape)
             result_value = sampler.sample(
                 dynamics,
                 initial,

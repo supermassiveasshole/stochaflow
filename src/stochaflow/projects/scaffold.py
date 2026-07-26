@@ -23,25 +23,25 @@ class ProjectScaffoldError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class _TemplateFile:
+class ProjectTemplateFile:
     resource_name: str
     output_path: str
 
 
 @dataclass(frozen=True, slots=True)
-class _RenderedFile:
+class RenderedProjectFile:
     relative_path: PurePosixPath
     content: str
 
 
 @dataclass(frozen=True, slots=True)
-class _DirectoryIdentity:
+class DirectoryIdentity:
     device: int
     inode: int
 
 
 @dataclass(frozen=True, slots=True)
-class _AnchoredEntry:
+class AnchoredDirectoryEntry:
     parent: tuple[str, ...]
     name: str
     device: int
@@ -49,13 +49,13 @@ class _AnchoredEntry:
 
 
 @dataclass(frozen=True, slots=True)
-class _AnchoredFile:
-    entry: _AnchoredEntry
+class AnchoredFile:
+    entry: AnchoredDirectoryEntry
     identity_descriptor: int
 
 
 @dataclass(frozen=True, slots=True)
-class _AnchoredOpenFlags:
+class AnchoredOpenFlags:
     directory: int
     nofollow: int
 
@@ -84,41 +84,41 @@ _SENTINEL_PREFIX: Final = "__STOCHAFLOW_"
 # This manifest is the sole mapping from package resources to generated paths.
 # Dotfiles are outputs, never package-data resource names.
 _TEMPLATE_MANIFEST: Final = (
-    _TemplateFile("pyproject.toml.tmpl", "pyproject.toml"),
-    _TemplateFile("gitignore.tmpl", ".gitignore"),
-    _TemplateFile("README.md.tmpl", "README.md"),
-    _TemplateFile("data.gitkeep.tmpl", "data/.gitkeep"),
-    _TemplateFile("notebooks.gitkeep.tmpl", "notebooks/.gitkeep"),
-    _TemplateFile("train.yaml.tmpl", "experiments/example/train.yaml"),
-    _TemplateFile(
+    ProjectTemplateFile("pyproject.toml.tmpl", "pyproject.toml"),
+    ProjectTemplateFile("gitignore.tmpl", ".gitignore"),
+    ProjectTemplateFile("README.md.tmpl", "README.md"),
+    ProjectTemplateFile("data.gitkeep.tmpl", "data/.gitkeep"),
+    ProjectTemplateFile("notebooks.gitkeep.tmpl", "notebooks/.gitkeep"),
+    ProjectTemplateFile("train.yaml.tmpl", "experiments/example/train.yaml"),
+    ProjectTemplateFile(
         "package-init.py.tmpl",
         f"src/{_PACKAGE_NAME_SENTINEL}/__init__.py",
     ),
-    _TemplateFile(
+    ProjectTemplateFile(
         "extension-init.py.tmpl",
         f"src/{_PACKAGE_NAME_SENTINEL}/stochaflow_ext/__init__.py",
     ),
-    _TemplateFile(
+    ProjectTemplateFile(
         "data.py.tmpl",
         f"src/{_PACKAGE_NAME_SENTINEL}/stochaflow_ext/data.py",
     ),
-    _TemplateFile(
+    ProjectTemplateFile(
         "model.py.tmpl",
         f"src/{_PACKAGE_NAME_SENTINEL}/stochaflow_ext/model.py",
     ),
-    _TemplateFile(
+    ProjectTemplateFile(
         "diagnostics.py.tmpl",
         f"src/{_PACKAGE_NAME_SENTINEL}/stochaflow_ext/diagnostics.py",
     ),
-    _TemplateFile(
+    ProjectTemplateFile(
         "training.py.tmpl",
         f"src/{_PACKAGE_NAME_SENTINEL}/stochaflow_ext/training.py",
     ),
-    _TemplateFile(
+    ProjectTemplateFile(
         "sampling.py.tmpl",
         f"src/{_PACKAGE_NAME_SENTINEL}/stochaflow_ext/sampling.py",
     ),
-    _TemplateFile("test-extensions.py.tmpl", "tests/test_extensions.py"),
+    ProjectTemplateFile("test-extensions.py.tmpl", "tests/test_extensions.py"),
 )
 
 
@@ -179,7 +179,7 @@ def _validated_relative_path(value: str) -> PurePosixPath:
     return path
 
 
-def _render_project(name: str) -> tuple[_RenderedFile, ...]:
+def _render_project(name: str) -> tuple[RenderedProjectFile, ...]:
     package_name = name.replace("-", "_")
     replacements = {
         _PROJECT_SLUG_SENTINEL: name,
@@ -187,7 +187,7 @@ def _render_project(name: str) -> tuple[_RenderedFile, ...]:
         _VERSION_SENTINEL: _current_stochaflow_version(),
     }
     template_root = resources.files("stochaflow.projects").joinpath("templates")
-    rendered: list[_RenderedFile] = []
+    rendered: list[RenderedProjectFile] = []
     seen_paths: set[PurePosixPath] = set()
     declared_resources: set[str] = set()
     for template in _TEMPLATE_MANIFEST:
@@ -213,7 +213,7 @@ def _render_project(name: str) -> tuple[_RenderedFile, ...]:
                 f"cannot read project template resource '{template.resource_name}'"
             ) from exc
         rendered.append(
-            _RenderedFile(
+            RenderedProjectFile(
                 relative_path=relative_path,
                 content=_render_template(content, replacements),
             )
@@ -222,7 +222,7 @@ def _render_project(name: str) -> tuple[_RenderedFile, ...]:
     return tuple(rendered)
 
 
-def _validate_output_topology(files: list[_RenderedFile]) -> None:
+def _validate_output_topology(files: list[RenderedProjectFile]) -> None:
     file_paths = {item.relative_path for item in files}
     for file_path in file_paths:
         for parent in file_path.parents:
@@ -244,7 +244,7 @@ def _exclusive_write_text(path: Path, content: str) -> None:
         handle.write(content)
 
 
-def _write_new_tree(root: Path, files: tuple[_RenderedFile, ...]) -> None:
+def _write_new_tree(root: Path, files: tuple[RenderedProjectFile, ...]) -> None:
     for rendered in files:
         destination = root.joinpath(*rendered.relative_path.parts)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -324,14 +324,14 @@ def _ordinary_directory_mode(staging: Path) -> int:
 
 def _new_staging_directory(
     target: Path,
-) -> tuple[Path, int, _DirectoryIdentity]:
+) -> tuple[Path, int, DirectoryIdentity]:
     staging = Path(
         tempfile.mkdtemp(
             prefix=f".{target.name}.stochaflow-init-",
             dir=target.parent,
         )
     )
-    identity: _DirectoryIdentity | None = None
+    identity: DirectoryIdentity | None = None
     try:
         identity = _real_directory_identity(staging)
         return staging, _ordinary_directory_mode(staging), identity
@@ -341,7 +341,7 @@ def _new_staging_directory(
         raise
 
 
-def _real_directory_identity(path: Path) -> _DirectoryIdentity:
+def _real_directory_identity(path: Path) -> DirectoryIdentity:
     try:
         path_stat = path.stat(follow_symlinks=False)
     except FileNotFoundError as exc:
@@ -350,13 +350,13 @@ def _real_directory_identity(path: Path) -> _DirectoryIdentity:
         raise ProjectScaffoldError(
             f"target must be an empty real directory or not exist: {path}"
         )
-    return _DirectoryIdentity(
+    return DirectoryIdentity(
         device=path_stat.st_dev,
         inode=path_stat.st_ino,
     )
 
 
-def _same_directory(path: Path, identity: _DirectoryIdentity) -> bool:
+def _same_directory(path: Path, identity: DirectoryIdentity) -> bool:
     try:
         path_stat = path.stat(follow_symlinks=False)
     except FileNotFoundError:
@@ -386,15 +386,15 @@ def _supports_anchored_publication() -> bool:
     )
 
 
-def _anchored_open_flags() -> _AnchoredOpenFlags | None:
+def _anchored_open_flags() -> AnchoredOpenFlags | None:
     directory = getattr(os, "O_DIRECTORY", None)
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if not isinstance(directory, int) or not isinstance(nofollow, int):
         return None
-    return _AnchoredOpenFlags(directory=directory, nofollow=nofollow)
+    return AnchoredOpenFlags(directory=directory, nofollow=nofollow)
 
 
-def _require_anchored_open_flags() -> _AnchoredOpenFlags:
+def _require_anchored_open_flags() -> AnchoredOpenFlags:
     flags = _anchored_open_flags()
     if flags is None:
         raise ProjectScaffoldError(
@@ -406,7 +406,7 @@ def _require_anchored_open_flags() -> _AnchoredOpenFlags:
 
 def _open_existing_directory(
     target: Path,
-    expected: _DirectoryIdentity,
+    expected: DirectoryIdentity,
 ) -> int:
     if not _supports_anchored_publication():
         raise ProjectScaffoldError(
@@ -445,7 +445,7 @@ def _exclusive_write_at(
     content: str,
     *,
     parent: tuple[str, ...],
-) -> _AnchoredFile:
+) -> AnchoredFile:
     flags = _require_anchored_open_flags()
     identity_descriptor = os.open(
         name,
@@ -454,13 +454,13 @@ def _exclusive_write_at(
         dir_fd=parent_descriptor,
     )
     entry_stat = os.fstat(identity_descriptor)
-    entry = _AnchoredEntry(
+    entry = AnchoredDirectoryEntry(
         parent=parent,
         name=name,
         device=entry_stat.st_dev,
         inode=entry_stat.st_ino,
     )
-    anchored_file = _AnchoredFile(
+    anchored_file = AnchoredFile(
         entry=entry,
         identity_descriptor=identity_descriptor,
     )
@@ -491,7 +491,7 @@ def _exclusive_write_at(
 
 def _entry_matches(
     parent_descriptor: int,
-    entry: _AnchoredEntry,
+    entry: AnchoredDirectoryEntry,
 ) -> bool:
     try:
         entry_stat = os.stat(
@@ -522,7 +522,7 @@ def _clear_directory_descriptor(descriptor: int) -> None:
             )
         except FileNotFoundError:
             continue
-        entry = _AnchoredEntry(
+        entry = AnchoredDirectoryEntry(
             parent=(),
             name=name,
             device=entry_stat.st_dev,
@@ -558,7 +558,7 @@ def _clear_directory_descriptor(descriptor: int) -> None:
 
 def _remove_owned_staging(
     staging: Path,
-    identity: _DirectoryIdentity,
+    identity: DirectoryIdentity,
 ) -> None:
     """Best-effort cleanup without recursively traversing a reused pathname."""
 
@@ -594,7 +594,7 @@ def _remove_owned_staging(
 
 
 def _expected_children(
-    files: tuple[_RenderedFile, ...],
+    files: tuple[RenderedProjectFile, ...],
 ) -> dict[tuple[str, ...], set[str]]:
     result: dict[tuple[str, ...], set[str]] = {}
     for rendered in files:
@@ -606,14 +606,14 @@ def _expected_children(
 
 def _publish_to_existing_empty_directory(
     target: Path,
-    files: tuple[_RenderedFile, ...],
+    files: tuple[RenderedProjectFile, ...],
 ) -> None:
     expected = _real_directory_identity(target)
     root_descriptor = _open_existing_directory(target, expected)
     flags = _require_anchored_open_flags()
     directory_descriptors: dict[tuple[str, ...], int] = {(): root_descriptor}
-    created_directories: list[_AnchoredEntry] = []
-    created_files: list[_AnchoredFile] = []
+    created_directories: list[AnchoredDirectoryEntry] = []
+    created_files: list[AnchoredFile] = []
     try:
         for rendered in files:
             parts = rendered.relative_path.parts
@@ -629,7 +629,7 @@ def _publish_to_existing_empty_directory(
                     dir_fd=parent_descriptor,
                     follow_symlinks=False,
                 )
-                created_entry = _AnchoredEntry(
+                created_entry = AnchoredDirectoryEntry(
                     parent=parent,
                     name=directory_name,
                     device=created_stat.st_dev,
@@ -710,7 +710,7 @@ def _publish_to_existing_empty_directory(
 
 def _publish_to_absent_target(
     target: Path,
-    files: tuple[_RenderedFile, ...],
+    files: tuple[RenderedProjectFile, ...],
 ) -> None:
     staging, publish_mode, staging_identity = _new_staging_directory(target)
     published = False

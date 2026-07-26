@@ -779,7 +779,7 @@ def test_existing_empty_target_rolls_back_only_created_items(
         content: str,
         *,
         parent: tuple[str, ...],
-    ) -> scaffold._AnchoredFile:
+    ) -> scaffold.AnchoredFile:
         nonlocal calls
         calls += 1
         if calls == 2:
@@ -876,7 +876,7 @@ def test_concurrently_replaced_generated_file_fails_without_deleting_replacement
         content: str,
         *,
         parent: tuple[str, ...],
-    ) -> scaffold._AnchoredFile:
+    ) -> scaffold.AnchoredFile:
         nonlocal replaced
         entry = original_write(
             parent_descriptor,
@@ -996,7 +996,7 @@ def test_existing_target_swap_to_symlink_never_redirects_writes(
 
     def swap_before_open(
         path: Path,
-        expected: scaffold._DirectoryIdentity,
+        expected: scaffold.DirectoryIdentity,
     ) -> int:
         nonlocal swapped
         if path == target and not swapped:

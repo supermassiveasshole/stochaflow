@@ -410,7 +410,7 @@ def test_trajectory_observer_does_not_change_sampling_math() -> None:
     assert observer.observations[-1].coordinate == 0
 
 
-class _PhysicsCorrectionDynamics(GaussianDenoisingDynamics):
+class FakePhysicsCorrectionDynamics(GaussianDenoisingDynamics):
     def __init__(
         self,
         process: DiscreteGaussianDenoisingProcess,
@@ -448,7 +448,7 @@ class _PhysicsCorrectionDynamics(GaussianDenoisingDynamics):
         return prediction
 
 
-class _PhysicsCorrectedDDIMSampler(Sampler):
+class FakePhysicsCorrectedDDIMSampler(Sampler):
     def __init__(self, base: DDIMSampler) -> None:
         self.base = base
 
@@ -460,7 +460,7 @@ class _PhysicsCorrectedDDIMSampler(Sampler):
         generator: torch.Generator | None = None,
         observer: SamplingObserver | None = None,
     ) -> SamplerResult:
-        if not isinstance(dynamics, _PhysicsCorrectionDynamics):
+        if not isinstance(dynamics, FakePhysicsCorrectionDynamics):
             raise TypeError("physics-corrected DDIM requires its task dynamics")
         if not isinstance(initial_state, torch.Tensor):
             raise TypeError("physics-corrected DDIM requires a Tensor state")
@@ -521,10 +521,10 @@ def test_zero_correction_sampler_reuses_ddim_primitives_exactly() -> None:
         initial,
         generator=torch.Generator().manual_seed(23),
     )
-    guided = _PhysicsCorrectedDDIMSampler(
+    guided = FakePhysicsCorrectedDDIMSampler(
         DDIMSampler(schedule=[4, 3, 1, 0], eta=0.5)
     ).sample(
-        _PhysicsCorrectionDynamics(process, correction=0.0),
+        FakePhysicsCorrectionDynamics(process, correction=0.0),
         initial,
         generator=torch.Generator().manual_seed(23),
     )
@@ -536,7 +536,7 @@ def test_zero_correction_sampler_reuses_ddim_primitives_exactly() -> None:
 def test_physics_correction_is_applied_after_transition_before_observation() -> None:
     process = _process(4)
     initial = torch.randn(2, 3)
-    dynamics = _PhysicsCorrectionDynamics(process, correction=0.125)
+    dynamics = FakePhysicsCorrectionDynamics(process, correction=0.125)
     base = DDIMSampler(schedule=[4, 0], eta=0)
     source_times = torch.full((2,), 4, dtype=torch.long)
     target_times = torch.zeros(2, dtype=torch.long)
@@ -550,7 +550,7 @@ def test_physics_correction_is_applied_after_transition_before_observation() -> 
     ).mean - 0.125
     observer = TrajectoryObserver()
 
-    result = _PhysicsCorrectedDDIMSampler(base).sample(
+    result = FakePhysicsCorrectedDDIMSampler(base).sample(
         dynamics,
         initial,
         observer=observer,

@@ -335,7 +335,7 @@ device、offload 和 inference loop 会出现两个 owner。
 ### 5.2 当前最大阻塞点：sampling 丢失 auxiliary assets
 
 checkpoint v8 已把具名 auxiliary modules 写入
-`training_assets_state_dict`，但 `_SamplingCheckpointView` 只保留：
+`training_assets_state_dict`，但 `SamplingCheckpointView` 只保留：
 
 - primary raw state；
 - primary EMA state；

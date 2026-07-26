@@ -14,7 +14,7 @@ def _normalization_groups(channels: int) -> int:
     return next(group for group in range(min(8, channels), 0, -1) if channels % group == 0)
 
 
-class _TimeEmbedding(nn.Module):
+class TimeEmbedding(nn.Module):
     def __init__(self, embedding_dim: int) -> None:
         super().__init__()
         if embedding_dim < 4 or embedding_dim % 2:
@@ -33,7 +33,7 @@ class _TimeEmbedding(nn.Module):
         return torch.cat((arguments.sin(), arguments.cos()), dim=1)
 
 
-class _ResidualBlock(nn.Module):
+class ResidualBlock(nn.Module):
     def __init__(self, channels: int, time_embedding_dim: int) -> None:
         super().__init__()
         groups = _normalization_groups(channels)
@@ -108,7 +108,7 @@ class ConditionalDenoiser(nn.Module):
             raise ValueError("time_delta must be positive")
 
         self.channels = channels
-        self.time_embedding = _TimeEmbedding(time_embedding_dim)
+        self.time_embedding = TimeEmbedding(time_embedding_dim)
         self.time_mlp = nn.Sequential(
             nn.Linear(time_embedding_dim, time_embedding_dim),
             nn.SiLU(),
@@ -116,7 +116,7 @@ class ConditionalDenoiser(nn.Module):
         )
         self.input = nn.Conv2d(channels * 2, hidden_channels, kernel_size=3, padding=1)
         self.blocks = nn.ModuleList(
-            _ResidualBlock(hidden_channels, time_embedding_dim)
+            ResidualBlock(hidden_channels, time_embedding_dim)
             for _ in range(num_blocks)
         )
         self.output = nn.Sequential(

@@ -17,7 +17,7 @@ _PREFIX = "stochaflow-knowledge-distillation"
 _MAX_SEED = (1 << 63) - 1
 
 
-class _EpochShuffleSampler(Sampler[int]):
+class EpochShuffleSampler(Sampler[int]):
     """Derive each shuffle solely from the experiment seed and epoch."""
 
     def __init__(self, data_source: object, *, seed: int) -> None:
@@ -232,7 +232,7 @@ def _loaders(
             train,
             shuffle=False,
             sampler=(
-                _EpochShuffleSampler(train, seed=seed + 100)
+                EpochShuffleSampler(train, seed=seed + 100)
                 if shuffle
                 else None
             ),

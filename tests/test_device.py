@@ -7,7 +7,7 @@ from torch import nn
 from stochaflow.utils.device import move_module_to_device
 
 
-class _StatefulModule(nn.Module):
+class FixtureStatefulModule(nn.Module):
     def __init__(
         self,
         *,
@@ -23,7 +23,7 @@ class _StatefulModule(nn.Module):
 def test_mps_placement_rejects_unsupported_parameter_dtype(
     dtype: torch.dtype,
 ) -> None:
-    module = _StatefulModule(parameter_dtype=dtype)
+    module = FixtureStatefulModule(parameter_dtype=dtype)
 
     with pytest.raises(
         TypeError,
@@ -39,7 +39,7 @@ def test_mps_placement_rejects_unsupported_parameter_dtype(
 
 
 def test_mps_placement_rejects_unsupported_buffer_dtype() -> None:
-    module = _StatefulModule(buffer_dtype=torch.float64)
+    module = FixtureStatefulModule(buffer_dtype=torch.float64)
 
     with pytest.raises(
         TypeError,
@@ -51,7 +51,7 @@ def test_mps_placement_rejects_unsupported_buffer_dtype() -> None:
 
 
 def test_cpu_placement_preserves_explicit_float64_state() -> None:
-    module = _StatefulModule(
+    module = FixtureStatefulModule(
         parameter_dtype=torch.float64,
         buffer_dtype=torch.float64,
     )

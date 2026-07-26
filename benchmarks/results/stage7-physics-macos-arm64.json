@@ -13,12 +13,12 @@
       "examples/extension-projects/physics-reconstruction/experiments/real-smoke/sample-guided-ddim.yaml": "da3d60b5dd98b7b96d9c0af45dfa6c454742f3916ba978e3679be3bd5b2bbfe0",
       "examples/extension-projects/physics-reconstruction/pyproject.toml": "74e7b8c8d1d584d232e5458c3e49b0336694417d451e44260f33b5a474449030",
       "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/data.py": "28d0ac14fedd236383a01b249e744104c34c02fcd5aa65918862f562d898dfbc",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/model.py": "adc027e6a5a3b548d40d15c07e01d03cbecf3f6180b476ce8b247d5aa19f9f28",
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/model.py": "5a3546908bdd0a94c66553710cb93c8337fd1795f918dbdfc786876a1a0ce59c",
       "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/physics.py": "83f50d5c3da99c150c223e4df85b0d59b3773e95c9df16ecedb208311fc8b2be",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/sampling.py": "fde0c5a34d97e719943de074b766755837beaf0a83309b7b0a235f196d924b27",
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/sampling.py": "fbebf57694c42d7c9b24864c685d50fed7eae8d033c99a7c50f2cf9485006106",
       "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/training.py": "d6e9e0e4ae67bcb347014f5d8460036ac9bbeaf45eea499b5eb37b87565c72ec",
       "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/stochaflow_ext/writers.py": "d3d670b16a6b1dfebf00998588494b480ea6ba14ce1e7999ee479dd148f5b2dc",
-      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/tools/capacity_check.py": "c01a78c2dfedbea8dcd0c754548914edbcf35bf7bd08c46cabad767fa49081ef",
+      "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/tools/capacity_check.py": "1e5658204642f1ef14b4f37cf0e66da3a70de3461b6fd03272c0f1fd7ae65ce5",
       "examples/extension-projects/physics-reconstruction/src/stochaflow_physics_reconstruction/tools/prepare_kolmogorov.py": "41c713dc03a473ca72a224ac1fa709c71890cdaa744f93849f088e4b69b5a4ba"
     }
   },

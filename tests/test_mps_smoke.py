@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-class _TinyGaussianModel(nn.Module):
+class TinyGaussianModel(nn.Module):
     def __init__(self, initial_scale: float = 0.0) -> None:
         super().__init__()
         self.scale = nn.Parameter(torch.tensor(initial_scale))
@@ -68,7 +68,7 @@ def test_default_discrete_gaussian_process_migrates_to_mps_in_float32() -> None:
 
 def test_trainer_runs_forward_backward_and_optimizer_step_on_mps() -> None:
     process = _process()
-    model = _TinyGaussianModel()
+    model = TinyGaussianModel()
     objective = MSEObjective()
     strategy = GaussianDenoisingTrainingStrategy(model, process, objective)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
@@ -112,7 +112,7 @@ def test_gaussian_samplers_run_complete_paths_on_mps(
 ) -> None:
     device = torch.device("mps")
     process = _process().to(device)
-    model = _TinyGaussianModel(initial_scale=0.05).to(device)
+    model = TinyGaussianModel(initial_scale=0.05).to(device)
     dynamics = GaussianModelDynamics(
         process,
         model,

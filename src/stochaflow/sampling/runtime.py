@@ -56,7 +56,7 @@ from stochaflow.utils.run_manifest import (
 from stochaflow.utils.seed import set_seed
 
 
-class _SamplingCheckpointView(TypedDict, total=False):
+class SamplingCheckpointView(TypedDict, total=False):
     """Validated inference-only state retained from a complete checkpoint."""
 
     format_version: int
@@ -73,7 +73,7 @@ class ResolvedSamplingInputs:
 
     config: StochaflowConfig
     checkpoint_path: Path
-    checkpoint: _SamplingCheckpointView
+    checkpoint: SamplingCheckpointView
     config_source: str
     extension_plan: ExtensionActivationPlan
 
@@ -378,7 +378,7 @@ def _load_checkpoint_config(payload: CheckpointState) -> StochaflowConfig:
     return load_config_dict(raw)
 
 
-def _sampling_checkpoint_view(payload: CheckpointState) -> _SamplingCheckpointView:
+def _sampling_checkpoint_view(payload: CheckpointState) -> SamplingCheckpointView:
     """Drop training-only state before generated outputs begin to accumulate."""
 
     retained_keys = (
@@ -391,14 +391,14 @@ def _sampling_checkpoint_view(payload: CheckpointState) -> _SamplingCheckpointVi
     )
     raw_payload = cast(dict[str, Any], payload)
     return cast(
-        _SamplingCheckpointView,
+        SamplingCheckpointView,
         {key: raw_payload[key] for key in retained_keys if key in raw_payload},
     )
 
 
 def _build_checkpointed_process(
     config: StochaflowConfig,
-    payload: _SamplingCheckpointView,
+    payload: SamplingCheckpointView,
     *,
     device: torch.device,
     allow_unused_state: bool = False,
@@ -424,7 +424,7 @@ def _build_checkpointed_process(
 
 def _build_model_provider(
     config: StochaflowConfig,
-    payload: _SamplingCheckpointView,
+    payload: SamplingCheckpointView,
     *,
     device: torch.device,
 ) -> InferenceModelProvider:

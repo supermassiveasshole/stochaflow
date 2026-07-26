@@ -214,7 +214,7 @@ def test_official_local_image_folders(tmp_path: Path) -> None:
     assert len(cast(Any, loaders.test).dataset) == 2
 
 
-class _TinyVisionDataset(Dataset[Any]):
+class FixtureTinyVisionDataset(Dataset[Any]):
     def __init__(self, size: int = 3) -> None:
         self.size = size
 
@@ -234,7 +234,7 @@ def test_torchvision_sources_use_curated_adapters(
         monkeypatch.setattr(
             sources.datasets,
             "Flowers102",
-            lambda *args, split, **kwargs: _TinyVisionDataset(
+            lambda *args, split, **kwargs: FixtureTinyVisionDataset(
                 2 if split == "val" else 3
             ),
         )
@@ -242,7 +242,7 @@ def test_torchvision_sources_use_curated_adapters(
         monkeypatch.setattr(
             sources.datasets,
             dataset_name,
-            lambda *args, train, **kwargs: _TinyVisionDataset(3 if train else 2),
+            lambda *args, train, **kwargs: FixtureTinyVisionDataset(3 if train else 2),
         )
 
     result = build_image_source(
@@ -432,14 +432,14 @@ def test_multi_resolution_holdout_ignores_native_validation_mismatch(
     def source(raw, **kwargs):
         del kwargs
         validation = (
-            _TinyVisionDataset(2)
+            FixtureTinyVisionDataset(2)
             if raw["dataset"] == "Flowers102"
             else None
         )
         return SourceDatasets(
-            train=_TinyVisionDataset(6),
+            train=FixtureTinyVisionDataset(6),
             validation=validation,
-            test=_TinyVisionDataset(2),
+            test=FixtureTinyVisionDataset(2),
         )
 
     monkeypatch.setattr(builtin, "build_image_source", source)

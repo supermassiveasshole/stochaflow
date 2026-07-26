@@ -259,7 +259,7 @@ class GuidedDDIMSampler(Sampler):
         )
 
 
-class _ReconstructionObserver:
+class ReconstructionObserver:
     def __init__(
         self,
         *,
@@ -330,30 +330,30 @@ class _ReconstructionObserver:
 
 
 @dataclass(frozen=True, slots=True)
-class _SourceConfig:
+class ReconstructionSourceConfig:
     path: Path
     trajectory_range: tuple[int, int]
 
 
 @dataclass(frozen=True, slots=True)
-class _TrajectoryConfig:
+class ReconstructionTrajectoryConfig:
     enabled: bool
     every_steps: int
 
 
 @dataclass(frozen=True, slots=True)
-class _ReconstructionConfig:
+class ReconstructionConfig:
     weights: WeightSelection
     prediction_type: PredictionType
     clip_denoised: bool
     partial_noise_time: int
     conditioning_strength: float
     correction_strength: float
-    source: _SourceConfig
-    reference: _SourceConfig | None
+    source: ReconstructionSourceConfig
+    reference: ReconstructionSourceConfig | None
     alignment: Path | None
     sampler: ComponentConfig
-    trajectory: _TrajectoryConfig
+    trajectory: ReconstructionTrajectoryConfig
 
 
 @REGISTRIES.sampling_builders.register("physics-reconstruction.reconstruction")
@@ -451,7 +451,7 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
                 state_times,
                 generator=generator,
             )
-            lifecycle = _ReconstructionObserver(
+            lifecycle = ReconstructionObserver(
                 start_time=config.partial_noise_time,
                 end_time=process.clean_time,
                 expected_shape=initial.shape,
@@ -566,7 +566,7 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
         )
 
     @classmethod
-    def _parse(cls, raw: dict[str, Any]) -> _ReconstructionConfig:
+    def _parse(cls, raw: dict[str, Any]) -> ReconstructionConfig:
         params = copied_mapping(raw, path="sampling.builder.params")
         weights = pop_string(
             params,
@@ -660,7 +660,7 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
             path="sampling.builder.params.trajectory",
         )
         reject_unknown(params, path="sampling.builder.params")
-        return _ReconstructionConfig(
+        return ReconstructionConfig(
             cast(WeightSelection, weights),
             cast(PredictionType, prediction_type),
             clip_denoised,
@@ -671,17 +671,17 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
             reference,
             alignment,
             sampler,
-            _TrajectoryConfig(enabled, every_steps),
+            ReconstructionTrajectoryConfig(enabled, every_steps),
         )
 
     @staticmethod
-    def _source(raw: dict[str, Any], *, path: str) -> _SourceConfig:
+    def _source(raw: dict[str, Any], *, path: str) -> ReconstructionSourceConfig:
         source_path = pop_path(raw, "path", path=path)
         trajectory_range = pop_optional_range(raw, "trajectories", path=path)
         reject_unknown(raw, path=path)
         if trajectory_range is None:
             raise ValueError(f"{path}.trajectories is required")
-        return _SourceConfig(source_path, trajectory_range)
+        return ReconstructionSourceConfig(source_path, trajectory_range)
 
     @staticmethod
     def _component(raw: dict[str, Any], *, path: str) -> ComponentConfig:

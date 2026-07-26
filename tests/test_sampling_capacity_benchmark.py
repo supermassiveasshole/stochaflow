@@ -47,11 +47,11 @@ _SUMMARIZE_REPEATS = cast(
 _WINDOWS_PEAK_RSS = cast(Callable[[], int], _TOOL_API["_windows_peak_rss_bytes"])
 _WINDOWS_COUNTERS = cast(
     type[ctypes.Structure],
-    _TOOL_API["_WindowsProcessMemoryCounters"],
+    _TOOL_API["WindowsProcessMemoryCounters"],
 )
 
 
-class _FakeWin32Function:
+class FakeWin32Function:
     def __init__(self, implementation: Callable[..., object]) -> None:
         self._implementation = implementation
         self.argtypes: tuple[object, ...] | None = None
@@ -342,7 +342,7 @@ def test_windows_peak_rss_declares_pointer_sized_win32_abi(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     process_handle = object()
-    get_current_process = _FakeWin32Function(lambda: process_handle)
+    get_current_process = FakeWin32Function(lambda: process_handle)
 
     def get_process_memory_info(
         received_process: object,
@@ -355,7 +355,7 @@ def test_windows_peak_rss_declares_pointer_sized_win32_abi(
         counters.peak_working_set_size = 123_456
         return 1
 
-    get_memory_info = _FakeWin32Function(get_process_memory_info)
+    get_memory_info = FakeWin32Function(get_process_memory_info)
     kernel32 = SimpleNamespace(
         GetCurrentProcess=get_current_process,
         K32GetProcessMemoryInfo=get_memory_info,
@@ -383,8 +383,8 @@ def test_windows_peak_rss_reports_win32_error_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel32 = SimpleNamespace(
-        GetCurrentProcess=_FakeWin32Function(object),
-        K32GetProcessMemoryInfo=_FakeWin32Function(lambda *_args: 0),
+        GetCurrentProcess=FakeWin32Function(object),
+        K32GetProcessMemoryInfo=FakeWin32Function(lambda *_args: 0),
     )
     monkeypatch.setattr(
         ctypes,
@@ -420,9 +420,9 @@ def test_reference_result_matches_current_tool_profiles_and_statistics() -> None
     )
     assert source["audited_compatible_tool_sha256"] == _canonical_sha256(TOOL)
     assert source["tool_compatibility_note"] == (
-        "Post-measurement cross-platform capability typing refactor; RSS units, "
-        "platform dispatch, capacity projections, writer execution, and aggregation "
-        "are unchanged."
+        "Post-measurement cross-platform capability typing and formal class naming "
+        "refactor; RSS units, platform dispatch, capacity projections, writer "
+        "execution, and aggregation are unchanged."
     )
     assert source["profiles_sha256"] == _canonical_sha256(PROFILES)
     profiles = _LOAD_PROFILES(PROFILES)

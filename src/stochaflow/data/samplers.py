@@ -99,7 +99,7 @@ class BucketedDataset(Protocol):
     def __len__(self) -> int: ...
 
 
-class _CyclingIndexPool:
+class CyclingIndexPool:
     """Draw shuffled indices indefinitely while retaining every sample."""
 
     def __init__(self, indices: Sequence[int], rng: random.Random) -> None:
@@ -258,7 +258,7 @@ class MixtureBatchSampler(Sampler[list[int]]):
         sources = list(self.source_weights)
         weights = [self.source_weights[source] for source in sources]
         pools = {
-            key: _CyclingIndexPool(indices, rng)
+            key: CyclingIndexPool(indices, rng)
             for key, indices in self._source_bucket_indices.items()
         }
         source_buckets: dict[str, list[str]] = {}

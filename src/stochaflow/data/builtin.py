@@ -117,7 +117,7 @@ def _loader_kwargs(config: LoaderRecipeConfig, *, seed: int) -> dict[str, Any]:
     return kwargs
 
 
-class _EpochRandomSampler(Sampler[int]):
+class EpochRandomSampler(Sampler[int]):
     """Rebuild one deterministic shuffled index stream from seed and epoch."""
 
     def __init__(self, dataset: Dataset[Any], *, seed: int) -> None:
@@ -151,7 +151,7 @@ def _build_loader(
     if dataset is None:
         return None
     sampler = (
-        _EpochRandomSampler(dataset, seed=seed)
+        EpochRandomSampler(dataset, seed=seed)
         if training and config.shuffle
         else None
     )
@@ -390,7 +390,7 @@ class SuperResolutionDataBuilder(DataBuilder):
         )
 
 
-class _SourceConcatDataset(Dataset[Any]):
+class SourceConcatDataset(Dataset[Any]):
     def __init__(self, datasets: Sequence[tuple[str, Dataset[Any]]]) -> None:
         if not datasets:
             raise ValueError("multi-resolution sources must not be empty")
@@ -420,12 +420,12 @@ class _SourceConcatDataset(Dataset[Any]):
 def _source_id(dataset: Dataset[Any], index: int) -> str:
     if isinstance(dataset, Subset):
         return _source_id(dataset.dataset, int(dataset.indices[index]))
-    if isinstance(dataset, _SourceConcatDataset):
+    if isinstance(dataset, SourceConcatDataset):
         return dataset.source_ids[index]
     raise TypeError("multi-resolution dataset lost private source metadata")
 
 
-class _MultiResolutionDataset(Dataset[tuple[torch.Tensor, dict[str, Any]]]):
+class MultiResolutionDataset(Dataset[tuple[torch.Tensor, dict[str, Any]]]):
     def __init__(
         self,
         dataset: Dataset[Any],
@@ -476,7 +476,7 @@ def _combine_sources(
         raise ValueError(
             f"multi-resolution source role '{role}' must be present for every source or none"
         )
-    return _SourceConcatDataset(cast(list[tuple[str, Dataset[Any]]], present))
+    return SourceConcatDataset(cast(list[tuple[str, Dataset[Any]]], present))
 
 
 @REGISTRIES.data_builders.register("multi_resolution_image")
@@ -579,10 +579,10 @@ class MultiResolutionImageDataBuilder(DataBuilder):
         policy: ResolutionBucketPolicy,
         *,
         role: str,
-    ) -> _MultiResolutionDataset | None:
+    ) -> MultiResolutionDataset | None:
         if dataset is None:
             return None
-        return _MultiResolutionDataset(
+        return MultiResolutionDataset(
             dataset,
             policy,
             role=role,
@@ -595,7 +595,7 @@ class MultiResolutionImageDataBuilder(DataBuilder):
 
     def _loader(
         self,
-        dataset: _MultiResolutionDataset | None,
+        dataset: MultiResolutionDataset | None,
         policy: ResolutionBucketPolicy,
         *,
         training: bool,

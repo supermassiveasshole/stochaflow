@@ -22,7 +22,7 @@ from stochaflow.utils.factory import build_model, build_objective
 from stochaflow_knowledge_distillation import stochaflow_ext
 from stochaflow_knowledge_distillation.stochaflow_ext.data import (
     ClassificationDataBuilder,
-    _EpochShuffleSampler,
+    EpochShuffleSampler,
 )
 from stochaflow_knowledge_distillation.stochaflow_ext.models import (
     StudentClassifier,
@@ -112,7 +112,7 @@ def test_shuffle_order_is_epoch_derived_and_resume_rebuild_safe() -> None:
     ).build()
     assert isinstance(uninterrupted.train, DataLoader)
     sampler = uninterrupted.train.sampler
-    assert isinstance(sampler, _EpochShuffleSampler)
+    assert isinstance(sampler, EpochShuffleSampler)
     sampler.set_epoch(1)
     epoch_one = tuple(sampler)
     sampler.set_epoch(2)
@@ -121,7 +121,7 @@ def test_shuffle_order_is_epoch_derived_and_resume_rebuild_safe() -> None:
     rebuilt = ClassificationDataBuilder(DataBuilderContext(params, seed=17)).build()
     assert isinstance(rebuilt.train, DataLoader)
     rebuilt_sampler = rebuilt.train.sampler
-    assert isinstance(rebuilt_sampler, _EpochShuffleSampler)
+    assert isinstance(rebuilt_sampler, EpochShuffleSampler)
     rebuilt_sampler.set_epoch(2)
 
     assert epoch_one != uninterrupted_epoch_two

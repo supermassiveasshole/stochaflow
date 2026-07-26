@@ -115,21 +115,21 @@ REGISTRIES.sampling_builders.require_base(SamplingBuilder)
 
 
 @dataclass(frozen=True, slots=True)
-class _TrajectoryConfig:
+class DenoisingTrajectoryConfig:
     enabled: bool
     every_steps: int
 
 
 @dataclass(frozen=True, slots=True)
-class _StandardDenoisingConfig:
+class StandardDenoisingConfig:
     weights: WeightSelection
     prediction_type: PredictionType
     clip_denoised: bool
     sampler: ComponentConfig
-    trajectory: _TrajectoryConfig
+    trajectory: DenoisingTrajectoryConfig
 
 
-class _StandardDenoisingObserver:
+class StandardDenoisingObserver:
     """Validate one standard denoising lifecycle and optionally retain it."""
 
     def __init__(
@@ -137,7 +137,7 @@ class _StandardDenoisingObserver:
         *,
         process: DiscreteGaussianDenoisingProcess,
         expected_shape: torch.Size,
-        trajectory: _TrajectoryConfig,
+        trajectory: DenoisingTrajectoryConfig,
     ) -> None:
         self._process = process
         self._expected_shape = expected_shape
@@ -268,7 +268,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
                 device=self.context.device,
                 generator=generator,
             )
-            lifecycle = _StandardDenoisingObserver(
+            lifecycle = StandardDenoisingObserver(
                 process=process,
                 expected_shape=initial.shape,
                 trajectory=config.trajectory,
@@ -316,7 +316,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
         )
 
     @staticmethod
-    def _parse_params(params: dict[str, Any]) -> _StandardDenoisingConfig:
+    def _parse_params(params: dict[str, Any]) -> StandardDenoisingConfig:
         allowed = {
             "weights",
             "prediction_type",
@@ -364,12 +364,12 @@ class StandardDenoisingBuilder(SamplingBuilder):
             or every_steps <= 0
         ):
             raise ValueError("trajectory.every_steps must be a positive integer")
-        return _StandardDenoisingConfig(
+        return StandardDenoisingConfig(
             weights=cast(WeightSelection, weights),
             prediction_type=cast(PredictionType, prediction_type),
             clip_denoised=clip_denoised,
             sampler=sampler,
-            trajectory=_TrajectoryConfig(enabled, every_steps),
+            trajectory=DenoisingTrajectoryConfig(enabled, every_steps),
         )
 
     @staticmethod

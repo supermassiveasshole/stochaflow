@@ -150,7 +150,7 @@ class ResolvedExtensions:
         object.__setattr__(self, "config", deepcopy(self.config))
 
 
-class _ActivationState(Enum):
+class PluginActivationState(Enum):
     UNACTIVATED = "unactivated"
     ACTIVATING = "activating"
     ACTIVE = "active"
@@ -158,14 +158,14 @@ class _ActivationState(Enum):
 
 
 @dataclass(slots=True)
-class _ActivationRuntime:
-    state: _ActivationState = _ActivationState.UNACTIVATED
+class PluginActivationRuntime:
+    state: PluginActivationState = PluginActivationState.UNACTIVATED
     selection: tuple[ExtensionPluginProvenance, ...] | None = None
     failure: BaseException | None = None
 
 
 _activation_lock = RLock()
-_activation_runtime = _ActivationRuntime()
+_activation_runtime = PluginActivationRuntime()
 
 
 def _validate_entry_point_name(value: object, *, context: str) -> str:
@@ -608,26 +608,26 @@ def activate_extension_plugins(
     selection = tuple(plan.provenance)
 
     with _activation_lock:
-        if _activation_runtime.state is _ActivationState.FAILED:
+        if _activation_runtime.state is PluginActivationState.FAILED:
             raise ExtensionActivationStateError(
                 "extension activation previously failed; restart the Python process"
             ) from _activation_runtime.failure
-        if _activation_runtime.state is _ActivationState.ACTIVATING:
+        if _activation_runtime.state is PluginActivationState.ACTIVATING:
             error = ExtensionActivationStateError(
                 "re-entrant extension activation is not supported; restart the "
                 "Python process"
             )
-            _activation_runtime.state = _ActivationState.FAILED
+            _activation_runtime.state = PluginActivationState.FAILED
             _activation_runtime.failure = error
             raise error
-        if _activation_runtime.state is _ActivationState.ACTIVE:
+        if _activation_runtime.state is PluginActivationState.ACTIVE:
             if selection != _activation_runtime.selection:
                 raise ExtensionActivationStateError(
                     "a different extension plugin selection is already active in "
                     "this Python process"
                 )
         else:
-            _activation_runtime.state = _ActivationState.ACTIVATING
+            _activation_runtime.state = PluginActivationState.ACTIVATING
             active_plugin: ExtensionPluginProvenance | None = None
             try:
                 for plugin in selection:
@@ -648,13 +648,13 @@ def activate_extension_plugins(
                         f"{active_plugin.target if active_plugin else '<unknown>'!r}): "
                         f"{exc}"
                     )
-                _activation_runtime.state = _ActivationState.FAILED
+                _activation_runtime.state = PluginActivationState.FAILED
                 _activation_runtime.failure = error
                 if error is exc:
                     raise
                 raise error from exc
             _activation_runtime.selection = selection
-            _activation_runtime.state = _ActivationState.ACTIVE
+            _activation_runtime.state = PluginActivationState.ACTIVE
 
     return ResolvedExtensions(
         config=_materialized_config(plan),
@@ -667,7 +667,7 @@ def _reset_extension_activation_state_for_testing() -> None:
     """Reset process activation state for isolated tests only."""
 
     with _activation_lock:
-        _activation_runtime.state = _ActivationState.UNACTIVATED
+        _activation_runtime.state = PluginActivationState.UNACTIVATED
         _activation_runtime.selection = None
         _activation_runtime.failure = None
 

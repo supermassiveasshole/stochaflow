@@ -33,10 +33,12 @@ intermediate plan without linking it from the public docs index.
 Use four-space indentation, Ruff’s default 88-character line length, and type
 annotations for public APIs. Prefer small, single-purpose modules and explicit
 imports. Name modules, functions, and variables `snake_case`; classes
-`PascalCase`; constants `UPPER_SNAKE_CASE`. Add concise docstrings to public
-classes and non-obvious methods. Register new configurable components through
-the existing registry/factory pattern rather than adding command-specific
-branches.
+`PascalCase`; constants `UPPER_SNAKE_CASE`. Every class declaration, including
+internal helpers, protocols, typed dictionaries, dataclasses, templates, and test
+fixtures, must use a formal descriptive name without a leading underscore. Add
+concise docstrings to public classes and non-obvious methods. Register new
+configurable components through the existing registry/factory pattern rather
+than adding command-specific branches.
 
 ## Architecture & SOLID Principles
 

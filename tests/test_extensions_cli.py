@@ -14,7 +14,7 @@ from stochaflow.utils.plugins import (
 )
 
 
-class _TTYInput(StringIO):
+class FixtureTTYInput(StringIO):
     def isatty(self) -> bool:
         return True
 
@@ -66,7 +66,7 @@ def test_force_flag_accepts_version_mismatch_without_prompt(monkeypatch):
 
 def test_interactive_confirmation_records_prompt(monkeypatch):
     observed = _record_activation(monkeypatch)
-    monkeypatch.setattr(extensions_cli.sys, "stdin", _TTYInput(""))
+    monkeypatch.setattr(extensions_cli.sys, "stdin", FixtureTTYInput(""))
     monkeypatch.setattr("builtins.input", lambda prompt: "yes")
 
     extensions_cli.activate_extensions_for_cli(
