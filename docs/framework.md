@@ -12,16 +12,36 @@ Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它
 | 领域 | 内置能力 | 扩展边界 |
 | --- | --- | --- |
 | 数据 | 普通图像、超分辨率配对、多源多分辨率图像 recipe | `DataBuilder` 直接组装任意 Dataset、sampler、collate 和 loader |
-| 训练 | Gaussian denoising、supervised、单 optimizer 自动训练循环 | `TrainingBuilder` 组合资产，`TrainingStrategy` 只解释 batch 并计算 loss/metrics |
+| 模型 | 无条件 UNet、class-conditional ADM-UNet 与 pixel DiT | 注册满足任务 capability 的普通 `nn.Module`，模型不拥有训练或采样策略 |
+| 训练 | 无条件/类条件 Gaussian denoising、supervised、混合精度与固定梯度累积 | `TrainingBuilder` 组合资产，`TrainingStrategy` 只解释 batch 并计算 loss/metrics |
 | 概率过程 | 离散 VP Gaussian Process 与 linear/cosine schedule | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
-| 采样 | DDPM、DDIM、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
+| 采样 | DDPM、DDIM、class-conditional CFG、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
 | 输出 | Tensor、PNG、trajectory grid/GIF | `SamplingArtifactWriter` 可输出 NetCDF、Zarr 等领域格式 |
-| 生命周期 | EMA、checkpoint v8、resume、diagnostic、Rich/TensorBoard/W&B 日志 | 注册 Objective、diagnostic 和 logger |
+| 生命周期 | EMA、checkpoint v9、strict resume、diagnostic、Rich/TensorBoard/W&B 日志 | 注册 Objective、diagnostic 和 logger |
 | 项目扩展 | `stochaflow init`、Python packaging entry point、插件 provenance | 普通可安装 Python distribution；不绑定 `uv` 或固定仓库布局 |
 
 内置 `super_resolution` 只负责数据配对和退化，不自动提供条件模型或训练/采样策略。
 完整超分辨率任务仍需项目实现 conditional model、TrainingBuilder/Strategy 与
 SamplingBuilder；这些组件可以继续复用离散 Gaussian Process 和 DDPM/DDIM。
+
+## 类条件 Gaussian 纵向切片
+
+内置类条件能力保持为一组窄协作，而不是全局 condition schema：
+
+- `ClassConditionalDenoiser` 只约定带 class labels 的 denoising prediction；
+- `class_conditional_gaussian_denoising` 解释
+  `(images, {"class_label": labels})`，在训练时执行 condition dropout，并支持
+  epsilon、x0、v 和 score targets；
+- `adm_unet` 与 `dit` 实现同一个模型 capability。ADM 使用卷积多尺度路径和低分辨率
+  Transformer blocks；DiT 使用 adaLN-Zero、固定二维位置编码与 PyTorch SDPA；
+- `class_conditional_denoising` SamplingBuilder 拥有 label allocation 和
+  classifier-free guidance，并把组装好的 model callable 交给现有 DDPM/DDIM；
+- `class_conditional_diffusion_quality` 使用真实 batch labels 做 reconstruction，并用固定
+  class allocation 和 guidance 生成训练期 diagnostic artifacts。
+
+Process、Sampler 和 `GenerativeDynamics` 根接口都没有增加 class 或 CFG 方法。新增
+labeled dataset 仍由一个 DataBuilder 定义 batch；新增兼容 denoiser 只需注册模型，不需要
+修改 runner。完整可运行例子见 [AFHQ-v2 类条件生成](tutorials/afhq-v2.md)。
 
 ## 三层组织方式
 
@@ -147,9 +167,16 @@ Trainer lifecycle
 
 core 先构造 primary model、可选 Process/Objective，再注入 Builder；Plan 必须原样保留
 这些对象。Builder 可以构造、加载、冻结并声明 auxiliary assets，Strategy 只负责一次 batch
-的训练计算。Trainer 负责自动优化生命周期，包括全部 managed assets 的 device/mode、一次
+的训练计算。Trainer 负责自动优化生命周期，包括全部 managed assets 的 device/mode、
 backward、一个 optimizer、可选 scheduler 和 checkpoint。EMA 仅跟踪 primary model；
 Process、Objective 与 auxiliary modules 只保存 raw state。
+
+自动循环还拥有 `fp32`、`bf16-mixed`、`fp16-mixed` precision 与固定
+`accumulate_grad_batches`。autocast、GradScaler、unscale/clip/step 顺序和 partial-window
+flush 都属于 Trainer/PrecisionRuntime，不散落在 Strategy 中。scheduler、EMA、global
+step 和 update-level diagnostics 只在 optimizer step 成功后推进。precision 与
+accumulation 会进入 checkpoint v9 的 strict resume 边界，不能用 observability overlay
+改写。
 
 冻结 teacher 蒸馏仍属于这套边界：Builder 加载并冻结 teacher，Strategy 组合
 student/teacher forward 与 Objective。独立 teacher optimizer、交替更新或 manual

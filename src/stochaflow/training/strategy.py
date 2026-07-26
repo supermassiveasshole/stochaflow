@@ -25,7 +25,13 @@ class DeviceTransferableBatch(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class TrainStepOutput:
-    """One strategy computation consumed by the automatic training loop."""
+    """One strategy computation consumed by the automatic training loop.
+
+    ``loss`` is the scalar optimization loss for one logical micro-batch.
+    Automatic accumulation gives each micro-batch scalar equal weight inside
+    an optimizer window. Strategies that require ordinary effective-batch
+    semantics should therefore return a mean over logical samples.
+    """
 
     loss: torch.Tensor
     metrics: Mapping[str, ScalarMetric] = field(default_factory=dict)
@@ -71,6 +77,10 @@ def validate_train_step_output(value: object) -> TrainStepOutput:
             if metric.ndim != 0:
                 raise ValueError(
                     f"TrainStepOutput metric '{name}' must be a scalar Tensor"
+                )
+            if metric.dtype == torch.bool or torch.is_complex(metric):
+                raise TypeError(
+                    f"TrainStepOutput metric '{name}' must be real numeric"
                 )
         elif not isinstance(metric, (int, float)):
             raise TypeError(f"TrainStepOutput metric '{name}' must be numeric")

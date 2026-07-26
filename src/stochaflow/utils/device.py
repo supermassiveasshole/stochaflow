@@ -1,4 +1,4 @@
-"""Device-placement helpers for framework-managed modules."""
+"""Execution-device validation and managed-module placement helpers."""
 
 from __future__ import annotations
 
@@ -34,3 +34,30 @@ def move_module_to_device[ModuleT: nn.Module](
             )
     module.to(target)
     return module
+
+
+def validate_execution_device(device: torch.device | str) -> None:
+    """Fail early when an explicitly resolved execution device is unusable."""
+
+    resolved = torch.device(device)
+    if resolved.type == "cuda":
+        if not torch.cuda.is_available():
+            raise ValueError("CUDA execution requires an available CUDA device")
+        device_count = torch.cuda.device_count()
+        if (
+            resolved.index is not None
+            and not 0 <= resolved.index < device_count
+        ):
+            raise ValueError(
+                f"CUDA device index {resolved.index} is outside the available "
+                f"range [0, {device_count})"
+            )
+        return
+    if resolved.type == "mps":
+        if not torch.backends.mps.is_available():
+            raise ValueError("MPS execution requires an available MPS device")
+        if resolved.index not in {None, 0}:
+            raise ValueError("MPS execution supports only device index 0")
+
+
+__all__ = ["move_module_to_device", "validate_execution_device"]

@@ -23,6 +23,13 @@ from stochaflow.sampling import (
     SamplerResult,
     SamplingObservation,
 )
+from stochaflow.sampling.class_conditional import (
+    ClassConditionalEvaluationCounts,
+    ClassifierFreeGuidancePredictor,
+)
+from stochaflow.training.class_conditional_gaussian import (
+    ClassConditionalGaussianDiagnosticSemantics,
+)
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
     ReconstructionFrame,
@@ -217,6 +224,20 @@ class GaussianTrainingRuntime:
     predict_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 
+@dataclass(frozen=True, slots=True)
+class ClassConditionalGaussianTrainingRuntime:
+    """Conditional Gaussian process and task-adapted diagnostic invocation."""
+
+    process: DiscreteGaussianDenoisingProcess
+    prediction_type: PredictionType
+    num_classes: int
+    null_class_id: int
+    predict_fn: Callable[
+        [torch.Tensor, torch.Tensor, torch.Tensor],
+        torch.Tensor,
+    ]
+
+
 def gaussian_training_runtime(trainer: Any) -> GaussianTrainingRuntime:
     """Resolve the narrow Gaussian training capability from a Trainer."""
 
@@ -237,6 +258,60 @@ def gaussian_training_runtime(trainer: Any) -> GaussianTrainingRuntime:
         process,
         strategy.prediction_type,
         strategy.predict_gaussian_model,
+    )
+
+
+def class_conditional_gaussian_training_runtime(
+    trainer: Any,
+) -> ClassConditionalGaussianTrainingRuntime:
+    """Resolve the narrow class-conditional Gaussian diagnostic capability."""
+
+    model = getattr(trainer, "model", None)
+    if not isinstance(model, nn.Module):
+        raise TypeError(
+            "class-conditional Gaussian diagnostics require a primary nn.Module"
+        )
+    process = getattr(trainer, "process", None)
+    if not isinstance(process, DiscreteGaussianDenoisingProcess):
+        raise TypeError(
+            "class-conditional Gaussian diagnostics require "
+            "DiscreteGaussianDenoisingProcess"
+        )
+    strategy = getattr(trainer, "strategy", None)
+    if not isinstance(strategy, ClassConditionalGaussianDiagnosticSemantics):
+        raise TypeError(
+            "class-conditional Gaussian diagnostics require "
+            "ClassConditionalGaussianDiagnosticSemantics strategy"
+        )
+    num_classes = cast(object, strategy.num_classes)
+    if (
+        isinstance(num_classes, bool)
+        or not isinstance(num_classes, int)
+        or num_classes <= 0
+    ):
+        raise ValueError(
+            "class-conditional Gaussian diagnostic num_classes must be positive"
+        )
+    null_class_id = cast(object, strategy.null_class_id)
+    if isinstance(null_class_id, bool) or not isinstance(
+        null_class_id,
+        int,
+    ):
+        raise TypeError(
+            "class-conditional Gaussian diagnostic null_class_id must be "
+            "an integer"
+        )
+    if null_class_id < num_classes:
+        raise ValueError(
+            "class-conditional Gaussian diagnostic null_class_id must be "
+            "outside the non-null class range"
+        )
+    return ClassConditionalGaussianTrainingRuntime(
+        process,
+        strategy.prediction_type,
+        num_classes,
+        null_class_id,
+        strategy.predict_class_conditional_gaussian_model,
     )
 
 
@@ -276,6 +351,77 @@ class SamplerPool:
 
     def get(self, profile_id: str) -> BoundSampler:
         """Return a previously validated sampler by profile ID."""
+
+        try:
+            return self._samplers[profile_id]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"diagnostic sampler profile '{profile_id}' was not initialized"
+            ) from exc
+
+
+class DiagnosticClassConditionalDenoiser:
+    """Adapt a diagnostic strategy capability to the CFG model contract."""
+
+    def __init__(self, runtime: ClassConditionalGaussianTrainingRuntime) -> None:
+        self.runtime = runtime
+
+    @property
+    def num_classes(self) -> int:
+        """Return the number of real class identifiers."""
+
+        return self.runtime.num_classes
+
+    @property
+    def null_class_id(self) -> int:
+        """Return the reserved unconditional class identifier."""
+
+        return self.runtime.null_class_id
+
+    def predict_class_conditioned(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+        class_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """Invoke the training strategy's conditional diagnostic capability."""
+
+        return self.runtime.predict_fn(state, model_time, class_labels)
+
+
+@dataclass(frozen=True, slots=True)
+class ClassConditionalBoundSampler:
+    """A Gaussian solver awaiting per-batch conditional dynamics."""
+
+    sampler: Sampler
+
+
+class ClassConditionalSamplerPool:
+    """Build inference-only solvers for a conditional diagnostic."""
+
+    def __init__(
+        self,
+        profiles: Sequence[SamplerProfileConfig],
+        *,
+        device: torch.device,
+    ) -> None:
+        del device
+        self._samplers: dict[str, ClassConditionalBoundSampler] = {}
+        for profile in profiles:
+            sampler_value = cast(
+                object,
+                REGISTRIES.samplers.create(profile.name, **profile.params),
+            )
+            if not isinstance(sampler_value, Sampler):
+                raise TypeError(
+                    f"diagnostic sampler '{profile.name}' must satisfy Sampler"
+                )
+            self._samplers[profile.id] = ClassConditionalBoundSampler(
+                sampler_value
+            )
+
+    def get(self, profile_id: str) -> ClassConditionalBoundSampler:
+        """Return a previously validated conditional sampler."""
 
         try:
             return self._samplers[profile_id]
@@ -373,6 +519,107 @@ class DiagnosticSamplingObserver:
             )
 
 
+def _run_sampler_batches(
+    *,
+    sampler: Sampler,
+    profile: SamplerProfileConfig,
+    initial_noise: torch.Tensor,
+    batch_size: int,
+    dynamics_for_batch: Callable[
+        [int, int],
+        GaussianDenoisingDynamics,
+    ],
+) -> SamplingResult:
+    sample_parts: list[torch.Tensor] = []
+    frame_parts: list[list[torch.Tensor]] = []
+    expected_identity: tuple[tuple[int, int | float, bool], ...] | None = None
+    template_observations: tuple[SamplingObservation, ...] | None = None
+    _synchronize(initial_noise.device)
+    started_at = time.perf_counter()
+    for start in range(0, initial_noise.shape[0], batch_size):
+        end = min(start + batch_size, initial_noise.shape[0])
+        noise_batch = initial_noise[start:end]
+        dynamics = dynamics_for_batch(start, end)
+        lifecycle = DiagnosticSamplingObserver(
+            process=dynamics.process,
+            expected_shape=noise_batch.shape,
+            retain=profile.trajectory.enabled,
+            every_steps=profile.trajectory.every_steps,
+        )
+        result_value = cast(
+            object,
+            sampler.sample(
+                dynamics,
+                noise_batch,
+                observer=lifecycle,
+            ),
+        )
+        if not isinstance(result_value, SamplerResult):
+            raise TypeError(
+                f"sampler '{profile.id}' must return SamplerResult"
+            )
+        lifecycle.validate_complete(result_value)
+        sampled = result_value.final_state
+        observations = lifecycle.observations
+        if observations is not None:
+            identity = tuple(
+                (
+                    observation.step_index,
+                    observation.coordinate,
+                    observation.is_final,
+                )
+                for observation in observations
+            )
+            if expected_identity is None:
+                expected_identity = identity
+                template_observations = observations
+                frame_parts = [[] for _ in identity]
+            elif identity != expected_identity:
+                raise ValueError(
+                    f"sampler '{profile.id}' trajectory lifecycle changed "
+                    "between batches"
+                )
+            for index, observation in enumerate(observations):
+                state = observation.state
+                if not isinstance(state, torch.Tensor):
+                    raise TypeError(
+                        "diagnostic trajectory states must be tensors"
+                    )
+                frame_parts[index].append(state)
+        if not isinstance(sampled, torch.Tensor):
+            raise TypeError(
+                f"sampler '{profile.id}' must return a Tensor final_state"
+            )
+        if sampled.shape != noise_batch.shape:
+            raise ValueError(
+                f"sampler '{profile.id}' returned shape {tuple(sampled.shape)}, "
+                f"expected {tuple(noise_batch.shape)}"
+            )
+        sample_parts.append(sampled.detach().cpu())
+    _synchronize(initial_noise.device)
+    trajectory = None
+    if frame_parts and template_observations is not None:
+        trajectory = tuple(
+            SamplingObservation(
+                step_index=template.step_index,
+                coordinate=template.coordinate,
+                state=torch.cat(parts, dim=0),
+                is_final=template.is_final,
+                diagnostics=dict(template.diagnostics),
+            )
+            for template, parts in zip(
+                template_observations,
+                frame_parts,
+                strict=True,
+            )
+        )
+    return SamplingResult(
+        samples=torch.cat(sample_parts, dim=0),
+        trajectory=trajectory,
+        duration_seconds=time.perf_counter() - started_at,
+    )
+
+
 class SamplerRunner:
     """Execute batched sample or trajectory generation exactly once."""
 
@@ -387,88 +634,148 @@ class SamplerRunner:
     ) -> SamplingResult:
         """Generate a profile result while preserving trajectory batch alignment."""
 
-        sample_parts: list[torch.Tensor] = []
-        frame_parts: list[list[torch.Tensor]] = []
-        expected_identity: tuple[tuple[int, int | float, bool], ...] | None = None
-        template_observations: tuple[SamplingObservation, ...] | None = None
-        _synchronize(initial_noise.device)
-        started_at = time.perf_counter()
-        for start in range(0, initial_noise.shape[0], self.batch_size):
-            noise_batch = initial_noise[start : start + self.batch_size]
-            lifecycle = DiagnosticSamplingObserver(
-                process=sampler.dynamics.process,
-                expected_shape=noise_batch.shape,
-                retain=profile.trajectory.enabled,
-                every_steps=profile.trajectory.every_steps,
-            )
-            result_value = cast(
-                object,
-                sampler.sampler.sample(
-                    sampler.dynamics,
-                    noise_batch,
-                    observer=lifecycle,
-                ),
-            )
-            if not isinstance(result_value, SamplerResult):
-                raise TypeError(
-                    f"sampler '{profile.id}' must return SamplerResult"
-                )
-            lifecycle.validate_complete(result_value)
-            sampled = result_value.final_state
-            observations = lifecycle.observations
-            if observations is not None:
-                identity = tuple(
-                    (
-                        observation.step_index,
-                        observation.coordinate,
-                        observation.is_final,
-                    )
-                    for observation in observations
-                )
-                if expected_identity is None:
-                    expected_identity = identity
-                    template_observations = observations
-                    frame_parts = [[] for _ in identity]
-                elif identity != expected_identity:
-                    raise ValueError(
-                        f"sampler '{profile.id}' trajectory lifecycle changed "
-                        "between batches"
-                    )
-                for index, observation in enumerate(observations):
-                    state = observation.state
-                    if not isinstance(state, torch.Tensor):
-                        raise TypeError("diagnostic trajectory states must be tensors")
-                    frame_parts[index].append(state)
-            if not isinstance(sampled, torch.Tensor):
-                raise TypeError(
-                    f"sampler '{profile.id}' must return a Tensor final_state"
-                )
-            if sampled.shape != noise_batch.shape:
-                raise ValueError(
-                    f"sampler '{profile.id}' returned shape {tuple(sampled.shape)}, "
-                    f"expected {tuple(noise_batch.shape)}"
-                )
-            sample_parts.append(sampled.detach().cpu())
-        _synchronize(initial_noise.device)
-        trajectory = None
-        if frame_parts and template_observations is not None:
-            trajectory = tuple(
-                SamplingObservation(
-                    step_index=template.step_index,
-                    coordinate=template.coordinate,
-                    state=torch.cat(parts, dim=0),
-                    is_final=template.is_final,
-                    diagnostics=dict(template.diagnostics),
-                )
-                for template, parts in zip(
-                    template_observations, frame_parts, strict=True
-                )
-            )
-        return SamplingResult(
-            samples=torch.cat(sample_parts, dim=0),
-            trajectory=trajectory,
-            duration_seconds=time.perf_counter() - started_at,
+        return _run_sampler_batches(
+            sampler=sampler.sampler,
+            profile=profile,
+            initial_noise=initial_noise,
+            batch_size=self.batch_size,
+            dynamics_for_batch=lambda start, end: sampler.dynamics,
         )
+
+
+class ClassConditionalSamplerRunner:
+    """Execute conditional diagnostic sampling with fixed labels and CFG."""
+
+    def __init__(
+        self,
+        batch_size: int,
+        *,
+        runtime: ClassConditionalGaussianTrainingRuntime,
+        class_labels: torch.Tensor,
+        guidance_scale: float,
+    ) -> None:
+        if class_labels.ndim != 1 or class_labels.dtype != torch.long:
+            raise ValueError(
+                "conditional diagnostic class_labels must be a 1D long Tensor"
+            )
+        if bool(torch.any(class_labels < 0)) or bool(
+            torch.any(class_labels >= runtime.num_classes)
+        ):
+            raise ValueError(
+                "conditional diagnostic class labels are outside the model range"
+            )
+        self.batch_size = batch_size
+        self.runtime = runtime
+        self.class_labels = class_labels
+        self.guidance_scale = guidance_scale
+        self.model = DiagnosticClassConditionalDenoiser(runtime)
+        self._counts: dict[str, ClassConditionalEvaluationCounts] = {}
+
+    def run(
+        self,
+        sampler: ClassConditionalBoundSampler,
+        profile: SamplerProfileConfig,
+        initial_noise: torch.Tensor,
+    ) -> SamplingResult:
+        """Generate one class-aligned profile and retain branch counts."""
+
+        if initial_noise.shape[0] != self.class_labels.shape[0]:
+            raise ValueError(
+                "conditional diagnostic labels must match initial noise"
+            )
+        if initial_noise.device != self.class_labels.device:
+            raise ValueError(
+                "conditional diagnostic labels and noise must share a device"
+            )
+        counts = ClassConditionalEvaluationCounts()
+
+        def dynamics_for_batch(
+            start: int,
+            end: int,
+        ) -> GaussianDenoisingDynamics:
+            predictor = ClassifierFreeGuidancePredictor(
+                self.model,
+                self.class_labels[start:end],
+                guidance_scale=self.guidance_scale,
+                counts=counts,
+            )
+            return GaussianModelDynamics(
+                self.runtime.process,
+                predictor,
+                prediction_type=self.runtime.prediction_type,
+                clip_denoised=True,
+            )
+
+        result = _run_sampler_batches(
+            sampler=sampler.sampler,
+            profile=profile,
+            initial_noise=initial_noise,
+            batch_size=self.batch_size,
+            dynamics_for_batch=dynamics_for_batch,
+        )
+        self._counts[profile.id] = counts
+        return result
+
+    def counts_for(
+        self,
+        profile_id: str,
+    ) -> ClassConditionalEvaluationCounts:
+        """Return model evaluation counts from the latest profile run."""
+
+        try:
+            return self._counts[profile_id]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"conditional diagnostic profile '{profile_id}' has not run"
+            ) from exc
+
+
+def _evaluate_reconstruction(
+    *,
+    trainer: Any,
+    seed_policy: SeedPolicy,
+    clean_samples: torch.Tensor,
+    timesteps: Sequence[int],
+    max_samples: int,
+    use_ema: bool,
+    dynamics: GaussianDenoisingDynamics,
+) -> ReconstructionResult:
+    x0 = clean_samples[:max_samples].to(trainer.device)
+    if x0.ndim != 4:
+        raise ValueError("reconstruction samples must have shape (N, C, H, W)")
+    frames: list[ReconstructionFrame] = []
+    with EvaluationGuard(
+        trainer,
+        seed=seed_policy.base_seed,
+        use_ema=use_ema,
+    ):
+        process = dynamics.process
+        for timestep in timesteps:
+            times = torch.full(
+                (x0.shape[0],),
+                timestep,
+                dtype=torch.long,
+                device=trainer.device,
+            )
+            noise = torch.randn_like(x0)
+            noisy, _ = process.sample_marginal(x0, times, noise=noise)
+            predicted_clean = dynamics.predict(noisy, times).clean
+            mse = (predicted_clean - x0).square().mean()
+            psnr = 10.0 * torch.log10(
+                torch.tensor(4.0, device=trainer.device)
+                / mse.clamp_min(1e-12)
+            )
+            frames.append(
+                ReconstructionFrame(
+                    timestep=timestep,
+                    clean=x0.detach().cpu(),
+                    noisy=noisy.detach().cpu(),
+                    predicted_clean=predicted_clean.detach().cpu(),
+                    mse=float(mse),
+                    psnr=float(psnr),
+                )
+            )
+    return ReconstructionResult(frames=tuple(frames))
 
 
 class ReconstructionEvaluator:
@@ -486,59 +793,94 @@ class ReconstructionEvaluator:
         max_samples: int,
         use_ema: bool,
     ) -> ReconstructionResult:
-        x0 = clean_samples[:max_samples].to(self.trainer.device)
-        if x0.ndim != 4:
-            raise ValueError("reconstruction samples must have shape (N, C, H, W)")
-        frames: list[ReconstructionFrame] = []
         runtime = gaussian_training_runtime(self.trainer)
-        with EvaluationGuard(
-            self.trainer,
-            seed=self.seed_policy.base_seed,
+        dynamics = GaussianModelDynamics(
+            runtime.process,
+            runtime.predict_fn,
+            prediction_type=runtime.prediction_type,
+            clip_denoised=True,
+        )
+        return _evaluate_reconstruction(
+            trainer=self.trainer,
+            seed_policy=self.seed_policy,
+            clean_samples=clean_samples,
+            timesteps=timesteps,
+            max_samples=max_samples,
             use_ema=use_ema,
-        ):
-            process = runtime.process
-            dynamics = GaussianModelDynamics(
-                process,
-                runtime.predict_fn,
-                prediction_type=runtime.prediction_type,
-                clip_denoised=True,
+            dynamics=dynamics,
+        )
+
+
+class ClassConditionalReconstructionEvaluator:
+    """Evaluate reconstruction with labels aligned to retained clean samples."""
+
+    def __init__(
+        self,
+        trainer: Any,
+        seed_policy: SeedPolicy,
+        class_labels: torch.Tensor,
+    ) -> None:
+        if class_labels.ndim != 1:
+            raise ValueError(
+                "conditional reconstruction labels must be a 1D Tensor"
             )
-            for timestep in timesteps:
-                times = torch.full(
-                    (x0.shape[0],),
-                    timestep,
-                    dtype=torch.long,
-                    device=self.trainer.device,
-                )
-                noise = torch.randn_like(x0)
-                noisy, _ = process.sample_marginal(x0, times, noise=noise)
-                predicted_clean = dynamics.predict(noisy, times).clean
-                mse = (predicted_clean - x0).square().mean()
-                psnr = 10.0 * torch.log10(
-                    torch.tensor(4.0, device=self.trainer.device)
-                    / mse.clamp_min(1e-12)
-                )
-                frames.append(
-                    ReconstructionFrame(
-                        timestep=timestep,
-                        clean=x0.detach().cpu(),
-                        noisy=noisy.detach().cpu(),
-                        predicted_clean=predicted_clean.detach().cpu(),
-                        mse=float(mse),
-                        psnr=float(psnr),
-                    )
-                )
-        return ReconstructionResult(frames=tuple(frames))
+        self.trainer = trainer
+        self.seed_policy = seed_policy
+        self.class_labels = class_labels.detach().cpu()
+
+    def __call__(
+        self,
+        *,
+        clean_samples: torch.Tensor,
+        timesteps: Sequence[int],
+        max_samples: int,
+        use_ema: bool,
+    ) -> ReconstructionResult:
+        count = min(max_samples, clean_samples.shape[0])
+        if self.class_labels.shape[0] < count:
+            raise ValueError(
+                "conditional reconstruction labels do not match clean samples"
+            )
+        labels = self.class_labels[:count].to(
+            self.trainer.device,
+            dtype=torch.long,
+        )
+        runtime = class_conditional_gaussian_training_runtime(self.trainer)
+        dynamics = GaussianModelDynamics(
+            runtime.process,
+            lambda state, model_time: runtime.predict_fn(
+                state,
+                model_time,
+                labels,
+            ),
+            prediction_type=runtime.prediction_type,
+            clip_denoised=True,
+        )
+        return _evaluate_reconstruction(
+            trainer=self.trainer,
+            seed_policy=self.seed_policy,
+            clean_samples=clean_samples,
+            timesteps=timesteps,
+            max_samples=max_samples,
+            use_ema=use_ema,
+            dynamics=dynamics,
+        )
 
 
 __all__ = [
     "BoundSampler",
+    "ClassConditionalBoundSampler",
+    "ClassConditionalGaussianTrainingRuntime",
+    "ClassConditionalReconstructionEvaluator",
+    "ClassConditionalSamplerPool",
+    "ClassConditionalSamplerRunner",
     "EvaluationGuard",
     "GaussianTrainingRuntime",
     "ReconstructionEvaluator",
     "SamplerPool",
     "SamplerRunner",
     "SeedPolicy",
+    "class_conditional_gaussian_training_runtime",
     "clean_samples_from_event",
     "first_tensor_from_batch",
     "gaussian_training_runtime",

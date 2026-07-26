@@ -94,6 +94,8 @@ class TrainerConfig:
 
     num_epochs: int = 1
     device: str = "cpu"
+    precision: str = "fp32"
+    accumulate_grad_batches: int = 1
     max_grad_norm: float | None = None
     show_progress: bool = True
     early_stopping: EarlyStoppingConfig = field(default_factory=EarlyStoppingConfig)
@@ -185,6 +187,24 @@ class StochaflowConfig:
                 seen_plugins.add(plugin)
         if self.trainer.num_epochs <= 0:
             raise ConfigError("trainer.num_epochs must be positive")
+        precision = cast(object, self.trainer.precision)
+        if not isinstance(precision, str) or precision not in {
+            "fp32",
+            "bf16-mixed",
+            "fp16-mixed",
+        }:
+            raise ConfigError(
+                "trainer.precision must be fp32, bf16-mixed, or fp16-mixed"
+            )
+        accumulation = cast(object, self.trainer.accumulate_grad_batches)
+        if (
+            not isinstance(accumulation, int)
+            or isinstance(accumulation, bool)
+            or accumulation <= 0
+        ):
+            raise ConfigError(
+                "trainer.accumulate_grad_batches must be a positive integer"
+            )
         if not 0.0 <= self.ema.decay < 1.0:
             raise ConfigError("ema.decay must satisfy 0 <= decay < 1")
         if self.ema.update_after_step < 0:

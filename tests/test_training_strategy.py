@@ -29,6 +29,20 @@ from stochaflow.training import (
             TrainStepOutput(torch.tensor(1.0), metrics={"bad": torch.ones(2)}),
             "scalar Tensor",
         ),
+        (
+            TrainStepOutput(
+                torch.tensor(1.0),
+                metrics={"bad": torch.tensor(True)},
+            ),
+            "real numeric",
+        ),
+        (
+            TrainStepOutput(
+                torch.tensor(1.0),
+                metrics={"bad": torch.tensor(1.0 + 2.0j)},
+            ),
+            "real numeric",
+        ),
     ],
 )
 def test_train_step_output_validation(value: Any, message: str) -> None:

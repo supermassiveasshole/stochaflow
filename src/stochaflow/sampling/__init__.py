@@ -7,6 +7,7 @@ from .builder import (
     SamplingOutput,
     StandardDenoisingBuilder,
 )
+from .class_conditional import ClassConditionalDenoisingBuilder
 from .ddim import DDIMSampler
 from .ddpm import DDPMAncestralSampler
 from .dynamics import GenerativeDynamics
@@ -41,6 +42,7 @@ from .writers import (
 )
 
 __all__ = [
+    "ClassConditionalDenoisingBuilder",
     "DDIMSampler",
     "DDPMAncestralSampler",
     "GaussianDenoisingDynamics",

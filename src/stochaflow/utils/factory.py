@@ -13,9 +13,11 @@ from torch.optim.lr_scheduler import LRScheduler
 from stochaflow.processes import Process
 from stochaflow.training import (
     DiagnosticBuildContext,
+    PrecisionRuntime,
     Trainer,
     TrainingDiagnostic,
     TrainingPlan,
+    build_precision_runtime,
     build_training_plan,
     trainable_parameters,
 )
@@ -68,6 +70,7 @@ class TrainingComponents:
     lr_scheduler: LRScheduler | None
     ema: ExponentialMovingAverage | None
     use_ema_for_sampling: bool
+    precision: PrecisionRuntime
     logger: ExperimentLogger
     diagnostics: list[TrainingDiagnostic]
     checkpoint_manager: CheckpointManager
@@ -244,6 +247,11 @@ def build_training_components(
     optimizer = build_optimizer(config.optimizer, parameters)
     lr_scheduler = build_lr_scheduler(config.lr_scheduler, optimizer)
     ema = build_ema(config.ema, model)
+    device = resolve_device(config.trainer.device)
+    precision = build_precision_runtime(
+        config.trainer.precision,
+        device,
+    )
     checkpoint_manager = CheckpointManager(
         model=model,
         process=process,
@@ -254,8 +262,9 @@ def build_training_components(
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
         ema=ema,
+        precision_kind=precision.kind,
+        grad_scaler=precision.grad_scaler,
     )
-    device = resolve_device(config.trainer.device)
     logger = build_logger(
         config.logging,
         experiment=config.experiment,
@@ -291,6 +300,8 @@ def build_training_components(
         checkpoint_every=config.artifacts.checkpoint_every,
         checkpoint_config=config.to_dict(),
         checkpoint_metadata=checkpoint_metadata,
+        precision=precision,
+        accumulate_grad_batches=config.trainer.accumulate_grad_batches,
     )
     return TrainingComponents(
         model=model,
@@ -301,6 +312,7 @@ def build_training_components(
         lr_scheduler=lr_scheduler,
         ema=ema,
         use_ema_for_sampling=config.ema.use_for_sampling,
+        precision=precision,
         logger=logger,
         diagnostics=diagnostics,
         checkpoint_manager=checkpoint_manager,

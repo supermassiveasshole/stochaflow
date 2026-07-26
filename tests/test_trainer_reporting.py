@@ -302,6 +302,55 @@ def test_trainer_rejects_checkpoint_manager_outside_plan(tmp_path) -> None:
         )
 
 
+def test_trainer_rejects_checkpoint_manager_precision_mismatch(tmp_path) -> None:
+    model = TinyRegressor()
+    objective = nn.MSELoss()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    checkpoint_manager = CheckpointManager(
+        model=model,
+        objective=objective,
+        optimizer=optimizer,
+        precision_kind="bf16-mixed",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"CheckpointManager precision.*Trainer",
+    ):
+        _build_trainer(
+            tmp_path,
+            model=model,
+            objective=objective,
+            optimizer=optimizer,
+            checkpoint_manager=checkpoint_manager,
+        )
+
+
+@pytest.mark.parametrize(
+    ("trainer_config", "message"),
+    [
+        (
+            {"precision": "bf16-mixed", "accumulate_grad_batches": 1},
+            "trainer precision",
+        ),
+        (
+            {"precision": "fp32", "accumulate_grad_batches": 2},
+            "accumulation",
+        ),
+    ],
+)
+def test_trainer_rejects_checkpoint_config_topology_mismatch(
+    tmp_path,
+    trainer_config: dict[str, Any],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _build_trainer(
+            tmp_path,
+            checkpoint_config={"trainer": trainer_config},
+        )
+
+
 def test_empty_primary_model_ema_and_managed_assets_are_safe(tmp_path) -> None:
     primary = nn.Identity()
     learner = nn.Linear(1, 1)
@@ -765,5 +814,5 @@ def test_checkpoint_manager_rejects_v7(tmp_path) -> None:
     payload["format_version"] = 7
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="expected version 8"):
+    with pytest.raises(ValueError, match=r"supported versions are 8 and 9"):
         checkpoint_manager.load(checkpoint)

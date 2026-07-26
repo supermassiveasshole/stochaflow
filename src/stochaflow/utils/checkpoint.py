@@ -1,13 +1,15 @@
 """Checkpoint save/load helpers."""
 
+import math
 import os
 import random
 import tempfile
 from collections import OrderedDict
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict, cast
 
 import numpy as np
 import torch
@@ -24,13 +26,40 @@ else:
     ExponentialMovingAverage = Any
 
 
-CHECKPOINT_FORMAT_VERSION = 8
+CHECKPOINT_FORMAT_VERSION = 9
+
+_LEGACY_CHECKPOINT_FORMAT_VERSION = 8
+_PRECISION_KINDS = frozenset(("fp32", "bf16-mixed", "fp16-mixed"))
+_V9_ONLY_FIELDS = frozenset(
+    (
+        "precision_kind",
+        "grad_scaler_class",
+        "grad_scaler_state_dict",
+        "inference_asset_descriptors",
+    )
+)
 
 _CHECKPOINT_LEAF_TYPES = (type(None), bool, int, float, complex, str, bytes)
 
 
 class StateDictWithMetadata(Protocol):
     _metadata: Any
+
+
+class InferenceAssetDeclaration(TypedDict):
+    """Reconstructable component identity for one embedded inference asset."""
+
+    name: str
+    params: dict[str, Any]
+
+
+class InferenceAssetDescriptor(TypedDict):
+    """Version-9 projection of a managed asset needed during inference."""
+
+    training_asset_name: str
+    declaration: InferenceAssetDeclaration
+    capability_role: str
+    persistence: Literal["embedded_state"]
 
 
 class CheckpointState(TypedDict, total=False):
@@ -49,6 +78,10 @@ class CheckpointState(TypedDict, total=False):
     lr_scheduler_class: str
     lr_scheduler_state_dict: dict[str, Any]
     ema_state_dict: EMAStateDict
+    precision_kind: str
+    grad_scaler_class: str
+    grad_scaler_state_dict: dict[str, Any]
+    inference_asset_descriptors: dict[str, InferenceAssetDescriptor]
     rng_state: dict[str, Any]
     config: dict[str, Any]
     metrics: dict[str, float]
@@ -79,6 +112,93 @@ class ParsedRNGState:
 
 
 @dataclass(slots=True)
+class CheckpointRuntimeSnapshot:
+    """Rollback state for one transactional checkpoint restore."""
+
+    model_state: OrderedDict[str, Any]
+    process_state: OrderedDict[str, Any] | None
+    objective_state: OrderedDict[str, Any] | None
+    auxiliary_states: dict[str, OrderedDict[str, Any]]
+    optimizer_state: dict[str, Any] | None
+    lr_scheduler_state: dict[str, Any] | None
+    ema_state: EMAStateDict | None
+    grad_scaler_state: dict[str, Any] | None
+
+
+def validate_inference_asset_descriptors(
+    value: object,
+    *,
+    path: str = "inference_asset_descriptors",
+) -> dict[str, InferenceAssetDescriptor]:
+    """Validate and detach the fixed v9 embedded-inference-asset schema."""
+
+    if type(value) is not dict:
+        raise TypeError(f"{path} must be an exact dictionary")
+    raw_descriptors = cast(dict[object, object], value)
+    descriptors: dict[str, InferenceAssetDescriptor] = {}
+    for slot_value, descriptor_value in raw_descriptors.items():
+        if type(slot_value) is not str:
+            raise TypeError(f"{path} slot names must be exact strings")
+        slot = cast(str, slot_value)
+        if not slot:
+            raise ValueError(f"{path} slot names must be non-empty")
+        descriptor_path = f"{path}[{slot!r}]"
+        descriptor = _exact_dict(
+            descriptor_value,
+            path=descriptor_path,
+            fields={
+                "training_asset_name",
+                "declaration",
+                "capability_role",
+                "persistence",
+            },
+        )
+        training_asset_name = _nonempty_exact_string(
+            descriptor["training_asset_name"],
+            path=f"{descriptor_path}.training_asset_name",
+        )
+        capability_role = _nonempty_exact_string(
+            descriptor["capability_role"],
+            path=f"{descriptor_path}.capability_role",
+        )
+        persistence_value = _nonempty_exact_string(
+            descriptor["persistence"],
+            path=f"{descriptor_path}.persistence",
+        )
+        if persistence_value != "embedded_state":
+            raise ValueError(
+                f"{descriptor_path}.persistence must be 'embedded_state'"
+            )
+        declaration_path = f"{descriptor_path}.declaration"
+        declaration = _exact_dict(
+            descriptor["declaration"],
+            path=declaration_path,
+            fields={"name", "params"},
+        )
+        declaration_name = _nonempty_exact_string(
+            declaration["name"],
+            path=f"{declaration_path}.name",
+        )
+        params_value = declaration["params"]
+        if type(params_value) is not dict:
+            raise TypeError(f"{declaration_path}.params must be an exact dictionary")
+        _validate_checkpoint_value(
+            params_value,
+            path=f"{declaration_path}.params",
+        )
+        descriptors[slot] = {
+            "training_asset_name": training_asset_name,
+            "declaration": {
+                "name": declaration_name,
+                "params": deepcopy(cast(dict[str, Any], params_value)),
+            },
+            "capability_role": capability_role,
+            "persistence": "embedded_state",
+        }
+    return descriptors
+
+
+@dataclass(slots=True)
 class CheckpointManager:
     """Object-oriented checkpoint IO wrapper for a training stack.
 
@@ -94,6 +214,62 @@ class CheckpointManager:
     optimizer: Optimizer | None = None
     lr_scheduler: LRScheduler | None = None
     ema: ExponentialMovingAverage | None = None
+    precision_kind: str = "fp32"
+    grad_scaler: torch.cuda.amp.GradScaler | None = None
+    inference_asset_descriptors: dict[str, InferenceAssetDescriptor] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        """Validate the runtime precision assets owned by this manager."""
+
+        self.precision_kind = _validate_precision_kind(
+            self.precision_kind,
+            path="checkpoint manager precision_kind",
+        )
+        scaler_value = cast(object, self.grad_scaler)
+        if scaler_value is not None and not isinstance(
+            scaler_value,
+            torch.cuda.amp.GradScaler,
+        ):
+            raise TypeError(
+                "checkpoint manager grad_scaler must be "
+                "torch.cuda.amp.GradScaler or None"
+            )
+        if self.precision_kind == "fp16-mixed":
+            if scaler_value is None:
+                raise ValueError(
+                    "fp16-mixed checkpoint manager requires a GradScaler"
+                )
+            if not scaler_value.is_enabled():
+                raise ValueError(
+                    "fp16-mixed checkpoint manager requires an enabled GradScaler"
+                )
+            _validate_grad_scaler_scale(
+                scaler_value.get_scale(),
+                path="checkpoint manager GradScaler scale",
+            )
+        elif scaler_value is not None:
+            raise ValueError(
+                f"{self.precision_kind} checkpoint manager cannot use a GradScaler"
+            )
+        self.inference_asset_descriptors = validate_inference_asset_descriptors(
+            self.inference_asset_descriptors,
+            path="checkpoint manager inference_asset_descriptors",
+        )
+        missing_assets = sorted(
+            {
+                descriptor["training_asset_name"]
+                for descriptor in self.inference_asset_descriptors.values()
+            }
+            - set(self.auxiliary_modules)
+        )
+        if missing_assets:
+            raise ValueError(
+                "checkpoint manager inference asset descriptors reference "
+                "missing training assets: "
+                + ", ".join(missing_assets)
+            )
 
     @staticmethod
     def find_best(root: str | Path) -> Path:
@@ -121,6 +297,10 @@ class CheckpointManager:
         state: CheckpointState = {
             "format_version": CHECKPOINT_FORMAT_VERSION,
             "model_state_dict": _clone_module_state(self.model),
+            "precision_kind": self.precision_kind,
+            "inference_asset_descriptors": deepcopy(
+                self.inference_asset_descriptors
+            ),
             "rng_state": capture_rng_state(),
         }
         if self.process is not None:
@@ -140,25 +320,70 @@ class CheckpointManager:
                 self.ema.restore(self.model)
         if self.optimizer is not None:
             state["optimizer_class"] = _type_identity(self.optimizer)
-            state["optimizer_state_dict"] = self.optimizer.state_dict()
+            state["optimizer_state_dict"] = cast(
+                dict[str, Any],
+                _clone_checkpoint_data(
+                    self.optimizer.state_dict(),
+                    tensors_to_cpu=False,
+                ),
+            )
         if self.lr_scheduler is not None:
             state["lr_scheduler_class"] = _type_identity(self.lr_scheduler)
-            state["lr_scheduler_state_dict"] = self.lr_scheduler.state_dict()
+            state["lr_scheduler_state_dict"] = cast(
+                dict[str, Any],
+                _clone_checkpoint_data(
+                    self.lr_scheduler.state_dict(),
+                    tensors_to_cpu=False,
+                ),
+            )
         if self.ema is not None:
-            state["ema_state_dict"] = self.ema.state_dict()
+            state["ema_state_dict"] = cast(
+                EMAStateDict,
+                _clone_checkpoint_data(
+                    self.ema.state_dict(),
+                    tensors_to_cpu=False,
+                ),
+            )
+        if self.grad_scaler is not None:
+            state["grad_scaler_class"] = _type_identity(self.grad_scaler)
+            state["grad_scaler_state_dict"] = cast(
+                dict[str, Any],
+                _clone_checkpoint_data(
+                    self.grad_scaler.state_dict(),
+                    tensors_to_cpu=False,
+                ),
+            )
         if epoch is not None:
             state["epoch"] = epoch
         if global_step is not None:
             state["global_step"] = global_step
         if config is not None:
-            state["config"] = config
+            state["config"] = cast(
+                dict[str, Any],
+                _clone_checkpoint_data(
+                    config,
+                    tensors_to_cpu=False,
+                ),
+            )
         if metrics is not None:
-            state["metrics"] = metrics
-        checkpoint_metadata = dict(metadata or {})
+            state["metrics"] = cast(
+                dict[str, float],
+                _clone_checkpoint_data(
+                    metrics,
+                    tensors_to_cpu=False,
+                ),
+            )
+        checkpoint_metadata = cast(
+            dict[str, Any],
+            _clone_checkpoint_data(
+                metadata or {},
+                tensors_to_cpu=False,
+            ),
+        )
         checkpoint_metadata.setdefault("extension_plugins", [])
         state["metadata"] = checkpoint_metadata
         _validate_checkpoint_value(state, path="checkpoint")
-        _validate_extension_plugin_metadata(state)
+        _validate_v9_checkpoint_header(state)
         return state
 
     def save(
@@ -192,7 +417,7 @@ class CheckpointManager:
             raise TypeError("checkpoint payload must be an exact dictionary")
         _validate_checkpoint_value(payload, path="checkpoint")
         state = cast(CheckpointState, payload)
-        _validate_checkpoint_header(state)
+        _validate_v9_checkpoint_header(state)
         _ensure_parent_directory(checkpoint_path)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{checkpoint_path.name}.",
@@ -226,7 +451,12 @@ class CheckpointManager:
         *,
         path: str | Path,
     ) -> LoadedCheckpoint:
-        """Restore managed objects from an already loaded checkpoint payload."""
+        """Restore managed objects from an already loaded checkpoint payload.
+
+        Ordinary failures are transactional. If a runtime object's custom load
+        hook also fails while applying the rollback snapshot, the object must be
+        treated as poisoned; the raised ``RuntimeError`` retains both failures.
+        """
 
         checkpoint_path = Path(path)
         if type(payload) is not dict:
@@ -234,8 +464,18 @@ class CheckpointManager:
                 f"checkpoint at '{checkpoint_path}' must contain a dictionary payload"
         )
         _validate_checkpoint_value(payload, path="checkpoint")
-        state = cast(CheckpointState, payload)
-        _validate_checkpoint_header(state)
+        state = _normalize_checkpoint_header(cast(CheckpointState, payload))
+        checkpoint_descriptors = validate_inference_asset_descriptors(
+            state.get("inference_asset_descriptors"),
+            path="checkpoint.inference_asset_descriptors",
+        )
+        if not _checkpoint_values_equal(
+            checkpoint_descriptors,
+            self.inference_asset_descriptors,
+        ):
+            raise ValueError(
+                "checkpoint inference asset descriptors do not match runtime"
+            )
         model_state_dict = cast(object, state.get("model_state_dict"))
         if not isinstance(model_state_dict, dict):
             raise TypeError("checkpoint is missing a valid model_state_dict")
@@ -317,6 +557,10 @@ class CheckpointManager:
                     f"{optimizer_class!r} != {expected_optimizer_class!r}"
                 )
             validated_optimizer_state = optimizer_state_dict
+            _validate_optimizer_state_dict_compatibility(
+                self.optimizer,
+                optimizer_state_dict,
+            )
 
         has_lr_scheduler_state = "lr_scheduler_state_dict" in state
         lr_scheduler_state_dict = cast(object, state.get("lr_scheduler_state_dict"))
@@ -342,50 +586,216 @@ class CheckpointManager:
                     f"{lr_scheduler_class!r} != {expected_lr_scheduler_class!r}"
                 )
             validated_lr_scheduler_state = lr_scheduler_state_dict
+            _validate_lr_scheduler_state_dict_compatibility(
+                self.lr_scheduler,
+                lr_scheduler_state_dict,
+            )
 
-        self.model.load_state_dict(model_state_dict)
-        if self.process is not None:
-            assert validated_process_state is not None
-            self.process.load_state_dict(validated_process_state)
-        if self.objective is not None:
-            assert validated_objective_state is not None
-            self.objective.load_state_dict(validated_objective_state)
-        for name, module in self.auxiliary_modules.items():
-            module.load_state_dict(validated_assets[name])
-
-        if self.lr_scheduler is not None:
-            assert validated_lr_scheduler_state is not None
-            self.lr_scheduler.load_state_dict(validated_lr_scheduler_state)
-        if self.optimizer is not None:
-            assert validated_optimizer_state is not None
-            self.optimizer.load_state_dict(validated_optimizer_state)
-
+        has_ema_state = "ema_state_dict" in state
+        has_ema_model_state = "ema_model_state_dict" in state
         ema_state_dict = cast(object, state.get("ema_state_dict"))
-        if self.ema is not None:
-            if ema_state_dict is None:
-                raise TypeError("checkpoint is missing ema_state_dict")
+        ema_model_state_dict = cast(object, state.get("ema_model_state_dict"))
+        validated_ema_state: EMAStateDict | None = None
+        if self.ema is None:
+            if has_ema_state or has_ema_model_state:
+                raise ValueError(
+                    "checkpoint contains EMA state but runtime has no EMA"
+                )
+        else:
+            if not has_ema_state or not has_ema_model_state:
+                missing = [
+                    name
+                    for name, present in (
+                        ("ema_state_dict", has_ema_state),
+                        ("ema_model_state_dict", has_ema_model_state),
+                    )
+                    if not present
+                ]
+                raise TypeError(
+                    "checkpoint is missing EMA field(s): " + ", ".join(missing)
+                )
             if not isinstance(ema_state_dict, dict):
                 raise TypeError("ema_state_dict must be a dictionary when provided")
-            self.ema.load_state_dict(cast(EMAStateDict, ema_state_dict))
+            if not isinstance(ema_model_state_dict, dict):
+                raise TypeError(
+                    "ema_model_state_dict must be a dictionary when provided"
+                )
+            validated_ema_state = _validate_ema_state_dict(
+                self.ema,
+                ema_state_dict,
+            )
+            _validate_ema_model_consistency(
+                self.model,
+                model_state_dict,
+                ema_model_state_dict,
+                validated_ema_state,
+            )
 
         epoch = cast(object, state.get("epoch"))
-        if epoch is not None and not isinstance(epoch, int):
-            raise TypeError("epoch must be an int when provided")
+        if epoch is not None and type(epoch) is not int:
+            raise TypeError("epoch must be an exact int when provided")
         global_step = cast(object, state.get("global_step"))
-        if global_step is not None and not isinstance(global_step, int):
-            raise TypeError("global_step must be an int when provided")
+        if global_step is not None and type(global_step) is not int:
+            raise TypeError("global_step must be an exact int when provided")
 
         config = cast(object, state.get("config"))
-        if config is not None and not isinstance(config, dict):
-            raise TypeError("config must be a dictionary when provided")
+        if config is not None and type(config) is not dict:
+            raise TypeError("config must be an exact dictionary when provided")
         metrics = cast(object, state.get("metrics"))
         if metrics is None:
             metrics = {}
-        elif not isinstance(metrics, dict):
-            raise TypeError("metrics must be a dictionary when provided")
+        elif type(metrics) is not dict:
+            raise TypeError("metrics must be an exact dictionary when provided")
         metadata = cast(object, state.get("metadata"))
-        if not isinstance(metadata, dict):
+        if type(metadata) is not dict:
             raise TypeError("checkpoint is missing valid metadata")
+
+        _validate_module_state_dict_compatibility(
+            self.model,
+            model_state_dict,
+            path="checkpoint.model_state_dict",
+        )
+        if self.process is not None:
+            assert validated_process_state is not None
+            _validate_module_state_dict_compatibility(
+                self.process,
+                validated_process_state,
+                path="checkpoint.process_state_dict",
+            )
+        if self.objective is not None:
+            assert validated_objective_state is not None
+            _validate_module_state_dict_compatibility(
+                self.objective,
+                validated_objective_state,
+                path="checkpoint.objective_state_dict",
+            )
+        for name, module in self.auxiliary_modules.items():
+            _validate_module_state_dict_compatibility(
+                module,
+                validated_assets[name],
+                path=f"checkpoint.training_assets_state_dict[{name!r}]",
+            )
+        if self.ema is not None:
+            assert isinstance(ema_model_state_dict, dict)
+            _validate_module_state_dict_compatibility(
+                self.model,
+                ema_model_state_dict,
+                path="checkpoint.ema_model_state_dict",
+            )
+        validated_scaler_state = self._validate_precision_topology(state)
+        snapshot = self._capture_runtime_snapshot()
+        prepared_model_state = cast(
+            Mapping[str, Any],
+            _clone_checkpoint_data(
+                model_state_dict,
+                tensors_to_cpu=False,
+            ),
+        )
+        prepared_process_state = (
+            None
+            if validated_process_state is None
+            else cast(
+                Mapping[str, Any],
+                _clone_checkpoint_data(
+                    validated_process_state,
+                    tensors_to_cpu=False,
+                ),
+            )
+        )
+        prepared_objective_state = (
+            None
+            if validated_objective_state is None
+            else cast(
+                Mapping[str, Any],
+                _clone_checkpoint_data(
+                    validated_objective_state,
+                    tensors_to_cpu=False,
+                ),
+            )
+        )
+        prepared_assets = {
+            name: cast(
+                Mapping[str, Any],
+                _clone_checkpoint_data(
+                    asset_state,
+                    tensors_to_cpu=False,
+                ),
+            )
+            for name, asset_state in validated_assets.items()
+        }
+        prepared_optimizer_state = (
+            None
+            if validated_optimizer_state is None
+            else cast(
+                dict[str, Any],
+                _clone_checkpoint_data(
+                    validated_optimizer_state,
+                    tensors_to_cpu=False,
+                ),
+            )
+        )
+        prepared_lr_scheduler_state = (
+            None
+            if validated_lr_scheduler_state is None
+            else cast(
+                dict[str, Any],
+                _clone_checkpoint_data(
+                    validated_lr_scheduler_state,
+                    tensors_to_cpu=False,
+                ),
+            )
+        )
+        prepared_ema_state = (
+            None
+            if self.ema is None or validated_ema_state is None
+            else _prepare_ema_state_for_runtime(
+                self.ema,
+                validated_ema_state,
+            )
+        )
+        prepared_scaler_state = (
+            None
+            if validated_scaler_state is None
+            else cast(
+                dict[str, Any],
+                _clone_checkpoint_data(
+                    validated_scaler_state,
+                    tensors_to_cpu=False,
+                ),
+            )
+        )
+        try:
+            self.model.load_state_dict(prepared_model_state)
+            if self.process is not None:
+                assert prepared_process_state is not None
+                self.process.load_state_dict(prepared_process_state)
+            if self.objective is not None:
+                assert prepared_objective_state is not None
+                self.objective.load_state_dict(prepared_objective_state)
+            for name, module in self.auxiliary_modules.items():
+                module.load_state_dict(prepared_assets[name])
+
+            if self.optimizer is not None:
+                assert prepared_optimizer_state is not None
+                self.optimizer.load_state_dict(prepared_optimizer_state)
+            if self.lr_scheduler is not None:
+                assert prepared_lr_scheduler_state is not None
+                self.lr_scheduler.load_state_dict(prepared_lr_scheduler_state)
+            if self.ema is not None:
+                assert prepared_ema_state is not None
+                self.ema.load_state_dict(prepared_ema_state)
+            if self.grad_scaler is not None:
+                assert prepared_scaler_state is not None
+                self.grad_scaler.load_state_dict(prepared_scaler_state)
+        except BaseException as restore_error:
+            try:
+                self._restore_runtime_snapshot(snapshot)
+            except BaseException as rollback_error:
+                raise RuntimeError(
+                    "checkpoint restore failed and runtime rollback also failed; "
+                    f"original restore error was {restore_error!r}"
+                ) from rollback_error
+            raise
 
         return LoadedCheckpoint(
             path=checkpoint_path,
@@ -395,6 +805,135 @@ class CheckpointManager:
             metrics=metrics,
             metadata=metadata,
         )
+
+    def _validate_precision_topology(
+        self,
+        state: CheckpointState,
+    ) -> dict[str, Any] | None:
+        checkpoint_precision = _validate_precision_kind(
+            state.get("precision_kind"),
+            path="checkpoint.precision_kind",
+        )
+        if checkpoint_precision != self.precision_kind:
+            raise ValueError(
+                "checkpoint precision kind does not match runtime: "
+                f"{checkpoint_precision!r} != {self.precision_kind!r}"
+            )
+        scaler_state_value = cast(object, state.get("grad_scaler_state_dict"))
+        scaler_class = cast(object, state.get("grad_scaler_class"))
+        if self.grad_scaler is None:
+            if scaler_class is not None or scaler_state_value is not None:
+                raise ValueError(
+                    "checkpoint contains GradScaler state but runtime has no "
+                    "GradScaler"
+                )
+            return None
+        _validate_grad_scaler_scale(
+            self.grad_scaler.get_scale(),
+            path="runtime GradScaler scale",
+        )
+        if scaler_class is None or scaler_state_value is None:
+            raise TypeError(
+                "checkpoint is missing GradScaler state required by the runtime"
+            )
+        if scaler_class != _type_identity(self.grad_scaler):
+            raise ValueError(
+                "checkpoint GradScaler class does not match runtime: "
+                f"{scaler_class!r} != {_type_identity(self.grad_scaler)!r}"
+            )
+        if type(scaler_state_value) is not dict:
+            raise TypeError(
+                "checkpoint grad_scaler_state_dict must be an exact dictionary"
+            )
+        validated_state = cast(dict[str, Any], scaler_state_value)
+        temporary_scaler = deepcopy(self.grad_scaler)
+        temporary_scaler.load_state_dict(deepcopy(validated_state))
+        _validate_grad_scaler_scale(
+            temporary_scaler.get_scale(),
+            path="checkpoint GradScaler restored scale",
+        )
+        return validated_state
+
+    def _capture_runtime_snapshot(self) -> CheckpointRuntimeSnapshot:
+        """Capture recoverable state before applying a validated payload."""
+
+        optimizer_state = (
+            None
+            if self.optimizer is None
+            else cast(
+                dict[str, Any],
+                _clone_checkpoint_data(
+                    self.optimizer.state_dict(),
+                    tensors_to_cpu=False,
+                ),
+            )
+        )
+        lr_scheduler_state = (
+            None
+            if self.lr_scheduler is None
+            else cast(
+                dict[str, Any],
+                _clone_checkpoint_data(
+                    self.lr_scheduler.state_dict(),
+                    tensors_to_cpu=False,
+                ),
+            )
+        )
+        ema_state = None if self.ema is None else self.ema.state_dict()
+        grad_scaler_state = (
+            None
+            if self.grad_scaler is None
+            else deepcopy(self.grad_scaler.state_dict())
+        )
+        return CheckpointRuntimeSnapshot(
+            model_state=_clone_module_state(self.model),
+            process_state=(
+                None
+                if self.process is None
+                else _clone_module_state(self.process)
+            ),
+            objective_state=(
+                None
+                if self.objective is None
+                else _clone_module_state(self.objective)
+            ),
+            auxiliary_states={
+                name: _clone_module_state(module)
+                for name, module in self.auxiliary_modules.items()
+            },
+            optimizer_state=optimizer_state,
+            lr_scheduler_state=lr_scheduler_state,
+            ema_state=ema_state,
+            grad_scaler_state=grad_scaler_state,
+        )
+
+    def _restore_runtime_snapshot(
+        self,
+        snapshot: CheckpointRuntimeSnapshot,
+    ) -> None:
+        """Roll back every managed runtime asset after a failed restore."""
+
+        self.model.load_state_dict(snapshot.model_state)
+        if self.process is not None:
+            assert snapshot.process_state is not None
+            self.process.load_state_dict(snapshot.process_state)
+        if self.objective is not None:
+            assert snapshot.objective_state is not None
+            self.objective.load_state_dict(snapshot.objective_state)
+        for name, module in self.auxiliary_modules.items():
+            module.load_state_dict(snapshot.auxiliary_states[name])
+        if self.optimizer is not None:
+            assert snapshot.optimizer_state is not None
+            self.optimizer.load_state_dict(snapshot.optimizer_state)
+        if self.lr_scheduler is not None:
+            assert snapshot.lr_scheduler_state is not None
+            self.lr_scheduler.load_state_dict(snapshot.lr_scheduler_state)
+        if self.ema is not None:
+            assert snapshot.ema_state is not None
+            self.ema.load_state_dict(snapshot.ema_state)
+        if self.grad_scaler is not None:
+            assert snapshot.grad_scaler_state is not None
+            self.grad_scaler.load_state_dict(snapshot.grad_scaler_state)
 
     @staticmethod
     def load_payload(
@@ -415,13 +954,11 @@ class CheckpointManager:
                 f"checkpoint at '{checkpoint_path}' must contain a dictionary payload"
             )
         _validate_checkpoint_value(raw_state, path="checkpoint")
-        state = cast(CheckpointState, raw_state)
-        _validate_checkpoint_header(state)
-        return state
+        return _normalize_checkpoint_header(cast(CheckpointState, raw_state))
 
 
 def capture_rng_state() -> dict[str, Any]:
-    """Capture process-global RNG streams using the v8 data-only contract."""
+    """Capture process-global RNG streams using the data-only contract."""
 
     return _capture_rng_state(include_cuda=True, include_mps=True)
 
@@ -476,7 +1013,7 @@ def parse_rng_state(
     require_cuda_compatibility: bool = False,
     require_mps_compatibility: bool = False,
 ) -> ParsedRNGState:
-    """Validate and normalize one v8 RNG snapshot without changing global RNGs."""
+    """Validate and normalize one RNG snapshot without changing global RNGs."""
 
     root = _exact_dict(
         value,
@@ -717,6 +1254,15 @@ def _exact_int(value: object, *, path: str) -> int:
     return cast(int, value)
 
 
+def _nonempty_exact_string(value: object, *, path: str) -> str:
+    if type(value) is not str:
+        raise TypeError(f"{path} must be an exact string")
+    result = cast(str, value)
+    if not result:
+        raise ValueError(f"{path} must be non-empty")
+    return result
+
+
 def _parse_rng_tensor(value: object, *, path: str) -> torch.Tensor:
     if type(value) is not torch.Tensor:
         raise TypeError(f"{path} must be an exact Tensor")
@@ -726,21 +1272,332 @@ def _parse_rng_tensor(value: object, *, path: str) -> torch.Tensor:
     return tensor.detach().cpu().clone()
 
 
-def _validate_checkpoint_header(state: CheckpointState) -> None:
-    """Validate the versioned metadata required before runtime restoration."""
+def _normalize_checkpoint_header(state: CheckpointState) -> CheckpointState:
+    """Validate and normalize a supported checkpoint header to effective v9."""
 
-    version = state.get("format_version")
-    if version != CHECKPOINT_FORMAT_VERSION:
+    version = cast(object, state.get("format_version"))
+    if type(version) is not int:
+        raise TypeError("checkpoint format_version must be an exact integer")
+    if version == _LEGACY_CHECKPOINT_FORMAT_VERSION:
+        normalized = _migrate_v8_checkpoint(state)
+    elif version == CHECKPOINT_FORMAT_VERSION:
+        normalized = state
+    else:
         raise ValueError(
             f"checkpoint format version {version!r} is unsupported; "
-            f"expected version {CHECKPOINT_FORMAT_VERSION}"
+            "supported versions are 8 and 9"
         )
+    _validate_v9_checkpoint_header(normalized)
+    return normalized
+
+
+def _migrate_v8_checkpoint(state: CheckpointState) -> CheckpointState:
+    """Strictly migrate an unextended v8 payload into the effective v9 shape."""
+
+    smuggled_fields = sorted(_V9_ONLY_FIELDS.intersection(state))
+    if smuggled_fields:
+        raise ValueError(
+            "v8 checkpoint contains v9-only field(s): "
+            + ", ".join(smuggled_fields)
+        )
+    config_value = cast(object, state.get("config"))
+    if config_value is None:
+        config: dict[str, Any] = {}
+    elif type(config_value) is not dict:
+        raise TypeError("v8 checkpoint config must be an exact dictionary")
+    else:
+        config = cast(dict[str, Any], config_value)
+    smuggled_config_fields = sorted(_V9_ONLY_FIELDS.intersection(config))
+    if smuggled_config_fields:
+        raise ValueError(
+            "v8 checkpoint config contains v9-only field(s): "
+            + ", ".join(smuggled_config_fields)
+        )
+    trainer_value = cast(object, config.get("trainer"))
+    if trainer_value is None:
+        trainer: dict[str, Any] = {}
+    elif type(trainer_value) is not dict:
+        raise TypeError(
+            "v8 checkpoint config.trainer must be an exact dictionary"
+        )
+    else:
+        trainer = cast(dict[str, Any], trainer_value)
+    smuggled_trainer_fields = sorted(
+        {"precision", "accumulate_grad_batches"}.intersection(trainer)
+    )
+    if smuggled_trainer_fields:
+        raise ValueError(
+            "v8 checkpoint config.trainer contains v9-only field(s): "
+            + ", ".join(smuggled_trainer_fields)
+        )
+    migrated_config = deepcopy(config)
+    migrated_trainer = deepcopy(trainer)
+    migrated_trainer["precision"] = "fp32"
+    migrated_trainer["accumulate_grad_batches"] = 1
+    migrated_config["trainer"] = migrated_trainer
+
+    normalized = cast(CheckpointState, dict(state))
+    normalized["format_version"] = CHECKPOINT_FORMAT_VERSION
+    normalized["precision_kind"] = "fp32"
+    normalized["inference_asset_descriptors"] = {}
+    normalized["config"] = migrated_config
+    _rebuild_legacy_ema_state_aliases(normalized)
+    return normalized
+
+
+def _rebuild_legacy_ema_state_aliases(state: CheckpointState) -> None:
+    """Materialize provable v8 tied-state relationships as valid v9 aliases."""
+
+    model_state_value = cast(object, state.get("model_state_dict"))
+    projection_value = cast(object, state.get("ema_model_state_dict"))
+    ema_state_value = cast(object, state.get("ema_state_dict"))
+    if not (
+        isinstance(model_state_value, dict)
+        and isinstance(projection_value, dict)
+        and type(ema_state_value) is dict
+    ):
+        return
+    ema_state = cast(dict[str, object], ema_state_value)
+    shadow_params = ema_state.get("shadow_params")
+    shadow_buffers = ema_state.get("shadow_buffers")
+    if not (
+        type(shadow_params) is OrderedDict
+        and type(shadow_buffers) is OrderedDict
+    ):
+        return
+
+    cloned_model_state = cast(
+        OrderedDict[str, Any] | dict[str, Any],
+        _clone_checkpoint_data(
+            model_state_value,
+            tensors_to_cpu=False,
+        ),
+    )
+    cloned_projection = cast(
+        OrderedDict[str, Any] | dict[str, Any],
+        _clone_checkpoint_data(
+            projection_value,
+            tensors_to_cpu=False,
+        ),
+    )
+    shadow_values = {
+        **cast(OrderedDict[str, torch.Tensor], shadow_params),
+        **cast(OrderedDict[str, torch.Tensor], shadow_buffers),
+    }
+    canonical_names = [
+        name
+        for name in shadow_values
+        if (
+            name in cloned_model_state
+            and name in cloned_projection
+            and isinstance(cloned_model_state[name], torch.Tensor)
+        )
+    ]
+    for key, raw_value in tuple(cloned_model_state.items()):
+        if (
+            key in shadow_values
+            or key not in cloned_projection
+            or not isinstance(raw_value, torch.Tensor)
+        ):
+            continue
+        matching_names = [
+            canonical_name
+            for canonical_name in canonical_names
+            if (
+                _checkpoint_values_equal(
+                    raw_value,
+                    cloned_model_state[canonical_name],
+                )
+                and _checkpoint_values_equal(
+                    cloned_projection[key],
+                    shadow_values[canonical_name],
+                )
+            )
+        ]
+        if len(matching_names) != 1:
+            continue
+        canonical_name = matching_names[0]
+        cloned_model_state[key] = cloned_model_state[canonical_name]
+        cloned_projection[key] = cloned_projection[canonical_name]
+    state["model_state_dict"] = cloned_model_state
+    state["ema_model_state_dict"] = cloned_projection
+
+
+def _validate_v9_checkpoint_header(state: CheckpointState) -> None:
+    """Validate the exact precision topology of a v9 checkpoint."""
+
+    version = cast(object, state.get("format_version"))
+    if type(version) is not int or version != CHECKPOINT_FORMAT_VERSION:
+        raise ValueError(
+            "checkpoint writer requires format version "
+            f"{CHECKPOINT_FORMAT_VERSION}, got {version!r}"
+        )
+    precision_kind = _validate_precision_kind(
+        state.get("precision_kind"),
+        path="checkpoint.precision_kind",
+    )
+    descriptors = validate_inference_asset_descriptors(
+        state.get("inference_asset_descriptors"),
+        path="checkpoint.inference_asset_descriptors",
+    )
+    if descriptors:
+        assets_value = cast(object, state.get("training_assets_state_dict"))
+        if type(assets_value) is not dict:
+            raise TypeError(
+                "checkpoint with inference asset descriptors requires an exact "
+                "training_assets_state_dict"
+            )
+        assets = cast(dict[object, object], assets_value)
+        for slot, descriptor in descriptors.items():
+            training_asset_name = descriptor["training_asset_name"]
+            if training_asset_name not in assets:
+                raise ValueError(
+                    "checkpoint inference asset descriptor "
+                    f"{slot!r} references missing training asset "
+                    f"{training_asset_name!r}"
+                )
+            if not isinstance(assets[training_asset_name], dict):
+                raise TypeError(
+                    "checkpoint embedded inference asset state "
+                    f"{training_asset_name!r} must be a state dictionary"
+                )
+
+    has_scaler_class = "grad_scaler_class" in state
+    has_scaler_state = "grad_scaler_state_dict" in state
+    if precision_kind == "fp16-mixed":
+        if not has_scaler_class or not has_scaler_state:
+            missing = [
+                name
+                for name, present in (
+                    ("grad_scaler_class", has_scaler_class),
+                    ("grad_scaler_state_dict", has_scaler_state),
+                )
+                if not present
+            ]
+            raise TypeError(
+                "fp16-mixed checkpoint is missing required field(s): "
+                + ", ".join(missing)
+            )
+        scaler_class = cast(object, state.get("grad_scaler_class"))
+        if type(scaler_class) is not str or not scaler_class:
+            raise TypeError(
+                "checkpoint grad_scaler_class must be a non-empty string"
+            )
+        scaler_state = cast(object, state.get("grad_scaler_state_dict"))
+        if type(scaler_state) is not dict:
+            raise TypeError(
+                "checkpoint grad_scaler_state_dict must be an exact dictionary"
+            )
+        _validate_grad_scaler_scale(
+            scaler_state.get("scale"),
+            path="checkpoint grad_scaler_state_dict.scale",
+        )
+    elif has_scaler_class or has_scaler_state:
+        unexpected = [
+            name
+            for name, present in (
+                ("grad_scaler_class", has_scaler_class),
+                ("grad_scaler_state_dict", has_scaler_state),
+            )
+            if present
+        ]
+        raise ValueError(
+            f"{precision_kind} checkpoint cannot contain GradScaler field(s): "
+            + ", ".join(unexpected)
+        )
+
+    _validate_v9_ema_payload(state)
+    _validate_checkpoint_config(state, precision_kind=precision_kind)
     _validate_extension_plugin_metadata(state)
     parse_rng_state(state.get("rng_state"))
 
 
+def _validate_v9_ema_payload(state: CheckpointState) -> None:
+    """Validate the self-contained EMA projection shared by all v9 readers."""
+
+    has_ema_state = "ema_state_dict" in state
+    has_ema_projection = "ema_model_state_dict" in state
+    if has_ema_state != has_ema_projection:
+        missing = (
+            "ema_model_state_dict" if has_ema_state else "ema_state_dict"
+        )
+        raise TypeError(
+            f"checkpoint EMA topology is missing required field: {missing}"
+        )
+    if not has_ema_state:
+        return
+
+    model_state_value = cast(object, state.get("model_state_dict"))
+    if not isinstance(model_state_value, dict):
+        raise TypeError(
+            "checkpoint with EMA state requires a valid model_state_dict"
+        )
+    projection_value = cast(object, state.get("ema_model_state_dict"))
+    if not isinstance(projection_value, dict):
+        raise TypeError("ema_model_state_dict must be a dictionary")
+    ema_state = _validate_serialized_ema_state_dict(
+        state.get("ema_state_dict"),
+        model_state=cast(Mapping[str, object], model_state_value),
+    )
+    _validate_serialized_ema_projection(
+        cast(Mapping[str, object], model_state_value),
+        cast(Mapping[str, object], projection_value),
+        ema_state,
+    )
+
+
+def _validate_precision_kind(value: object, *, path: str) -> str:
+    if type(value) is not str or value not in _PRECISION_KINDS:
+        choices = ", ".join(sorted(_PRECISION_KINDS))
+        raise ValueError(f"{path} must be one of: {choices}")
+    return cast(str, value)
+
+
+def _validate_grad_scaler_scale(value: object, *, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{path} must be a finite positive number")
+    scale = float(value)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"{path} must be a finite positive number")
+    return scale
+
+
+def _validate_checkpoint_config(
+    state: CheckpointState,
+    *,
+    precision_kind: str,
+) -> None:
+    config_value = cast(object, state.get("config"))
+    if config_value is None:
+        return
+    if type(config_value) is not dict:
+        raise TypeError("checkpoint config must be an exact dictionary")
+    trainer_value = cast(object, config_value.get("trainer"))
+    if trainer_value is None:
+        return
+    if type(trainer_value) is not dict:
+        raise TypeError("checkpoint config.trainer must be an exact dictionary")
+    configured_precision = cast(object, trainer_value.get("precision"))
+    if configured_precision is not None and configured_precision != precision_kind:
+        raise ValueError(
+            "checkpoint config.trainer.precision does not match precision_kind: "
+            f"{configured_precision!r} != {precision_kind!r}"
+        )
+    accumulation = cast(
+        object,
+        trainer_value.get("accumulate_grad_batches"),
+    )
+    if accumulation is not None and (
+        type(accumulation) is not int or accumulation <= 0
+    ):
+        raise ValueError(
+            "checkpoint config.trainer.accumulate_grad_batches must be "
+            "a positive integer"
+        )
+
+
 def _validate_extension_plugin_metadata(state: CheckpointState) -> None:
-    """Require the v8 extension-provenance container on every checkpoint."""
+    """Require the extension-provenance container on every checkpoint."""
 
     metadata = cast(object, state.get("metadata"))
     if not isinstance(metadata, dict):
@@ -752,7 +1609,7 @@ def _validate_extension_plugin_metadata(state: CheckpointState) -> None:
 
 
 def _validate_checkpoint_value(value: object, *, path: str) -> None:
-    """Validate the recursively data-only v8 checkpoint value contract."""
+    """Validate the recursively data-only checkpoint value contract."""
 
     value_type = type(value)
     if value_type in _CHECKPOINT_LEAF_TYPES:
@@ -785,10 +1642,577 @@ def _validate_checkpoint_value(value: object, *, path: str) -> None:
         return
     raise TypeError(
         f"{path} contains unsupported checkpoint value type "
-        f"'{value_type.__module__}.{value_type.__qualname__}'; v8 checkpoints "
+        f"'{value_type.__module__}.{value_type.__qualname__}'; checkpoints "
         "may contain only exact Tensor or Parameter values, primitive values, "
         "and plain dict, OrderedDict, list, or tuple containers"
     )
+
+
+def _clone_checkpoint_data(
+    value: object,
+    *,
+    tensors_to_cpu: bool,
+) -> object:
+    """Clone one validated data-only value for transactional rollback."""
+
+    value_type = type(value)
+    if value_type in _CHECKPOINT_LEAF_TYPES:
+        return value
+    if value_type is torch.Tensor or value_type is nn.Parameter:
+        tensor = cast(torch.Tensor, value).detach()
+        return (
+            tensor.to(device="cpu", copy=True)
+            if tensors_to_cpu
+            else tensor.clone()
+        )
+    if value_type is dict:
+        mapping = cast(dict[object, object], value)
+        return {
+            _clone_checkpoint_data(key, tensors_to_cpu=tensors_to_cpu):
+            _clone_checkpoint_data(item, tensors_to_cpu=tensors_to_cpu)
+            for key, item in mapping.items()
+        }
+    if value_type is OrderedDict:
+        mapping = cast(OrderedDict[object, object], value)
+        cloned = OrderedDict(
+            (
+                _clone_checkpoint_data(key, tensors_to_cpu=tensors_to_cpu),
+                _clone_checkpoint_data(item, tensors_to_cpu=tensors_to_cpu),
+            )
+            for key, item in mapping.items()
+        )
+        metadata = getattr(value, "_metadata", None)
+        if metadata is not None:
+            cast(StateDictWithMetadata, cloned)._metadata = deepcopy(metadata)
+        return cloned
+    if value_type is list:
+        return [
+            _clone_checkpoint_data(item, tensors_to_cpu=tensors_to_cpu)
+            for item in cast(list[object], value)
+        ]
+    if value_type is tuple:
+        return tuple(
+            _clone_checkpoint_data(item, tensors_to_cpu=tensors_to_cpu)
+            for item in cast(tuple[object, ...], value)
+        )
+    raise TypeError(
+        "runtime checkpoint state contains unsupported rollback value type "
+        f"'{value_type.__module__}.{value_type.__qualname__}'"
+    )
+
+
+def _checkpoint_values_equal(left: object, right: object) -> bool:
+    """Compare two data-only values without ambiguous Tensor equality."""
+
+    if isinstance(left, torch.Tensor) and isinstance(right, torch.Tensor):
+        if (
+            left.shape != right.shape
+            or left.dtype != right.dtype
+            or left.layout != right.layout
+        ):
+            return False
+        left_cpu = left.detach().to(device="cpu")
+        right_cpu = right.detach().to(device="cpu")
+        if torch.equal(left_cpu, right_cpu):
+            return True
+        if not (torch.is_floating_point(left_cpu) or torch.is_complex(left_cpu)):
+            return False
+        try:
+            equal_or_matching_nan = torch.eq(left_cpu, right_cpu) | (
+                torch.isnan(left_cpu) & torch.isnan(right_cpu)
+            )
+            return bool(torch.all(equal_or_matching_nan).item())
+        except RuntimeError:
+            return False
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict or type(left) is OrderedDict:
+        left_mapping = cast(Mapping[object, object], left)
+        right_mapping = cast(Mapping[object, object], right)
+        return (
+            set(left_mapping) == set(right_mapping)
+            and all(
+                _checkpoint_values_equal(
+                    left_mapping[key],
+                    right_mapping[key],
+                )
+                for key in left_mapping
+            )
+        )
+    if type(left) is list or type(left) is tuple:
+        left_sequence = cast(list[object] | tuple[object, ...], left)
+        right_sequence = cast(list[object] | tuple[object, ...], right)
+        return len(left_sequence) == len(right_sequence) and all(
+            _checkpoint_values_equal(left_item, right_item)
+            for left_item, right_item in zip(
+                left_sequence,
+                right_sequence,
+                strict=True,
+            )
+        )
+    return bool(left == right)
+
+
+def _validate_module_state_dict_compatibility(
+    module: nn.Module,
+    state_dict: Mapping[str, object],
+    *,
+    path: str,
+) -> None:
+    """Reject ordinary strict-load failures before touching a module."""
+
+    if any(type(key) is not str for key in state_dict):
+        raise TypeError(f"{path} keys must be exact strings")
+    runtime_state = module.state_dict()
+    actual_keys = cast(set[str], set(state_dict))
+    expected_keys = set(runtime_state)
+    if actual_keys != expected_keys:
+        missing = sorted(expected_keys - actual_keys)
+        unexpected = sorted(actual_keys - expected_keys)
+        raise ValueError(
+            f"{path} keys do not match runtime: "
+            f"missing={missing or '<none>'}, "
+            f"unexpected={unexpected or '<none>'}"
+        )
+    typed_state = cast(Mapping[str, object], state_dict)
+    for name, runtime_value in runtime_state.items():
+        checkpoint_value = typed_state[name]
+        if not isinstance(runtime_value, torch.Tensor):
+            continue
+        if not isinstance(checkpoint_value, torch.Tensor):
+            raise TypeError(f"{path}[{name!r}] must be a Tensor")
+        if checkpoint_value.device.type == "meta":
+            raise ValueError(
+                f"{path}[{name!r}] cannot use the meta device"
+            )
+        if (
+            not torch.nn.parameter.is_lazy(runtime_value)
+            and checkpoint_value.shape != runtime_value.shape
+        ):
+            raise ValueError(
+                f"{path}[{name!r}] shape does not match runtime: "
+                f"{tuple(checkpoint_value.shape)} != "
+                f"{tuple(runtime_value.shape)}"
+            )
+        if checkpoint_value.dtype != runtime_value.dtype:
+            raise ValueError(
+                f"{path}[{name!r}] dtype does not match runtime: "
+                f"{checkpoint_value.dtype} != {runtime_value.dtype}"
+            )
+        if checkpoint_value.layout != runtime_value.layout:
+            raise ValueError(
+                f"{path}[{name!r}] layout does not match runtime"
+            )
+
+
+def _validate_optimizer_state_dict_compatibility(
+    optimizer: Optimizer,
+    state_dict: Mapping[str, object],
+) -> None:
+    """Reject optimizer parameter-group topology changes before module loads."""
+
+    if not isinstance(state_dict, dict):
+        raise TypeError(
+            "checkpoint optimizer_state_dict must be a dictionary"
+        )
+    optimizer_state = state_dict.get("state")
+    if type(optimizer_state) is not dict:
+        raise TypeError(
+            "checkpoint optimizer_state_dict.state must be an exact dictionary"
+        )
+    param_groups = state_dict.get("param_groups")
+    if type(param_groups) is not list:
+        raise TypeError(
+            "checkpoint optimizer_state_dict.param_groups must be an exact list"
+        )
+    expected_fields = {"state", "param_groups"}
+    actual_fields = set(state_dict)
+    if not expected_fields.issubset(actual_fields):
+        missing = sorted(map(str, expected_fields - actual_fields))
+        raise ValueError(
+            "checkpoint optimizer_state_dict is missing required field(s): "
+            + ", ".join(missing)
+        )
+    checkpoint_groups = cast(list[object], param_groups)
+    runtime_groups = optimizer.state_dict().get("param_groups")
+    if type(runtime_groups) is not list:
+        raise TypeError("runtime optimizer state has invalid param_groups")
+    typed_runtime_groups = cast(list[object], runtime_groups)
+    if len(checkpoint_groups) != len(typed_runtime_groups):
+        raise ValueError(
+            "checkpoint optimizer parameter-group count does not match runtime"
+        )
+    for index, (checkpoint_group, runtime_group) in enumerate(
+        zip(checkpoint_groups, typed_runtime_groups, strict=True)
+    ):
+        if type(checkpoint_group) is not dict:
+            raise TypeError(
+                "checkpoint optimizer_state_dict.param_groups"
+                f"[{index}] must be an exact dictionary"
+            )
+        if type(runtime_group) is not dict:
+            raise TypeError(
+                f"runtime optimizer param_groups[{index}] is invalid"
+            )
+        checkpoint_params = cast(dict[object, object], checkpoint_group).get(
+            "params"
+        )
+        runtime_params = cast(dict[object, object], runtime_group).get("params")
+        if type(checkpoint_params) is not list:
+            raise TypeError(
+                "checkpoint optimizer_state_dict.param_groups"
+                f"[{index}].params must be an exact list"
+            )
+        if type(runtime_params) is not list:
+            raise TypeError(
+                f"runtime optimizer param_groups[{index}].params is invalid"
+            )
+        if len(checkpoint_params) != len(runtime_params):
+            raise ValueError(
+                "checkpoint optimizer parameter count does not match runtime "
+                f"for parameter group {index}"
+            )
+        checkpoint_group_keys = set(
+            cast(dict[object, object], checkpoint_group)
+        )
+        required_group_keys = (
+            set(cast(dict[object, object], runtime_group)) - {"params"}
+        )
+        missing_group_keys = required_group_keys - checkpoint_group_keys
+        if missing_group_keys:
+            raise ValueError(
+                "checkpoint optimizer parameter group is missing runtime "
+                f"key(s) for group {index}: "
+                + ", ".join(sorted(map(str, missing_group_keys)))
+            )
+
+
+def _validate_lr_scheduler_state_dict_compatibility(
+    lr_scheduler: LRScheduler,
+    state_dict: Mapping[str, object],
+) -> None:
+    """Reject scheduler key-topology drift before applying any module state."""
+
+    required_keys = set(lr_scheduler.state_dict())
+    missing = required_keys - set(state_dict)
+    if missing:
+        raise ValueError(
+            "checkpoint lr_scheduler_state_dict is missing runtime key(s): "
+            + ", ".join(sorted(map(str, missing)))
+        )
+
+
+def _validate_serialized_ema_state_dict(
+    value: object,
+    *,
+    model_state: Mapping[str, object],
+) -> EMAStateDict:
+    """Validate the runtime-independent EMA schema in a serialized payload."""
+
+    if type(value) is not dict:
+        raise TypeError("ema_state_dict must be an exact dictionary")
+    state = cast(dict[str, object], value)
+    required = {
+        "decay",
+        "update_after_step",
+        "update_every",
+        "num_updates",
+        "shadow_params",
+        "shadow_buffers",
+    }
+    if set(state) != required:
+        missing = sorted(required - set(state))
+        unexpected = sorted(set(state) - required)
+        raise ValueError(
+            "ema_state_dict has invalid fields: "
+            f"missing={missing or '<none>'}, "
+            f"unexpected={unexpected or '<none>'}"
+        )
+    decay = state["decay"]
+    if (
+        isinstance(decay, bool)
+        or not isinstance(decay, (int, float))
+        or not math.isfinite(float(decay))
+        or not 0.0 <= float(decay) < 1.0
+    ):
+        raise ValueError("ema_state_dict.decay must satisfy 0 <= decay < 1")
+    for field_name, minimum in (
+        ("update_after_step", 0),
+        ("update_every", 1),
+        ("num_updates", 0),
+    ):
+        field_value = state[field_name]
+        if type(field_value) is not int or cast(int, field_value) < minimum:
+            raise ValueError(
+                f"ema_state_dict.{field_name} must be an integer >= {minimum}"
+            )
+
+    shadow_names: set[str] = set()
+    for field_name in ("shadow_params", "shadow_buffers"):
+        raw_values = state[field_name]
+        if type(raw_values) is not OrderedDict:
+            raise TypeError(
+                f"ema_state_dict.{field_name} must be an exact OrderedDict"
+            )
+        values = cast(OrderedDict[object, object], raw_values)
+        if any(type(name) is not str for name in values):
+            raise TypeError(
+                f"ema_state_dict.{field_name} keys must be exact strings"
+            )
+        typed_names = cast(set[str], set(values))
+        overlap = shadow_names.intersection(typed_names)
+        if overlap:
+            raise ValueError(
+                "ema_state_dict shadow parameter and buffer names overlap: "
+                + ", ".join(sorted(overlap))
+            )
+        shadow_names.update(typed_names)
+        for name, raw_tensor in values.items():
+            if name not in model_state:
+                raise ValueError(
+                    f"ema_state_dict.{field_name}[{name!r}] is missing "
+                    "from model_state_dict"
+                )
+            if type(raw_tensor) is not torch.Tensor:
+                raise TypeError(
+                    f"ema_state_dict.{field_name}[{name!r}] must be an exact Tensor"
+                )
+            model_tensor = model_state[cast(str, name)]
+            if not isinstance(model_tensor, torch.Tensor):
+                raise TypeError(
+                    f"model_state_dict[{name!r}] must be a Tensor for EMA"
+                )
+            tensor = cast(torch.Tensor, raw_tensor)
+            if (
+                tensor.shape != model_tensor.shape
+                or tensor.dtype != model_tensor.dtype
+                or tensor.layout != model_tensor.layout
+            ):
+                raise ValueError(
+                    f"ema_state_dict.{field_name}[{name!r}] topology does "
+                    "not match model_state_dict"
+                )
+    return cast(EMAStateDict, value)
+
+
+def _validate_serialized_ema_projection(
+    model_state: Mapping[str, object],
+    ema_model_state: Mapping[str, object],
+    ema_state: EMAStateDict,
+) -> None:
+    """Validate EMA projection values, including tied state-dict aliases."""
+
+    if set(model_state) != set(ema_model_state):
+        raise ValueError(
+            "ema_model_state_dict keys must match model_state_dict"
+        )
+    shadow_values: dict[str, torch.Tensor] = {
+        **ema_state["shadow_params"],
+        **ema_state["shadow_buffers"],
+    }
+    canonical_model_tensors = {
+        name: cast(torch.Tensor, model_state[name])
+        for name in shadow_values
+    }
+    for key, raw_value in model_state.items():
+        expected_value: object = raw_value
+        if key in shadow_values:
+            expected_value = shadow_values[key]
+        elif isinstance(raw_value, torch.Tensor):
+            alias_name = next(
+                (
+                    canonical_name
+                    for canonical_name, canonical_tensor
+                    in canonical_model_tensors.items()
+                    if _tensor_state_alias(raw_value, canonical_tensor)
+                ),
+                None,
+            )
+            if alias_name is not None:
+                expected_value = shadow_values[alias_name]
+        if not _checkpoint_values_equal(
+            ema_model_state[key],
+            expected_value,
+        ):
+            raise ValueError(
+                f"ema_model_state_dict[{key!r}] does not match EMA state"
+            )
+
+
+def _tensor_state_alias(left: torch.Tensor, right: torch.Tensor) -> bool:
+    """Return whether two state-dict tensors represent the same tensor view."""
+
+    if left is right:
+        return True
+    if (
+        left.layout is not torch.strided
+        or right.layout is not torch.strided
+        or left.device.type == "meta"
+        or right.device.type == "meta"
+    ):
+        return False
+    return (
+        left.device == right.device
+        and left.dtype == right.dtype
+        and left.shape == right.shape
+        and left.stride() == right.stride()
+        and left.storage_offset() == right.storage_offset()
+        and left.untyped_storage().data_ptr()
+        == right.untyped_storage().data_ptr()
+    )
+
+
+def _validate_ema_state_dict(
+    ema: ExponentialMovingAverage,
+    value: object,
+) -> EMAStateDict:
+    """Validate the complete EMA state before managed modules are restored."""
+
+    if type(value) is not dict:
+        raise TypeError("ema_state_dict must be an exact dictionary")
+    state = cast(dict[str, object], value)
+    required = {
+        "decay",
+        "update_after_step",
+        "update_every",
+        "num_updates",
+        "shadow_params",
+        "shadow_buffers",
+    }
+    if set(state) != required:
+        missing = sorted(required - set(state))
+        unexpected = sorted(set(state) - required)
+        raise ValueError(
+            "ema_state_dict has invalid fields: "
+            f"missing={missing or '<none>'}, "
+            f"unexpected={unexpected or '<none>'}"
+        )
+    decay = state["decay"]
+    if (
+        isinstance(decay, bool)
+        or not isinstance(decay, (int, float))
+        or not math.isfinite(float(decay))
+        or not 0.0 <= float(decay) < 1.0
+    ):
+        raise ValueError("ema_state_dict.decay must satisfy 0 <= decay < 1")
+    for field_name, minimum in (
+        ("update_after_step", 0),
+        ("update_every", 1),
+        ("num_updates", 0),
+    ):
+        field_value = state[field_name]
+        if type(field_value) is not int or cast(int, field_value) < minimum:
+            raise ValueError(
+                f"ema_state_dict.{field_name} must be an integer >= {minimum}"
+            )
+    for field_name, runtime_values in (
+        ("shadow_params", ema.shadow_params),
+        ("shadow_buffers", ema.shadow_buffers),
+    ):
+        raw_values = state[field_name]
+        if type(raw_values) is not OrderedDict:
+            raise TypeError(
+                f"ema_state_dict.{field_name} must be an exact OrderedDict"
+            )
+        values = cast(OrderedDict[object, object], raw_values)
+        if any(type(name) is not str for name in values):
+            raise TypeError(
+                f"ema_state_dict.{field_name} keys must be exact strings"
+            )
+        actual_names = cast(set[str], set(values))
+        expected_names = set(runtime_values)
+        if actual_names != expected_names:
+            raise ValueError(
+                f"ema_state_dict.{field_name} keys do not match runtime"
+            )
+        for name, runtime_tensor in runtime_values.items():
+            checkpoint_tensor = values[name]
+            if type(checkpoint_tensor) is not torch.Tensor:
+                raise TypeError(
+                    f"ema_state_dict.{field_name}[{name!r}] must be an exact Tensor"
+                )
+            tensor = cast(torch.Tensor, checkpoint_tensor)
+            if tensor.shape != runtime_tensor.shape:
+                raise ValueError(
+                    f"ema_state_dict.{field_name}[{name!r}] shape does not "
+                    "match runtime"
+                )
+            if tensor.dtype != runtime_tensor.dtype:
+                raise ValueError(
+                    f"ema_state_dict.{field_name}[{name!r}] dtype does not "
+                    "match runtime"
+                )
+    return cast(EMAStateDict, value)
+
+
+def _prepare_ema_state_for_runtime(
+    ema: ExponentialMovingAverage,
+    value: EMAStateDict,
+) -> EMAStateDict:
+    """Detach an EMA payload and align its tensors with runtime shadows."""
+
+    prepared = cast(
+        EMAStateDict,
+        _clone_checkpoint_data(value, tensors_to_cpu=False),
+    )
+    for field_name, runtime_values in (
+        ("shadow_params", ema.shadow_params),
+        ("shadow_buffers", ema.shadow_buffers),
+    ):
+        payload_values = prepared[field_name]
+        prepared[field_name] = OrderedDict(
+            (
+                name,
+                payload_values[name].to(
+                    device=runtime_tensor.device,
+                    dtype=runtime_tensor.dtype,
+                    copy=True,
+                ),
+            )
+            for name, runtime_tensor in runtime_values.items()
+        )
+    return prepared
+
+
+def _validate_ema_model_consistency(
+    model: nn.Module,
+    model_state: Mapping[str, object],
+    ema_model_state: Mapping[str, object],
+    ema_state: EMAStateDict,
+) -> None:
+    """Keep the inference EMA projection identical to its canonical shadows."""
+
+    if set(model_state) != set(ema_model_state):
+        raise ValueError(
+            "ema_model_state_dict keys must match model_state_dict"
+    )
+    shadow_params = ema_state["shadow_params"]
+    shadow_buffers = ema_state["shadow_buffers"]
+    canonical_shadow_names = {
+        id(value): name
+        for name, value in (
+            *model.named_parameters(),
+            *model.named_buffers(),
+        )
+        if name in shadow_params or name in shadow_buffers
+    }
+    runtime_state = model.state_dict(keep_vars=True)
+    for key, raw_value in model_state.items():
+        runtime_value = runtime_state[key]
+        shadow_name = canonical_shadow_names.get(id(runtime_value))
+        if shadow_name in shadow_params:
+            expected_value = shadow_params[shadow_name]
+        elif shadow_name in shadow_buffers:
+            expected_value = shadow_buffers[shadow_name]
+        else:
+            expected_value = raw_value
+        if not _checkpoint_values_equal(
+            ema_model_state[key],
+            expected_value,
+        ):
+            raise ValueError(
+                f"ema_model_state_dict[{key!r}] does not match EMA state"
+            )
 
 
 def _ensure_parent_directory(path: Path) -> None:
@@ -802,21 +2226,30 @@ def _type_identity(value: object) -> str:
     return f"{value_type.__module__}.{value_type.__qualname__}"
 
 
-def _clone_module_state(module: nn.Module) -> OrderedDict[str, Any]:
+def _clone_module_state(
+    module: nn.Module,
+    *,
+    tensors_to_cpu: bool = False,
+) -> OrderedDict[str, Any]:
     """Clone a module state so temporary EMA swaps cannot mutate a snapshot."""
 
-    source = module.state_dict()
-    cloned = OrderedDict(
-        (
-            name,
-            (
-                value.detach().clone()
-                if isinstance(value, torch.Tensor)
-                else deepcopy(value)
-            ),
-        )
-        for name, value in source.items()
-    )
+    source = module.state_dict(keep_vars=True)
+    tensor_clones: dict[int, torch.Tensor] = {}
+    cloned: OrderedDict[str, Any] = OrderedDict()
+    for name, value in source.items():
+        if isinstance(value, torch.Tensor):
+            tensor = tensor_clones.get(id(value))
+            if tensor is None:
+                detached = value.detach()
+                tensor = (
+                    detached.to(device="cpu", copy=True)
+                    if tensors_to_cpu
+                    else detached.clone()
+                )
+                tensor_clones[id(value)] = tensor
+            cloned[name] = tensor
+        else:
+            cloned[name] = deepcopy(value)
     metadata = getattr(source, "_metadata", None)
     if metadata is not None:
         cast(StateDictWithMetadata, cloned)._metadata = deepcopy(metadata)

@@ -21,6 +21,7 @@ from stochaflow.data import (
 )
 from stochaflow.sampling.runtime import run_sampling
 from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
+from stochaflow.training.precision import validate_precision_support
 from stochaflow.training.reporting import (
     FinalSummary,
     RichTrainingReporter,
@@ -40,7 +41,12 @@ from stochaflow.utils.config import (
     load_config,
     load_config_dict,
 )
-from stochaflow.utils.factory import TrainingComponents, build_training_components
+from stochaflow.utils.device import validate_execution_device
+from stochaflow.utils.factory import (
+    TrainingComponents,
+    build_training_components,
+    resolve_device,
+)
 from stochaflow.utils.iterables import try_length
 from stochaflow.utils.plugins import (
     ExtensionPluginProvenance,
@@ -1337,6 +1343,12 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
     if args.output_dir is not None:
         output_root = args.output_dir
     options = replace(options, resume_checkpoint=inputs.checkpoint_path)
+    execution_device = resolve_device(options.device or config.trainer.device)
+    validate_execution_device(execution_device)
+    validate_precision_support(
+        config.trainer.precision,
+        execution_device,
+    )
     strict_resume = inputs.checkpoint is not None
     expected_artifacts = (
         _checkpoint_data_artifacts(inputs.checkpoint)

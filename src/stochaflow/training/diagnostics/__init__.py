@@ -2,6 +2,10 @@
 
 # Import built-ins before the orchestrator can resolve its default provider set.
 from . import providers as providers
+from .class_conditional_quality import (
+    ClassConditionalDiffusionQualityDiagnostic,
+    DiagnosticClassAllocation,
+)
 from .config import (
     DiagnosticCadenceConfig,
     DiagnosticSamplingConfig,
@@ -37,11 +41,13 @@ from .registry import DIAGNOSTIC_PROVIDERS, DiagnosticProviderCatalog
 __all__ = [
     "DIAGNOSTIC_PROVIDERS",
     "ArtifactRecord",
+    "ClassConditionalDiffusionQualityDiagnostic",
     "ContextAwareDiagnostic",
     "DenoiserArtifactContext",
     "DenoiserArtifactProvider",
     "DiagnosticBuildContext",
     "DiagnosticCadenceConfig",
+    "DiagnosticClassAllocation",
     "DiagnosticProviderCatalog",
     "DiagnosticSamplingConfig",
     "DiffusionQualityConfig",

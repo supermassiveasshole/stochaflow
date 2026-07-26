@@ -28,6 +28,7 @@ from stochaflow.sampling.runtime import (
     validate_sampling_output,
 )
 from stochaflow.scripts.cli import build_argument_parser
+from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     capture_rng_state,
@@ -384,6 +385,13 @@ def _checkpoint(
         "config": raw,
         "metadata": {"extension_plugins": []},
     }
+    if version == CHECKPOINT_FORMAT_VERSION:
+        payload.update(
+            {
+                "precision_kind": "fp32",
+                "inference_asset_descriptors": {},
+            }
+        )
     process_config = raw.get("process")
     if process_config is not None:
         assert isinstance(process_config, dict)
@@ -920,14 +928,17 @@ def test_sampling_inputs_drop_training_only_checkpoint_state(tmp_path: Path) -> 
     raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
     payload = torch.load(checkpoint, weights_only=True)
+    ema_model = TinyDenoiser()
+    ema_model.load_state_dict(payload["model_state_dict"])
+    ema = ExponentialMovingAverage(ema_model)
     payload.update(
         {
-            "ema_model_state_dict": TinyDenoiser().state_dict(),
+            "ema_model_state_dict": ema_model.state_dict(),
             "objective_state_dict": {"scale": torch.ones(1)},
             "training_assets_state_dict": {"teacher": {"weight": torch.ones(1)}},
             "optimizer_state_dict": {"state": {0: {"moment": torch.ones(1)}}},
             "lr_scheduler_state_dict": {"last_epoch": 2},
-            "ema_state_dict": {"shadow": [torch.ones(1)]},
+            "ema_state_dict": ema.state_dict(),
             "rng_state": capture_rng_state(),
             "epoch": 2,
             "global_step": 4,
@@ -958,7 +969,12 @@ def test_checkpoint_sampling_view_retains_and_uses_ema_weights(tmp_path: Path) -
     ema_model = TinyDenoiser()
     with torch.no_grad():
         ema_model.scale.fill_(5.0)
+    raw_model = TinyDenoiser()
+    raw_model.load_state_dict(payload["model_state_dict"])
+    ema = ExponentialMovingAverage(raw_model)
+    ema.shadow_params["scale"].fill_(5.0)
     payload["ema_model_state_dict"] = ema_model.state_dict()
+    payload["ema_state_dict"] = ema.state_dict()
     torch.save(payload, checkpoint)
 
     result = run_sampling(
@@ -983,11 +999,22 @@ def test_sampling_only_config_requires_explicit_checkpoint(tmp_path: Path) -> No
         run_sampling(config_path=config_path)
 
 
+def test_sampling_runtime_migrates_legacy_v8_header(tmp_path: Path) -> None:
+    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=8)
+
+    inputs = resolve_sampling_inputs(config_path=None, checkpoint=checkpoint)
+
+    assert inputs.checkpoint.get("format_version") == 9
+    assert inputs.config.trainer.precision == "fp32"
+    assert inputs.config.trainer.accumulate_grad_batches == 1
+
+
 def test_checkpoint_v7_is_rejected(tmp_path: Path) -> None:
     raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=7)
 
-    with pytest.raises(ValueError, match="expected version 8"):
+    with pytest.raises(ValueError, match=r"supported versions are 8 and 9"):
         run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
 
 
@@ -1074,4 +1101,4 @@ def test_sampling_builder_context_copies_params() -> None:
     )
     context.params["nested"]["value"] = 2
     assert raw == {"nested": {"value": 1}}
-    assert CHECKPOINT_FORMAT_VERSION == 8
+    assert CHECKPOINT_FORMAT_VERSION == 9

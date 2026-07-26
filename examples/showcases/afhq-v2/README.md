@@ -1,95 +1,107 @@
-# AFHQ-v2 DataSource showcase
+# AFHQ-v2 class-conditional generation showcase
 
-这个安装型 extension 展示一条完整的数据生命周期：
+这个可安装 example 展示一条完整、可恢复的 AFHQ-v2 生成数据流：
 
 ```text
 官方 AFHQ-v2 archive
-  -> 下载与 source-lock 校验
-  -> 安全、确定性 materialization
-  -> ManagedDataArtifact
-  -> 内置 image DataBuilder
-  -> Dataset/DataLoader
-  -> DDPM training
+  -> source lock、完整性与安全审计
+  -> 确定性 128×128 managed artifact
+  -> 带 class_label 的 train/validation/test loaders
+  -> ADM-UNet 或 DiT-S/8 类条件 Gaussian 训练
+  -> validation、best checkpoint 与 official test
+  -> EMA + classifier-free guidance DDIM sampling
+  -> tensor、PNG、trajectory 与可追溯 manifest
 ```
 
-训练不依赖独立的 preparation script，也没有 Trainer pre/post hook。source 插件只负责
-产生 artifact；Dataset、在线随机翻转、normalize、sampler 和 DataLoader 仍由
-DataBuilder 负责。
+AFHQ-specific 下载、准备和 class-aware DataBuilder 留在这个 extension 中。ADM-UNet、
+DiT、Gaussian Process、训练 Strategy、CFG SamplingBuilder、DDIM、Trainer、EMA、
+checkpoint 和 artifact writers 都使用 Stochaflow 的内置注册路径；runner 中没有
+AFHQ 名称分支。
 
-## 数据与许可
+## 数据与许可证
 
 权威入口是 [ClovaAI StarGAN v2](https://github.com/clovaai/stargan-v2#animal-faces-hq-dataset-afhq)
-维护的完整 `afhq-v2-dataset`。AFHQ-v2 包含 15,803 张 512×512 RGB PNG，类别为
-cat、dog 和 wild，官方 train/test 数量为 14,336/1,467。
+维护的完整 AFHQ-v2 archive。数据采用
+[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)；请先确认用途符合
+非商业许可证要求。
 
-数据采用 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)；
-请勿在未经许可的商业场景中使用。
+packaged source lock 固定：
 
-packaged source lock 固定官方 Dropbox URL、6,955,288,636 bytes，以及 Stochaflow
-对完整官方 archive 本地审计得到的 SHA-256：
+- 15,803 张 512×512 RGB PNG；
+- `cat: 0`、`dog: 1`、`wild: 2`；
+- official train/test 为 14,336/1,467；
+- archive 大小为 6,955,288,636 bytes；
+- 项目对完整官方 archive 审计得到的 SHA-256 为
+  `6f2540f22c6d8ebb8879a2bc0227666dd4fc765cc355cb073b63a835d679e4e3`。
 
-```text
-6f2540f22c6d8ebb8879a2bc0227666dd4fc765cc355cb073b63a835d679e4e3
-```
+上游没有发布 checksum；这里的摘要是本项目对固定官方下载内容的审计值。source 不会在
+官方入口失败时静默切换到第三方镜像。
 
-上游没有发布 checksum；该值是本项目对固定官方下载内容的审计值，而不是上游声明。
-source 不会在官方入口失败时静默切换第三方镜像。
+准备流程从 official train 的每类确定性保留 300 张作为 validation。最终
+train/validation/test 数量为 13,436/900/1,467，其中 train 的
+cat/dog/wild 数量为 4,765/4,378/4,293。
 
-## 安装与首次训练
+## 安装
 
-在仓库根目录运行：
+在仓库根目录执行：
 
 ```powershell
 uv pip install -e examples/showcases/afhq-v2
-
-uv run stochaflow train `
-  --config examples/showcases/afhq-v2/experiments/ddpm_128.yaml
 ```
 
-示例配置使用 `materialization.policy: ensure`。DataBuilder 会在创建训练 run 之前：
+这会安装三个 example 命令，并注册 extension entry point
+`stochaflow-afhq-v2`。它提供：
 
-1. 验证 exact prepared cache hit；
-2. cache miss 时下载并校验官方 archive；
-3. 审计 ZIP 与完整数据 contract；
-4. 确定性产生 128×128 artifact；
-5. 再由 artifact 构造 Dataset/DataLoader 并开始训练。
+- ImageDataSource `afhq-v2.official`；
+- DataBuilder `afhq-v2.class-images`；
+- `stochaflow-afhq-v2-prepare`；
+- `stochaflow-afhq-v2-capacity`；
+- `stochaflow-afhq-v2-evaluate`。
 
-下载遵循标准 `HTTPS_PROXY`/`HTTP_PROXY` 环境变量，例如：
+正式 KID/FID 评估还需要仓库已有的 optional quality extra：
 
 ```powershell
-$env:HTTPS_PROXY = "http://127.0.0.1:6268"
-uv run stochaflow train `
-  --config examples/showcases/afhq-v2/experiments/ddpm_128.yaml
+uv sync --extra quality
 ```
 
-不要把带凭据的 proxy URL 写入 YAML；环境变量不会进入 manifest 或 checkpoint。
+## 1. 准备并验证数据
 
-如果已经取得官方 ZIP，可在 `source.params` 临时增加：
+第一次运行使用 `ensure`。它可以下载官方 archive，也可以使用已经下载的本地文件：
 
-```yaml
-archive: D:/downloads/afhq_v2.zip
+```powershell
+uv run stochaflow-afhq-v2-prepare `
+  --cache-root .\data `
+  --resolution 128 `
+  --validation-per-class 300
 ```
 
-archive 仍必须通过 lock 中的 byte count、SHA-256、ZIP 和数据 contract 校验。
-
-## 离线严格训练
-
-首次 materialization 成功后，把配置改为：
-
-```yaml
-materialization:
-  cache_root: ./data
-  policy: require
-  verification: full
+```powershell
+uv run stochaflow-afhq-v2-prepare `
+  --cache-root .\data `
+  --archive D:\downloads\afhq_v2.zip `
+  --resolution 128 `
+  --validation-per-class 300
 ```
 
-`require` 不访问网络、不重建，也不要求 raw ZIP 继续保留；它根据 packaged source
-lock 和 recipe 推导 exact preparation key，并完整验证 prepared artifact。缺失或
-损坏会在创建 run、模型或 optimizer 前失败。
+本地 archive 仍必须匹配 source lock 的字节数、SHA-256、ZIP inventory 和完整数据
+contract。下载遵循标准 `HTTPS_PROXY`/`HTTP_PROXY` 环境变量；不要把含凭据的代理地址
+写入 YAML。
 
-## Artifact
+准备成功后，用只读模式进行一次完整验证：
 
-默认输出：
+```powershell
+uv run stochaflow-afhq-v2-prepare `
+  --cache-root .\data `
+  --resolution 128 `
+  --validation-per-class 300 `
+  --policy require `
+  --verification full
+```
+
+`require` 不访问网络、不重建也不修复。缺失或被修改的文件会直接失败。production 和
+smoke 配置都固定为 `require/full`，因此长训练不会在启动时悄悄下载或改变数据。
+
+默认缓存结构为：
 
 ```text
 data/
@@ -102,20 +114,200 @@ data/
     └── dataset_manifest.yaml
 ```
 
-固定 validation 算法从官方 train 的每类保留 300 张，因此 prepared
-train/validation/test 为 13,436/900/1,467，总数仍为 15,803。处理采用一次
-Lanczos resize、不 crop、固定 PNG 参数。source、Pillow recipe、inventory、
-manifest 和最终 artifact 都有独立 digest。
+准备阶段执行一次 Lanczos resize，不 crop，并使用固定 PNG 编码。训练阶段要求
+authenticated size 精确为 128×128，不再在线 resize。DataBuilder 输出
+`(images, {"class_label": labels})`；shuffle 和 horizontal flip 都由
+`(seed, epoch, sample identity)` 确定，因此 `num_workers: 2` 与 persistent workers
+下的 epoch-boundary resume 仍可重建同一顺序和增强。
 
-实际 artifact bindings 会写入 `run_manifest.yaml` 和 checkpoint metadata。
-strict resume 在构建数据前注入 checkpoint 的 expected identity；若缺失历史 identity，
-或 source、recipe、prepared content identity 不同，会在创建新 run 以及恢复模型、
-optimizer、scheduler 或 EMA 前拒绝恢复。
+## 2. 真实训练容量报告
 
-## 示例边界
+准备好 AFHQ-v2 artifact 后，在目标 CUDA 主机运行真实训练 profiler：
 
-`experiments/ddpm_128.yaml` 使用当前内置 UNet 和无条件 Gaussian denoising
-TrainingBuilder，目标是展示可复现数据准备与一个有视觉冲击力的 128×128 训练入口。
-类别目录及 class mapping 保存在 artifact manifest 中，但当前 recipe 不把类别作为
-模型条件。class-conditional backbone、AMP 与 gradient accumulation 属于后续独立的
-训练能力，不隐藏在 DataSource 中。
+```powershell
+uv run stochaflow-afhq-v2-capacity `
+  --config examples/showcases/afhq-v2/experiments/production/train-adm-128.yaml `
+  --micro-batches 4 6 8 `
+  --precisions fp32 bf16-mixed `
+  --warmup-updates 5 `
+  --measured-updates 25 `
+  --output outputs/benchmarks/afhq-v2/adm-128-capacity.json
+```
+
+每个 trial 都通过已注册 DataBuilder、TrainingBuilder、Trainer 和 precision runtime 执行，
+不会使用独立训练循环。micro batch 4/6/8 分别使用 accumulation 8/5/4，对应 effective
+batch 32/30/32。默认每个 trial warmup 5 次，并测量至少 25 次成功 optimizer updates；
+报告 images/s、updates/s、allocated/reserved peak VRAM、data-wait/compute、细分
+forward/backward/optimizer 时间、非有限 loss/gradient，以及同一 batch 下 BF16 相对
+FP32 的吞吐和显存差值。报告还记录 Python、PyTorch、CUDA、cuDNN、GPU 型号和
+capability，便于比较结果。CUDA phase 使用异步 Events，整段测量仅在开始和结束同步，
+因此 phase 观测不会在每次 forward/backward/optimizer 边界串行化训练。
+
+报告固定同一 DataBuilder 返回的 artifact bindings，并为每个 trial 保存完整 resolved
+config、canonical SHA-256、seed 和 output directory；core/extension 版本及 Python source
+tree digest 也会进入 code identity。device 和 precision support 在 meta model、DataBuilder
+及 trial output 创建之前完成 preflight；全部 precision 不受支持时不会读取数据或构建
+模型。
+
+命令默认要求 CUDA，避免 `device: auto` 在无 CUDA 时静默运行巨型 CPU trial。仅做有界
+测试或调试时显式传入 `--device cpu`；CPU 报告的 VRAM 字段为 `null`，不应用于
+production batch 选择。
+
+## 3. 真实数据 smoke
+
+smoke 配置使用已经准备好的真实 AFHQ-v2 artifact，而不是 synthetic data。它缩小
+ADM-UNet、batch、diffusion steps 和采样步数，同时仍经过 class-aware loader、训练、
+validation、official test、checkpoint、diagnostic 和最终 CFG sample：
+
+```powershell
+uv run stochaflow train `
+  --config examples/showcases/afhq-v2/experiments/smoke/train-adm-128.yaml `
+  --limit-batches 4 `
+  --limit-validation-batches 2 `
+  --limit-test-batches 2
+```
+
+smoke 使用 CPU/FP32、micro batch 2、累积 2 次和 4 个训练 micro-batches，产生 2 次
+optimizer update。它证明 wiring 与 artifact contract 可运行，不代表模型质量或
+production 性能。
+
+## 4. Production 训练
+
+主展示模型是 ADM-UNet：
+
+```powershell
+uv run stochaflow train `
+  --config examples/showcases/afhq-v2/experiments/production/train-adm-128.yaml
+```
+
+DiT-S/8 使用相同 data、Process、Objective、effective batch、scheduler、diagnostic 和
+sampling protocol：
+
+```powershell
+uv run stochaflow train `
+  --config examples/showcases/afhq-v2/experiments/production/train-dit-128.yaml
+```
+
+两个 production 配置均固定：
+
+- 200 epochs、micro batch 8、gradient accumulation 4，即 effective batch 32；
+- `bf16-mixed`、AdamW、EMA 和 step-level warmup cosine；
+- class-condition dropout 0.1 和 `v` prediction；
+- 每 5 epochs 保存周期 checkpoint；
+- 每个 epoch 运行 validation，恢复 best checkpoint 后运行一次 official test；
+- 每 5 epochs 产出固定 seed 的 balanced class diagnostic 和 DDIM-50 CFG 2.0 artifact。
+
+在 `drop_last: true` 下：
+
+```text
+micro-batches/epoch = floor(13,436 / 8) = 1,679
+optimizer updates/epoch = ceil(1,679 / 4) = 420
+total updates = 200 × 420 = 84,000
+warmup updates = round(0.02 × 84,000) = 1,680
+```
+
+最后不足 4 个 micro-batches 的 accumulation window 会按实际长度 flush。scheduler、
+EMA、global step 和 diagnostics 只在 optimizer update 成功后推进。production 默认
+使用 `device: auto`；当它选中 CUDA 时要求 CUDA BF16 capability，框架不会静默降级。
+CPU BF16 autocast 可用但不代表适合 production 吞吐。如果目标 CUDA 不支持 BF16，
+应明确评估并修改为 `fp16-mixed`，而不是把一次运行中的 precision 改写为另一种语义。
+
+TensorBoard：
+
+```powershell
+uv run tensorboard --logdir outputs
+```
+
+## 5. Strict resume
+
+训练输出根目录下会创建时间戳 run。使用 run directory 或 `latest.pt` 继续未完成的
+200-epoch 作业：
+
+```powershell
+uv run stochaflow train `
+  --resume outputs/afhq-v2/adm-128/<run-id> `
+  --epochs 200
+```
+
+checkpoint v9 严格恢复 model、Process、Objective、optimizer、scheduler、EMA、
+precision/scaler topology、global step、epoch-boundary RNG、训练循环状态和 data
+artifact identity。恢复前会用 `require/full` 重新验证同一个 prepared artifact；source、
+recipe、manifest 或内容 identity 不一致时，在恢复训练资产前失败。
+
+resume 创建新的 sibling run，不续写旧日志。它不能通过 config 替换 model、optimizer、
+precision 或 accumulation。`--observability-config` 只用于允许的 diagnostics/logging
+覆盖。
+
+## 6. CFG 采样与结果
+
+从训练 run 的 best checkpoint 生成每类 12 张、共 36 张 DDIM-50 sample：
+
+```powershell
+uv run stochaflow sample `
+  --checkpoint outputs/afhq-v2/adm-128/<run-id> `
+  --config examples/showcases/afhq-v2/experiments/sampling/ddim50-cfg2.yaml `
+  --output-dir outputs/afhq-v2/samples/adm-ddim50-cfg2
+```
+
+sampling overlay 固定 seed `20260726`、CFG 2.0、EMA `auto` selection 和每 5 个求解步
+保留一次 trajectory。class 顺序为 cat、dog、wild。非平凡 CFG scale 将 conditional
+和 null labels 拼成双 batch，只进行一次模型 forward；DDIM 本身不解释 class 或
+guidance。
+
+一次 production run 的主要结果如下：
+
+```text
+outputs/afhq-v2/adm-128/<run-id>/
+├── resolved_config.yaml
+├── run_manifest.yaml
+├── train.log
+├── metrics.jsonl
+├── tensorboard/
+├── checkpoints/
+│   ├── best.pt
+│   ├── latest.pt
+│   └── epoch_*.pt
+├── diagnostics/class_conditional_diffusion_quality/epoch_*/
+│   ├── manifest.yaml
+│   ├── denoiser/
+│   └── ddim_50/
+└── samples/final/
+```
+
+显式 sampling 目录包含 `samples.pt`、`samples.png`、`trajectory.pt`、
+`trajectory.png`、`trajectory.gif` 和 `resolved_sampling.yaml`。训练 manifest 记录
+data artifact binding；checkpoint 记录同一 identity；sampling manifest 记录 checkpoint
+lineage、seed、conditions、guidance、weights 和 artifact 路径，因此结果可以追溯到同一
+训练输入。
+
+## 7. 正式 KID/FID 评估
+
+训练期 validation 和 diagnostic 不冒充正式生成质量结果。对冻结的 best checkpoint
+执行 class-aware post-training evaluation：
+
+```powershell
+uv run stochaflow-afhq-v2-evaluate `
+  --checkpoint outputs/afhq-v2/adm-128/<run-id>/checkpoints/best.pt `
+  --config examples/showcases/afhq-v2/experiments/evaluation/ddim50-cfg2-kid-fid.yaml `
+  --output-dir outputs/afhq-v2/evaluations/adm-ddim50-cfg2
+```
+
+协议从 authenticated official test split 按 manifest 顺序选择 cat/dog/wild 各 300 张
+real images，并以相同 class allocation、EMA、seed `20260726`、DDIM-50 和 CFG 2.0
+生成各 300 张 fake images。它报告 aggregate 与 per-class KID/FID；aggregate 是主要
+分布指标，per-class 数值只作为细分诊断，不能忽略有限样本偏差。
+
+命令先验证 checkpoint、execution device、quality provider 和严格
+`DataArtifactBindings`，再调用现有 DataBuilder 与 SamplingBuilder。输出包含
+`evaluation-result.json`、其 SHA-256 sidecar、immutable result manifest、规范化
+sampling overlay，以及完整 sampling artifacts。结果冻结 checkpoint SHA-256、
+epoch/global step、raw/EMA、data identity、extension provenance、metric protocol、
+依赖版本和所有 artifact hashes。
+
+评估开始时会把 checkpoint 的同一份已认证字节复制到 final output 的同文件系统私有
+staging；checkpoint resolve、progress、内存权重和采样都只使用这份 snapshot。采样、
+指标、result、digest 与 manifest 全部完成后，staging 才以 atomic no-replace rename
+发布。失败或并发目标冲突不会留下半成品正式目录，也不会覆盖已有结果。
+
+所有 data、checkpoint、benchmark 和普通 run artifacts 都位于被忽略的 `data/` 或
+`outputs/`，不得提交到 Git。

@@ -1,0 +1,209 @@
+experiment:
+  name: afhq_v2_dit_s8_128
+  seed: 20260726
+  output_dir: outputs/afhq-v2/dit-s8-128
+
+extensions:
+  plugins: [stochaflow-afhq-v2]
+
+data:
+  name: afhq-v2.class-images
+  params:
+    source:
+      name: afhq-v2.official
+      params:
+        resolution: 128
+        validation_per_class: 300
+        validation_seed: stochaflow-afhq-v2-validation-v1
+      materialization:
+        cache_root: ./data
+        policy: require
+        verification: full
+    image:
+      size: [128, 128]
+      channels: 3
+      require_exact_size: true
+      normalize: true
+      random_horizontal_flip: true
+    loader:
+      batch_size: 8
+      num_workers: 2
+      shuffle: true
+      drop_last: true
+      pin_memory: true
+      persistent_workers: true
+      prefetch_factor: 4
+      steps_per_epoch: auto
+
+model:
+  name: dit
+  params:
+    input_size: 128
+    patch_size: 8
+    in_channels: 3
+    out_channels: 3
+    hidden_size: 384
+    depth: 12
+    num_heads: 6
+    mlp_ratio: 4.0
+    num_classes: 3
+
+process:
+  name: discrete_gaussian
+  params:
+    schedule:
+      name: cosine_alpha_bar
+      params:
+        num_timesteps: 1000
+        s: 0.008
+        max_beta: 0.999
+
+training:
+  name: class_conditional_gaussian_denoising
+  params:
+    prediction_type: v
+    condition_dropout: 0.1
+
+objective:
+  name: mse
+  params:
+    reduction: mean
+
+optimizer:
+  name: torch.optim.AdamW
+  params:
+    lr: 1.0e-4
+    weight_decay: 0.0
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+lr_scheduler:
+  name: warmup_cosine
+  interval: step
+  params:
+    warmup_steps: 1680
+    total_steps: 84000
+    min_lr_ratio: 0.05
+
+ema:
+  enabled: true
+  decay: 0.9999
+  update_after_step: 500
+  update_every: 1
+  use_for_sampling: true
+
+sampling:
+  shape: [3, 128, 128]
+  num_samples: 36
+  batch_size: 12
+  seed: 20260726
+  builder:
+    name: class_conditional_denoising
+    params:
+      weights: auto
+      prediction_type: v
+      clip_denoised: true
+      guidance_scale: 2.0
+      conditions:
+        - {class_label: 0, count: 12}
+        - {class_label: 1, count: 12}
+        - {class_label: 2, count: 12}
+      sampler:
+        name: ddim
+        params:
+          num_inference_steps: 50
+          eta: 0.0
+      trajectory:
+        enabled: true
+        every_steps: 5
+  writers:
+    - name: tensor
+      params: {}
+    - name: image
+      params:
+        grid_nrow: 12
+        gif_fps: 8
+        denormalize: true
+
+diagnostics:
+  - name: class_conditional_diffusion_quality
+    params:
+      conditions:
+        - {class_label: 0, count: 4}
+        - {class_label: 1, count: 4}
+        - {class_label: 2, count: 4}
+      guidance_scale: 2.0
+      modules: []
+      cadence:
+        step_every: 200
+        artifact_every_epochs: 5
+      sampling:
+        sample_num: 12
+        batch_size: 6
+        seed: 20260726
+      use_ema: true
+      failure_policy: warn
+      samplers:
+        - id: ddim_50
+          name: ddim
+          params:
+            num_inference_steps: 50
+            eta: 0.0
+          trajectory:
+            enabled: true
+            every_steps: 5
+            gif_fps: 8
+      providers:
+        step_metrics:
+          - name: timestep_bucket_loss
+            params: {buckets: 10}
+          - name: noise_alignment
+            params: {}
+          - name: x0_reconstruction
+            params:
+              timesteps: [50, 250, 500, 750, 900]
+        sampler_metrics:
+          - name: sample_statistics
+            params: {}
+          - name: sampling_performance
+            params: {}
+        denoiser_artifacts:
+          - name: reconstruction_panel
+            params:
+              timesteps: [100, 500, 900]
+              max_samples: 4
+        sampler_artifacts:
+          - name: sample_grid
+            params: {nrow: 12}
+          - name: trajectory
+            params: {nrow: 12}
+      reference:
+        enabled: false
+
+trainer:
+  num_epochs: 200
+  device: auto
+  precision: bf16-mixed
+  accumulate_grad_batches: 4
+  max_grad_norm: 1.0
+  show_progress: true
+  early_stopping:
+    enabled: false
+    monitor: valid_loss
+    mode: min
+    patience: 20
+    min_delta: 0.0
+
+logging:
+  log_every: 100
+  backends:
+    - name: local
+      params:
+        console: false
+        append: false
+    - name: tensorboard
+      params: {}
+  torch_logs: {}
+
+artifacts:
+  checkpoint_every: 5

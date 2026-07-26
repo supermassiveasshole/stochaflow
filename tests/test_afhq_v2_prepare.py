@@ -18,6 +18,7 @@ from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import pytest
+import torch
 import yaml
 from PIL import Image
 from torch.utils.data import Dataset
@@ -29,7 +30,15 @@ from stochaflow.data import (
     ManagedDataArtifactIdentity,
     build_data_loaders,
 )
-from stochaflow.utils.config import ComponentConfig
+from stochaflow.sampling.runtime import run_sampling
+from stochaflow.utils.checkpoint import (
+    CheckpointManager,
+    parse_rng_state,
+    restore_rng_state,
+)
+from stochaflow.utils.config import ComponentConfig, load_config_dict
+from stochaflow.utils.factory import build_training_components
+from stochaflow.utils.seed import set_seed
 
 _REPOSITORY = Path(__file__).resolve().parents[1]
 _EXAMPLE_ROOT = _REPOSITORY / "examples" / "showcases" / "afhq-v2"
@@ -85,7 +94,14 @@ def _png_bytes(
         if mode == "RGB"
         else value
     )
-    Image.new(mode, (size, size), color=color).save(output, format="PNG")
+    image = Image.new(mode, (size, size), color=color)
+    marker: int | tuple[int, int, int] = (
+        ((value + 97) % 256, (value + 53) % 256, (value + 11) % 256)
+        if mode == "RGB"
+        else (value + 97) % 256
+    )
+    image.putpixel((0, 0), marker)
+    image.save(output, format="PNG")
     return output.getvalue()
 
 
@@ -198,6 +214,129 @@ def _load_extension_data_module() -> ModuleType:
     importlib.invalidate_caches()
     return importlib.import_module(
         "stochaflow_afhq_v2.stochaflow_ext.data"
+    )
+
+
+def test_prepare_tool_constructs_source_through_registered_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _load_extension_data_module()
+    tool = importlib.import_module("stochaflow_afhq_v2.tools.prepare")
+    observed: dict[str, Any] = {}
+
+    class PreparedPayload:
+        def __init__(self) -> None:
+            self.class_mapping = {"cat": 0, "dog": 1, "wild": 2}
+            self.train = (object(),)
+            self.validation = (object(),)
+            self.test = (object(),)
+
+    class PreparedIdentity:
+        def to_dict(self) -> dict[str, Any]:
+            return {"source_name": "afhq-v2.official"}
+
+    class PreparedArtifact:
+        artifact_root = tmp_path / "artifact"
+        manifest_path = artifact_root / "manifest.yaml"
+        identity = PreparedIdentity()
+        payload = PreparedPayload()
+
+    class RecordingSource:
+        def materialize(self, context: DataSourceContext) -> PreparedArtifact:
+            observed["context"] = context
+            return PreparedArtifact()
+
+    class RecordingCatalog:
+        def create(
+            self,
+            name: str,
+            params: dict[str, Any],
+            *,
+            config_path: str,
+        ) -> RecordingSource:
+            observed["name"] = name
+            observed["params"] = params
+            observed["config_path"] = config_path
+            return RecordingSource()
+
+    monkeypatch.setattr(tool, "IMAGE_DATA_SOURCES", RecordingCatalog())
+    monkeypatch.setattr(
+        tool,
+        "AFHQV2ImageFolderArtifactPayload",
+        PreparedPayload,
+    )
+
+    summary = tool.prepare_artifact(
+        cache_root=tmp_path / "cache",
+        archive=tmp_path / "afhq_v2.zip",
+        lock_file=tmp_path / "lock.yaml",
+        resolution=128,
+        validation_per_class=300,
+        validation_seed="seed",
+        policy="require",
+        verification="full",
+    )
+
+    assert observed["name"] == "afhq-v2.official"
+    assert observed["config_path"] == "afhq-v2.prepare.source"
+    assert observed["params"] == {
+        "archive": str(tmp_path / "afhq_v2.zip"),
+        "lock_file": str(tmp_path / "lock.yaml"),
+        "resolution": 128,
+        "validation_per_class": 300,
+        "validation_seed": "seed",
+    }
+    context = observed["context"]
+    assert isinstance(context, DataSourceContext)
+    assert context.policy == "require"
+    assert context.verification == "full"
+    assert summary["counts"] == {
+        "train": 1,
+        "validation": 1,
+        "test": 1,
+    }
+
+
+def _class_data_config(
+    *,
+    source_params: dict[str, Any],
+    cache_root: Path,
+    image_size: int = 4,
+    num_workers: int = 0,
+    shuffle: bool = True,
+    random_horizontal_flip: bool = True,
+) -> ComponentConfig:
+    return ComponentConfig(
+        name="afhq-v2.class-images",
+        params={
+            "source": {
+                "name": "afhq-v2.official",
+                "params": source_params,
+                "materialization": {
+                    "cache_root": str(cache_root),
+                    "policy": "require",
+                    "verification": "full",
+                },
+            },
+            "image": {
+                "size": [image_size, image_size],
+                "channels": 3,
+                "require_exact_size": True,
+                "normalize": True,
+                "random_horizontal_flip": random_horizontal_flip,
+            },
+            "loader": {
+                "batch_size": 2,
+                "num_workers": num_workers,
+                "shuffle": shuffle,
+                "drop_last": False,
+                "pin_memory": False,
+                "persistent_workers": num_workers > 0,
+                "prefetch_factor": 2 if num_workers > 0 else None,
+                "steps_per_epoch": "auto",
+            },
+        },
     )
 
 
@@ -456,6 +595,46 @@ def test_afhq_extension_materializes_and_feeds_image_builder(
         == artifact.identity
     )
 
+    class_loaders = build_data_loaders(
+        ComponentConfig(
+            name="afhq-v2.class-images",
+            params={
+                "source": {
+                    "name": "afhq-v2.official",
+                    "params": source_params,
+                    "materialization": {
+                        "cache_root": str(cache_root),
+                        "policy": "require",
+                        "verification": "full",
+                    },
+                },
+                "image": {
+                    "size": [4, 4],
+                    "channels": 3,
+                    "require_exact_size": True,
+                    "normalize": True,
+                    "random_horizontal_flip": False,
+                },
+                "loader": {
+                    "batch_size": 2,
+                    "num_workers": 0,
+                    "shuffle": False,
+                    "drop_last": False,
+                    "pin_memory": False,
+                    "persistent_workers": False,
+                    "prefetch_factor": None,
+                    "steps_per_epoch": "auto",
+                },
+            },
+        ),
+        seed=7,
+    )
+    class_images, class_conditions = next(iter(class_loaders.train))
+    assert class_images.shape == (2, 3, 4, 4)
+    assert class_conditions["class_label"].dtype == torch.long
+    assert class_conditions["class_label"].tolist() == [0, 0]
+    assert class_loaders.artifact_bindings == loaders.artifact_bindings
+
     changed_record = artifact.payload.train[0]
     image_path = (
         artifact.payload.roots[changed_record.tree]
@@ -474,6 +653,11 @@ def test_afhq_extension_materializes_and_feeds_image_builder(
         next(iter(loaders.train))
     with pytest.raises(
         extension.PreparationError,
+        match="prepared image content changed",
+    ):
+        next(iter(class_loaders.train))
+    with pytest.raises(
+        extension.PreparationError,
         match="prepared file digest mismatch",
     ):
         source.materialize(
@@ -483,6 +667,476 @@ def test_afhq_extension_materializes_and_feeds_image_builder(
                 verification="full",
             )
         )
+
+
+def test_afhq_class_builder_enforces_mapping_size_and_strict_identity(
+    tmp_path: Path,
+) -> None:
+    extension = _load_extension_data_module()
+    archive_path = tmp_path / "afhq_v2.zip"
+    _write_tiny_archive(archive_path, image_size=512)
+    lock_path = _write_tiny_source_lock(
+        archive_path,
+        tmp_path / "afhq-v2.lock.yaml",
+    )
+    cache_root = tmp_path / "cache"
+    source_params = {
+        "archive": str(archive_path),
+        "lock_file": str(lock_path),
+        "resolution": 4,
+        "validation_per_class": 1,
+        "validation_seed": "fixture-seed",
+    }
+    source = extension.AFHQV2ImageDataSource(
+        source_params,
+        config_path="data.params.source",
+    )
+    artifact = source.materialize(
+        DataSourceContext(
+            cache_root=cache_root,
+            policy="ensure",
+            verification="full",
+        )
+    )
+    assert dict(artifact.payload.class_mapping) == {
+        "cat": 0,
+        "dog": 1,
+        "wild": 2,
+    }
+    immutable_mapping: Any = artifact.payload.class_mapping
+    with pytest.raises(TypeError):
+        immutable_mapping["cat"] = 2
+    with pytest.raises(ValueError, match="class_mapping must be"):
+        extension.AFHQV2ImageFolderArtifactPayload(
+            roots=artifact.payload.roots,
+            train=artifact.payload.train,
+            validation=artifact.payload.validation,
+            test=artifact.payload.test,
+            class_mapping={"cat": 1, "dog": 0, "wild": 2},
+        )
+
+    config = _class_data_config(
+        source_params=source_params,
+        cache_root=cache_root,
+        random_horizontal_flip=False,
+    )
+    loaders = build_data_loaders(config, seed=11)
+    assert loaders.artifact_bindings is not None
+    resumed = build_data_loaders(
+        config,
+        seed=11,
+        strict_resume=True,
+        expected_artifacts=loaders.artifact_bindings,
+    )
+    assert resumed.artifact_bindings == loaders.artifact_bindings
+    with pytest.raises(
+        ValueError,
+        match="missing data artifact identities",
+    ):
+        build_data_loaders(
+            config,
+            seed=11,
+            strict_resume=True,
+            expected_artifacts=None,
+        )
+
+    wrong_size = _class_data_config(
+        source_params=source_params,
+        cache_root=cache_root,
+        image_size=8,
+    )
+    with pytest.raises(ValueError, match="authenticated size 4x4"):
+        build_data_loaders(wrong_size, seed=11)
+
+
+def _collect_epoch(
+    loader: Any,
+    *,
+    epoch: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    sampler = loader.sampler
+    sampler.set_epoch(epoch)
+    batches = list(loader)
+    return (
+        torch.cat([batch[0] for batch in batches]),
+        torch.cat([batch[1]["class_label"] for batch in batches]),
+    )
+
+
+def test_afhq_class_builder_is_worker_and_resume_deterministic(
+    tmp_path: Path,
+) -> None:
+    _load_extension_data_module()
+    archive_path = tmp_path / "afhq_v2.zip"
+    _write_tiny_archive(archive_path, image_size=512)
+    lock_path = _write_tiny_source_lock(
+        archive_path,
+        tmp_path / "afhq-v2.lock.yaml",
+    )
+    cache_root = tmp_path / "cache"
+    source_params = {
+        "archive": str(archive_path),
+        "lock_file": str(lock_path),
+        "resolution": 4,
+        "validation_per_class": 1,
+        "validation_seed": "fixture-seed",
+    }
+    source = _load_extension_data_module().AFHQV2ImageDataSource(
+        source_params,
+        config_path="data.params.source",
+    )
+    source.materialize(
+        DataSourceContext(
+            cache_root=cache_root,
+            policy="ensure",
+            verification="full",
+        )
+    )
+    single_worker = build_data_loaders(
+        _class_data_config(
+            source_params=source_params,
+            cache_root=cache_root,
+            num_workers=0,
+        ),
+        seed=29,
+    )
+    persistent_workers = build_data_loaders(
+        _class_data_config(
+            source_params=source_params,
+            cache_root=cache_root,
+            num_workers=2,
+        ),
+        seed=29,
+    )
+    resumed_workers = build_data_loaders(
+        _class_data_config(
+            source_params=source_params,
+            cache_root=cache_root,
+            num_workers=2,
+        ),
+        seed=29,
+        strict_resume=True,
+        expected_artifacts=single_worker.artifact_bindings,
+    )
+
+    single_images, single_labels = _collect_epoch(
+        single_worker.train,
+        epoch=3,
+    )
+    worker_images, worker_labels = _collect_epoch(
+        persistent_workers.train,
+        epoch=3,
+    )
+    resumed_images, resumed_labels = _collect_epoch(
+        resumed_workers.train,
+        epoch=3,
+    )
+    assert torch.equal(worker_labels, single_labels)
+    assert torch.equal(resumed_labels, single_labels)
+    assert torch.equal(worker_images, single_images)
+    assert torch.equal(resumed_images, single_images)
+    assert set(single_labels.tolist()) == {0, 1, 2}
+
+    next_images, next_labels = _collect_epoch(single_worker.train, epoch=4)
+    assert not (
+        torch.equal(next_labels, single_labels)
+        and torch.equal(next_images, single_images)
+    )
+
+    assert single_worker.validation is not None
+    validation_images, validation_conditions = next(iter(single_worker.validation))
+    repeated_images, repeated_conditions = next(iter(single_worker.validation))
+    assert torch.equal(validation_images, repeated_images)
+    assert torch.equal(
+        validation_conditions["class_label"],
+        repeated_conditions["class_label"],
+    )
+    assert set(validation_conditions) == {"class_label"}
+
+
+def test_afhq_real_data_pipeline_trains_resumes_validates_and_samples(
+    tmp_path: Path,
+) -> None:
+    extension = _load_extension_data_module()
+    archive_path = tmp_path / "afhq_v2.zip"
+    _write_tiny_archive(archive_path, image_size=512)
+    lock_path = _write_tiny_source_lock(
+        archive_path,
+        tmp_path / "afhq-v2.lock.yaml",
+    )
+    cache_root = tmp_path / "cache"
+    source_params = {
+        "archive": str(archive_path),
+        "lock_file": str(lock_path),
+        "resolution": 8,
+        "validation_per_class": 1,
+        "validation_seed": "pipeline-fixture-seed",
+    }
+    source = extension.AFHQV2ImageDataSource(
+        source_params,
+        config_path="data.params.source",
+    )
+    source.materialize(
+        DataSourceContext(
+            cache_root=cache_root,
+            policy="ensure",
+            verification="full",
+        )
+    )
+    data_config = _class_data_config(
+        source_params=source_params,
+        cache_root=cache_root,
+        image_size=8,
+    )
+    raw_config = {
+        "experiment": {
+            "name": "afhq-v2-real-data-pipeline",
+            "seed": 431,
+            "output_dir": str(tmp_path / "uninterrupted"),
+        },
+        "extensions": {"plugins": []},
+        "data": {
+            "name": data_config.name,
+            "params": data_config.params,
+        },
+        "model": {
+            "name": "adm_unet",
+            "params": {
+                "in_channels": 3,
+                "out_channels": 3,
+                "base_channels": 8,
+                "channel_multipliers": [1, 2],
+                "num_res_blocks": 1,
+                "transformer_depths": [0, 0],
+                "middle_transformer_depth": 0,
+                "attention_head_dim": 8,
+                "time_embedding_dim": 32,
+                "num_classes": 3,
+                "dropout": 0.0,
+            },
+        },
+        "process": {
+            "name": "discrete_gaussian",
+            "params": {
+                "schedule": {
+                    "name": "linear_beta",
+                    "params": {
+                        "num_timesteps": 4,
+                        "beta_start": 0.0001,
+                        "beta_end": 0.02,
+                    },
+                }
+            },
+        },
+        "training": {
+            "name": "class_conditional_gaussian_denoising",
+            "params": {
+                "prediction_type": "v",
+                "condition_dropout": 0.25,
+            },
+        },
+        "objective": {
+            "name": "mse",
+            "params": {"reduction": "mean"},
+        },
+        "optimizer": {
+            "name": "torch.optim.AdamW",
+            "params": {"lr": 0.001, "weight_decay": 0.0},
+        },
+        "lr_scheduler": {
+            "name": "warmup_cosine",
+            "interval": "step",
+            "params": {
+                "warmup_steps": 1,
+                "total_steps": 4,
+                "min_lr_ratio": 0.1,
+            },
+        },
+        "ema": {
+            "enabled": True,
+            "decay": 0.9,
+            "update_after_step": 0,
+            "update_every": 1,
+            "use_for_sampling": True,
+        },
+        "sampling": {
+            "shape": [3, 8, 8],
+            "num_samples": 3,
+            "batch_size": 3,
+            "seed": 431,
+            "builder": {
+                "name": "class_conditional_denoising",
+                "params": {
+                    "weights": "auto",
+                    "prediction_type": "v",
+                    "clip_denoised": True,
+                    "guidance_scale": 2.0,
+                    "conditions": [
+                        {"class_label": 0, "count": 1},
+                        {"class_label": 1, "count": 1},
+                        {"class_label": 2, "count": 1},
+                    ],
+                    "sampler": {
+                        "name": "ddim",
+                        "params": {
+                            "num_inference_steps": 2,
+                            "eta": 0.0,
+                        },
+                    },
+                    "trajectory": {
+                        "enabled": False,
+                        "every_steps": 1,
+                    },
+                },
+            },
+            "writers": [{"name": "tensor", "params": {}}],
+        },
+        "trainer": {
+            "num_epochs": 2,
+            "device": "cpu",
+            "precision": "fp32",
+            "accumulate_grad_batches": 2,
+            "show_progress": False,
+        },
+        "logging": {
+            "log_every": 1,
+            "backends": [{"name": "local", "params": {"console": False}}],
+            "torch_logs": {},
+        },
+        "artifacts": {"checkpoint_every": 1},
+    }
+    config = load_config_dict(raw_config)
+    loaders = build_data_loaders(
+        config.data,
+        seed=config.experiment.seed,
+    )
+    assert loaders.artifact_bindings is not None
+
+    set_seed(config.experiment.seed)
+    uninterrupted = build_training_components(config)
+    resumed = None
+    try:
+        uninterrupted.trainer.train_epoch(
+            loaders.train,
+            epoch_index=1,
+            show_progress=False,
+        )
+        assert loaders.validation is not None
+        validation = uninterrupted.trainer.evaluate_epoch(
+            loaders.validation,
+            epoch_index=1,
+            show_progress=False,
+        )
+        assert validation["num_batches"] > 0
+        assert loaders.test is not None
+        test_metrics = uninterrupted.trainer.evaluate_epoch(
+            loaders.test,
+            epoch_index=1,
+            show_progress=False,
+            metric_prefix="test",
+        )
+        assert test_metrics["num_batches"] > 0
+        checkpoint = uninterrupted.checkpoint_manager.save(
+            tmp_path / "epoch-1.pt",
+            epoch=1,
+            global_step=uninterrupted.trainer.global_step,
+            config=config.to_dict(),
+            metadata={
+                "data_artifacts": loaders.artifact_bindings.to_dict(),
+            },
+        )
+        uninterrupted.trainer.train_epoch(
+            loaders.train,
+            epoch_index=2,
+            show_progress=False,
+        )
+        expected = uninterrupted.checkpoint_manager.build_state()
+
+        resumed_raw = dict(raw_config)
+        resumed_raw["experiment"] = {
+            **raw_config["experiment"],
+            "output_dir": str(tmp_path / "resumed"),
+        }
+        resumed_config = load_config_dict(resumed_raw)
+        resumed_loaders = build_data_loaders(
+            resumed_config.data,
+            seed=resumed_config.experiment.seed,
+            strict_resume=True,
+            expected_artifacts=loaders.artifact_bindings,
+        )
+        resumed = build_training_components(resumed_config)
+        payload = CheckpointManager.load_payload(
+            checkpoint,
+            map_location="cpu",
+        )
+        loaded = resumed.checkpoint_manager.restore_payload(
+            payload,
+            path=checkpoint,
+        )
+        assert loaded.global_step is not None
+        resumed.trainer.global_step = loaded.global_step
+        rng_state = payload.get("rng_state")
+        assert rng_state is not None
+        restore_rng_state(
+            parse_rng_state(rng_state),
+            restore_cuda=False,
+            restore_mps=False,
+        )
+        resumed.trainer.train_epoch(
+            resumed_loaders.train,
+            epoch_index=2,
+            show_progress=False,
+        )
+        actual = resumed.checkpoint_manager.build_state()
+        for key in (
+            "model_state_dict",
+            "optimizer_state_dict",
+            "lr_scheduler_state_dict",
+            "ema_state_dict",
+        ):
+            torch.testing.assert_close(
+                actual.get(key),
+                expected.get(key),
+                rtol=0.0,
+                atol=0.0,
+            )
+
+        assert resumed_loaders.artifact_bindings is not None
+        final_checkpoint = resumed.checkpoint_manager.save(
+            tmp_path / "epoch-2.pt",
+            epoch=2,
+            global_step=resumed.trainer.global_step,
+            config=resumed_config.to_dict(),
+            metadata={
+                "data_artifacts": resumed_loaders.artifact_bindings.to_dict(),
+            },
+        )
+        result = run_sampling(
+            checkpoint=final_checkpoint,
+            output_dir=tmp_path / "samples",
+            device_name="cpu",
+        )
+        samples = torch.load(
+            result.artifacts["samples"],
+            map_location="cpu",
+            weights_only=True,
+        )
+        assert samples.shape == (3, 3, 8, 8)
+        assert result.metadata["conditions"] == [
+            {"class_label": 0, "count": 1},
+            {"class_label": 1, "count": 1},
+            {"class_label": 2, "count": 1},
+        ]
+        assert result.metadata["conditional_branch_evaluation_count"] > 0
+        assert (
+            result.metadata["unconditional_branch_evaluation_count"]
+            == result.metadata["conditional_branch_evaluation_count"]
+        )
+        assert result.artifacts["config"].is_file()
+    finally:
+        uninterrupted.logger.close()
+        if resumed is not None:
+            resumed.logger.close()
 
 
 @pytest.mark.parametrize(

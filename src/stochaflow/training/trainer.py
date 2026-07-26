@@ -1,6 +1,8 @@
 """Generic training loop utilities."""
 
+import math
 import time
+import warnings
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from copy import copy
 from dataclasses import dataclass
@@ -29,6 +31,10 @@ from stochaflow.training.diagnostics.contracts import (
     TrainingDiagnostic,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
+from stochaflow.training.precision import (
+    PrecisionRuntime,
+    build_precision_runtime,
+)
 from stochaflow.training.strategy import (
     Batch,
     DeviceTransferableBatch,
@@ -132,13 +138,115 @@ def _set_dataloader_epoch(dataloader: Iterable[Batch], epoch: int) -> None:
             set_epoch(epoch)
 
 
-def _scalar_metrics(metrics: Mapping[str, ScalarMetric]) -> dict[str, float]:
-    result: dict[str, float] = {}
+type TrainingPhaseToken = float | torch.cuda.Event
+
+
+class TrainingPhaseProfiler:
+    """Record opt-in CPU timings or asynchronous CUDA event intervals."""
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+        self.phase_seconds = {
+            "forward_seconds": 0.0,
+            "backward_seconds": 0.0,
+            "optimizer_seconds": 0.0,
+        }
+        self.cuda_events: dict[
+            str,
+            list[tuple[torch.cuda.Event, torch.cuda.Event]],
+        ] = {}
+
+    def start_measurement(self) -> float:
+        """Start one wall-clock measurement after pending CUDA work drains."""
+
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        return time.perf_counter()
+
+    def start_phase(self) -> TrainingPhaseToken:
+        """Record one phase start without synchronizing the execution stream."""
+
+        if self.device.type == "cuda":
+            event = torch.cuda.Event(enable_timing=True)
+            event.record()
+            return event
+        return time.perf_counter()
+
+    def end_phase(
+        self,
+        name: str,
+        started_at: TrainingPhaseToken,
+    ) -> None:
+        """Record one phase end without forcing CUDA work to finish."""
+
+        if self.device.type == "cuda":
+            if isinstance(started_at, float):
+                raise TypeError("CUDA phase timing requires a CUDA event")
+            started_event = cast(torch.cuda.Event, started_at)
+            ended_at = torch.cuda.Event(enable_timing=True)
+            ended_at.record()
+            self.cuda_events.setdefault(name, []).append(
+                (started_event, ended_at)
+            )
+            return
+        if not isinstance(started_at, float):
+            raise TypeError("CPU phase timing requires a perf-counter value")
+        self.phase_seconds[name] += time.perf_counter() - started_at
+
+    def finish_measurement(
+        self,
+        started_at: float,
+    ) -> tuple[float, dict[str, float]]:
+        """Synchronize once and materialize wall-clock and phase durations."""
+
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            for name, intervals in self.cuda_events.items():
+                self.phase_seconds[name] = sum(
+                    start.elapsed_time(end) / 1_000.0
+                    for start, end in intervals
+                )
+        return time.perf_counter() - started_at, dict(self.phase_seconds)
+
+
+def _gradients_are_finite(parameters: tuple[nn.Parameter, ...]) -> bool:
+    """Return whether every materialized gradient contains finite values."""
+
+    for parameter in parameters:
+        gradient = parameter.grad
+        if gradient is not None and not bool(torch.isfinite(gradient).all().item()):
+            return False
+    return True
+
+
+def _accumulate_scalar_metrics(
+    values: dict[str, list[float | torch.Tensor]],
+    metrics: Mapping[str, ScalarMetric],
+) -> None:
+    """Collect detached scalars without retaining their step outputs."""
+
     for name, value in metrics.items():
         if isinstance(value, torch.Tensor):
-            result[name] = float(value.detach().item())
+            detached_value: float | torch.Tensor = value.detach().clone()
         else:
-            result[name] = float(value)
+            detached_value = float(value)
+        values.setdefault(name, []).append(detached_value)
+
+
+def _mean_accumulated_metrics(
+    values: Mapping[str, list[float | torch.Tensor]],
+) -> dict[str, float]:
+    """Materialize accumulated metrics after every backward has completed."""
+
+    result: dict[str, float] = {}
+    for name, metric_values in values.items():
+        total = sum(
+            float(value.detach().item())
+            if isinstance(value, torch.Tensor)
+            else value
+            for value in metric_values
+        )
+        result[name] = total / len(metric_values)
     return result
 
 
@@ -166,6 +274,7 @@ def _validate_checkpoint_manager(
     optimizer: Optimizer,
     lr_scheduler: LRScheduler | None,
     ema: ExponentialMovingAverage | None,
+    precision: PrecisionRuntime,
 ) -> None:
     """Keep checkpoint ownership identical to the validated training Plan."""
 
@@ -188,6 +297,48 @@ def _validate_checkpoint_manager(
         raise ValueError("CheckpointManager lr_scheduler must match Trainer")
     if manager.ema is not ema:
         raise ValueError("CheckpointManager EMA must match Trainer")
+    if manager.precision_kind != precision.kind:
+        raise ValueError("CheckpointManager precision must match Trainer")
+    if manager.grad_scaler is not precision.grad_scaler:
+        raise ValueError("CheckpointManager GradScaler must match Trainer")
+
+
+def _validate_checkpoint_training_config(
+    config: object,
+    *,
+    precision: PrecisionRuntime,
+    accumulate_grad_batches: int,
+) -> None:
+    """Keep serialized automatic-loop topology identical to this Trainer."""
+
+    if config is None:
+        return
+    if type(config) is not dict:
+        raise TypeError("checkpoint_config must be an exact dictionary or None")
+    trainer = cast(dict[str, Any], config).get("trainer")
+    if trainer is None:
+        return
+    if type(trainer) is not dict:
+        raise TypeError("checkpoint_config.trainer must be an exact dictionary")
+    trainer_config = cast(dict[str, Any], trainer)
+    configured_precision = trainer_config.get("precision")
+    if (
+        configured_precision is not None
+        and configured_precision != precision.kind
+    ):
+        raise ValueError(
+            "checkpoint_config trainer precision must match Trainer"
+        )
+    configured_accumulation = trainer_config.get(
+        "accumulate_grad_batches"
+    )
+    if (
+        configured_accumulation is not None
+        and configured_accumulation != accumulate_grad_batches
+    ):
+        raise ValueError(
+            "checkpoint_config accumulation must match Trainer"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +448,26 @@ class TrainingFitState:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class OptimizerWindowResult:
+    """One complete automatic optimizer-update attempt."""
+
+    microbatch_losses: tuple[float, ...]
+    metrics: Mapping[str, float]
+    final_batch: Batch
+    final_output: TrainStepOutput
+    succeeded: bool
+    grad_norm: float | None
+    non_finite_loss_count: int = 0
+    non_finite_gradient_count: int = 0
+
+    @property
+    def loss(self) -> float:
+        """Return the equally weighted mean of micro-batch scalar losses."""
+
+        return sum(self.microbatch_losses) / len(self.microbatch_losses)
+
+
 class Trainer:
     """Automatic optimization and experiment lifecycle wrapper.
 
@@ -328,6 +499,8 @@ class Trainer:
         checkpoint_every: int | None = None,
         checkpoint_config: dict[str, Any] | None = None,
         checkpoint_metadata: dict[str, Any] | None = None,
+        precision: PrecisionRuntime | None = None,
+        accumulate_grad_batches: int = 1,
     ) -> None:
         self.plan = validate_training_plan(plan)
         self.strategy = self.plan.strategy
@@ -336,6 +509,21 @@ class Trainer:
         self.objective = self.plan.objective
         self.optimizer = optimizer
         self.device = torch.device(device)
+        accumulation_value = cast(object, accumulate_grad_batches)
+        if (
+            not isinstance(accumulation_value, int)
+            or isinstance(accumulation_value, bool)
+            or accumulation_value <= 0
+        ):
+            raise ValueError("accumulate_grad_batches must be a positive integer")
+        self.accumulate_grad_batches = accumulation_value
+        self.precision = precision or build_precision_runtime("fp32", self.device)
+        precision_value = cast(object, self.precision)
+        if not isinstance(precision_value, PrecisionRuntime):
+            raise TypeError("precision must be a PrecisionRuntime")
+        self.precision = precision_value
+        if self.precision.device_type != self.device.type:
+            raise ValueError("precision runtime device must match Trainer device")
         self.trainable_parameters = plan_trainable_parameters(self.plan)
         _validate_optimizer_parameters(self.optimizer, self.trainable_parameters)
         self.lr_scheduler = lr_scheduler
@@ -370,10 +558,13 @@ class Trainer:
         self.stopped_early = False
         self._best_monitor: str | None = None
         self._best_mode: str | None = None
-        self._last_train_step_output: TrainStepOutput | None = None
-
         if self.checkpoint_every is not None and self.checkpoint_every <= 0:
             raise ValueError("checkpoint_every must be positive when provided")
+        _validate_checkpoint_training_config(
+            self.checkpoint_config,
+            precision=self.precision,
+            accumulate_grad_batches=self.accumulate_grad_batches,
+        )
         if self.checkpoint_manager is not None and self.checkpoint_dir is None:
             raise ValueError("checkpoint_dir is required when checkpoint_manager is provided")
         if self.checkpoint_manager is not None:
@@ -383,6 +574,7 @@ class Trainer:
                 optimizer=self.optimizer,
                 lr_scheduler=self.lr_scheduler,
                 ema=self.ema,
+                precision=self.precision,
             )
         if self.lr_scheduler_interval not in {"step", "epoch"}:
             raise ValueError("lr_scheduler_interval must be 'step' or 'epoch'")
@@ -490,31 +682,138 @@ class Trainer:
             with preserve_global_rng_state(self.device):
                 diagnostic.on_train_epoch_end(event)
 
-    def train_batch(self, batch: Batch) -> float:
-        """Run one optimization step and return the scalar loss."""
-
-        self._set_module_modes(training=True)
-        self.optimizer.zero_grad(set_to_none=True)
-        prepared_batch = _move_to_device(batch, self.device)
-        output = validate_train_step_output(
-            cast(object, self.strategy.training_step(prepared_batch))
-        )
-        loss = output.loss
-        loss.backward()
-
+    def _finish_optimizer_step(self) -> tuple[bool, float | None]:
+        grad_norm: float | None = None
         if self.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(
+            self.precision.unscale_(self.optimizer)
+            norm = torch.nn.utils.clip_grad_norm_(
                 self.trainable_parameters,
                 self.max_grad_norm,
             )
-
-        self.optimizer.step()
+            grad_norm = float(norm.detach().item())
+        succeeded = self.precision.step(self.optimizer)
+        self.optimizer.zero_grad(set_to_none=True)
+        if not succeeded:
+            return False, grad_norm
         if self.ema is not None:
             self.ema.update(self.ema_model)
         self._step_lr_scheduler("step")
+        self.global_step += 1
+        return True, grad_norm
 
-        self._last_train_step_output = output
-        return float(loss.detach().item())
+    def _run_accumulation_window(
+        self,
+        batches: tuple[Batch, ...],
+        *,
+        phase_profiler: TrainingPhaseProfiler | None = None,
+    ) -> OptimizerWindowResult:
+        if not batches:
+            raise ValueError("an accumulation window must contain a batch")
+        loss_tensors: list[torch.Tensor] = []
+        metric_values: dict[str, list[float | torch.Tensor]] = {}
+        final_batch: Batch = batches[-1]
+        final_output: TrainStepOutput | None = None
+        try:
+            for index, batch in enumerate(batches):
+                prepared_batch = _move_to_device(batch, self.device)
+                forward_started_at = (
+                    phase_profiler.start_phase()
+                    if phase_profiler is not None
+                    else None
+                )
+                with self.precision.autocast():
+                    output = validate_train_step_output(
+                        cast(object, self.strategy.training_step(prepared_batch))
+                    )
+                    normalized_loss = output.loss / len(batches)
+                if (
+                    phase_profiler is not None
+                    and forward_started_at is not None
+                ):
+                    phase_profiler.end_phase(
+                        "forward_seconds",
+                        forward_started_at,
+                    )
+                loss_tensors.append(output.loss.detach().clone())
+                _accumulate_scalar_metrics(
+                    metric_values,
+                    output.metrics,
+                )
+                backward_started_at = (
+                    phase_profiler.start_phase()
+                    if phase_profiler is not None
+                    else None
+                )
+                self.precision.backward(normalized_loss)
+                if (
+                    phase_profiler is not None
+                    and backward_started_at is not None
+                ):
+                    phase_profiler.end_phase(
+                        "backward_seconds",
+                        backward_started_at,
+                    )
+                del normalized_loss
+                del prepared_batch
+                if index == len(batches) - 1:
+                    final_output = output
+                else:
+                    del output
+            if final_output is None:
+                raise RuntimeError(
+                    "accumulation window did not produce an output"
+                )
+            stacked_losses = torch.stack(tuple(loss_tensors)).to(
+                device="cpu",
+                dtype=torch.float64,
+            )
+            losses = tuple(
+                float(value) for value in stacked_losses.tolist()
+            )
+            metrics = _mean_accumulated_metrics(metric_values)
+            gradients_finite = (
+                _gradients_are_finite(self.trainable_parameters)
+                if phase_profiler is not None and self.max_grad_norm is None
+                else None
+            )
+            optimizer_started_at = (
+                phase_profiler.start_phase()
+                if phase_profiler is not None
+                else None
+            )
+            succeeded, grad_norm = self._finish_optimizer_step()
+            if (
+                phase_profiler is not None
+                and optimizer_started_at is not None
+            ):
+                phase_profiler.end_phase(
+                    "optimizer_seconds",
+                    optimizer_started_at,
+                )
+        except BaseException:
+            self.optimizer.zero_grad(set_to_none=True)
+            raise
+        if grad_norm is not None:
+            gradients_finite = math.isfinite(grad_norm)
+        return OptimizerWindowResult(
+            microbatch_losses=losses,
+            metrics=metrics,
+            final_batch=final_batch,
+            final_output=final_output,
+            succeeded=succeeded,
+            grad_norm=grad_norm,
+            non_finite_loss_count=sum(
+                not math.isfinite(loss) for loss in losses
+            ),
+            non_finite_gradient_count=int(gradients_finite is False),
+        )
+
+    def train_batch(self, batch: Batch) -> float:
+        """Run one complete optimizer-update attempt and return its loss."""
+
+        self._set_module_modes(training=True)
+        self.optimizer.zero_grad(set_to_none=True)
+        return self._run_accumulation_window((batch,)).loss
 
     def train_epoch(
         self,
@@ -523,12 +822,29 @@ class Trainer:
         epoch_index: int | None = None,
         show_progress: bool = True,
         max_batches: int | None = None,
+        max_optimizer_steps: int | None = None,
+        profile_phases: bool = False,
         reporter: Any | None = None,
     ) -> dict[str, float]:
         """Train for one epoch and return aggregate metrics."""
 
         if max_batches is not None and max_batches <= 0:
             raise ValueError("max_batches must be positive when provided")
+        max_optimizer_steps_value = cast(object, max_optimizer_steps)
+        if (
+            max_optimizer_steps_value is not None
+            and (
+                isinstance(max_optimizer_steps_value, bool)
+                or not isinstance(max_optimizer_steps_value, int)
+                or max_optimizer_steps_value <= 0
+            )
+        ):
+            raise ValueError(
+                "max_optimizer_steps must be a positive integer when provided"
+            )
+        profile_phases_value = cast(object, profile_phases)
+        if not isinstance(profile_phases_value, bool):
+            raise TypeError("profile_phases must be boolean")
         if epoch_index is not None:
             _set_dataloader_epoch(dataloader, epoch_index)
 
@@ -549,27 +865,61 @@ class Trainer:
 
         total_loss = 0.0
         num_batches = 0
-        started_at = time.perf_counter()
+        optimizer_steps = 0
+        skipped_optimizer_steps = 0
+        non_finite_loss_count = 0
+        non_finite_gradient_count = 0
+        data_wait_seconds = 0.0
+        compute_seconds = 0.0
+        phase_profiler = (
+            TrainingPhaseProfiler(self.device) if profile_phases else None
+        )
+        started_at = (
+            phase_profiler.start_measurement()
+            if phase_profiler is not None
+            else time.perf_counter()
+        )
+        self._set_module_modes(training=True)
+        self.optimizer.zero_grad(set_to_none=True)
         try:
-            for batch in iterator:
-                batch_loss = self.train_batch(batch)
-                train_step_output = self._last_train_step_output
-                if train_step_output is None:
-                    raise RuntimeError("train_batch did not produce a TrainStepOutput")
-                total_loss += batch_loss
-                num_batches += 1
-                self.global_step += 1
-                self._emit_batch_diagnostics(
-                    batch=batch,
-                    output=train_step_output,
-                    loss=batch_loss,
-                    global_step=self.global_step,
-                    epoch_index=epoch_index,
+            while True:
+                data_wait_started_at = time.perf_counter()
+                window = tuple(
+                    islice(iterator, self.accumulate_grad_batches)
                 )
-                running_loss = total_loss / num_batches
-                if self.global_step % self.log_every == 0:
+                data_wait_seconds += time.perf_counter() - data_wait_started_at
+                if not window:
+                    break
+                compute_started_at = time.perf_counter()
+                result = self._run_accumulation_window(
+                    window,
+                    phase_profiler=phase_profiler,
+                )
+                compute_seconds += time.perf_counter() - compute_started_at
+                total_loss += sum(result.microbatch_losses)
+                non_finite_loss_count += result.non_finite_loss_count
+                non_finite_gradient_count += (
+                    result.non_finite_gradient_count
+                )
+                batch_offset = num_batches
+                num_batches += len(result.microbatch_losses)
+                if result.succeeded:
+                    optimizer_steps += 1
+                    self._emit_batch_diagnostics(
+                        batch=result.final_batch,
+                        output=result.final_output,
+                        loss=result.loss,
+                        global_step=self.global_step,
+                        epoch_index=epoch_index,
+                    )
+                else:
+                    skipped_optimizer_steps += 1
+                if (
+                    result.succeeded
+                    and self.global_step % self.log_every == 0
+                ):
                     metrics = {
-                        "train/loss": batch_loss,
+                        "train/loss": result.loss,
                         "train/epoch": (
                             float(epoch_index) if epoch_index is not None else 0.0
                         ),
@@ -577,41 +927,148 @@ class Trainer:
                     metrics.update(
                         {
                             f"train/strategy/{name}": value
-                            for name, value in _scalar_metrics(
-                                train_step_output.metrics
-                            ).items()
+                            for name, value in result.metrics.items()
                         }
                     )
                     metrics.update(_optimizer_metrics(self.optimizer))
+                    if result.grad_norm is not None:
+                        metrics["train/grad_norm"] = result.grad_norm
+                    if self.precision.grad_scaler is not None:
+                        metrics["train/loss_scale"] = (
+                            self.precision.grad_scaler.get_scale()
+                        )
                     self.logger.log_metrics(metrics, step=self.global_step)
                 if progress_reporter is not None:
-                    progress_reporter.on_batch_end(
-                        phase="train",
-                        loss=batch_loss,
-                        avg_loss=running_loss,
-                        lr=_first_lr(self.optimizer),
-                        global_step=self.global_step,
+                    running_total = total_loss - sum(
+                        result.microbatch_losses
                     )
+                    step_before_window = self.global_step - int(
+                        result.succeeded
+                    )
+                    for index, batch_loss in enumerate(
+                        result.microbatch_losses,
+                        start=1,
+                    ):
+                        running_total += batch_loss
+                        progress_reporter.on_batch_end(
+                            phase="train",
+                            loss=batch_loss,
+                            avg_loss=running_total / (batch_offset + index),
+                            lr=_first_lr(self.optimizer),
+                            global_step=(
+                                self.global_step
+                                if index == len(result.microbatch_losses)
+                                else step_before_window
+                            ),
+                        )
+                reached_optimizer_limit = (
+                    max_optimizer_steps is not None
+                    and optimizer_steps >= max_optimizer_steps
+                )
+                del result
+                if reached_optimizer_limit:
+                    break
         finally:
             if progress_reporter is not None:
                 progress_reporter.on_phase_end()
 
+        if phase_profiler is not None:
+            duration_seconds, phase_timings = (
+                phase_profiler.finish_measurement(started_at)
+            )
+            if self.device.type == "cuda":
+                compute_seconds = max(
+                    0.0,
+                    duration_seconds - data_wait_seconds,
+                )
+        else:
+            duration_seconds = time.perf_counter() - started_at
+            phase_timings = None
         if num_batches == 0:
             raise ValueError("dataloader yielded no batches")
-
+        optimizer_steps_per_second = (
+            optimizer_steps / duration_seconds
+            if duration_seconds > 0.0
+            else 0.0
+        )
         epoch_metrics = {
             "loss": total_loss / num_batches,
             "num_batches": float(num_batches),
-            "duration_seconds": time.perf_counter() - started_at,
+            "micro_batches": float(num_batches),
+            "optimizer_steps": float(optimizer_steps),
+            "skipped_optimizer_steps": float(skipped_optimizer_steps),
+            "optimizer_steps_per_second": optimizer_steps_per_second,
+            "data_wait_seconds": data_wait_seconds,
+            "compute_seconds": compute_seconds,
+            "duration_seconds": duration_seconds,
         }
+        if phase_timings is not None:
+            epoch_metrics.update(phase_timings)
+            epoch_metrics["non_finite_loss_count"] = float(
+                non_finite_loss_count
+            )
+            epoch_metrics["non_finite_gradient_count"] = float(
+                non_finite_gradient_count
+            )
         logged_epoch_metrics = {
             "train/epoch_loss": epoch_metrics["loss"],
             "train/epoch_batches": epoch_metrics["num_batches"],
+            "train/epoch_micro_batches": epoch_metrics["micro_batches"],
+            "train/epoch_optimizer_steps": epoch_metrics["optimizer_steps"],
+            "train/epoch_skipped_optimizer_steps": epoch_metrics[
+                "skipped_optimizer_steps"
+            ],
+            "train/optimizer_steps_per_second": epoch_metrics[
+                "optimizer_steps_per_second"
+            ],
+            "train/epoch_data_wait_seconds": epoch_metrics[
+                "data_wait_seconds"
+            ],
+            "train/epoch_compute_seconds": epoch_metrics["compute_seconds"],
             "train/epoch_duration_seconds": epoch_metrics["duration_seconds"],
         }
+        if phase_timings is not None:
+            logged_epoch_metrics.update(
+                {
+                    "train/epoch_forward_seconds": epoch_metrics[
+                        "forward_seconds"
+                    ],
+                    "train/epoch_backward_seconds": epoch_metrics[
+                        "backward_seconds"
+                    ],
+                    "train/epoch_optimizer_seconds": epoch_metrics[
+                        "optimizer_seconds"
+                    ],
+                    "train/epoch_non_finite_loss_count": epoch_metrics[
+                        "non_finite_loss_count"
+                    ],
+                    "train/epoch_non_finite_gradient_count": epoch_metrics[
+                        "non_finite_gradient_count"
+                    ],
+                }
+            )
+        if self.precision.grad_scaler is not None:
+            logged_epoch_metrics["train/epoch_loss_scale"] = (
+                self.precision.grad_scaler.get_scale()
+            )
         if epoch_index is not None:
             logged_epoch_metrics["train/epoch"] = float(epoch_index)
         self.logger.log_metrics(logged_epoch_metrics, step=self.global_step)
+        if optimizer_steps == 0 and skipped_optimizer_steps > 0:
+            overflow_warning = (
+                "all optimizer windows were skipped in the training epoch; "
+                f"skipped_windows={skipped_optimizer_steps}"
+            )
+            self.logger.log_text(
+                "training/optimizer_overflow",
+                overflow_warning,
+                step=self.global_step,
+            )
+            warnings.warn(
+                overflow_warning,
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return epoch_metrics
 
     def evaluate_epoch(
@@ -653,9 +1110,13 @@ class Trainer:
             with torch.no_grad():
                 for batch in iterator:
                     prepared_batch = _move_to_device(batch, self.device)
-                    output = validate_train_step_output(
-                        cast(object, self.strategy.evaluation_step(prepared_batch))
-                    )
+                    with self.precision.autocast():
+                        output = validate_train_step_output(
+                            cast(
+                                object,
+                                self.strategy.evaluation_step(prepared_batch),
+                            )
+                        )
                     batch_loss = float(output.loss.detach().item())
                     total_loss += batch_loss
                     num_batches += 1
@@ -790,7 +1251,12 @@ class Trainer:
                             "duration_seconds"
                         ],
                     }
-                self._step_lr_scheduler("epoch")
+                successful_updates = metrics.get(
+                    "optimizer_steps",
+                    metrics["num_batches"],
+                )
+                if successful_updates > 0:
+                    self._step_lr_scheduler("epoch")
                 history.append(metrics)
 
                 status = "-"

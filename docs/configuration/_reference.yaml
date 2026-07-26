@@ -56,6 +56,8 @@ fields:
   trainer: {description: 训练循环、设备、梯度和早停配置。}
   trainer.num_epochs: {description: 每个独立 run 的最大训练 epoch 数。, constraints: 正整数。, cli: "train --epochs"}
   trainer.device: {description: Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。, cli: "train --device"}
+  trainer.precision: {description: 自动单 optimizer 循环的 forward/evaluation precision；支持 fp32、bf16-mixed、fp16-mixed，且不进行静默 fallback。, interactions: CUDA BF16 要求硬件 capability；FP16 仅支持 CUDA 并持久化 GradScaler state。}
+  trainer.accumulate_grad_batches: {description: 每个 optimizer update 累积的 micro-batch 数；epoch 尾部不足一个窗口时按实际长度归一化并 flush。, constraints: 正整数。}
   trainer.max_grad_norm: {description: 梯度范数裁剪阈值；null 禁用裁剪。, constraints: 非 null 时为正数。}
   trainer.show_progress: {description: 是否显示 Rich 进度条。, cli: "train --no-progress"}
   trainer.early_stopping: {description: 基于 epoch 指标的提前停止策略。}
@@ -79,6 +81,36 @@ registries:
     base: torch.nn.Module
     config_path: model.name / model.params
     entries:
+      adm_unet:
+        description: 带 class/time conditioning、scale-shift residual blocks、residual resampling 和低分辨率 Transformer 的 ADM 风格 UNet。
+        parameters:
+          in_channels: {description: 输入 state 通道数。}
+          out_channels: {description: 输出预测通道数；固定方差去噪要求与输入通道相同。}
+          base_channels: {description: 第一层特征通道数。}
+          channel_multipliers: {description: 各分辨率层相对 base_channels 的通道倍数。}
+          num_res_blocks: {description: 每个分辨率层的 residual block 数量。}
+          transformer_depths: {description: 每个分辨率层的 Spatial Transformer 深度；零表示禁用。}
+          middle_transformer_depth: {description: middle block 的 Spatial Transformer 深度；零表示禁用。}
+          attention_head_dim: {description: Transformer attention 的单 head 通道数。}
+          time_embedding_dim: {description: time 与 class embedding 的共享 conditioning 宽度。}
+          num_classes: {description: 非 null class 数量；null class id 固定为 num_classes。}
+          dropout: {description: residual 与 Transformer 分支的 dropout 概率。}
+          scale_shift_norm: {description: residual block 是否使用 conditioning scale-shift normalization。}
+          residual_resampling: {description: 下采样和上采样是否使用 residual resampling blocks。}
+          zero_init_residual: {description: 是否零初始化 residual block 的末端 projection。}
+          zero_init_output: {description: 是否零初始化最终输出 projection。}
+      dit:
+        description: 使用固定二维位置编码、adaLN-Zero 和 PyTorch SDPA 的 class-conditional pixel DiT。
+        parameters:
+          input_size: {description: "输入图像空间大小；可为正整数方形尺寸或 `[height, width]`。"}
+          patch_size: {description: 方形 patch 边长；必须整除两个输入维度。}
+          in_channels: {description: 输入 state 通道数。}
+          out_channels: {description: 输出预测通道数；固定方差去噪要求与输入通道相同。}
+          hidden_size: {description: token 与 conditioning 的隐藏宽度；必须兼容 head 数和二维位置编码。}
+          depth: {description: Transformer block 数量。}
+          num_heads: {description: self-attention head 数量。}
+          mlp_ratio: {description: feed-forward 隐藏宽度相对 hidden_size 的正比例。}
+          num_classes: {description: 非 null class 数量；null class id 固定为 num_classes。}
       unet:
         description: 带时间嵌入、残差块和可选注意力的图像 UNet。
         parameters:
@@ -273,6 +305,20 @@ registries:
     base: stochaflow.sampling.SamplingBuilder
     config_path: sampling.builder.name / sampling.builder.params
     entries:
+      class_conditional_denoising:
+        description: 为离散 Gaussian denoising 显式分配 class labels，并通过 classifier-free guidance 组合条件与 null prediction。
+        runtime_parameters: [context]
+        inspect: context_parameters
+        parameters:
+          weights: {description: "模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`。"}
+          prediction_type: {description: "模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。"}
+          clip_denoised: {description: "是否把预测 clean state 裁剪到 `[-1, 1]`；默认 `true`。"}
+          guidance_scale: {description: "有限非负 CFG scale；0 只执行 null branch，1 只执行 conditional branch，其他值使用 fused double batch。"}
+          conditions: {description: "必填有序列表；每项为 `{class_label, count}`，count 总和必须等于 sampling.num_samples。"}
+          sampler.name: {description: "必填的 Gaussian-family samplers Registry 名称。"}
+          sampler.params: {description: "传给所选 Sampler 构造器的 mapping。"}
+          trajectory.enabled: {description: "是否保留 solver trajectory observations；默认 `false`。"}
+          trajectory.every_steps: {description: "trajectory 的 accepted-step 保留间隔；默认 `1`。"}
       standard_denoising:
         description: 固定 Tensor shape 的标准 Gaussian denoising sampling recipe；要求 sampling.shape、离散 Gaussian Process，以及返回 Tensor 的 model(state, model_time)。
         runtime_parameters: [context]
@@ -291,6 +337,13 @@ registries:
     base: stochaflow.training.TrainingBuilder
     config_path: training.name / training.params
     entries:
+      class_conditional_gaussian_denoising:
+        description: "读取 `(Tensor, {\"class_label\": labels})` batch，训练满足 ClassConditionalDenoiser capability 的离散 Gaussian denoiser。"
+        runtime_parameters: [context]
+        inspect: context_parameters
+        parameters:
+          prediction_type: {description: "训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。"}
+          condition_dropout: {description: "训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。"}
       gaussian_denoising:
         description: 使用离散 Gaussian marginal 和指定 prediction target 训练无条件去噪模型；batch 必须为 Tensor 或 (Tensor, {})。
         runtime_parameters: [context]
@@ -366,6 +419,20 @@ registries:
     base: stochaflow.training.diagnostics.TrainingDiagnostic
     config_path: diagnostics[].name / diagnostics[].params
     entries:
+      class_conditional_diffusion_quality:
+        description: 使用原始 batch labels 做对齐重建，并按显式 class allocation 与 CFG 比较 Gaussian sampler profile。
+        runtime_parameters: [logger, output_dir, sample_shape]
+        parameters:
+          conditions: {description: "有序 `{class_label, count}` 列表；总数必须等于 sampling.sample_num。"}
+          guidance_scale: {description: diagnostic sampler 使用的有限非负 CFG scale。}
+          samplers: {description: sampler profile 列表；每项声明唯一 id、Registry name、构造 params 和可选 trajectory。}
+          modules: {description: 按声明顺序导入并注册第三方 diagnostic provider 的 Python module。}
+          cadence: {description: step metric 与 epoch artifact 的执行周期。}
+          sampling: {description: 多 profile 共用的样本数、batch size 和基础 seed。}
+          providers: {description: step metric、sampler metric、denoiser artifact 与 sampler artifact provider 列表。}
+          reference: {description: 必须保持 disabled；class-aware reference metrics 属于独立 post-training evaluator。}
+          use_ema: {description: diagnostic 推理是否优先使用 EMA 权重。}
+          failure_policy: {description: 运行期错误采用 raise 或 warn；配置错误始终失败。}
       diffusion_quality:
         description: 通过可插拔 provider 记录 denoiser 指标，并在固定噪声下比较多个 sampler profile。
         runtime_parameters: [logger, output_dir, sample_shape]

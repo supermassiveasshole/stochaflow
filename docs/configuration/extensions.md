@@ -166,9 +166,11 @@ loggers 和 diagnostics。这个摘要保留显式 `null` 与列表顺序，但�
 ownership 推断或 compatibility 判断；checkpoint 中的完整 config 与 runtime state
 仍是恢复权威。
 
-checkpoint v8 使用 `torch.load(..., weights_only=True)`，payload 只允许 Tensor、primitive
-和普通 container。扩展组件的 `state_dict` 或 extra state 也必须编码为这些数据类型；不能
-要求 `safe_globals`、保存自定义 class instance 或 custom Tensor subclass。这个约束让 runtime
+当前 checkpoint v9 使用 `torch.load(..., weights_only=True)`，payload 只允许
+Tensor、primitive 和普通 container。runtime 还可以按
+[受限迁移规则](compatibility-and-migration.md#v8-到-v9-的受限迁移)读取 legacy v8。
+扩展组件的 `state_dict` 或 extra state 也必须编码为这些数据类型；不能要求
+`safe_globals`、保存自定义 class instance 或 custom Tensor subclass。这个约束让 runtime
 能在导入扩展前安全读取 config/provenance，但不是针对恶意超大 Tensor 的完整资源沙箱。
 
 ### 生成一个扩展项目

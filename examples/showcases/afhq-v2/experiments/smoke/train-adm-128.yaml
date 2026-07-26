@@ -1,13 +1,13 @@
 experiment:
-  name: ddpm_afhq_v2_128
-  seed: 42
-  output_dir: outputs/ddpm_afhq_v2_128
+  name: afhq_v2_adm_128_smoke
+  seed: 20260726
+  output_dir: outputs/afhq-v2/smoke
 
 extensions:
   plugins: [stochaflow-afhq-v2]
 
 data:
-  name: image
+  name: afhq-v2.class-images
   params:
     source:
       name: afhq-v2.official
@@ -17,52 +17,54 @@ data:
         validation_seed: stochaflow-afhq-v2-validation-v1
       materialization:
         cache_root: ./data
-        policy: ensure
+        policy: require
         verification: full
     image:
       size: [128, 128]
       channels: 3
+      require_exact_size: true
       normalize: true
       random_horizontal_flip: true
     loader:
-      batch_size: 16
-      num_workers: 2
+      batch_size: 2
+      num_workers: 0
       shuffle: true
       drop_last: true
-      pin_memory: true
-      persistent_workers: true
-      prefetch_factor: 4
-      steps_per_epoch: auto
-    partition:
-      mode: official
+      pin_memory: false
+      persistent_workers: false
+      prefetch_factor: null
+      steps_per_epoch: 4
 
 model:
-  name: unet
+  name: adm_unet
   params:
     in_channels: 3
     out_channels: 3
-    base_channels: 96
-    channel_multipliers: [1, 2, 3, 4]
-    num_res_blocks: 2
-    time_embedding_dim: 256
-    dropout: 0.1
-    attention_levels: [3]
-    attention_heads: 4
+    base_channels: 32
+    channel_multipliers: [1, 2]
+    num_res_blocks: 1
+    transformer_depths: [0, 1]
+    middle_transformer_depth: 1
+    attention_head_dim: 32
+    time_embedding_dim: 128
+    num_classes: 3
+    dropout: 0.0
 
 process:
   name: discrete_gaussian
   params:
     schedule:
-      name: cosine_alpha_bar
+      name: linear_beta
       params:
-        num_timesteps: 1000
-        s: 0.008
-        max_beta: 0.999
+        num_timesteps: 8
+        beta_start: 1.0e-4
+        beta_end: 0.02
 
 training:
-  name: gaussian_denoising
+  name: class_conditional_gaussian_denoising
   params:
     prediction_type: v
+    condition_dropout: 0.1
 
 objective:
   name: mse
@@ -72,83 +74,93 @@ objective:
 optimizer:
   name: torch.optim.AdamW
   params:
-    lr: 0.0002
-    weight_decay: 0.01
-    betas: [0.9, 0.999]
-    eps: 1.0e-8
+    lr: 1.0e-4
+    weight_decay: 0.0
 
 lr_scheduler:
   name: warmup_cosine
   interval: step
   params:
-    warmup_steps: 5000
-    total_steps: 167800
-    min_lr_ratio: 0.05
+    warmup_steps: 1
+    total_steps: 2
+    min_lr_ratio: 0.1
 
 ema:
   enabled: true
-  decay: 0.9999
-  update_after_step: 500
+  decay: 0.99
+  update_after_step: 0
   update_every: 1
   use_for_sampling: true
 
 sampling:
   shape: [3, 128, 128]
-  num_samples: 16
-  batch_size: 8
-  seed: 123
+  num_samples: 3
+  batch_size: 3
+  seed: 20260726
   builder:
-    name: standard_denoising
+    name: class_conditional_denoising
     params:
       weights: auto
       prediction_type: v
       clip_denoised: true
+      guidance_scale: 2.0
+      conditions:
+        - {class_label: 0, count: 1}
+        - {class_label: 1, count: 1}
+        - {class_label: 2, count: 1}
       sampler:
         name: ddim
         params:
-          num_inference_steps: 100
+          num_inference_steps: 2
           eta: 0.0
       trajectory:
         enabled: false
-        every_steps: 10
+        every_steps: 1
   writers:
     - name: tensor
       params: {}
     - name: image
-      params: {grid_nrow: 4, gif_fps: 8, denormalize: true}
+      params:
+        grid_nrow: 3
+        gif_fps: 8
+        denormalize: true
 
 diagnostics:
-  - name: diffusion_quality
+  - name: class_conditional_diffusion_quality
     params:
+      conditions:
+        - {class_label: 0, count: 1}
+        - {class_label: 1, count: 1}
+        - {class_label: 2, count: 1}
+      guidance_scale: 2.0
       modules: []
       cadence:
-        step_every: 200
-        artifact_every_epochs: 10
+        step_every: 1
+        artifact_every_epochs: 1
       sampling:
-        sample_num: 16
-        batch_size: 8
-        seed: 123
+        sample_num: 3
+        batch_size: 3
+        seed: 20260726
       use_ema: true
-      failure_policy: warn
+      failure_policy: raise
       samplers:
-        - id: ddim_50
+        - id: ddim_2
           name: ddim
           params:
-            num_inference_steps: 50
+            num_inference_steps: 2
             eta: 0.0
           trajectory:
             enabled: false
-            every_steps: 5
-            gif_fps: 8
+            every_steps: 1
+            gif_fps: 4
       providers:
         step_metrics:
           - name: timestep_bucket_loss
-            params: {buckets: 10}
+            params: {buckets: 2}
           - name: noise_alignment
             params: {}
           - name: x0_reconstruction
-            params:
-              timesteps: [50, 250, 500, 750, 900]
+            params: {timesteps: [4]}
         sampler_metrics:
           - name: sample_statistics
             params: {}
@@ -157,36 +169,32 @@ diagnostics:
         denoiser_artifacts:
           - name: reconstruction_panel
             params:
-              timesteps: [100, 500, 900]
-              max_samples: 4
+              timesteps: [4]
+              max_samples: 1
         sampler_artifacts:
           - name: sample_grid
-            params: {nrow: 4}
+            params: {nrow: 3}
       reference:
         enabled: false
 
 trainer:
-  num_epochs: 200
-  device: auto
+  num_epochs: 1
+  device: cpu
+  precision: fp32
+  accumulate_grad_batches: 2
   max_grad_norm: 1.0
   show_progress: true
   early_stopping:
     enabled: false
-    monitor: valid_loss
-    mode: min
-    patience: 20
-    min_delta: 0.0
 
 logging:
-  log_every: 100
+  log_every: 1
   backends:
     - name: local
       params:
-        console: false
+        console: true
         append: false
-    - name: tensorboard
-      params: {}
   torch_logs: {}
 
 artifacts:
-  checkpoint_every: 10
+  checkpoint_every: 1

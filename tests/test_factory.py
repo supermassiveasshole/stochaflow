@@ -210,6 +210,11 @@ def test_build_training_components_from_ddpm_mnist_config() -> None:
     assert components.trainer.lr_scheduler_interval == "step"
     assert isinstance(components.logger, ExperimentLogger)
     assert isinstance(components.checkpoint_manager, CheckpointManager)
+    assert components.checkpoint_manager.precision_kind == components.precision.kind
+    assert (
+        components.checkpoint_manager.grad_scaler
+        is components.precision.grad_scaler
+    )
     assert isinstance(components.trainer, Trainer)
 
 
@@ -232,6 +237,18 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
     assert isinstance(components.logger, ExperimentLogger)
     assert isinstance(components.checkpoint_manager, CheckpointManager)
     assert isinstance(components.trainer, Trainer)
+
+
+def test_factory_injects_bf16_runtime_into_trainer_and_checkpoint_manager() -> None:
+    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw["model"]["params"] = dict(TINY_UNET_PARAMS)
+    raw["trainer"].update({"device": "cpu", "precision": "bf16-mixed"})
+    components = build_training_components(load_config_dict(raw))
+
+    assert components.precision is components.trainer.precision
+    assert components.precision.kind == "bf16-mixed"
+    assert components.checkpoint_manager.precision_kind == "bf16-mixed"
+    assert components.checkpoint_manager.grad_scaler is None
 
 
 def test_gaussian_training_requires_a_configured_process() -> None:
@@ -287,7 +304,7 @@ def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> 
     assert "process_gain" not in components.ema.shadow_params
 
     state = components.checkpoint_manager.build_state()
-    assert state.get("format_version") == 8
+    assert state.get("format_version") == 9
     process_state = state.get("process_state_dict")
     assert process_state is not None
     assert "process_gain" in process_state

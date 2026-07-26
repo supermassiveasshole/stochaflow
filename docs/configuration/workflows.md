@@ -202,8 +202,8 @@ resume 仍创建新的兄弟 run，因此 local 日志和 TensorBoard event 文�
 checkpoint 再次 resume 且不传该选项时，使用的就是先前已固化的 effective config 和
 审计链。
 
-`--resume` 与 `--config` 互斥。checkpoint v8 保存 resolved config、primary inference
-model、可选 Process/Objective、可选 EMA model、optimizer、scheduler、EMA、具名
+`--resume` 与 `--config` 互斥。当前 checkpoint v9 保存 resolved config、primary
+inference model、可选 Process/Objective、可选 EMA model、optimizer、scheduler、EMA、具名
 training assets 和训练进度。它只保存
 `data: {name, params}`，不保存 Dataset、PyTorch Sampler、DataLoader、partition 或数值
 solver 的运行时状态。
@@ -225,7 +225,7 @@ monitor、mode、resolved config 和 extension provenance 必须与所选 checkp
 校验且能载入当前资产拓扑的 inherited best 会在训练开始前原子物化到新 run 的
 `checkpoints/best.pt`，并记录当前 resolved config/provenance；后续恢复和 sampling 不依赖
 父 run。
-Strict resume 还要求合法的 `epoch`、`global_step` 和 v8 RNG snapshot，并在 selected state
+Strict resume 还要求合法的 `epoch`、`global_step` 和 v9 RNG snapshot，并在 selected state
 与 inherited-best 全部验证后恢复 Python、NumPy、Torch CPU 及适用的 CUDA/MPS RNG。
 早期 v8 checkpoint 若缺少 MPS RNG 字段，在 MPS resume 时会警告并继续，但不能保证该
 随机流精确延续。普通 checkpoint load 不修改全局 RNG。sampling 不恢复 checkpoint RNG snapshot，而是按
@@ -242,10 +242,11 @@ generator 的 runtime state。内置图像 recipe 会由 experiment seed 与 epo
 恢复时应显式传 `--output-dir`。DataBuilder 私有 params 中的相对路径遵循同一 cwd 规则，
 核心不会猜测并重写不透明字段。
 
-v8 payload 只允许 Tensor、primitive 与普通 container，并始终由
-`torch.load(..., weights_only=True)` 读取。扩展代码/class 不会 freeze 在 checkpoint 中；
-恢复环境需要安装记录的 entry-point distribution。实现变化造成的不兼容由 state/资产契约
-报错，Stochaflow 不保存或迁移第三方源码。
+当前 v9 payload 只允许 Tensor、primitive 与普通 container，并始终由
+`torch.load(..., weights_only=True)` 读取；legacy v8 只按
+[受限规则](compatibility-and-migration.md#v8-到-v9-的受限迁移)迁移。扩展代码/class
+不会 freeze 在 checkpoint 中；恢复环境需要安装记录的 entry-point distribution。
+实现变化造成的不兼容由 state/资产契约报错，Stochaflow 不保存或迁移第三方源码。
 
 ## K-fold
 

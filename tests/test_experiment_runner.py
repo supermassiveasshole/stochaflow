@@ -202,6 +202,8 @@ def _best_payload(
     }
     return {
         "format_version": CHECKPOINT_FORMAT_VERSION,
+        "precision_kind": "fp32",
+        "inference_asset_descriptors": {},
         "epoch": best_epoch,
         "global_step": best_epoch * 2,
         "rng_state": capture_rng_state(),
@@ -253,10 +255,13 @@ def _write_training_checkpoint(
     torch.save(
         {
             "format_version": CHECKPOINT_FORMAT_VERSION,
+            "precision_kind": config.trainer.precision,
+            "inference_asset_descriptors": {},
             "epoch": 1,
             "global_step": 0,
             "config": config.to_dict(),
             "model_state_dict": {},
+            "training_assets_state_dict": {},
             "rng_state": capture_rng_state(),
             "metadata": checkpoint_metadata,
         },
@@ -1386,6 +1391,104 @@ def test_runner_builds_registered_data_builder(monkeypatch, tmp_path, config_pat
         "strict_resume": False,
         "expected_artifacts": None,
     }
+
+
+def test_runner_rejects_unsupported_precision_before_data_or_run_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config.trainer.precision = "fp16-mixed"
+    args = _args()
+    args.config = Path("unused.yaml")
+    args.device = "cpu"
+    args.output_dir = tmp_path / "outputs"
+
+    monkeypatch.setattr(experiment_runner, "load_config", lambda path: config)
+
+    def unexpected_side_effect(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("unsupported precision reached data or run creation")
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_data_loaders",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_make_timestamped_output_dir",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_run_single_run",
+        unexpected_side_effect,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="fp16-mixed precision is supported only on CUDA",
+    ):
+        experiment_runner.run_experiment_from_args(args)
+
+    assert not args.output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("device_name", "expected_error"),
+    [
+        ("cuda", "CUDA execution requires an available CUDA device"),
+        ("mps", "MPS execution requires an available MPS device"),
+        ("cuda:3", "CUDA device index 3 is outside the available range"),
+    ],
+)
+def test_runner_rejects_unavailable_execution_device_before_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    device_name: str,
+    expected_error: str,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config.trainer.precision = "fp32"
+    args = _args()
+    args.config = Path("unused.yaml")
+    args.device = device_name
+    args.output_dir = tmp_path / "outputs"
+
+    monkeypatch.setattr(experiment_runner, "load_config", lambda path: config)
+    if device_name == "mps":
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    elif device_name == "cuda":
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    else:
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+
+    def unexpected_side_effect(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("invalid execution device reached data or run creation")
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_data_loaders",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_make_timestamped_output_dir",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_run_single_run",
+        unexpected_side_effect,
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
+        experiment_runner.run_experiment_from_args(args)
+
+    assert not args.output_dir.exists()
 
 
 def test_strict_resume_accepts_matching_data_artifacts() -> None:

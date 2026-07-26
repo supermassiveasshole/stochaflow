@@ -477,7 +477,7 @@ diagnostic 构造参数；logger、output_dir 与 sample_shape 由运行时注�
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{device: cpu, early_stopping: {enabled: false, min_delta: 0.0, mode: min, monitor: valid_loss, patience: 10}, max_grad_norm: null, num_epochs: 1, show_progress: true}`
+- 默认值：`{accumulate_grad_batches: 1, device: cpu, early_stopping: {enabled: false, min_delta: 0.0, mode: min, monitor: valid_loss, patience: 10}, max_grad_norm: null, num_epochs: 1, precision: fp32, show_progress: true}`
 
 (config-field-path-trainer-num-epochs)=
 ### `trainer.num_epochs`
@@ -499,6 +499,26 @@ Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。
 - 必填：否
 - 默认值：`cpu`
 - CLI 覆盖：`train --device`
+
+(config-field-path-trainer-precision)=
+### `trainer.precision`
+
+自动单 optimizer 循环的 forward/evaluation precision；支持 fp32、bf16-mixed、fp16-mixed，且不进行静默 fallback。
+
+- 类型：`str`
+- 必填：否
+- 默认值：`fp32`
+- 关联：CUDA BF16 要求硬件 capability；FP16 仅支持 CUDA 并持久化 GradScaler state。
+
+(config-field-path-trainer-accumulate-grad-batches)=
+### `trainer.accumulate_grad_batches`
+
+每个 optimizer update 累积的 micro-batch 数；epoch 尾部不足一个窗口时按实际长度归一化并 flush。
+
+- 类型：`int`
+- 必填：否
+- 默认值：`1`
+- 约束：正整数。
 
 (config-field-path-trainer-max-grad-norm)=
 ### `trainer.max_grad_norm`
@@ -680,6 +700,46 @@ native provider，扩展 Registry 不能占用。
 
 - 基类/契约：`torch.nn.Module`
 - 配置位置：`model.name / model.params`
+
+(config-component-models-adm-unet)=
+#### `adm_unet`
+
+带 class/time conditioning、scale-shift residual blocks、residual resampling 和低分辨率 Transformer 的 ADM 风格 UNet。
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `in_channels` | 输入 state 通道数。 |
+| `out_channels` | 输出预测通道数；固定方差去噪要求与输入通道相同。 |
+| `base_channels` | 第一层特征通道数。 |
+| `channel_multipliers` | 各分辨率层相对 base_channels 的通道倍数。 |
+| `num_res_blocks` | 每个分辨率层的 residual block 数量。 |
+| `transformer_depths` | 每个分辨率层的 Spatial Transformer 深度；零表示禁用。 |
+| `middle_transformer_depth` | middle block 的 Spatial Transformer 深度；零表示禁用。 |
+| `attention_head_dim` | Transformer attention 的单 head 通道数。 |
+| `time_embedding_dim` | time 与 class embedding 的共享 conditioning 宽度。 |
+| `num_classes` | 非 null class 数量；null class id 固定为 num_classes。 |
+| `dropout` | residual 与 Transformer 分支的 dropout 概率。 |
+| `scale_shift_norm` | residual block 是否使用 conditioning scale-shift normalization。 |
+| `residual_resampling` | 下采样和上采样是否使用 residual resampling blocks。 |
+| `zero_init_residual` | 是否零初始化 residual block 的末端 projection。 |
+| `zero_init_output` | 是否零初始化最终输出 projection。 |
+
+(config-component-models-dit)=
+#### `dit`
+
+使用固定二维位置编码、adaLN-Zero 和 PyTorch SDPA 的 class-conditional pixel DiT。
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `input_size` | 输入图像空间大小；可为正整数方形尺寸或 `[height, width]`。 |
+| `patch_size` | 方形 patch 边长；必须整除两个输入维度。 |
+| `in_channels` | 输入 state 通道数。 |
+| `out_channels` | 输出预测通道数；固定方差去噪要求与输入通道相同。 |
+| `hidden_size` | token 与 conditioning 的隐藏宽度；必须兼容 head 数和二维位置编码。 |
+| `depth` | Transformer block 数量。 |
+| `num_heads` | self-attention head 数量。 |
+| `mlp_ratio` | feed-forward 隐藏宽度相对 hidden_size 的正比例。 |
+| `num_classes` | 非 null class 数量；null class id 固定为 num_classes。 |
 
 (config-component-models-unet)=
 #### `unet`
@@ -941,6 +1001,25 @@ native provider，扩展 Registry 不能占用。
 - 基类/契约：`stochaflow.sampling.SamplingBuilder`
 - 配置位置：`sampling.builder.name / sampling.builder.params`
 
+(config-component-sampling_builders-class-conditional-denoising)=
+#### `class_conditional_denoising`
+
+为离散 Gaussian denoising 显式分配 class labels，并通过 classifier-free guidance 组合条件与 null prediction。
+
+运行时注入（不得在 YAML 中覆盖）：`context`。
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `weights` | 模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`。 |
+| `prediction_type` | 模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。 |
+| `clip_denoised` | 是否把预测 clean state 裁剪到 `[-1, 1]`；默认 `true`。 |
+| `guidance_scale` | 有限非负 CFG scale；0 只执行 null branch，1 只执行 conditional branch，其他值使用 fused double batch。 |
+| `conditions` | 必填有序列表；每项为 `{class_label, count}`，count 总和必须等于 sampling.num_samples。 |
+| `sampler.name` | 必填的 Gaussian-family samplers Registry 名称。 |
+| `sampler.params` | 传给所选 Sampler 构造器的 mapping。 |
+| `trajectory.enabled` | 是否保留 solver trajectory observations；默认 `false`。 |
+| `trajectory.every_steps` | trajectory 的 accepted-step 保留间隔；默认 `1`。 |
+
 (config-component-sampling_builders-standard-denoising)=
 #### `standard_denoising`
 
@@ -965,6 +1044,18 @@ native provider，扩展 Registry 不能占用。
 
 - 基类/契约：`stochaflow.training.TrainingBuilder`
 - 配置位置：`training.name / training.params`
+
+(config-component-training_builders-class-conditional-gaussian-denoising)=
+#### `class_conditional_gaussian_denoising`
+
+读取 `(Tensor, {"class_label": labels})` batch，训练满足 ClassConditionalDenoiser capability 的离散 Gaussian denoiser。
+
+运行时注入（不得在 YAML 中覆盖）：`context`。
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `prediction_type` | 训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。 |
+| `condition_dropout` | 训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。 |
 
 (config-component-training_builders-gaussian-denoising)=
 #### `gaussian_denoising`
@@ -1087,6 +1178,26 @@ native provider，扩展 Registry 不能占用。
 
 - 基类/契约：`stochaflow.training.diagnostics.TrainingDiagnostic`
 - 配置位置：`diagnostics[].name / diagnostics[].params`
+
+(config-component-diagnostics-class-conditional-diffusion-quality)=
+#### `class_conditional_diffusion_quality`
+
+使用原始 batch labels 做对齐重建，并按显式 class allocation 与 CFG 比较 Gaussian sampler profile。
+
+运行时注入（不得在 YAML 中覆盖）：`logger`, `output_dir`, `sample_shape`。
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `conditions` | 有序 `{class_label, count}` 列表；总数必须等于 sampling.sample_num。 |
+| `guidance_scale` | diagnostic sampler 使用的有限非负 CFG scale。 |
+| `samplers` | sampler profile 列表；每项声明唯一 id、Registry name、构造 params 和可选 trajectory。 |
+| `modules` | 按声明顺序导入并注册第三方 diagnostic provider 的 Python module。 |
+| `cadence` | step metric 与 epoch artifact 的执行周期。 |
+| `sampling` | 多 profile 共用的样本数、batch size 和基础 seed。 |
+| `providers` | step metric、sampler metric、denoiser artifact 与 sampler artifact provider 列表。 |
+| `reference` | 必须保持 disabled；class-aware reference metrics 属于独立 post-training evaluator。 |
+| `use_ema` | diagnostic 推理是否优先使用 EMA 权重。 |
+| `failure_policy` | 运行期错误采用 raise 或 warn；配置错误始终失败。 |
 
 (config-component-diagnostics-diffusion-quality)=
 #### `diffusion_quality`

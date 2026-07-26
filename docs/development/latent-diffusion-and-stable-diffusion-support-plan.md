@@ -9,7 +9,7 @@
   Flowers102、256×256、类条件 frozen-codec latent generation、CFG、
   conditional UNet/DiT 对照
 - 前置项目：
-  [AFHQ-v2 类条件生成展示实施计划](afhq-v2-generation-showcase-plan.md)中的
+  [AFHQ-v2 类条件生成 showcase](../tutorials/afhq-v2.md)中的
   class-aware data、条件 denoiser、CFG、AMP 与 gradient accumulation
 - 关联计划：
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、

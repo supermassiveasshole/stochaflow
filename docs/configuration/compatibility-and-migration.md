@@ -4,51 +4,100 @@
 Stochaflow 不把 checkpoint 当作源码或环境快照，也不会静默猜测其他 checkpoint 格式的
 语义。
 
-## Checkpoint v8
+## Checkpoint v9
 
-当前 runtime 只接受 `format_version: 8`。其他版本在构建或恢复 runtime state 前直接失败；
-没有内置升级、降级或旧 payload 推断。若手中有其他格式，只能重新训练，或在项目外编写
-一次性、经过任务所有者验证的转换工具；这种转换不属于 Stochaflow 的兼容保证。
+当前 writer 只生成 `format_version: 9`。runtime 接受 v9，也接受满足下述严格迁移规则的
+v8；其他版本在修改任何 runtime state 前失败。payload 通过
+`torch.load(..., weights_only=True)` 读取，并递归限制为 Tensor/Parameter、primitive 和
+普通 `dict`、`OrderedDict`、`list`、`tuple` 等 data-only 值。
 
-v8 使用 `torch.load(..., weights_only=True)`，并递归限制 payload 为精确 Tensor/
-Parameter、primitive 和普通 `dict`、`OrderedDict`、`list`、`tuple`。训练 checkpoint
-保存：
+训练 checkpoint 保存：
 
 - format version、epoch/global step、resolved config、metrics 与 metadata；
-- primary model state；
-- 存在时的 Process、Objective、EMA model 与 EMA runtime state；
+- primary model，以及存在时的 Process、Objective 和按名称声明的 managed auxiliary
+  module state；
 - optimizer/scheduler 的 concrete class identity 与 state；
-- 按名称保存的 managed auxiliary module state；
+- EMA runtime shadows 与可直接推理的 EMA model projection；
+- `precision_kind`，以及仅在 `fp16-mixed` 时存在的 GradScaler class/state；
+- 始终存在的 typed `inference_asset_descriptors` mapping；没有外部推理资产时为 `{}`；
 - Python、NumPy、Torch CPU 及可用 CUDA/MPS 的 epoch-boundary RNG snapshot；
-- extension entry-point provenance、version acceptance、lineage 和
-  `selected_components` 等审计信息。
+- extension provenance、lineage、`selected_components` 和可选 data artifact bindings。
 
-v8 不保存：
+v9 恢复是事务性的。manager 先验证完整 header、precision/scaler topology、inference
+descriptors、module key/shape/dtype/layout、optimizer parameter groups、scheduler、
+EMA 与可选资产拓扑，再加载 state；后期 load hook 或任一资产失败时，已触及的 runtime
+对象会回滚到恢复前快照。strict resume 因而是完整恢复，不是 weights-only warm start。
+
+可选资产按“存在性 + state”严格配对：runtime 有 Process/Objective 时 checkpoint 必须有
+对应 state，runtime 没有时 payload 也不能含该 key。辅助资产名称、
+optimizer/scheduler class、EMA topology、precision 和 accumulation 同样必须匹配。
+data-aware 训练还会在构建 sibling run 和恢复任何训练资产前，重新 materialize 并比较
+checkpoint 的完整 `DataArtifactBindings`。
+
+### Precision 与 accumulation
+
+`trainer.precision` 支持：
+
+| precision | CPU | CUDA | MPS |
+| --- | --- | --- | --- |
+| `fp32` | 支持 | 支持 | 支持 |
+| `bf16-mixed` | BF16 autocast | 需要可用 CUDA 与 BF16 capability | 不支持 |
+| `fp16-mixed` | 不支持 | FP16 autocast + GradScaler | 不支持 |
+
+不支持的组合在创建 run directory 前失败，不会自动 fallback。模型参数和标准 AdamW state
+保持 FP32；mixed precision 只改变 forward/evaluation autocast 与必要的 gradient scaling。
+FP32/BF16 checkpoint 不得含 scaler fields，FP16 checkpoint 必须同时含 scaler class 和
+state。
+
+`trainer.accumulate_grad_batches` 是正整数。Trainer 在每个固定窗口内累积 backward，
+在实际窗口末尾执行 `unscale -> clip -> step/update`；epoch 末 partial window 按实际
+micro-batch 数归一化。只有成功的 optimizer update 才推进 global step、step scheduler、
+EMA 和 update-level diagnostics。precision、scaler state 和 accumulation 都属于 strict
+resume config/state 边界，不能通过 observability overlay 改写。
+
+### v8 到 v9 的受限迁移
+
+v8 只在没有任何 v9-only header/config 字段时迁移。runtime 确定性补入：
+
+```yaml
+format_version: 9
+precision_kind: fp32
+inference_asset_descriptors: {}
+config:
+  trainer:
+    precision: fp32
+    accumulate_grad_batches: 1
+```
+
+v8 不能携带或推断 GradScaler state，也不能被解释为历史 FP16/BF16 或 accumulation
+训练。若一个标记为 v8 的 payload 已含 precision、accumulation、scaler 或 descriptors
+等 v9-only 字段，迁移直接拒绝，而不是猜测它们的来源。迁移只规范 header；其余资产、
+class identity、RNG 和 data provenance 仍按当前 strict restore 规则验证。
+
+### 不在 checkpoint 中的状态
+
+v9 不保存：
 
 - extension 的 Python class、源码、wheel、依赖环境或 lockfile；
 - DataBuilder/TrainingBuilder/Strategy/SamplingBuilder 实例；
-- Dataset、DataLoader、iterator、worker、PyTorch data sampler 或 partition runtime state；
+- Dataset、DataLoader、iterator、worker、PyTorch data sampler 或 partition runtime
+  state；
+- epoch 中间尚未 step 的 gradients、accumulation window 或 DataLoader cursor；
 - Sampler、Observer、solver history、sampling trajectory 等临时采样状态；
 - TrainingDiagnostic/ExperimentLogger 实例、diagnostic cache/counter、打开的日志文件或
   TensorBoard writer/event 文件；
-- 用户私有 generator 或未声明为 managed training asset 的对象；
-- 数据集、网络资源、输出目录内容或相对路径所指向的文件。
+- 用户私有 generator、数据集、网络资源或输出目录内容。
 
-当前 v8 写入 MPS RNG state。早期实现生成、仍标记为 v8 的 checkpoint 可能没有这个
-字段；它们在 MPS strict resume 时会发出警告并继续加载，但无法保证 MPS 随机流与未中断
-运行精确衔接。CPU/CUDA/MPS RNG snapshot 都只覆盖相应的全局 generator，不扩展
-DataLoader worker 或用户私有 generator 的持久化边界。
+CPU/CUDA/MPS RNG snapshot 只覆盖相应全局 generator，不扩展 DataLoader worker 或用户
+私有 generator 的持久化边界。需要 epoch-boundary 逐 batch 重建的 DataBuilder 应使用
+epoch-aware sampler 和 stateless `(seed, epoch, sample identity)` augmentation。
 
-在 `train --resume` 的完整训练恢复中，可选资产按“存在性 + state”严格配对：runtime
-有 Process/Objective 时 checkpoint 必须有对应 state，runtime 没有时 payload 也不能含
-该 key。辅助资产名称、optimizer/scheduler class 和可加载 state 同样必须匹配。因此
-strict resume 是完整恢复，不是 weights-only warm start。
-
-sampling 使用单独的 inference view：它只保留 model、可选 EMA、可选 Process 以及必要
-metadata，不构建或加载 Objective、optimizer、scheduler 和 managed training assets。
-checkpoint config 或 sampling-only overlay 会保留 checkpoint 的 Process 声明和 state
-配对；完整外部 sampling config 可以声明 `process: null` 并忽略 checkpoint 中未使用的
-Process state。无论哪条路径，实际构建的 model/Process 仍必须能严格加载所复用的 state。
+sampling 使用单独的 inference view：它只保留 model、可选 EMA、可选 Process、声明的
+inference assets 和必要 metadata，不构建或加载 Objective、optimizer、scheduler 或其他
+training-only assets。checkpoint config 或 sampling-only overlay 会保留 checkpoint 的
+Process 声明和 state 配对；完整外部 sampling config 可以声明 `process: null` 并忽略未
+使用的 Process state。无论哪条路径，实际构建的 model/Process 仍必须严格加载被复用的
+state。
 
 ## Config authority
 

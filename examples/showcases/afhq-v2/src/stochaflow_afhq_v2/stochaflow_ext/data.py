@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any, cast
 
 from stochaflow.extensions import (
@@ -31,6 +33,39 @@ _DEFAULT_LOCK = (
     Path(__file__).resolve().parents[1] / "resources" / "afhq-v2.lock.yaml"
 )
 _DEFAULT_VALIDATION_SEED = "stochaflow-afhq-v2-validation-v1"
+_CLASS_MAPPING = {"cat": 0, "dog": 1, "wild": 2}
+
+
+@dataclass(frozen=True, slots=True)
+class AFHQV2ImageFolderArtifactPayload(ImageFolderArtifactPayload):
+    """AFHQ-v2 image partitions with an authenticated class mapping."""
+
+    class_mapping: Mapping[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        ImageFolderArtifactPayload.__post_init__(self)
+        mapping = cast(object, self.class_mapping)
+        if not isinstance(mapping, Mapping):
+            raise TypeError("AFHQ-v2 class_mapping must be a mapping")
+        copied = dict(mapping)
+        if copied != _CLASS_MAPPING:
+            raise ValueError(
+                "AFHQ-v2 class_mapping must be cat=0, dog=1, wild=2"
+            )
+        for role in ("train", "validation", "test"):
+            records = getattr(self, role)
+            for record in records or ():
+                parts = PurePosixPath(record.path).parts
+                if len(parts) != 2 or parts[0] not in copied:
+                    raise ValueError(
+                        f"AFHQ-v2 {role} record has no authenticated class: "
+                        f"{record.path!r}"
+                    )
+        object.__setattr__(
+            self,
+            "class_mapping",
+            MappingProxyType(copied),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +150,8 @@ def _image_folder_payload(
     prepared: PreparedArtifact,
     *,
     resolution: int,
-) -> ImageFolderArtifactPayload:
+    class_mapping: Mapping[str, int],
+) -> AFHQV2ImageFolderArtifactPayload:
     roots = {
         role: prepared.root / role
         for role in ("train", "validation", "test")
@@ -141,11 +177,12 @@ def _image_folder_payload(
                 height=resolution,
             )
         )
-    return ImageFolderArtifactPayload(
+    return AFHQV2ImageFolderArtifactPayload(
         roots=roots,
         train=tuple(partitions["train"]),
         validation=tuple(partitions["validation"]),
         test=tuple(partitions["test"]),
+        class_mapping=class_mapping,
     )
 
 
@@ -268,8 +305,13 @@ class AFHQV2ImageDataSource(ImageDataSource):
             payload=_image_folder_payload(
                 prepared,
                 resolution=config.resolution,
+                class_mapping=lock.contract.class_mapping,
             ),
         )
 
 
-__all__ = ["AFHQV2DataSourceConfig", "AFHQV2ImageDataSource"]
+__all__ = [
+    "AFHQV2DataSourceConfig",
+    "AFHQV2ImageDataSource",
+    "AFHQV2ImageFolderArtifactPayload",
+]

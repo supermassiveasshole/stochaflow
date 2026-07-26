@@ -954,6 +954,56 @@ def _read_regular_file_without_links(
     )
 
 
+def load_verified_prepared_image(
+    root: Path,
+    relative_path: str,
+    *,
+    expected_size_bytes: int,
+    expected_sha256: str,
+    expected_width: int,
+    expected_height: int,
+) -> Image.Image:
+    """Load one prepared RGB PNG while rechecking its authenticated record."""
+
+    path = PurePosixPath(relative_path)
+    payload, metadata = _read_regular_file_without_links(
+        root,
+        path,
+        label="prepared AFHQ-v2 image",
+    )
+    assert payload is not None
+    if metadata.st_size != expected_size_bytes or len(payload) != expected_size_bytes:
+        raise PreparationError(
+            f"prepared image size changed: {relative_path!r}"
+        )
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise PreparationError(
+            f"prepared image content changed: {relative_path!r}"
+        )
+    try:
+        with Image.open(io.BytesIO(payload)) as source:
+            source.load()
+            if source.format != "PNG":
+                raise PreparationError(
+                    f"prepared image is not PNG: {relative_path!r}"
+                )
+            if source.mode != "RGB":
+                raise PreparationError(
+                    f"prepared image is not RGB: {relative_path!r}"
+                )
+            if source.size != (expected_width, expected_height):
+                raise PreparationError(
+                    f"prepared image dimensions changed: {relative_path!r}"
+                )
+            return source.copy()
+    except PreparationError:
+        raise
+    except (OSError, ValueError, UnidentifiedImageError) as error:
+        raise PreparationError(
+            f"cannot decode prepared image: {relative_path!r}"
+        ) from error
+
+
 def _directory_identity(metadata: os.stat_result) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 

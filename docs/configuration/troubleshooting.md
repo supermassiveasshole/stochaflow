@@ -322,10 +322,11 @@ Tensor 只声明 `tensor` writer，或注册领域 writer。
 
 ### `checkpoint format version ... is unsupported`
 
-当前 checkpoint 格式为 v8，分别保存 primary model、可选 Process/Objective、可选
-EMA model、带 concrete class identity 的 optimizer/scheduler，以及按稳定名称组织的
-training assets。训练恢复和 checkpoint-only sampling 不读取 v7 及更早格式；
-请用当前代码重新训练或重新生成 checkpoint。
+当前 checkpoint writer 只生成 v9，分别保存 primary model、可选 Process/Objective、
+可选 EMA model、带 concrete class identity 的 optimizer/scheduler，以及按稳定名称组织的
+training assets。runtime 只额外接受满足
+[受限迁移规则](compatibility-and-migration.md#v8-到-v9-的受限迁移)的 legacy v8；
+v7 及更早格式会在修改 runtime state 前失败。请用当前代码重新训练或重新生成 checkpoint。
 
 ### 蒸馏 resume 找不到 teacher bootstrap state
 
@@ -344,11 +345,11 @@ partial-noised initial state 使用 public state time `t` 时，显式 DDIM sche
 
 ### checkpoint state 不是 weights-only 安全值
 
-v8 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor subclass 和
-其他 `torch.load(..., weights_only=True)` 默认值域之外的对象。自定义 module、optimizer
-或 scheduler 的 extra state 应转换为 Tensor、primitive、list/tuple/dict 等普通 container；
-不要添加 `safe_globals` 或依赖导入 extension class 才能读取的 pickle 对象。异常中的 state
-path 会定位具体非法值。
+当前 v9 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor
+subclass 和其他 `torch.load(..., weights_only=True)` 默认值域之外的对象；同一约束也适用
+于可迁移的 legacy v8。自定义 module、optimizer 或 scheduler 的 extra state 应转换为
+Tensor、primitive、list/tuple/dict 等普通 container；不要添加 `safe_globals` 或依赖导入
+extension class 才能读取的 pickle 对象。异常中的 state path 会定位具体非法值。
 
 ## 文档生成与 CI
 

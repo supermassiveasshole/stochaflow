@@ -11,7 +11,13 @@ from .builder import (
     validate_training_plan,
 )
 from .builtin import SupervisedTrainingBuilder, SupervisedTrainingStrategy
+from .class_conditional_gaussian import (
+    ClassConditionalGaussianDenoisingTrainingBuilder,
+    ClassConditionalGaussianDenoisingTrainingStrategy,
+    ClassConditionalGaussianDiagnosticSemantics,
+)
 from .diagnostics import (
+    ClassConditionalDiffusionQualityDiagnostic,
     ContextAwareDiagnostic,
     DiagnosticBuildContext,
     FitStartEvent,
@@ -28,6 +34,13 @@ from .gaussian import (
 )
 from .objectives import MSEObjective, PerSampleObjective, compute_objective
 from .optimization import WarmupCosineLR
+from .precision import (
+    PRECISION_KINDS,
+    PrecisionKind,
+    PrecisionRuntime,
+    build_precision_runtime,
+    validate_precision_support,
+)
 from .reporting import FinalSummary, RichTrainingReporter, RunSummary
 from .strategy import (
     Batch,
@@ -40,7 +53,12 @@ from .strategy import (
 from .trainer import Trainer
 
 __all__ = [
+    "PRECISION_KINDS",
     "Batch",
+    "ClassConditionalDiffusionQualityDiagnostic",
+    "ClassConditionalGaussianDenoisingTrainingBuilder",
+    "ClassConditionalGaussianDenoisingTrainingStrategy",
+    "ClassConditionalGaussianDiagnosticSemantics",
     "ContextAwareDiagnostic",
     "DeviceTransferableBatch",
     "DiagnosticBuildContext",
@@ -53,6 +71,8 @@ __all__ = [
     "MSEObjective",
     "ManagedTrainingModule",
     "PerSampleObjective",
+    "PrecisionKind",
+    "PrecisionRuntime",
     "RichTrainingReporter",
     "RunSummary",
     "ScalarMetric",
@@ -68,11 +88,13 @@ __all__ = [
     "TrainingPlan",
     "TrainingStrategy",
     "WarmupCosineLR",
+    "build_precision_runtime",
     "build_training_plan",
     "compute_objective",
     "gaussian_training_target",
     "trainable_parameters",
     "training_module_roots",
+    "validate_precision_support",
     "validate_train_step_output",
     "validate_training_plan",
 ]
