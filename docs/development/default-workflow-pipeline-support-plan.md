@@ -1050,8 +1050,14 @@ sampling:
     name: gaussian_super_resolution
     params:
       source:
-        kind: image_folder
-        path: data/low-resolution
+        name: image_folder
+        params:
+          root: data/low-resolution
+          layout: flat
+        materialization:
+          cache_root: ./data
+          policy: ensure
+          verification: full
       native_scale: 4
       weights: auto
       prediction_type: epsilon

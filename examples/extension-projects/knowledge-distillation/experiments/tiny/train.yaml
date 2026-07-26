@@ -11,7 +11,7 @@ data:
   name: stochaflow-knowledge-distillation.classification
   params:
     source:
-      kind: synthetic
+      name: synthetic
       input_features: 8
       num_classes: 4
       train_samples: 64

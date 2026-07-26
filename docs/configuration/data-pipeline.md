@@ -7,8 +7,11 @@ Sampler、collate 或 DataLoader，而是一次性接收 builder 已经组装好
 flowchart LR
     A["data.name / data.params"] --> B["data_builders Registry"]
     B --> C["DataBuilder.build()"]
-    C --> D["DataLoaders"]
-    D --> E["Runner / Trainer"]
+    C --> D["ImageDataSource.materialize()（仅 image recipes）"]
+    D --> E["DataArtifact / ImageDatasetFactory"]
+    E --> F["Dataset / partition / transform / sampler / DataLoader"]
+    F --> G["DataLoaders"]
+    G --> H["Runner / Trainer"]
 ```
 
 ```python
@@ -18,6 +21,7 @@ class DataLoaders:
     validation: Iterable[Any] | None = None
     test: Iterable[Any] | None = None
     steps_per_epoch: int | None = None
+    artifact_bindings: DataArtifactBindings | None = None
 ```
 
 loader 必须可重复迭代，不能直接返回一次性的 generator/iterator。训练 loader 没有
@@ -34,10 +38,13 @@ data:
   name: image
   params:
     source:
-      kind: torchvision
-      dataset: CIFAR10
-      root: ./data
-      download: true
+      name: torchvision
+      params:
+        dataset: CIFAR10
+      materialization:
+        cache_root: ./data
+        policy: ensure
+        verification: manifest
     partition:
       mode: holdout
       validation_size: 5000
@@ -57,9 +64,37 @@ data:
       steps_per_epoch: auto
 ```
 
-`source.kind` 支持 `torchvision` 和 `image_folder`。torchvision 首批支持 MNIST、
-CIFAR10 和 Flowers102；本地目录会递归、稳定排序地读取常见图片格式。`download: true`
-由 torchvision 自身负责下载。
+`source` 只有一种规范结构：`name` 选择已注册的 `ImageDataSource`，`params` 是该
+source 的私有参数，`materialization` 声明缓存、获取策略与验证强度。
+`materialization` 是必填 mapping；其中字段省略时依次使用 `cache_root: ./data`、
+`policy: ensure` 和 `verification: full`。持久化实验配置建议显式写出三者，避免工作目录
+改变缓存位置。内置 `torchvision` 支持 MNIST、CIFAR10 和 Flowers102；
+`policy: ensure` 允许在 exact managed artifact 不存在时下载并发布，
+`policy: require` 则只接受已有的 exact artifact。`verification` 可选 `manifest` 或
+`full`；strict resume 会强制完整验证。
+
+现有本地/NFS 图片目录使用 `image_folder`，它创建 reference artifact：缓存中只保存
+canonical manifest 和分片 inventory，不复制原图。第一次 `ensure` 会完整枚举并读取
+每个文件以记录大小与 SHA-256。`manifest` 校验索引、路径和大小，`full` 还会重新计算
+全部内容哈希。Dataset 只按 manifest 的固定顺序读取，并在解码同一份字节前校验 SHA-256，
+因此外部文件被替换时会 fail-stop；但外部目录被删除后，Stochaflow 无法仅凭 reference
+artifact 重建图片。示例：
+
+```yaml
+source:
+  name: image_folder
+  params:
+    root: G:/datasets/images
+    layout: flat
+  materialization:
+    cache_root: ./data
+    policy: ensure
+    verification: full
+```
+
+当前内置 image recipes 不支持 Hugging Face streaming。streaming 需要
+`IterableDataset`、shuffle buffer 与 iterator-state resume 的独立生命周期；需要该
+能力的项目应提供自己的 `DataBuilder`，并明确其恢复契约。
 
 partition 是这个 recipe 的私有能力：
 
@@ -91,8 +126,14 @@ data:
   name: super_resolution
   params:
     source:
-      kind: image_folder
-      path: ./data/hr
+      name: image_folder
+      params:
+        root: ./data/hr
+        layout: flat
+      materialization:
+        cache_root: ./data
+        policy: ensure
+        verification: full
     partition:
       mode: holdout
       validation_size: 0.1
@@ -110,10 +151,25 @@ data:
       steps_per_epoch: auto
 ```
 
-在线模式先对 HR 做对齐 crop 和可选 flip，再生成 LR。配对模式使用
-`source.kind: paired_folders`，声明 `high_resolution_path`、`low_resolution_path`，并将
-`low_resolution.kind` 设为 `paired`。文件按相对路径和 stem 稳定匹配；LR/HR 共享几何
-变换并校验整数尺度。默认 batch 为 `(high_res, {"low_res": low_res})`。
+在线模式先对 HR 做对齐 crop 和可选 flip，再生成 LR。配对模式使用以下 source，并将
+`low_resolution.kind` 设为 `paired`：
+
+```yaml
+source:
+  name: paired_image_folders
+  params:
+    high_resolution_root: ./data/hr
+    low_resolution_root: ./data/lr
+    layout: flat
+  materialization:
+    cache_root: ./data
+    policy: ensure
+    verification: full
+```
+
+文件按规范相对路径和 stem 稳定匹配；重复、缺失和大小写冲突都会被拒绝。LR/HR 共享
+几何变换并校验整数尺度。默认 batch 为
+`(high_res, {"low_res": low_res})`。
 
 (multi-resolution-image-recipe)=
 ## `multi_resolution_image` recipe
@@ -129,15 +185,24 @@ data:
       - id: digits
         sampling_weight: 0.4
         source:
-          kind: torchvision
-          dataset: MNIST
-          root: ./data
-          download: true
+          name: torchvision
+          params:
+            dataset: MNIST
+          materialization:
+            cache_root: ./data
+            policy: ensure
+            verification: manifest
       - id: flowers
         sampling_weight: 0.6
         source:
-          kind: image_folder
-          path: ./data/flowers
+          name: image_folder
+          params:
+            root: ./data/flowers
+            layout: flat
+          materialization:
+            cache_root: ./data
+            policy: ensure
+            verification: full
     image:
       channels: 3
       normalize: true
@@ -170,6 +235,18 @@ $$
 `image`/`super_resolution` 使用 recipe 私有的 epoch-aware shuffle，
 `multi_resolution_image` 使用自己的 `set_epoch()` batch sampler。因此在数据与配置不变时，
 strict resume 可以重建对应 epoch 的索引/batch 顺序。
+
+每个 source 的完整 artifact identity 会按 source id 排序后写入 run manifest 与
+checkpoint。strict resume 在构建数据前注入 checkpoint 中的 expected bindings；任何
+缺失、source/recipe/content identity 不一致都会在恢复模型、optimizer 或 scheduler
+之前失败。managed artifact 可从固定来源与 recipe 重新构建；reference artifact 只保证
+对当前外部字节 fail-stop，不宣称拥有或版本化外部目录。
+
+POSIX 路径读取与缓存变更使用从文件系统根逐级 no-follow 的 descriptor-relative 操作。
+Windows 会拒绝 symlink/junction/reparse point，并在操作前后复核祖先与目标 identity；
+但 Windows 的发布、隔离和递归删除仍受限于 pathname API。若另一个进程同时拥有缓存目录
+写权限，框架只能在检测到替换时 fail-stop，不能承诺像 POSIX `openat`/`renameat2` 那样
+对错误目标绝对零副作用。生产缓存应通过 ACL 限制为训练账户独占写入。
 
 checkpoint 不保存 DataLoader iterator、worker 或 transform 的随机状态。使用
 `num_workers > 0` 的随机 crop/flip 不保证与不中断运行产生逐位相同的 batch Tensor；

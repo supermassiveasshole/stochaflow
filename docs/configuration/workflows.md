@@ -257,8 +257,14 @@ data:
   name: image
   params:
     source:
-      kind: image_folder
-      path: ./data/images
+      name: image_folder
+      params:
+        root: ./data/images
+        layout: flat
+      materialization:
+        cache_root: ./data
+        policy: ensure
+        verification: full
     partition:
       mode: kfold
       num_folds: 5

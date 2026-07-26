@@ -31,7 +31,8 @@ def test_load_ddpm_mnist_config() -> None:
     assert config.process is not None
     assert config.model.name == "unet"
     assert config.data.name == "image"
-    assert config.data.params["source"]["dataset"] == "MNIST"
+    assert config.data.params["source"]["name"] == "torchvision"
+    assert config.data.params["source"]["params"]["dataset"] == "MNIST"
     assert config.data.params["image"]["channels"] == 1
     assert config.data.params["image"]["size"] == [32, 32]
     assert config.data.params["partition"]["mode"] == "holdout"
@@ -276,7 +277,8 @@ def test_load_ddpm_flowers102_config() -> None:
     assert isinstance(config, StochaflowConfig)
     assert config.process is not None
     assert config.model.name == "unet"
-    assert config.data.params["source"]["dataset"] == "Flowers102"
+    assert config.data.params["source"]["name"] == "torchvision"
+    assert config.data.params["source"]["params"]["dataset"] == "Flowers102"
     assert config.data.params["image"]["size"] == [64, 64]
     assert config.data.params["partition"]["mode"] == "official"
     assert config.data.params["loader"]["batch_size"] == 64
@@ -390,7 +392,7 @@ def test_config_requires_training_declaration() -> None:
     raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
     raw.pop("training")
 
-    with pytest.raises(TypeError, match="training"):
+    with pytest.raises(ConfigError, match="training"):
         load_config_dict(raw)
 
 

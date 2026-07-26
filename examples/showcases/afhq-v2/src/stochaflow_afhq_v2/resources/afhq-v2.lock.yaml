@@ -1,0 +1,42 @@
+schema_version: 1
+dataset: afhq-v2
+source:
+  type: official_archive
+  url: https://www.dropbox.com/s/vkzjokiwof5h8w6/afhq_v2.zip?dl=1
+  archive_name: afhq_v2.zip
+  bytes: 6955288636
+  # Locally audited from the complete official Dropbox archive on 2026-07-26.
+  # The upstream project does not publish a checksum; see README.md.
+  sha256: 6f2540f22c6d8ebb8879a2bc0227666dd4fc765cc355cb073b63a835d679e4e3
+license:
+  name: CC BY-NC 4.0
+  url: https://creativecommons.org/licenses/by-nc/4.0/
+homepage: https://github.com/clovaai/stargan-v2#animal-faces-hq-dataset-afhq
+citation: >-
+  Yunjey Choi, Youngjung Uh, Jaejun Yoo, and Jung-Woo Ha.
+  StarGAN v2: Diverse Image Synthesis for Multiple Domains. CVPR 2020.
+dataset_contract:
+  classes:
+    - cat
+    - dog
+    - wild
+  class_mapping:
+    cat: 0
+    dog: 1
+    wild: 2
+  source_splits:
+    train: 14336
+    test: 1467
+  source_class_counts:
+    train:
+      cat: 5065
+      dog: 4678
+      wild: 4593
+    test:
+      cat: 493
+      dog: 491
+      wild: 483
+  total_count: 15803
+  input_resolution: 512
+  image_mode: RGB
+  image_format: PNG

@@ -15,7 +15,11 @@ from typing import Any, cast
 import torch
 import yaml
 
-from stochaflow.data import DataLoaders, build_data_loaders
+from stochaflow.data import (
+    DataArtifactBindings,
+    DataLoaders,
+    build_data_loaders,
+)
 from stochaflow.sampling.runtime import run_sampling
 from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
 from stochaflow.training.reporting import (
@@ -23,6 +27,7 @@ from stochaflow.training.reporting import (
     RichTrainingReporter,
     RunSummary,
 )
+from stochaflow.training.trainer import TrainingFitState
 from stochaflow.utils.checkpoint import (
     CheckpointManager,
     CheckpointState,
@@ -624,6 +629,23 @@ def _resolve_training_inputs(args: argparse.Namespace) -> ResolvedTrainingInputs
             expected_provenance=_load_checkpoint_extension_provenance(checkpoint),
             selection_policy=ExtensionSelectionPolicy.EXACT,
         )
+        requested_epochs = cast(object, args.epochs)
+        if requested_epochs is not None and (
+            isinstance(requested_epochs, bool)
+            or not isinstance(requested_epochs, int)
+            or requested_epochs <= 0
+        ):
+            raise ValueError("--epochs must be positive when provided")
+        target_epoch = (
+            unresolved_config.trainer.num_epochs
+            if requested_epochs is None
+            else requested_epochs
+        )
+        _preflight_inherited_best(
+            checkpoint_path,
+            checkpoint,
+            target_epoch=target_epoch,
+        )
         config_source = "checkpoint"
 
     extensions = activate_extensions_for_cli(
@@ -702,7 +724,10 @@ def _restore_training_state(
             f"exceeds the target of {target_epoch}; increase --epochs to continue"
         )
     checkpoint_kind = loaded.metadata.get("checkpoint_kind")
-    if checkpoint_kind not in {None, "best", "latest"}:
+    if checkpoint_kind is not None and (
+        not isinstance(checkpoint_kind, str)
+        or checkpoint_kind not in {"best", "latest"}
+    ):
         raise ValueError(
             "checkpoint metadata.checkpoint_kind must be 'best', 'latest', or null"
         )
@@ -720,7 +745,6 @@ def _restore_training_state(
         checkpoint=checkpoint,
         checkpoint_payload=payload,
         checkpoint_kind=checkpoint_kind,
-        selected_epoch=selected_epoch,
         training_loop_state=training_loop_state,
     )
     training.trainer.best_checkpoint_path = previous_best
@@ -771,17 +795,41 @@ def _same_metric(left: object, right: float) -> bool:
     return value == right or (math.isnan(value) and math.isnan(right))
 
 
+def _validate_best_snapshot_fit_state(
+    fit_state: TrainingFitState,
+    *,
+    label: str,
+) -> None:
+    if fit_state.best_epoch is None or fit_state.best_metric_value is None:
+        raise ValueError(
+            f"{label} must record best_epoch and best_metric_value"
+        )
+    if fit_state.epochs_without_improvement != 0:
+        raise ValueError(
+            f"{label} must record epochs_without_improvement=0"
+        )
+    if fit_state.stopped_early:
+        raise ValueError(f"{label} must record stopped_early=false")
+
+
 def _validate_inherited_best(
     payload: CheckpointState,
     *,
     source: Path,
     selected_payload: CheckpointState,
-    selected_epoch: int | None,
     best_epoch: int,
     best_metric: float,
     monitor: str,
     mode: str,
 ) -> None:
+    selected_epoch, selected_global_step, _ = _parse_strict_resume_state(
+        selected_payload,
+        require_cuda_compatibility=False,
+    )
+    candidate_epoch, candidate_global_step, _ = _parse_strict_resume_state(
+        payload,
+        require_cuda_compatibility=False,
+    )
     candidate_config = cast(object, payload.get("config"))
     selected_config = cast(object, selected_payload.get("config"))
     if (
@@ -817,17 +865,31 @@ def _validate_inherited_best(
             f"inherited best checkpoint '{source}' config overlay history does "
             "not match the selected checkpoint"
         )
-    candidate_epoch = cast(object, payload.get("epoch"))
+    selected_artifacts = _checkpoint_data_artifacts(
+        selected_payload,
+        path="selected checkpoint metadata.data_artifacts",
+    )
+    candidate_artifacts = _checkpoint_data_artifacts(
+        payload,
+        path="inherited best checkpoint metadata.data_artifacts",
+    )
+    if candidate_artifacts != selected_artifacts:
+        raise ValueError(
+            f"inherited best checkpoint '{source}' data artifacts do not "
+            "match the selected checkpoint"
+        )
     if (
-        isinstance(candidate_epoch, bool)
-        or not isinstance(candidate_epoch, int)
-        or candidate_epoch != best_epoch
-        or selected_epoch is None
+        candidate_epoch != best_epoch
         or candidate_epoch > selected_epoch
     ):
         raise ValueError(
             f"inherited best checkpoint '{source}' does not belong to the "
             "selected checkpoint history: best epoch mismatch"
+        )
+    if candidate_global_step > selected_global_step:
+        raise ValueError(
+            f"inherited best checkpoint '{source}' does not belong to the "
+            "selected checkpoint history: global_step mismatch"
         )
     metadata = candidate_metadata
     if metadata.get("checkpoint_kind") != "best":
@@ -836,18 +898,19 @@ def _validate_inherited_best(
             "metadata.checkpoint_kind='best'"
         )
     candidate_loop = cast(object, metadata.get("training_loop"))
+    candidate_fit_state = TrainingFitState.from_mapping(candidate_loop)
+    _validate_best_snapshot_fit_state(
+        candidate_fit_state,
+        label=f"inherited best checkpoint '{source}'",
+    )
     expected_identity = {
         "best_epoch": best_epoch,
         "best_metric_value": best_metric,
         "monitor": monitor,
         "mode": mode,
     }
-    if not isinstance(candidate_loop, dict):
-        raise TypeError(
-            f"inherited best checkpoint '{source}' is missing training_loop state"
-        )
     for field, expected in expected_identity.items():
-        actual = candidate_loop.get(field)
+        actual = getattr(candidate_fit_state, field)
         matches = (
             _same_metric(actual, best_metric)
             if field == "best_metric_value"
@@ -869,24 +932,92 @@ def _validate_inherited_best(
         )
 
 
+def _preflight_inherited_best(
+    checkpoint: Path,
+    checkpoint_payload: CheckpointState,
+    *,
+    target_epoch: int,
+) -> None:
+    """Validate all pure resume state before importing selected plugins."""
+
+    selected_epoch, _, _ = _parse_strict_resume_state(
+        checkpoint_payload,
+        require_cuda_compatibility=False,
+    )
+    if selected_epoch >= target_epoch:
+        raise ValueError(
+            f"checkpoint already completed epoch {selected_epoch}, which meets or "
+            f"exceeds the target of {target_epoch}; increase --epochs to continue"
+        )
+    metadata = cast(object, checkpoint_payload.get("metadata"))
+    if not isinstance(metadata, dict):
+        raise TypeError("checkpoint metadata must be a mapping")
+    fit_state = TrainingFitState.from_mapping(metadata.get("training_loop"))
+    if fit_state.stopped_early:
+        raise ValueError(
+            "checkpoint training already stopped early; strict resume cannot "
+            "change the saved early-stopping policy"
+        )
+    checkpoint_kind = cast(object, metadata.get("checkpoint_kind"))
+    if checkpoint_kind is not None and (
+        not isinstance(checkpoint_kind, str)
+        or checkpoint_kind not in {"best", "latest"}
+    ):
+        raise ValueError(
+            "checkpoint metadata.checkpoint_kind must be 'best', 'latest', or null"
+        )
+    if checkpoint_kind == "best":
+        _validate_best_snapshot_fit_state(
+            fit_state,
+            label="checkpoint metadata.checkpoint_kind='best'",
+        )
+    _checkpoint_data_artifacts(checkpoint_payload)
+    if fit_state.best_epoch is None:
+        return
+    assert fit_state.best_metric_value is not None
+    assert fit_state.monitor is not None
+    assert fit_state.mode is not None
+    source = (
+        checkpoint
+        if checkpoint_kind == "best"
+        else checkpoint.parent / "best.pt"
+    )
+    if source == checkpoint:
+        candidate_payload = checkpoint_payload
+    else:
+        if not source.is_file():
+            raise FileNotFoundError(
+                "strict resume requires the sibling checkpoints/best.pt artifact "
+                "recorded by best-tracking state"
+            )
+        candidate_payload = CheckpointManager.load_payload(source, map_location="cpu")
+    _validate_inherited_best(
+        candidate_payload,
+        source=source,
+        selected_payload=checkpoint_payload,
+        best_epoch=fit_state.best_epoch,
+        best_metric=fit_state.best_metric_value,
+        monitor=fit_state.monitor,
+        mode=fit_state.mode,
+    )
+
+
 def _materialize_inherited_best(
     training: TrainingComponents,
     *,
     checkpoint: Path,
     checkpoint_payload: CheckpointState,
     checkpoint_kind: object,
-    selected_epoch: int | None,
     training_loop_state: object,
 ) -> Path | None:
     best_epoch = training.trainer.best_epoch
     best_metric = training.trainer.best_metric_value
     if best_epoch is None or best_metric is None:
         return None
-    if not isinstance(training_loop_state, dict):
-        raise TypeError("checkpoint metadata.training_loop must be a mapping")
-    monitor = training_loop_state.get("monitor")
-    mode = training_loop_state.get("mode")
-    if not isinstance(monitor, str) or mode not in {"min", "max"}:
+    fit_state = TrainingFitState.from_mapping(training_loop_state)
+    monitor = fit_state.monitor
+    mode = fit_state.mode
+    if monitor is None or mode is None:
         raise ValueError("checkpoint best-tracking monitor/mode are invalid")
 
     source = checkpoint if checkpoint_kind == "best" else checkpoint.parent / "best.pt"
@@ -903,7 +1034,6 @@ def _materialize_inherited_best(
         candidate_payload,
         source=source,
         selected_payload=checkpoint_payload,
-        selected_epoch=selected_epoch,
         best_epoch=best_epoch,
         best_metric=best_metric,
         monitor=monitor,
@@ -1016,6 +1146,36 @@ def _evaluate_test_split(
     return metrics["loss"]
 
 
+def _checkpoint_data_artifacts(
+    checkpoint: CheckpointState,
+    *,
+    path: str = "checkpoint metadata.data_artifacts",
+) -> DataArtifactBindings | None:
+    """Parse the optional artifact set stored by one checkpoint."""
+
+    metadata = cast(object, checkpoint.get("metadata"))
+    if not isinstance(metadata, dict):
+        raise TypeError("checkpoint metadata must be a mapping")
+    raw = metadata.get("data_artifacts")
+    if raw is None:
+        return None
+    return DataArtifactBindings.from_dict(raw, path=path)
+
+
+def _validate_resume_data_artifacts(
+    expected: DataArtifactBindings | None,
+    current: DataArtifactBindings | None,
+    *,
+    strict_resume: bool,
+) -> None:
+    """Defensively enforce exact artifact identity before run creation."""
+
+    if strict_resume and current != expected:
+        raise ValueError(
+            "strict resume data artifacts do not match the selected checkpoint"
+        )
+
+
 def _run_single_run(
     config: StochaflowConfig,
     loaders: DataLoaders,
@@ -1026,6 +1186,7 @@ def _run_single_run(
     checkpoint_payload: CheckpointState | None,
     startup_cwd: Path,
     runtime_options: dict[str, Any],
+    data_artifacts: DataArtifactBindings | None = None,
     config_overlays: list[dict[str, Any]] | None = None,
 ) -> None:
     config.trainer.num_epochs = options.num_epochs
@@ -1051,6 +1212,9 @@ def _run_single_run(
         "lineage": lineage,
         "startup_cwd": str(startup_cwd),
         "runtime_options": runtime_options,
+        "data_artifacts": (
+            data_artifacts.to_dict() if data_artifacts is not None else None
+        ),
     }
     write_yaml_manifest(
         Path(config.experiment.output_dir) / "run_manifest.yaml",
@@ -1064,6 +1228,9 @@ def _run_single_run(
             "lineage": lineage,
             "startup_cwd": str(startup_cwd),
             "runtime_options": runtime_options,
+            "data_artifacts": (
+                data_artifacts.to_dict() if data_artifacts is not None else None
+            ),
         },
     )
     training = build_training_components(
@@ -1171,11 +1338,24 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
     if args.output_dir is not None:
         output_root = args.output_dir
     options = replace(options, resume_checkpoint=inputs.checkpoint_path)
-
+    strict_resume = inputs.checkpoint is not None
+    expected_artifacts = (
+        _checkpoint_data_artifacts(inputs.checkpoint)
+        if inputs.checkpoint is not None
+        else None
+    )
     set_seed(config.experiment.seed, deterministic=options.deterministic)
     loaders = build_data_loaders(
         config.data,
         seed=config.experiment.seed,
+        strict_resume=strict_resume,
+        expected_artifacts=expected_artifacts,
+    )
+    data_artifacts = loaders.artifact_bindings
+    _validate_resume_data_artifacts(
+        expected_artifacts,
+        data_artifacts,
+        strict_resume=strict_resume,
     )
     exp_id, output_dir = _make_timestamped_output_dir(str(output_root))
     config.experiment.exp_id = exp_id
@@ -1213,5 +1393,6 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
         checkpoint_payload=inputs.checkpoint,
         startup_cwd=inputs.startup_cwd,
         runtime_options=runtime_options,
+        data_artifacts=data_artifacts,
         config_overlays=inputs.config_overlays,
     )

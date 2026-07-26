@@ -27,12 +27,32 @@ from stochaflow.extensions import ...
 
 | 符号 | 用途 |
 | --- | --- |
+| `IMAGE_DATA_SOURCES` | 复用内置 image recipe 时注册 `ImageDataSource` 的受限 Registry |
+| `DataSource` | 只负责物化一个带 identity 的 `DataArtifact`，不构造训练数据栈 |
+| `DataSourceContext` | cache root、ensure/require、verification 与 strict-resume expected identity |
+| `ImageDataSource` | 内置 image recipe 可消费的 source-adapter 基类 |
+| `DataArtifact` | 已验证 artifact 的 identity 与公开 payload 契约 |
+| `ManagedDataArtifact` | Stochaflow 管理、可重建内容的 artifact handle |
+| `ReferencedDataArtifact` | 只缓存 inventory、不复制外部数据的 reference artifact handle |
+| `DataArtifactIdentity` | location-independent artifact identity 根契约 |
+| `ManagedDataArtifactIdentity` | managed ownership discriminator 与完整 identity |
+| `ReferencedDataArtifactIdentity` | referenced ownership discriminator 与完整 identity |
+| `DataArtifactBinding` | 一个稳定 role/id 到完整 artifact identity 的绑定 |
+| `DataArtifactBindings` | 严格排序、唯一且可序列化的 binding 集合 |
+| `ImageFileRecord` | reference inventory 中的相对路径、字节数与 SHA-256 |
+| `ImageFilePair` | paired image payload 中严格对齐的 HR/LR 记录 |
+| `TorchvisionImageArtifactPayload` | torchvision source 交给 image recipe 的公开 payload |
+| `ImageFolderArtifactPayload` | 单目录或 split image folders 的公开 payload |
+| `PairedImageFolderArtifactPayload` | paired HR/LR image folders 的公开 payload |
 | `DataBuilder` | 组装一份独立训练运行的完整数据栈 |
-| `DataBuilderContext` | 深复制的私有 `params` 与 experiment seed |
-| `DataLoaders` | 可重复迭代的 train/validation/test loader 与可选 `steps_per_epoch` |
+| `DataBuilderContext` | 深复制的私有 `params`、seed 与 strict-resume artifact expectations |
+| `DataLoaders` | 可重复迭代 loader、可选 `steps_per_epoch` 与本次运行的 `artifact_bindings` |
 
-数据公共 API 不包含 Dataset、split、source、collate、bucket 或 PyTorch sampler
-抽象；这些由具体 DataBuilder 私有拥有。
+`DataBuilder` 仍是核心唯一的数据扩展入口。`ImageDataSource` 只是复用内置 image recipe
+生命周期的可选 adapter：它必须通过 `IMAGE_DATA_SOURCES` 注册，只物化 artifact，并返回
+上述公开 payload 之一。它不拥有 Dataset、split、transform、collate、bucket、PyTorch
+sampler 或 DataLoader；这些仍由具体 DataBuilder 及其私有 helper 组装。自定义 batch
+语义应实现独立 `DataBuilder`。
 
 最小实现签名：
 
@@ -41,6 +61,8 @@ from stochaflow.extensions import ...
 class DataBuilderContext:
     params: dict[str, Any]  # 深复制
     seed: int
+    strict_resume: bool = False
+    expected_artifacts: DataArtifactBindings | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +71,7 @@ class DataLoaders:
     validation: Iterable[Any] | None = None
     test: Iterable[Any] | None = None
     steps_per_epoch: int | None = None
+    artifact_bindings: DataArtifactBindings | None = None
 
 
 class DataBuilder(ABC):
@@ -265,5 +288,5 @@ partial decorator registration 后应重启进程。
 
 ## 完整性约束
 
-本页列出的 70 个名称与当前 `stochaflow.extensions.__all__` 一一对应。新增公共契约时应先
+本页列出的 87 个名称与当前 `stochaflow.extensions.__all__` 一一对应。新增公共契约时应先
 更新该 `__all__`，再同步本页；仅存在于内部 package 的名称不应被 extension 依赖。

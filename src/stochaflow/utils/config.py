@@ -1,7 +1,7 @@
 """Centralized configuration schema and loading utilities."""
 
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from types import UnionType
 from typing import Any, Union, cast, get_args, get_origin, get_type_hints
@@ -328,6 +328,18 @@ def _coerce_dataclass(cls: type[Any], raw: Any, path: str) -> Any:
     if unknown:
         unknown_fields = ", ".join(f"{path}.{name}" for name in unknown)
         raise ConfigError(f"unknown config field(s): {unknown_fields}")
+    missing = sorted(
+        name
+        for name, field_info in field_map.items()
+        if name not in raw
+        and field_info.default is MISSING
+        and field_info.default_factory is MISSING
+    )
+    if missing:
+        missing_fields = ", ".join(f"{path}.{name}" for name in missing)
+        raise ConfigError(
+            f"missing required config field(s): {missing_fields}"
+        )
 
     kwargs: dict[str, Any] = {}
     for name, field_info in field_map.items():

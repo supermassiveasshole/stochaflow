@@ -14,9 +14,15 @@ from stochaflow.utils import config, logging, plugins, registry
 def test_public_extension_contracts_reexport_runtime_types() -> None:
     expected = {
         "ComponentConfig": config.ComponentConfig,
+        "DataArtifact": data.DataArtifact,
+        "DataArtifactBinding": data.DataArtifactBinding,
+        "DataArtifactBindings": data.DataArtifactBindings,
+        "DataArtifactIdentity": data.DataArtifactIdentity,
         "DataBuilder": data.DataBuilder,
         "DataBuilderContext": data.DataBuilderContext,
         "DataLoaders": data.DataLoaders,
+        "DataSource": data.DataSource,
+        "DataSourceContext": data.DataSourceContext,
         "DDIMSampler": sampling.DDIMSampler,
         "DDPMAncestralSampler": sampling.DDPMAncestralSampler,
         "DiagnosticBuildContext": training.DiagnosticBuildContext,
@@ -49,14 +55,28 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "GaussianTransition": sampling.GaussianTransition,
         "GenerativeDynamics": sampling.GenerativeDynamics,
         "InferenceModelProvider": sampling.InferenceModelProvider,
+        "IMAGE_DATA_SOURCES": data.IMAGE_DATA_SOURCES,
+        "ImageDataSource": data.ImageDataSource,
+        "ImageFilePair": data.ImageFilePair,
+        "ImageFileRecord": data.ImageFileRecord,
+        "ImageFolderArtifactPayload": data.ImageFolderArtifactPayload,
+        "ManagedDataArtifact": data.ManagedDataArtifact,
+        "ManagedDataArtifactIdentity": data.ManagedDataArtifactIdentity,
         "MSEObjective": training.MSEObjective,
         "ManagedTrainingModule": training.ManagedTrainingModule,
         "PerSampleObjective": training.PerSampleObjective,
         "PredictionType": sampling.PredictionType,
         "Process": processes.Process,
+        "PairedImageFolderArtifactPayload": (
+            data.PairedImageFolderArtifactPayload
+        ),
         "REGISTRIES": registry.REGISTRIES,
         "Registry": registry.Registry,
         "RegistryError": registry.RegistryError,
+        "ReferencedDataArtifact": data.ReferencedDataArtifact,
+        "ReferencedDataArtifactIdentity": (
+            data.ReferencedDataArtifactIdentity
+        ),
         "ResolvedExtensions": plugins.ResolvedExtensions,
         "Sampler": sampling.Sampler,
         "SamplerResult": sampling.SamplerResult,
@@ -76,6 +96,9 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "TrainingDiagnostic": training.TrainingDiagnostic,
         "TrainingPlan": training.TrainingPlan,
         "TrainingStrategy": training.TrainingStrategy,
+        "TorchvisionImageArtifactPayload": (
+            data.TorchvisionImageArtifactPayload
+        ),
         "TrajectoryObserver": sampling.TrajectoryObserver,
         "TabulatedDiscreteVPSchedule": processes.TabulatedDiscreteVPSchedule,
         "activate_extension_plugins": plugins.activate_extension_plugins,

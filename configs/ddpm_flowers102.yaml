@@ -10,10 +10,13 @@ data:
   name: image
   params:
     source:
-      kind: torchvision
-      dataset: Flowers102
-      root: ./data
-      download: true
+      name: torchvision
+      params:
+        dataset: Flowers102
+      materialization:
+        cache_root: ./data
+        policy: ensure
+        verification: full
     image:
       size: [64, 64]
       channels: 3

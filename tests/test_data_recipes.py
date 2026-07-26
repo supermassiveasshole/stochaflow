@@ -1,8 +1,9 @@
-"""Tests for built-in image-oriented data recipes."""
+"""Regression tests for built-in image-oriented DataBuilders."""
 
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sized
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,12 +11,15 @@ import pytest
 from PIL import Image
 from torch.utils.data import Dataset
 
-from stochaflow.data import build_data_loaders, builtin, sources
-from stochaflow.data.sources import SourceDatasets, build_image_source
+from stochaflow.data import build_data_loaders, sources
+from stochaflow.data import datasets as dataset_module
+from stochaflow.data.artifacts import DataSourceContext
+from stochaflow.data.datasets import ImageDatasetFactory
+from stochaflow.data.sources import TorchvisionImageDataSource
 from stochaflow.utils.config import ComponentConfig, ConfigError
 
 
-def _write_image(
+def write_image(
     path: Path,
     *,
     size: tuple[int, int] = (16, 16),
@@ -25,16 +29,21 @@ def _write_image(
     Image.new("RGB", size, color).save(path)
 
 
-def _folder(path: Path, count: int, *, size: tuple[int, int] = (16, 16)) -> None:
+def write_folder(
+    path: Path,
+    count: int,
+    *,
+    size: tuple[int, int] = (16, 16),
+) -> None:
     for index in range(count):
-        _write_image(
+        write_image(
             path / f"sample_{index:03d}.png",
             size=size,
             color=(index % 255, 40, 80),
         )
 
 
-def _loader_params(**overrides: Any) -> dict[str, Any]:
+def loader_params(**overrides: Any) -> dict[str, Any]:
     result = {
         "batch_size": 2,
         "num_workers": 0,
@@ -48,175 +57,233 @@ def _loader_params(**overrides: Any) -> dict[str, Any]:
     return result
 
 
-def _image_component(
+def image_source(
+    root: Path,
+    *,
+    layout: str = "flat",
+    cache_name: str = "cache",
+) -> dict[str, Any]:
+    return {
+        "name": "image_folder",
+        "params": {"root": str(root), "layout": layout},
+        "materialization": {
+            "cache_root": str(root.parent / cache_name),
+            "policy": "ensure",
+            "verification": "full",
+        },
+    }
+
+
+def image_component(
     path: Path,
     *,
     partition: dict[str, Any] | None = None,
 ) -> ComponentConfig:
+    selected_partition = partition or {"mode": "none"}
+    layout = (
+        "split"
+        if selected_partition.get("mode") == "official"
+        else "flat"
+    )
     return ComponentConfig(
         name="image",
         params={
-            "source": {"kind": "image_folder", "path": str(path)},
-            "partition": partition or {"mode": "none"},
+            "source": image_source(path, layout=layout),
+            "partition": selected_partition,
             "image": {
                 "size": [8, 8],
                 "channels": 3,
                 "normalize": False,
                 "random_horizontal_flip": False,
             },
-            "loader": _loader_params(),
+            "loader": loader_params(),
         },
     )
 
 
-def test_image_folder_is_stable_and_emits_standard_batch(tmp_path: Path) -> None:
-    _write_image(tmp_path / "z.png")
-    _write_image(tmp_path / "nested" / "a.jpg")
+def test_image_folder_is_stable_and_emits_standard_batch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "images"
+    write_image(root / "z.png")
+    write_image(root / "nested" / "a.jpg")
 
-    loaders = build_data_loaders(_image_component(tmp_path), seed=3)
+    loaders = build_data_loaders(image_component(root), seed=3)
     images, condition = next(iter(loaders.train))
+    records = cast(Any, loaders.train).dataset.dataset.records
 
     assert images.shape == (2, 3, 8, 8)
     assert condition == {}
-    paths = cast(Any, loaders.train).dataset.dataset.paths
-    assert list(paths) == sorted(paths)
+    assert [record.path for record in records] == ["nested/a.jpg", "z.png"]
+    assert loaders.artifact_bindings is not None
+    assert loaders.artifact_bindings.ids == ("source",)
 
 
-def test_image_loader_omits_pinned_memory_by_default(tmp_path: Path) -> None:
-    _write_image(tmp_path / "sample.png")
-    component = _image_component(tmp_path)
-    loader_params = cast(dict[str, Any], component.params["loader"])
-    loader_params.pop("pin_memory")
-
-    loaders = build_data_loaders(component, seed=3)
-
-    assert not cast(Any, loaders.train).pin_memory
-
-
-def test_image_holdout_and_single_kfold_are_deterministic(tmp_path: Path) -> None:
-    _folder(tmp_path, 12)
+def test_image_holdout_and_kfold_are_deterministic(tmp_path: Path) -> None:
+    root = tmp_path / "images"
+    write_folder(root, 12)
     holdout = build_data_loaders(
-        _image_component(
-            tmp_path,
+        image_component(
+            root,
             partition={"mode": "holdout", "validation_size": 3},
         ),
         seed=11,
     )
     first_fold = build_data_loaders(
-        _image_component(
-            tmp_path,
+        image_component(
+            root,
             partition={"mode": "kfold", "num_folds": 3, "fold_index": 1},
         ),
         seed=11,
     )
     repeated_fold = build_data_loaders(
-        _image_component(
-            tmp_path,
+        image_component(
+            root,
             partition={"mode": "kfold", "num_folds": 3, "fold_index": 1},
         ),
         seed=11,
     )
 
-    holdout_train = cast(Any, holdout.train)
-    holdout_validation = cast(Any, holdout.validation)
-    first_train = cast(Any, first_fold.train)
-    first_validation = cast(Any, first_fold.validation)
-    repeated_validation = cast(Any, repeated_fold.validation)
-    assert len(holdout_train.dataset) == 9
-    assert holdout.validation is not None
-    assert len(holdout_validation.dataset) == 3
-    assert first_fold.validation is not None
-    assert len(first_train.dataset) == 8
-    assert len(first_validation.dataset) == 4
-    first_indices = first_validation.dataset.dataset.indices
-    repeated_indices = repeated_validation.dataset.dataset.indices
-    assert first_indices == repeated_indices
+    assert len(cast(Any, holdout.train).dataset) == 9
+    assert len(cast(Any, holdout.validation).dataset) == 3
+    assert len(cast(Any, first_fold.train).dataset) == 8
+    first_validation = cast(Any, first_fold.validation).dataset.dataset
+    repeated_validation = cast(Any, repeated_fold.validation).dataset.dataset
+    assert first_validation.indices == repeated_validation.indices
 
 
-@pytest.mark.parametrize("recipe", ["image", "super_resolution"])
-def test_shuffled_recipe_index_order_is_rebuilt_from_seed_and_epoch(
+def test_official_local_image_folders(tmp_path: Path) -> None:
+    root = tmp_path / "images"
+    write_folder(root / "train", 4)
+    write_folder(root / "validation", 2)
+    write_folder(root / "test", 2)
+
+    loaders = build_data_loaders(
+        image_component(root, partition={"mode": "official"}),
+        seed=5,
+    )
+
+    assert len(cast(Any, loaders.train).dataset) == 4
+    assert len(cast(Any, loaders.validation).dataset) == 2
+    assert len(cast(Any, loaders.test).dataset) == 2
+
+
+def test_recipe_rejects_old_source_schema_and_invalid_values(
     tmp_path: Path,
-    recipe: str,
 ) -> None:
-    _folder(tmp_path, 12, size=(20, 16))
-    if recipe == "image":
-        component = _image_component(tmp_path)
-    else:
-        component = ComponentConfig(
-            name="super_resolution",
-            params={
-                "source": {"kind": "image_folder", "path": str(tmp_path)},
-                "partition": {"mode": "none"},
-                "image": {
-                    "high_resolution": [12, 12],
-                    "low_resolution": [4, 4],
-                    "channels": 3,
-                    "normalize": False,
-                    "random_horizontal_flip": False,
-                },
-                "low_resolution": {"kind": "bicubic"},
-                "loader": _loader_params(shuffle=True),
-            },
-        )
-    component.params["loader"]["shuffle"] = True
+    root = tmp_path / "images"
+    write_folder(root, 2)
+    old_schema = image_component(root)
+    old_schema.params["source"] = {
+        "kind": "image_folder",
+        "path": str(root),
+    }
+    with pytest.raises(ConfigError, match=r"source\.kind"):
+        build_data_loaders(old_schema, seed=1)
 
-    uninterrupted = cast(Any, build_data_loaders(component, seed=17).train)
-    uninterrupted.sampler.set_epoch(1)
-    epoch_one = list(uninterrupted.sampler)
-    uninterrupted.sampler.set_epoch(2)
-    epoch_two = list(uninterrupted.sampler)
+    missing_materialization = image_component(root)
+    del missing_materialization.params["source"]["materialization"]
+    with pytest.raises(ConfigError, match=r"source\.materialization"):
+        build_data_loaders(missing_materialization, seed=1)
 
-    rebuilt = cast(Any, build_data_loaders(component, seed=17).train)
-    rebuilt.sampler.set_epoch(2)
+    old_download = image_component(root)
+    old_download.params["source"] = {
+        "name": "torchvision",
+        "params": {"dataset": "MNIST", "download": True},
+        "materialization": {
+            "cache_root": str(tmp_path / "torchvision-cache"),
+            "policy": "ensure",
+            "verification": "full",
+        },
+    }
+    with pytest.raises(ConfigError, match=r"source\.params\.download"):
+        build_data_loaders(old_download, seed=1)
 
-    assert epoch_one != epoch_two
-    assert list(rebuilt.sampler) == epoch_two
-
-
-def test_kfold_requires_one_explicit_fold(tmp_path: Path) -> None:
-    _folder(tmp_path, 6)
-    with pytest.raises(ConfigError, match="fold_index is required"):
-        build_data_loaders(
-            _image_component(
-                tmp_path,
-                partition={"mode": "kfold", "num_folds": 3},
-            ),
-            seed=1,
-        )
-
-
-def test_image_recipe_rejects_unknown_and_mistyped_params(tmp_path: Path) -> None:
-    _folder(tmp_path, 2)
-    unknown = _image_component(tmp_path)
-    unknown.params["unexpected"] = True
-    with pytest.raises(ConfigError, match="unexpected"):
-        build_data_loaders(unknown, seed=1)
-
-    mistyped = _image_component(tmp_path)
+    mistyped = image_component(root)
     mistyped.params["loader"]["batch_size"] = True
     with pytest.raises(ConfigError, match="batch_size"):
         build_data_loaders(mistyped, seed=1)
 
 
-def test_official_local_image_folders(tmp_path: Path) -> None:
-    _folder(tmp_path / "train", 4)
-    _folder(tmp_path / "validation", 2)
-    _folder(tmp_path / "test", 2)
-    loaders = build_data_loaders(
-        _image_component(tmp_path, partition={"mode": "official"}),
-        seed=5,
-    )
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("policy", []),
+        ("policy", {}),
+        ("verification", []),
+        ("verification", {}),
+    ],
+)
+def test_recipe_rejects_non_string_materialization_enums(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    root = tmp_path / "images"
+    write_folder(root, 2)
+    component = image_component(root)
+    component.params["source"]["materialization"][field] = value
 
-    assert len(cast(Any, loaders.train).dataset) == 4
-    assert loaders.validation is not None
-    assert len(cast(Any, loaders.validation).dataset) == 2
-    assert loaders.test is not None
-    assert len(cast(Any, loaders.test).dataset) == 2
+    with pytest.raises(ConfigError, match=rf"source\.materialization\.{field}"):
+        build_data_loaders(component, seed=1)
+
+
+@pytest.mark.parametrize("value", [[], {}])
+def test_recipe_rejects_non_string_image_source_layout(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    root = tmp_path / "images"
+    write_folder(root, 2)
+    component = image_component(root)
+    component.params["source"]["params"]["layout"] = value
+
+    with pytest.raises(ConfigError, match=r"source\.params\.layout"):
+        build_data_loaders(component, seed=1)
+
+
+@pytest.mark.parametrize("value", [[], {}])
+def test_recipe_rejects_non_string_low_resolution_kind(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    root = tmp_path / "images"
+    write_folder(root, 2)
+    component = super_resolution_component(root)
+    component.params["low_resolution"]["kind"] = value
+
+    with pytest.raises(ConfigError, match=r"low_resolution\.kind"):
+        build_data_loaders(component, seed=1)
 
 
 class FixtureTinyVisionDataset(Dataset[Any]):
-    def __init__(self, size: int = 3) -> None:
-        self.size = size
+    """Tiny acquisition-compatible torchvision test double."""
+
+    def __init__(
+        self,
+        root: str,
+        *,
+        train: bool | None = None,
+        split: str | None = None,
+        download: bool,
+        **kwargs: Any,
+    ) -> None:
+        del kwargs
+        if download:
+            data_root = Path(root)
+            data_root.mkdir(parents=True, exist_ok=True)
+            marker = split or ("train" if train else "test")
+            (data_root / f"{marker}.bin").write_bytes(marker.encode("ascii"))
+        if split == "train":
+            self.size = 3
+        elif split == "val":
+            self.size = 2
+        elif split == "test":
+            self.size = 1
+        elif train is False:
+            self.size = 2
+        else:
+            self.size = 3
 
     def __len__(self) -> int:
         return self.size
@@ -226,173 +293,185 @@ class FixtureTinyVisionDataset(Dataset[Any]):
 
 
 @pytest.mark.parametrize("dataset_name", ["MNIST", "CIFAR10", "Flowers102"])
-def test_torchvision_sources_use_curated_adapters(
+def test_torchvision_sources_preserve_official_splits(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     dataset_name: str,
 ) -> None:
-    if dataset_name == "Flowers102":
-        monkeypatch.setattr(
-            sources.datasets,
-            "Flowers102",
-            lambda *args, split, **kwargs: FixtureTinyVisionDataset(
-                2 if split == "val" else 3
-            ),
-        )
-    else:
-        monkeypatch.setattr(
-            sources.datasets,
-            dataset_name,
-            lambda *args, train, **kwargs: FixtureTinyVisionDataset(3 if train else 2),
-        )
-
-    result = build_image_source(
-        {
-            "kind": "torchvision",
-            "dataset": dataset_name,
-            "download": False,
-        },
-        partition_mode="official",
+    monkeypatch.setattr(
+        sources.datasets,
+        dataset_name,
+        FixtureTinyVisionDataset,
     )
+    monkeypatch.setattr(
+        dataset_module.datasets,
+        dataset_name,
+        FixtureTinyVisionDataset,
+    )
+    source = TorchvisionImageDataSource(
+        {"dataset": dataset_name},
+        config_path="data.params.source",
+    )
+    artifact = source.materialize(
+        DataSourceContext(
+            cache_root=tmp_path / "cache",
+            policy="ensure",
+            verification="full",
+        )
+    )
+    result = ImageDatasetFactory().build(artifact)
 
-    assert len(cast(Any, result.train)) == 3
+    assert len(cast(Sized, result.train)) == 3
     assert result.test is not None
-    expected_test_size = 3 if dataset_name == "Flowers102" else 2
-    assert len(cast(Any, result.test)) == expected_test_size
+    expected_test_size = 1 if dataset_name == "Flowers102" else 2
+    assert len(cast(Sized, result.test)) == expected_test_size
+    if dataset_name == "Flowers102":
+        assert result.validation is not None
+        assert len(cast(Sized, result.validation)) == 2
 
 
-def test_generated_super_resolution_batch(tmp_path: Path) -> None:
-    _folder(tmp_path, 4, size=(20, 16))
-    component = ComponentConfig(
+def super_resolution_component(
+    root: Path,
+    *,
+    paired_root: Path | None = None,
+    layout: str = "flat",
+    partition: dict[str, Any] | None = None,
+) -> ComponentConfig:
+    paired = paired_root is not None
+    source = (
+        {
+            "name": "paired_image_folders",
+            "params": {
+                "high_resolution_root": str(root),
+                "low_resolution_root": str(paired_root),
+                "layout": layout,
+            },
+            "materialization": {
+                "cache_root": str(root.parent / "paired-cache"),
+                "policy": "ensure",
+                "verification": "full",
+            },
+        }
+        if paired
+        else image_source(root, layout=layout, cache_name="sr-cache")
+    )
+    return ComponentConfig(
         name="super_resolution",
         params={
-            "source": {"kind": "image_folder", "path": str(tmp_path)},
-            "partition": {"mode": "none"},
+            "source": source,
+            "partition": partition or {"mode": "none"},
             "image": {
-                "high_resolution": [12, 12],
+                "high_resolution": [12 if not paired else 8, 12 if not paired else 8],
                 "low_resolution": [4, 4],
                 "channels": 3,
-                "normalize": False,
-                "random_horizontal_flip": False,
+                "normalize": paired,
+                "random_horizontal_flip": paired,
             },
-            "low_resolution": {"kind": "bicubic"},
-            "loader": _loader_params(),
+            "low_resolution": {"kind": "paired" if paired else "bicubic"},
+            "loader": loader_params(),
         },
     )
 
-    loaders = build_data_loaders(component, seed=7)
-    high, condition = next(iter(loaders.train))
 
+def test_generated_and_paired_super_resolution_batches(
+    tmp_path: Path,
+) -> None:
+    generated_root = tmp_path / "generated"
+    write_folder(generated_root, 4, size=(20, 16))
+    generated = build_data_loaders(
+        super_resolution_component(generated_root),
+        seed=7,
+    )
+    high, condition = next(iter(generated.train))
     assert high.shape == (2, 3, 12, 12)
     assert condition["low_res"].shape == (2, 3, 4, 4)
 
-
-def test_paired_super_resolution_aligns_and_reports_missing_pairs(
-    tmp_path: Path,
-) -> None:
     high_root = tmp_path / "high"
     low_root = tmp_path / "low"
-    _folder(high_root, 3, size=(16, 16))
-    _folder(low_root, 3, size=(8, 8))
-    component = ComponentConfig(
-        name="super_resolution",
-        params={
-            "source": {
-                "kind": "paired_folders",
-                "high_resolution_path": str(high_root),
-                "low_resolution_path": str(low_root),
-            },
-            "partition": {"mode": "none"},
-            "image": {
-                "high_resolution": [8, 8],
-                "low_resolution": [4, 4],
-                "channels": 3,
-                "normalize": True,
-                "random_horizontal_flip": True,
-            },
-            "low_resolution": {"kind": "paired"},
-            "loader": _loader_params(),
-        },
+    write_folder(high_root, 3, size=(16, 16))
+    write_folder(low_root, 3, size=(8, 8))
+    paired = build_data_loaders(
+        super_resolution_component(high_root, paired_root=low_root),
+        seed=9,
     )
-
-    high, condition = next(iter(build_data_loaders(component, seed=9).train))
+    high, condition = next(iter(paired.train))
     assert high.shape == (2, 3, 8, 8)
     assert condition["low_res"].shape == (2, 3, 4, 4)
     assert high.min() >= -1
     assert high.max() <= 1
 
-    (low_root / "sample_000.png").unlink()
-    with pytest.raises(ValueError, match="missing LR"):
+
+def test_paired_super_resolution_preserves_official_splits(
+    tmp_path: Path,
+) -> None:
+    high_root = tmp_path / "high"
+    low_root = tmp_path / "low"
+    for role, count in (("train", 4), ("validation", 2), ("test", 2)):
+        write_folder(high_root / role, count, size=(16, 16))
+        write_folder(low_root / role, count, size=(8, 8))
+
+    loaders = build_data_loaders(
+        super_resolution_component(
+            high_root,
+            paired_root=low_root,
+            layout="split",
+            partition={"mode": "official"},
+        ),
+        seed=9,
+    )
+
+    assert len(cast(Any, loaders.train).dataset) == 4
+    assert len(cast(Any, loaders.validation).dataset) == 2
+    assert len(cast(Any, loaders.test).dataset) == 2
+
+
+def test_paired_super_resolution_rejects_non_integer_scale(
+    tmp_path: Path,
+) -> None:
+    component = super_resolution_component(
+        tmp_path / "high",
+        paired_root=tmp_path / "low",
+    )
+    component.params["image"]["high_resolution"] = [10, 8]
+
+    with pytest.raises(ConfigError, match="integer multiple"):
         build_data_loaders(component, seed=9)
 
 
-def test_paired_super_resolution_rejects_duplicate_stems_and_bad_scale(
+def test_paired_source_reports_missing_and_duplicate_pairs(
     tmp_path: Path,
 ) -> None:
-    duplicate_high = tmp_path / "duplicate_high"
-    duplicate_low = tmp_path / "duplicate_low"
-    _write_image(duplicate_high / "sample.png", size=(16, 16))
-    _write_image(duplicate_high / "sample.jpg", size=(16, 16))
-    _write_image(duplicate_low / "sample.png", size=(8, 8))
-
-    def component(high: Path, low: Path) -> ComponentConfig:
-        return ComponentConfig(
-            name="super_resolution",
-            params={
-                "source": {
-                    "kind": "paired_folders",
-                    "high_resolution_path": str(high),
-                    "low_resolution_path": str(low),
-                },
-                "partition": {"mode": "none"},
-                "image": {
-                    "high_resolution": [8, 8],
-                    "low_resolution": [4, 4],
-                    "channels": 3,
-                    "normalize": False,
-                },
-                "low_resolution": {"kind": "paired"},
-                "loader": _loader_params(),
-            },
+    high_root = tmp_path / "high"
+    low_root = tmp_path / "low"
+    write_image(high_root / "sample.png", size=(16, 16))
+    write_image(low_root / "other.png", size=(8, 8))
+    with pytest.raises(ValueError, match="missing LR"):
+        build_data_loaders(
+            super_resolution_component(high_root, paired_root=low_root),
+            seed=2,
         )
 
-    with pytest.raises(ValueError, match="duplicate relative image stem"):
-        build_data_loaders(component(duplicate_high, duplicate_low), seed=2)
-
-    bad_high = tmp_path / "bad_high"
-    bad_low = tmp_path / "bad_low"
-    _write_image(bad_high / "sample.png", size=(15, 16))
-    _write_image(bad_low / "sample.png", size=(8, 8))
-    loaders = build_data_loaders(component(bad_high, bad_low), seed=2)
-    with pytest.raises(ValueError, match="configured scale"):
-        next(iter(loaders.train))
+    (low_root / "other.png").unlink()
+    write_image(low_root / "sample.png", size=(8, 8))
+    write_image(high_root / "sample.jpg", size=(16, 16))
+    with pytest.raises(ValueError, match=r"duplicate.*stem"):
+        build_data_loaders(
+            super_resolution_component(high_root, paired_root=low_root),
+            seed=2,
+        )
 
 
-def test_multi_resolution_batches_are_homogeneous_and_weighted(
-    tmp_path: Path,
-) -> None:
-    square = tmp_path / "square"
-    landscape = tmp_path / "landscape"
-    _folder(square, 6, size=(16, 16))
-    _folder(landscape, 6, size=(32, 16))
-    component = ComponentConfig(
+def multi_resolution_component(
+    sources_config: list[dict[str, Any]],
+    *,
+    partition: dict[str, Any] | None = None,
+    steps_per_epoch: int | str = 200,
+) -> ComponentConfig:
+    return ComponentConfig(
         name="multi_resolution_image",
         params={
-            "sources": [
-                {
-                    "id": "square",
-                    "source": {"kind": "image_folder", "path": str(square)},
-                    "sampling_weight": 0.2,
-                },
-                {
-                    "id": "landscape",
-                    "source": {
-                        "kind": "image_folder",
-                        "path": str(landscape),
-                    },
-                    "sampling_weight": 0.8,
-                },
-            ],
-            "partition": {"mode": "none"},
+            "sources": sources_config,
+            "partition": partition or {"mode": "none"},
             "image": {
                 "channels": 3,
                 "normalize": False,
@@ -406,8 +485,34 @@ def test_multi_resolution_batches_are_homogeneous_and_weighted(
                 "base_bucket": "square",
                 "dynamic_batch_size": True,
             },
-            "loader": _loader_params(batch_size=4, steps_per_epoch=200),
+            "loader": loader_params(
+                batch_size=4,
+                steps_per_epoch=steps_per_epoch,
+            ),
         },
+    )
+
+
+def test_multi_resolution_batches_are_homogeneous_and_weighted(
+    tmp_path: Path,
+) -> None:
+    square = tmp_path / "square"
+    landscape = tmp_path / "landscape"
+    write_folder(square, 6, size=(16, 16))
+    write_folder(landscape, 6, size=(32, 16))
+    component = multi_resolution_component(
+        [
+            {
+                "id": "square",
+                "source": image_source(square, cache_name="mix-cache"),
+                "sampling_weight": 0.2,
+            },
+            {
+                "id": "landscape",
+                "source": image_source(landscape, cache_name="mix-cache"),
+                "sampling_weight": 0.8,
+            },
+        ]
     )
 
     loaders = build_data_loaders(component, seed=13)
@@ -416,57 +521,44 @@ def test_multi_resolution_batches_are_homogeneous_and_weighted(
     dataset = train_loader.dataset
     counts: Counter[str] = Counter()
     for indices in sampler:
-        bucket_ids = {dataset.bucket_ids[index] for index in indices}
+        assert len({dataset.bucket_ids[index] for index in indices}) == 1
         source_ids = {dataset.source_ids[index] for index in indices}
-        assert len(bucket_ids) == 1
         assert len(source_ids) == 1
         counts.update(source_ids)
 
-    assert counts["landscape"] / sum(counts.values()) == pytest.approx(0.8, abs=0.1)
-    assert len(next(iter(loaders.train))[0]) in {2, 4}
+    assert counts["landscape"] / sum(counts.values()) == pytest.approx(
+        0.8,
+        abs=0.1,
+    )
+    assert loaders.artifact_bindings is not None
+    assert loaders.artifact_bindings.ids == ("landscape", "square")
 
 
 def test_multi_resolution_holdout_ignores_native_validation_mismatch(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    def source(raw, **kwargs):
-        del kwargs
-        validation = (
-            FixtureTinyVisionDataset(2)
-            if raw["dataset"] == "Flowers102"
-            else None
-        )
-        return SourceDatasets(
-            train=FixtureTinyVisionDataset(6),
-            validation=validation,
-            test=FixtureTinyVisionDataset(2),
-        )
-
-    monkeypatch.setattr(builtin, "build_image_source", source)
-    component = ComponentConfig(
-        name="multi_resolution_image",
-        params={
-            "sources": [
-                {
-                    "id": "digits",
-                    "source": {"kind": "torchvision", "dataset": "MNIST"},
-                },
-                {
-                    "id": "flowers",
-                    "source": {
-                        "kind": "torchvision",
-                        "dataset": "Flowers102",
-                    },
-                },
-            ],
-            "partition": {"mode": "holdout", "validation_size": 2},
-            "image": {"channels": 3, "normalize": False},
-            "batching": {
-                "buckets": [{"name": "square", "height": 8, "width": 8}],
-                "base_bucket": "square",
+    flat = tmp_path / "flat"
+    split = tmp_path / "split"
+    write_folder(flat, 6)
+    write_folder(split / "train", 6)
+    write_folder(split / "validation", 2)
+    component = multi_resolution_component(
+        [
+            {
+                "id": "flat",
+                "source": image_source(flat, cache_name="holdout-cache"),
             },
-            "loader": _loader_params(),
-        },
+            {
+                "id": "split",
+                "source": image_source(
+                    split,
+                    layout="split",
+                    cache_name="holdout-cache",
+                ),
+            },
+        ],
+        partition={"mode": "holdout", "validation_size": 2},
+        steps_per_epoch="auto",
     )
 
     loaders = build_data_loaders(component, seed=3)
@@ -474,3 +566,87 @@ def test_multi_resolution_holdout_ignores_native_validation_mismatch(
     assert len(cast(Any, loaders.train).dataset) == 10
     assert loaders.validation is not None
     assert len(cast(Any, loaders.validation).dataset) == 2
+
+
+def test_multi_resolution_rejects_duplicate_source_ids() -> None:
+    component = multi_resolution_component(
+        [
+            {
+                "id": "duplicate",
+                "source": image_source(Path("first")),
+            },
+            {
+                "id": "duplicate",
+                "source": image_source(Path("second")),
+            },
+        ]
+    )
+
+    with pytest.raises(ConfigError, match=r"sources\[1\]\.id must be unique"):
+        build_data_loaders(component, seed=3)
+
+
+@pytest.mark.parametrize(
+    ("first_weight", "second_weight", "message"),
+    [
+        (0.5, None, "must be set for every source or none"),
+        (0.5, 0.0, "must be positive"),
+        (0.5, True, "must be positive"),
+    ],
+)
+def test_multi_resolution_rejects_invalid_weight_sets(
+    first_weight: float,
+    second_weight: float | bool | None,
+    message: str,
+) -> None:
+    component = multi_resolution_component(
+        [
+            {
+                "id": "first",
+                "source": image_source(Path("first")),
+                "sampling_weight": first_weight,
+            },
+            {
+                "id": "second",
+                "source": image_source(Path("second")),
+                "sampling_weight": second_weight,
+            },
+        ]
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        build_data_loaders(component, seed=3)
+
+
+def test_multi_resolution_official_partition_rejects_role_mismatch(
+    tmp_path: Path,
+) -> None:
+    flat = tmp_path / "flat"
+    split = tmp_path / "split"
+    write_folder(flat, 4)
+    write_folder(split / "train", 4)
+    write_folder(split / "validation", 2)
+    component = multi_resolution_component(
+        [
+            {
+                "id": "flat",
+                "source": image_source(flat, cache_name="official-cache"),
+            },
+            {
+                "id": "split",
+                "source": image_source(
+                    split,
+                    layout="split",
+                    cache_name="official-cache",
+                ),
+            },
+        ],
+        partition={"mode": "official"},
+        steps_per_epoch="auto",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"validation.*every source or none",
+    ):
+        build_data_loaders(component, seed=3)

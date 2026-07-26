@@ -493,8 +493,14 @@ data:
   name: super_resolution
   params:
     source:
-      kind: image_folder
-      path: data/hr
+      name: image_folder
+      params:
+        root: data/hr
+        layout: flat
+      materialization:
+        cache_root: ./data
+        policy: ensure
+        verification: full
     partition:
       mode: holdout
       validation_size: 0.1

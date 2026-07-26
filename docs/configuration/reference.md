@@ -715,12 +715,16 @@ native provider，扩展 Registry 不能占用。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `source` | 必填 mapping；仅接受所选 `source.kind` 对应的下列字段，未知字段拒绝。 |
-| `source.kind` | 必填字符串；`torchvision` 或 `image_folder`。 |
-| `source.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
-| `source.root` | `torchvision` 数据根目录；默认 `./data`。 |
-| `source.download` | `torchvision` 是否允许下载；默认 `true`，必须为布尔值。 |
-| `source.path` | `image_folder` 时必填的非空目录路径；非 `official` 时递归读取该目录，`official` 时要求 `<path>/train` 并可读取 `validation\|val` 与 `test` 子目录。 |
+| `source` | 必填 mapping；规范结构为 `name`、`params`、`materialization`，未知字段拒绝。 |
+| `source.name` | 必填非空注册名；内置为 `torchvision`、`image_folder` 或 `paired_image_folders`（配对项仅供 super-resolution recipe）。 |
+| `source.params` | source 私有 mapping；字段由所选 DataSource 严格验证。 |
+| `source.params.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
+| `source.params.root` | `image_folder` 时必填的本地/NFS 根目录。 |
+| `source.params.layout` | folder source 布局；`flat` 递归读取单一根目录，`split` 读取 train/validation/test 子目录。 |
+| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。 |
+| `source.materialization.cache_root` | artifact/index 缓存根目录；默认 `./data`。 |
+| `source.materialization.policy` | `ensure` 可创建 exact artifact，`require` 只接受已存在 artifact；默认 `ensure`。 |
+| `source.materialization.verification` | `manifest` 校验索引与大小，`full` 重新校验全部内容；默认 `full`，strict resume 强制完整验证。 |
 | `image` | 必填 mapping；`size` 必填，其余字段使用下列默认值。 |
 | `image.size` | 必填 `[height, width]`；两个维度均为正整数。 |
 | `image.channels` | 输出通道数；默认 `3`，仅支持 `1` 或 `3`。 |
@@ -751,11 +755,15 @@ native provider，扩展 Registry 不能占用。
 | `sources` | 必填的非空 source mapping 列表；每项只接受下列字段。 |
 | `sources[].id` | 每个来源必填的非空唯一标识。 |
 | `sources[].sampling_weight` | 默认 `null`；若任一来源设置，则所有来源都必须设置正数权重，无需归一化为和 1。 |
-| `sources[].source.kind` | 必填字符串；`torchvision` 或 `image_folder`。 |
-| `sources[].source.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
-| `sources[].source.root` | `torchvision` 数据根目录；默认 `./data`。 |
-| `sources[].source.download` | `torchvision` 是否允许下载；默认 `true`，必须为布尔值。 |
-| `sources[].source.path` | `image_folder` 时必填的非空目录路径；`official` 模式要求 train 子目录。 |
+| `sources[].source.name` | 必填非空注册名；内置为 `torchvision` 或 `image_folder`。 |
+| `sources[].source.params` | source 私有 mapping；字段由所选 DataSource 严格验证。 |
+| `sources[].source.params.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
+| `sources[].source.params.root` | `image_folder` 时必填的本地/NFS 根目录。 |
+| `sources[].source.params.layout` | folder source 布局；`flat` 或 `split`。 |
+| `sources[].source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。 |
+| `sources[].source.materialization.cache_root` | artifact/index 缓存根目录；默认 `./data`。 |
+| `sources[].source.materialization.policy` | `ensure` 或 `require`；默认 `ensure`。 |
+| `sources[].source.materialization.verification` | `manifest` 或 `full`；默认 `full`，strict resume 强制完整验证。 |
 | `image` | 必填 mapping；内部字段均使用下列默认值。 |
 | `image.channels` | 输出通道数；默认 `3`，仅支持 `1` 或 `3`。 |
 | `image.normalize` | 是否将 `[0, 1]` 映射到 `[-1, 1]`；默认 `true`，必须为布尔值。 |
@@ -789,14 +797,18 @@ native provider，扩展 Registry 不能占用。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `source` | 必填 mapping；只接受所选 `source.kind` 对应的下列字段，未知字段拒绝。 |
-| `source.kind` | 必填；在线模式为 `torchvision` 或 `image_folder`，配对模式为 `paired_folders`，并必须与 `low_resolution.kind` 一致。 |
-| `source.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
-| `source.root` | `torchvision` 数据根目录；默认 `./data`。 |
-| `source.download` | `torchvision` 是否允许下载；默认 `true`，必须为布尔值。 |
-| `source.path` | `image_folder` 时必填的非空 HR 目录路径；`official` 模式要求 train 子目录并可读取 validation\|val/test。 |
-| `source.high_resolution_path` | `paired_folders` 时必填的非空 HR 根目录；`official` 模式要求 train 子目录。 |
-| `source.low_resolution_path` | `paired_folders` 时必填的非空 LR 根目录；与 HR 按相对路径 stem 配对，`official` split 必须与 HR 成对存在。 |
+| `source` | 必填 mapping；规范结构为 `name`、`params`、`materialization`，未知字段拒绝。 |
+| `source.name` | 在线模式为 `torchvision` 或 `image_folder`，配对模式为 `paired_image_folders`，并必须与 `low_resolution.kind` 一致。 |
+| `source.params` | source 私有 mapping；字段由所选 DataSource 严格验证。 |
+| `source.params.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
+| `source.params.root` | `image_folder` 时必填的 HR 根目录。 |
+| `source.params.high_resolution_root` | `paired_image_folders` 时必填的 HR 根目录。 |
+| `source.params.low_resolution_root` | `paired_image_folders` 时必填的 LR 根目录；与 HR 按相对路径 stem 配对。 |
+| `source.params.layout` | folder source 布局；`flat` 或 `split`。 |
+| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。 |
+| `source.materialization.cache_root` | artifact/index 缓存根目录；默认 `./data`。 |
+| `source.materialization.policy` | `ensure` 或 `require`；默认 `ensure`。 |
+| `source.materialization.verification` | `manifest` 或 `full`；默认 `full`，strict resume 强制完整验证。 |
 | `image` | 必填 mapping；HR/LR size 必填，其余字段使用下列默认值。 |
 | `image.high_resolution` | 必填 HR `[height, width]`；两个维度均为正整数。 |
 | `image.low_resolution` | 必填 LR `[height, width]`；两个维度均为正整数；paired 模式要求每轴 HR/LR 缩放比为整数。 |

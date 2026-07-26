@@ -252,16 +252,16 @@ class ClassificationDataBuilder(DataBuilder):
         """Assemble one independent train/validation/test loader set."""
 
         params = dict(self.context.params)
-        source = _mapping(params.pop("source", {"kind": "synthetic"}), "source")
+        source = _mapping(params.pop("source", {"name": "synthetic"}), "source")
         loader = _mapping(params.pop("loader", {}), "loader")
         _unknown(params, "data builder")
-        kind = source.pop("kind", "synthetic")
-        if kind == "synthetic":
+        name = source.pop("name", "synthetic")
+        if name == "synthetic":
             datasets = _synthetic_splits(source, seed=self.context.seed)
-        elif kind == "torchvision":
+        elif name == "torchvision":
             datasets = _torchvision_splits(source, seed=self.context.seed)
         else:
-            raise ValueError("source.kind must be synthetic or torchvision")
+            raise ValueError("source.name must be synthetic or torchvision")
         return _loaders(loader, datasets=datasets, seed=self.context.seed)
 
 

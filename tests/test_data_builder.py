@@ -2,16 +2,43 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 from copy import deepcopy
+from dataclasses import is_dataclass
+from textwrap import dedent
 
 import pytest
 
 from stochaflow import data
 from stochaflow.data import (
+    DataArtifactBinding,
+    DataArtifactBindings,
     DataBuilder,
     DataBuilderContext,
     DataLoaders,
+    ImageDataBuilder,
+    ManagedDataArtifactIdentity,
+    MultiResolutionImageDataBuilder,
+    SuperResolutionDataBuilder,
     build_data_loaders,
+    recipe_config,
+)
+from stochaflow.data.dataloaders import (
+    collate_image_batch,
+    collate_super_resolution_batch,
+)
+from stochaflow.data.datasets import (
+    GeneratedSuperResolutionDataset,
+    ImageDatasetFactory,
+    ImageDatasetPartitions,
+    ImageRecipeDataset,
+    PairedSuperResolutionDataset,
+)
+from stochaflow.data.samplers import (
+    EpochRandomSampler,
+    MixtureBatchSampler,
+    ResolutionBucketPolicy,
 )
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog, RegistryError
@@ -73,6 +100,105 @@ def test_sized_and_streaming_loaders_validate_epoch_length() -> None:
     assert next(iter(streaming.train))["condition"] == {"value": 2}
 
 
+def test_data_runtime_types_reside_in_responsibility_modules() -> None:
+    assert DataBuilder.__module__ == "stochaflow.data.builder"
+    assert DataBuilderContext.__module__ == "stochaflow.data.builder"
+    assert DataLoaders.__module__ == "stochaflow.data.dataloaders"
+    assert ImageRecipeDataset.__module__ == "stochaflow.data.datasets"
+    assert (
+        GeneratedSuperResolutionDataset.__module__
+        == "stochaflow.data.datasets"
+    )
+    assert (
+        PairedSuperResolutionDataset.__module__
+        == "stochaflow.data.datasets"
+    )
+    assert ImageDatasetFactory.__module__ == "stochaflow.data.datasets"
+    assert ImageDatasetPartitions.__module__ == "stochaflow.data.datasets"
+    assert collate_image_batch.__module__ == "stochaflow.data.dataloaders"
+    assert (
+        collate_super_resolution_batch.__module__
+        == "stochaflow.data.dataloaders"
+    )
+    assert EpochRandomSampler.__module__ == "stochaflow.data.samplers"
+    assert MixtureBatchSampler.__module__ == "stochaflow.data.samplers"
+    assert ResolutionBucketPolicy.__module__ == "stochaflow.data.samplers"
+
+
+def test_every_recipe_config_exposes_one_public_validation_entrypoint() -> None:
+    config_types = [
+        value
+        for value in vars(recipe_config).values()
+        if (
+            isinstance(value, type)
+            and value.__module__ == recipe_config.__name__
+            and is_dataclass(value)
+        )
+    ]
+
+    assert config_types
+    assert all("validate" in config_type.__dict__ for config_type in config_types)
+    assert not any(
+        name.startswith("_validate_") or name in {"validate_partition", "validate_size"}
+        for name in vars(recipe_config)
+    )
+
+
+@pytest.mark.parametrize(
+    "builder_type",
+    [
+        ImageDataBuilder,
+        SuperResolutionDataBuilder,
+        MultiResolutionImageDataBuilder,
+    ],
+)
+def test_builtin_builder_constructor_calls_only_top_level_validate_once(
+    builder_type: type[DataBuilder],
+) -> None:
+    tree = ast.parse(dedent(inspect.getsource(builder_type.__init__)))
+    validate_calls = [
+        node
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "validate"
+        )
+    ]
+
+    assert len(validate_calls) == 1
+    validate_call = validate_calls[0]
+    assert isinstance(validate_call.func, ast.Attribute)
+    target = validate_call.func.value
+    assert isinstance(target, ast.Attribute)
+    assert target.attr == "config"
+    assert isinstance(target.value, ast.Name)
+    assert target.value.id == "self"
+
+
+def test_data_loaders_preserve_optional_artifact_bindings() -> None:
+    identity = ManagedDataArtifactIdentity(
+        artifact_type="image-folder",
+        source_name="test-source",
+        source_digest="a" * 64,
+        materializer_name="test-materializer",
+        materialization_digest="b" * 64,
+        artifact_digest="c" * 64,
+        manifest_sha256="d" * 64,
+    )
+    binding = DataArtifactBinding(id="primary", identity=identity)
+
+    untracked = DataLoaders(train=[1])
+    bindings = DataArtifactBindings((binding,))
+    loaders = DataLoaders(train=[1], artifact_bindings=bindings)
+
+    assert untracked.artifact_bindings is None
+    assert loaders.artifact_bindings == bindings
+
+    with pytest.raises(TypeError, match="must be DataArtifactBindings"):
+        DataLoaders(train=[1], artifact_bindings=[binding])  # type: ignore[arg-type]
+
+
 def test_data_loaders_reject_invalid_values() -> None:
     with pytest.raises(TypeError, match="train loader must be iterable"):
         DataLoaders(train=object())  # type: ignore[arg-type]
@@ -105,9 +231,30 @@ def test_builder_errors_report_registry_and_return_contract() -> None:
 
 def test_only_new_data_contract_is_public() -> None:
     assert set(data.__all__) == {
+        "DataArtifact",
+        "DataArtifactBinding",
+        "DataArtifactBindings",
+        "DataArtifactIdentity",
         "DataBuilder",
         "DataBuilderContext",
         "DataLoaders",
+        "DataSource",
+        "DataSourceContext",
+        "IMAGE_DATA_SOURCES",
+        "ImageArtifactPayload",
+        "ImageDataBuilder",
+        "ImageDataSource",
+        "ImageFilePair",
+        "ImageFileRecord",
+        "ImageFolderArtifactPayload",
+        "ManagedDataArtifact",
+        "ManagedDataArtifactIdentity",
+        "MultiResolutionImageDataBuilder",
+        "PairedImageFolderArtifactPayload",
+        "ReferencedDataArtifact",
+        "ReferencedDataArtifactIdentity",
+        "SuperResolutionDataBuilder",
+        "TorchvisionImageArtifactPayload",
         "build_data_loaders",
     }
     for removed in (

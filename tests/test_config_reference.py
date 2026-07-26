@@ -32,19 +32,22 @@ def test_context_built_component_private_parameters_are_documented() -> None:
     reference = Path("docs/configuration/reference.md").read_text(encoding="utf-8")
     expected_paths = {
         "data_builders-image": (
-            "source.kind",
+            "source.name",
+            "source.materialization.policy",
             "image.size",
             "partition.mode",
             "loader.steps_per_epoch",
         ),
         "data_builders-multi-resolution-image": (
             "sources[].sampling_weight",
+            "sources[].source.name",
             "batching.buckets[].name",
             "batching.base_bucket",
             "loader.steps_per_epoch",
         ),
         "data_builders-super-resolution": (
-            "source.high_resolution_path",
+            "source.params.high_resolution_root",
+            "source.materialization.verification",
             "image.high_resolution",
             "low_resolution.kind",
             "loader.steps_per_epoch",

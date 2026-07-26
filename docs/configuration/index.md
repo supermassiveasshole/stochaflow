@@ -148,10 +148,13 @@ data:
   name: image
   params:
     source:
-      kind: torchvision
-      dataset: MNIST
-      root: ./data
-      download: true
+      name: torchvision
+      params:
+        dataset: MNIST
+      materialization:
+        cache_root: ./data
+        policy: ensure
+        verification: manifest
     partition: {mode: none}
     image: {size: [32, 32], channels: 1, normalize: true}
 

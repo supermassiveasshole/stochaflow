@@ -5,11 +5,12 @@ from __future__ import annotations
 import math
 import random
 from collections import defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, cast
 
-from torch.utils.data import Sampler
+import torch
+from torch.utils.data import Dataset, Sampler
 
 from stochaflow.data.recipe_config import ResolutionBucketRecipeConfig
 
@@ -97,6 +98,29 @@ class BucketedDataset(Protocol):
     def source_ids(self) -> Sequence[str]: ...
 
     def __len__(self) -> int: ...
+
+
+class EpochRandomSampler(Sampler[int]):
+    """Rebuild a deterministic shuffled index stream from seed and epoch."""
+
+    def __init__(self, dataset: Dataset[Any], *, seed: int) -> None:
+        self.size = len(cast(Sized, dataset))
+        self.seed = seed
+        self.epoch = 0
+
+    def __iter__(self) -> Iterator[int]:
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        yield from torch.randperm(self.size, generator=generator).tolist()
+
+    def __len__(self) -> int:
+        return self.size
+
+    def set_epoch(self, epoch: int) -> None:
+        """Select the shuffled index stream for one training epoch."""
+
+        if epoch < 0:
+            raise ValueError("epoch must be non-negative")
+        self.epoch = epoch
 
 
 class CyclingIndexPool:
@@ -299,6 +323,8 @@ class MixtureBatchSampler(Sampler[list[int]]):
 
 __all__ = [
     "BucketedDataset",
+    "CyclingIndexPool",
+    "EpochRandomSampler",
     "MixtureBatchSampler",
     "ResolutionBucket",
     "ResolutionBucketPolicy",

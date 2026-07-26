@@ -1,29 +1,31 @@
 experiment:
-  name: ddim_mnist
+  name: ddpm_afhq_v2_128
   seed: 42
-  output_dir: outputs/ddim_mnist
+  output_dir: outputs/ddpm_afhq_v2_128
 
 extensions:
-  plugins: []
+  plugins: [stochaflow-afhq-v2]
 
 data:
   name: image
   params:
     source:
-      name: torchvision
+      name: afhq-v2.official
       params:
-        dataset: MNIST
+        resolution: 128
+        validation_per_class: 300
+        validation_seed: stochaflow-afhq-v2-validation-v1
       materialization:
         cache_root: ./data
         policy: ensure
         verification: full
     image:
-      size: [32, 32]
-      channels: 1
+      size: [128, 128]
+      channels: 3
       normalize: true
-      random_horizontal_flip: false
+      random_horizontal_flip: true
     loader:
-      batch_size: 128
+      batch_size: 16
       num_workers: 2
       shuffle: true
       drop_last: true
@@ -32,20 +34,19 @@ data:
       prefetch_factor: 4
       steps_per_epoch: auto
     partition:
-      mode: holdout
-      validation_size: 10000
+      mode: official
 
 model:
   name: unet
   params:
-    in_channels: 1
-    out_channels: 1
+    in_channels: 3
+    out_channels: 3
     base_channels: 96
-    channel_multipliers: [1, 2, 4]
-    num_res_blocks: 3
-    time_embedding_dim: 192
+    channel_multipliers: [1, 2, 3, 4]
+    num_res_blocks: 2
+    time_embedding_dim: 256
     dropout: 0.1
-    attention_levels: [2]
+    attention_levels: [3]
     attention_heads: 4
 
 process:
@@ -69,10 +70,10 @@ objective:
     reduction: mean
 
 optimizer:
-  name: torch.optim.Adam
+  name: torch.optim.AdamW
   params:
-    lr: 0.0003
-    weight_decay: 0.0
+    lr: 0.0002
+    weight_decay: 0.01
     betas: [0.9, 0.999]
     eps: 1.0e-8
 
@@ -80,22 +81,22 @@ lr_scheduler:
   name: warmup_cosine
   interval: step
   params:
-    warmup_steps: 2000
-    total_steps: 78000
+    warmup_steps: 5000
+    total_steps: 167800
     min_lr_ratio: 0.05
 
 ema:
   enabled: true
-  decay: 0.9995
-  update_after_step: 100
+  decay: 0.9999
+  update_after_step: 500
   update_every: 1
   use_for_sampling: true
 
 sampling:
-  shape: [1, 32, 32]
-  num_samples: 64
-  batch_size: 64
-  seed: null
+  shape: [3, 128, 128]
+  num_samples: 16
+  batch_size: 8
+  seed: 123
   builder:
     name: standard_denoising
     params:
@@ -108,24 +109,24 @@ sampling:
           num_inference_steps: 100
           eta: 0.0
       trajectory:
-        enabled: true
-        every_steps: 5
+        enabled: false
+        every_steps: 10
   writers:
     - name: tensor
       params: {}
     - name: image
-      params: {grid_nrow: 8, gif_fps: 8, denormalize: true}
+      params: {grid_nrow: 4, gif_fps: 8, denormalize: true}
 
 diagnostics:
   - name: diffusion_quality
     params:
       modules: []
       cadence:
-        step_every: 100
+        step_every: 200
         artifact_every_epochs: 10
       sampling:
-        sample_num: 32
-        batch_size: 32
+        sample_num: 16
+        batch_size: 8
         seed: 123
       use_ema: true
       failure_policy: warn
@@ -157,10 +158,10 @@ diagnostics:
           - name: reconstruction_panel
             params:
               timesteps: [100, 500, 900]
-              max_samples: 8
+              max_samples: 4
         sampler_artifacts:
           - name: sample_grid
-            params: {nrow: 8}
+            params: {nrow: 4}
       reference:
         enabled: false
 
@@ -173,8 +174,8 @@ trainer:
     enabled: false
     monitor: valid_loss
     mode: min
-    patience: 7
-    min_delta: 0.00001
+    patience: 20
+    min_delta: 0.0
 
 logging:
   log_every: 100
@@ -188,4 +189,4 @@ logging:
   torch_logs: {}
 
 artifacts:
-  checkpoint_every: 50
+  checkpoint_every: 10

@@ -16,7 +16,12 @@ from torch import nn
 from torch.optim import SGD
 from torch.utils.data import DataLoader, TensorDataset
 
-from stochaflow.data import DataLoaders
+from stochaflow.data import (
+    DataArtifactBinding,
+    DataArtifactBindings,
+    DataLoaders,
+    ManagedDataArtifactIdentity,
+)
 from stochaflow.scripts import experiment_runner
 from stochaflow.scripts.cli import build_argument_parser
 from stochaflow.training import (
@@ -91,6 +96,33 @@ def _loaders(*, validation: bool = False, test: bool = False) -> DataLoaders:
     )
 
 
+def _data_artifact_binding(
+    *,
+    artifact_digest: str = "4" * 64,
+) -> DataArtifactBinding:
+    return DataArtifactBinding(
+        id="source",
+        identity=ManagedDataArtifactIdentity(
+            artifact_type="image-folder-v1",
+            source_name="example.images",
+            source_digest="1" * 64,
+            materializer_name="example.resize",
+            materialization_digest="2" * 64,
+            artifact_digest=artifact_digest,
+            manifest_sha256="3" * 64,
+        ),
+    )
+
+
+def _data_artifacts(
+    *,
+    artifact_digest: str = "4" * 64,
+) -> DataArtifactBindings:
+    return DataArtifactBindings(
+        (_data_artifact_binding(artifact_digest=artifact_digest),)
+    )
+
+
 def _args() -> Namespace:
     return Namespace(
         config=None,
@@ -142,6 +174,11 @@ def _best_payload(
 ) -> CheckpointState:
     best_epoch = loop_state["best_epoch"] if epoch is None else epoch
     monitor = loop_state["monitor"]
+    best_snapshot_loop = {
+        **loop_state,
+        "epochs_without_improvement": 0,
+        "stopped_early": False,
+    }
     return {
         "format_version": CHECKPOINT_FORMAT_VERSION,
         "epoch": best_epoch,
@@ -154,7 +191,7 @@ def _best_payload(
         "metadata": {
             "extension_plugins": [],
             "checkpoint_kind": "best",
-            "training_loop": dict(loop_state),
+            "training_loop": best_snapshot_loop,
         },
     }
 
@@ -181,11 +218,22 @@ def _write_training_checkpoint(
 ) -> Path:
     checkpoint_metadata = {
         "extension_plugins": [],
+        "checkpoint_kind": "latest",
+        "training_loop": {
+            "best_epoch": None,
+            "best_metric_value": None,
+            "epochs_without_improvement": 0,
+            "stopped_early": False,
+            "monitor": None,
+            "mode": None,
+        },
         **({} if metadata is None else metadata),
     }
     torch.save(
         {
             "format_version": CHECKPOINT_FORMAT_VERSION,
+            "epoch": 1,
+            "global_step": 0,
             "config": config.to_dict(),
             "model_state_dict": {},
             "rng_state": capture_rng_state(),
@@ -670,7 +718,58 @@ def test_strict_resume_rejects_mismatched_sibling_best_identity(
         )
 
 
-@pytest.mark.parametrize("mismatch", ["config", "plugins", "overlays"])
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "epochs_without_improvement",
+            1,
+            "epochs_without_improvement=0",
+        ),
+        (
+            "stopped_early",
+            True,
+            "stopped_early=false",
+        ),
+    ],
+)
+def test_strict_resume_rejects_noncanonical_best_snapshot_state(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    loop_state = {
+        "best_epoch": 1,
+        "best_metric_value": 0.5,
+        "epochs_without_improvement": 0,
+        "stopped_early": False,
+        "monitor": "valid_loss",
+        "mode": "min",
+    }
+    selected = _best_payload(loop_state, epoch=2)
+    _checkpoint_metadata(selected)["checkpoint_kind"] = "latest"
+    candidate = _best_payload(loop_state)
+    candidate_loop = _checkpoint_metadata(candidate)["training_loop"]
+    assert isinstance(candidate_loop, dict)
+    candidate_loop[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        experiment_runner._validate_inherited_best(
+            candidate,
+            source=tmp_path / "best.pt",
+            selected_payload=selected,
+            best_epoch=1,
+            best_metric=0.5,
+            monitor="valid_loss",
+            mode="min",
+        )
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    ["config", "plugins", "overlays", "data_artifacts"],
+)
 def test_strict_resume_rejects_sibling_from_another_run(
     tmp_path: Path,
     mismatch: str,
@@ -713,7 +812,7 @@ def test_strict_resume_rejects_sibling_from_another_run(
             }
         ]
         expected = "extension provenance does not match"
-    else:
+    elif mismatch == "overlays":
         _checkpoint_metadata(candidate)["config_overlays"] = [
             {
                 "kind": "observability",
@@ -724,6 +823,14 @@ def test_strict_resume_rejects_sibling_from_another_run(
             }
         ]
         expected = "config overlay history does not match"
+    else:
+        _checkpoint_metadata(selected_payload)["data_artifacts"] = (
+            _data_artifacts().to_dict()
+        )
+        _checkpoint_metadata(candidate)["data_artifacts"] = _data_artifacts(
+            artifact_digest="5" * 64
+        ).to_dict()
+        expected = "data artifacts do not match"
     CheckpointManager.save_payload(candidate, checkpoint.parent / "best.pt")
     trainer.checkpoint_dir = tmp_path / "new-run" / "checkpoints"
 
@@ -1229,9 +1336,17 @@ def test_runner_builds_registered_data_builder(monkeypatch, tmp_path, config_pat
     args.config = Path("unused.yaml")
     observed = {}
 
-    def stub_builder(data_config, *, seed):
+    def stub_builder(
+        data_config,
+        *,
+        seed,
+        strict_resume,
+        expected_artifacts,
+    ):
         observed["builder_config"] = data_config
         observed["seed"] = seed
+        observed["strict_resume"] = strict_resume
+        observed["expected_artifacts"] = expected_artifacts
         return _loaders()
 
     monkeypatch.setattr(experiment_runner, "load_config", lambda path: config)
@@ -1247,7 +1362,220 @@ def test_runner_builds_registered_data_builder(monkeypatch, tmp_path, config_pat
     assert observed == {
         "builder_config": config.data,
         "seed": config.experiment.seed,
+        "strict_resume": False,
+        "expected_artifacts": None,
     }
+
+
+def test_strict_resume_accepts_matching_data_artifacts() -> None:
+    current = _data_artifacts()
+
+    experiment_runner._validate_resume_data_artifacts(
+        current,
+        current,
+        strict_resume=True,
+    )
+
+
+def test_strict_resume_rejects_missing_checkpoint_data_artifacts() -> None:
+    with pytest.raises(
+        ValueError,
+        match="strict resume data artifacts do not match",
+    ):
+        experiment_runner._validate_resume_data_artifacts(
+            None,
+            _data_artifacts(),
+            strict_resume=True,
+        )
+
+
+def test_strict_resume_rejects_data_artifact_mismatch_before_run_creation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config.experiment.output_dir = str(tmp_path / "runs" / "original")
+    checkpoint = _write_training_checkpoint(
+        tmp_path / "resume.pt",
+        config,
+        metadata={
+            "data_artifacts": _data_artifacts(
+                artifact_digest="5" * 64
+            ).to_dict(),
+        },
+    )
+    args = _resume_args(checkpoint)
+    args.output_dir = tmp_path / "new-runs"
+    current_binding = _data_artifact_binding()
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_data_loaders",
+        lambda config, *, seed, strict_resume, expected_artifacts: DataLoaders(
+            train=_loader(),
+            artifact_bindings=DataArtifactBindings((current_binding,)),
+        ),
+    )
+
+    def unexpected_side_effect(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("artifact mismatch reached run creation or training assets")
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "_make_timestamped_output_dir",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        unexpected_side_effect,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="strict resume data artifacts do not match",
+    ):
+        experiment_runner.run_experiment_from_args(args)
+
+    assert not args.output_dir.exists()
+
+
+def test_strict_resume_preflights_sibling_best_before_any_run_side_effect(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config.experiment.output_dir = str(tmp_path / "runs" / "original")
+    loop_state = {
+        "best_epoch": 1,
+        "best_metric_value": 0.5,
+        "epochs_without_improvement": 1,
+        "stopped_early": False,
+        "monitor": "valid_loss",
+        "mode": "min",
+    }
+    selected = _best_payload(loop_state, epoch=2)
+    selected["config"] = config.to_dict()
+    selected_metadata = _checkpoint_metadata(selected)
+    selected_metadata["checkpoint_kind"] = "latest"
+    selected_metadata["data_artifacts"] = _data_artifacts().to_dict()
+    checkpoint = tmp_path / "old-run" / "checkpoints" / "latest.pt"
+    CheckpointManager.save_payload(selected, checkpoint)
+
+    inherited_best = _best_payload(loop_state)
+    inherited_best["config"] = config.to_dict()
+    _checkpoint_metadata(inherited_best)["data_artifacts"] = _data_artifacts(
+        artifact_digest="5" * 64
+    ).to_dict()
+    CheckpointManager.save_payload(
+        inherited_best,
+        checkpoint.parent / "best.pt",
+    )
+    args = _resume_args(checkpoint)
+    args.output_dir = tmp_path / "new-runs"
+
+    def unexpected_side_effect(*args, **kwargs):
+        del args, kwargs
+        pytest.fail(
+            "sibling-best identity mismatch reached data, run, or training creation"
+        )
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_data_loaders",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "activate_extensions_for_cli",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_make_timestamped_output_dir",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        unexpected_side_effect,
+    )
+
+    with pytest.raises(ValueError, match="data artifacts do not match"):
+        experiment_runner.run_experiment_from_args(args)
+
+    assert not args.output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("case", "error_type", "message"),
+    [
+        (
+            "invalid_wait",
+            TypeError,
+            "epochs_without_improvement",
+        ),
+        (
+            "terminal_early_stop",
+            ValueError,
+            "stopped early",
+        ),
+        (
+            "invalid_checkpoint_kind",
+            ValueError,
+            "checkpoint_kind",
+        ),
+        (
+            "best_without_state",
+            ValueError,
+            "must record best_epoch",
+        ),
+        (
+            "target_already_complete",
+            ValueError,
+            "increase --epochs",
+        ),
+    ],
+)
+def test_strict_resume_preflights_complete_loop_state_before_plugin_activation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: str,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
+    payload = CheckpointManager.load_payload(checkpoint, map_location="cpu")
+    metadata = _checkpoint_metadata(payload)
+    loop_state = metadata["training_loop"]
+    assert isinstance(loop_state, dict)
+    if case == "invalid_wait":
+        loop_state["epochs_without_improvement"] = []
+    elif case == "terminal_early_stop":
+        loop_state["stopped_early"] = True
+    elif case == "invalid_checkpoint_kind":
+        metadata["checkpoint_kind"] = []
+    elif case == "best_without_state":
+        metadata["checkpoint_kind"] = "best"
+    CheckpointManager.save_payload(payload, checkpoint)
+    args = _resume_args(checkpoint)
+    if case == "target_already_complete":
+        args.epochs = 1
+
+    def unexpected_activation(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        pytest.fail("invalid strict-resume state reached plugin activation")
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "activate_extensions_for_cli",
+        unexpected_activation,
+    )
+
+    with pytest.raises(error_type, match=message):
+        experiment_runner.run_experiment_from_args(args)
 
 
 def test_resolve_resume_checkpoint_requires_an_explicit_existing_target(tmp_path):
@@ -1271,17 +1599,7 @@ def test_resolve_training_inputs_uses_checkpoint_config_for_strict_resume(
     config = load_config(Path("configs/ddpm_mnist.yaml"))
     config.experiment.name = "saved-name"
     config.experiment.output_dir = str(tmp_path / "runs" / "original")
-    checkpoint = tmp_path / "resume.pt"
-    torch.save(
-        {
-            "format_version": CHECKPOINT_FORMAT_VERSION,
-            "config": config.to_dict(),
-            "model_state_dict": {},
-            "rng_state": capture_rng_state(),
-            "metadata": {"extension_plugins": []},
-        },
-        checkpoint,
-    )
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
     args = _args()
     args.config = None
     args.resume = checkpoint
@@ -1296,6 +1614,41 @@ def test_resolve_training_inputs_uses_checkpoint_config_for_strict_resume(
     assert inputs.checkpoint_path == checkpoint
     assert inputs.checkpoint is not None
     assert inputs.config_overlays == []
+
+
+def test_strict_resume_rejects_old_source_schema_before_runtime_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config.data.params["source"] = {
+        "kind": "torchvision",
+        "dataset": "MNIST",
+        "download": True,
+    }
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
+    args = _resume_args(checkpoint)
+    args.output_dir = tmp_path / "new-runs"
+
+    def unexpected_side_effect(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        pytest.fail("old source schema reached extension activation or run creation")
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "_make_timestamped_output_dir",
+        unexpected_side_effect,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        unexpected_side_effect,
+    )
+
+    with pytest.raises(ConfigError, match=r"source\.kind"):
+        experiment_runner.run_experiment_from_args(args)
+
+    assert not args.output_dir.exists()
 
 
 def test_resolve_training_inputs_rejects_config_and_resume_together(tmp_path):
@@ -1829,7 +2182,7 @@ def test_run_experiment_passes_overlay_audit_and_absolute_runtime_path(
     monkeypatch.setattr(
         experiment_runner,
         "build_data_loaders",
-        lambda config, *, seed: _loaders(),
+        lambda config, *, seed, strict_resume, expected_artifacts: _loaders(),
     )
     monkeypatch.setattr(
         experiment_runner,
@@ -1875,6 +2228,7 @@ def test_run_manifest_and_checkpoint_metadata_record_overlay_audit(
     trainer = RecordingTrainer()
     logger = RecordingLogger()
     captured: dict[str, Any] = {}
+    data_artifacts = _data_artifacts()
     config_overlays = [
         {
             "kind": "observability",
@@ -1903,6 +2257,7 @@ def test_run_manifest_and_checkpoint_metadata_record_overlay_audit(
         extensions=ResolvedExtensions(config, (), ()),
         config_source="checkpoint",
         config_overlays=config_overlays,
+        data_artifacts=data_artifacts,
         checkpoint_payload=None,
         startup_cwd=Path.cwd(),
         runtime_options={
@@ -1912,7 +2267,12 @@ def test_run_manifest_and_checkpoint_metadata_record_overlay_audit(
 
     manifest = yaml.safe_load((tmp_path / "run_manifest.yaml").read_text())
     assert manifest["config_overlays"] == config_overlays
+    assert manifest["data_artifacts"] == data_artifacts.to_dict()
     assert captured["checkpoint_metadata"]["config_overlays"] == config_overlays
+    assert (
+        captured["checkpoint_metadata"]["data_artifacts"]
+        == data_artifacts.to_dict()
+    )
     assert manifest["runtime_options"]["observability_config"] == str(
         tmp_path / "observability.yaml"
     )

@@ -3,6 +3,7 @@
 import time
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sized
 from copy import copy
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from types import MappingProxyType
@@ -185,6 +186,113 @@ def _validate_checkpoint_manager(
         raise ValueError("CheckpointManager EMA must match Trainer")
 
 
+@dataclass(frozen=True, slots=True)
+class TrainingFitState:
+    """Validated best-selection and early-stopping checkpoint state."""
+
+    best_epoch: int | None
+    best_metric_value: float | None
+    epochs_without_improvement: int
+    stopped_early: bool
+    monitor: str | None
+    mode: str | None
+
+    @classmethod
+    def from_mapping(cls, state: object) -> "TrainingFitState":
+        """Parse the strict persisted mapping without mutating trainer state."""
+
+        if not isinstance(state, Mapping):
+            raise TypeError("checkpoint metadata.training_loop must be a mapping")
+        required = {
+            "best_epoch",
+            "best_metric_value",
+            "epochs_without_improvement",
+            "stopped_early",
+            "monitor",
+            "mode",
+        }
+        if set(state) != required:
+            missing = sorted(required - set(state))
+            unknown = sorted(set(state) - required, key=str)
+            raise ValueError(
+                "checkpoint metadata.training_loop has invalid fields: "
+                f"missing={missing or '<none>'}, unknown={unknown or '<none>'}"
+            )
+        best_epoch = state["best_epoch"]
+        if best_epoch is not None and (
+            isinstance(best_epoch, bool)
+            or not isinstance(best_epoch, int)
+            or best_epoch <= 0
+        ):
+            raise TypeError(
+                "training_loop.best_epoch must be a positive int or null"
+            )
+        best_metric = state["best_metric_value"]
+        if best_metric is not None and (
+            isinstance(best_metric, bool)
+            or not isinstance(best_metric, (int, float))
+        ):
+            raise TypeError(
+                "training_loop.best_metric_value must be numeric or null"
+            )
+        if (best_epoch is None) != (best_metric is None):
+            raise ValueError(
+                "training_loop best_epoch and best_metric_value must both be null "
+                "or both be set"
+            )
+        wait = state["epochs_without_improvement"]
+        if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
+            raise TypeError(
+                "training_loop.epochs_without_improvement must be a non-negative int"
+            )
+        stopped_early = state["stopped_early"]
+        if not isinstance(stopped_early, bool):
+            raise TypeError("training_loop.stopped_early must be a bool")
+        monitor = state["monitor"]
+        if monitor is not None and (
+            not isinstance(monitor, str) or not monitor
+        ):
+            raise TypeError(
+                "training_loop.monitor must be a non-empty string or null"
+            )
+        mode = state["mode"]
+        if mode is not None and (
+            not isinstance(mode, str) or mode not in {"min", "max"}
+        ):
+            raise ValueError("training_loop.mode must be 'min', 'max', or null")
+        if (monitor is None) != (mode is None):
+            raise ValueError(
+                "training_loop monitor and mode must both be null or both be set"
+            )
+        if best_epoch is not None and monitor is None:
+            raise ValueError(
+                "training_loop monitor and mode are required when a best "
+                "checkpoint is recorded"
+            )
+        return cls(
+            best_epoch=best_epoch,
+            best_metric_value=(
+                None if best_metric is None else float(best_metric)
+            ),
+            epochs_without_improvement=wait,
+            stopped_early=stopped_early,
+            monitor=monitor,
+            mode=mode,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the validated state using the checkpoint schema."""
+
+        return {
+            "best_epoch": self.best_epoch,
+            "best_metric_value": self.best_metric_value,
+            "epochs_without_improvement": self.epochs_without_improvement,
+            "stopped_early": self.stopped_early,
+            "monitor": self.monitor,
+            "mode": self.mode,
+        }
+
+
 class Trainer:
     """Automatic optimization and experiment lifecycle wrapper.
 
@@ -292,66 +400,13 @@ class Trainer:
     ) -> None:
         """Restore best-selection and early-stopping state for strict resume."""
 
-        if not isinstance(state, Mapping):
-            raise TypeError("checkpoint metadata.training_loop must be a mapping")
-        required = {
-            "best_epoch",
-            "best_metric_value",
-            "epochs_without_improvement",
-            "stopped_early",
-            "monitor",
-            "mode",
-        }
-        if set(state) != required:
-            missing = sorted(required - set(state))
-            unknown = sorted(set(state) - required, key=str)
-            raise ValueError(
-                "checkpoint metadata.training_loop has invalid fields: "
-                f"missing={missing or '<none>'}, unknown={unknown or '<none>'}"
-            )
-        best_epoch = state["best_epoch"]
-        if best_epoch is not None and (
-            isinstance(best_epoch, bool)
-            or not isinstance(best_epoch, int)
-            or best_epoch <= 0
-        ):
-            raise TypeError("training_loop.best_epoch must be a positive int or null")
-        best_metric = state["best_metric_value"]
-        if best_metric is not None and (
-            isinstance(best_metric, bool)
-            or not isinstance(best_metric, (int, float))
-        ):
-            raise TypeError("training_loop.best_metric_value must be numeric or null")
-        if (best_epoch is None) != (best_metric is None):
-            raise ValueError(
-                "training_loop best_epoch and best_metric_value must both be null "
-                "or both be set"
-            )
-        wait = state["epochs_without_improvement"]
-        if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
-            raise TypeError(
-                "training_loop.epochs_without_improvement must be a non-negative int"
-            )
-        stopped_early = state["stopped_early"]
-        if not isinstance(stopped_early, bool):
-            raise TypeError("training_loop.stopped_early must be a bool")
-        monitor = state["monitor"]
-        if monitor is not None and (
-            not isinstance(monitor, str) or not monitor
-        ):
-            raise TypeError("training_loop.monitor must be a non-empty string or null")
-        mode = state["mode"]
-        if mode is not None and mode not in {"min", "max"}:
-            raise ValueError("training_loop.mode must be 'min', 'max', or null")
-
-        self.best_epoch = best_epoch
-        self.best_metric_value = (
-            None if best_metric is None else float(best_metric)
-        )
-        self.epochs_without_improvement = wait
-        self.stopped_early = stopped_early
-        self._best_monitor = monitor
-        self._best_mode = mode
+        parsed = TrainingFitState.from_mapping(state)
+        self.best_epoch = parsed.best_epoch
+        self.best_metric_value = parsed.best_metric_value
+        self.epochs_without_improvement = parsed.epochs_without_improvement
+        self.stopped_early = parsed.stopped_early
+        self._best_monitor = parsed.monitor
+        self._best_mode = parsed.mode
         self.best_checkpoint_path = (
             Path(best_checkpoint_path)
             if best_checkpoint_path is not None

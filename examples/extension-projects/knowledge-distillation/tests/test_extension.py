@@ -57,7 +57,7 @@ def test_components_are_namespaced_and_registered() -> None:
 def test_synthetic_data_is_deterministic() -> None:
     params = {
         "source": {
-            "kind": "synthetic",
+            "name": "synthetic",
             "input_features": 3,
             "num_classes": 2,
             "train_samples": 8,
@@ -80,7 +80,7 @@ def test_synthetic_data_rejects_non_finite_noise(noise_std: float) -> None:
         DataBuilderContext(
             {
                 "source": {
-                    "kind": "synthetic",
+                    "name": "synthetic",
                     "train_samples": 8,
                     "validation_samples": 4,
                     "test_samples": 4,
@@ -98,7 +98,7 @@ def test_synthetic_data_rejects_non_finite_noise(noise_std: float) -> None:
 def test_shuffle_order_is_epoch_derived_and_resume_rebuild_safe() -> None:
     params = {
         "source": {
-            "kind": "synthetic",
+            "name": "synthetic",
             "input_features": 3,
             "num_classes": 2,
             "train_samples": 12,
@@ -131,7 +131,7 @@ def test_shuffle_order_is_epoch_derived_and_resume_rebuild_safe() -> None:
 def test_shuffle_false_preserves_sequential_order() -> None:
     params = {
         "source": {
-            "kind": "synthetic",
+            "name": "synthetic",
             "input_features": 3,
             "num_classes": 2,
             "train_samples": 8,

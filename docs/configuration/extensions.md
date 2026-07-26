@@ -224,9 +224,12 @@ python -c "import sys; from importlib.metadata import entry_points, version; pri
 这只列出已安装 entry point，不导入扩展代码或列举其 Registry components。实际 component
 registration 在 runtime 激活 YAML 选中的插件后发生。
 
-第三方代码应从 `stochaflow.extensions` 导入稳定契约。数据层只导出 `DataBuilder`、
-`DataBuilderContext` 和 `DataLoaders`；内置 recipe 的 source、partition、transform、bucket
-与 sampler helper 均为私有实现。
+第三方代码应从 `stochaflow.extensions` 导入稳定契约。`DataBuilder` 仍是核心运行时唯一的
+数据扩展入口，负责交付完整的 `DataLoaders`。对于复用内置 image recipe 的扩展，
+`ImageDataSource`、`IMAGE_DATA_SOURCES`、`DataArtifact`、identity/binding 类型以及三个
+公开 image payload 是受限的 source-adapter 契约：source 只物化带 identity 的 artifact，
+由内置 `ImageDatasetFactory` 消费 payload，不得构造 Dataset、transform、sampler 或
+DataLoader。partition、transform、bucket 与 sampler helper 仍为内置 recipe 的私有实现。
 
 需要查看跨 data/training/sampling 三条扩展轴的完整实现时，参考两个彼此独立、可安装的
 [纵向扩展项目](reference-projects.md)。它们分别展示 Physics reconstruction 对离散

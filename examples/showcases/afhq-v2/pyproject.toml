@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stochaflow-afhq-v2"
+version = "0.1.0"
+description = "Official AFHQ-v2 DataSource showcase for Stochaflow."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "stochaflow==0.1.0",
+]
+
+[project.entry-points."stochaflow.extensions"]
+stochaflow-afhq-v2 = "stochaflow_afhq_v2.stochaflow_ext"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+stochaflow_afhq_v2 = ["resources/*.yaml"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
