@@ -136,7 +136,7 @@ registries:
         parameters:
           sources: {description: "必填的非空 source mapping 列表；每项只接受下列字段。"}
           "sources[].id": {description: "每个来源必填的非空唯一标识。"}
-          "sources[].sampling_weight": {description: "默认 `null`；若任一来源设置，则所有来源都必须设置正数权重，无需归一化为和 1。"}
+          "sources[].sampling_weight": {description: "默认 `null`；若任一来源设置，则所有来源都必须设置有限正数权重，无需归一化为和 1。"}
           "sources[].source.name": {description: "必填非空注册名；内置为 `torchvision` 或 `image_folder`。"}
           "sources[].source.params": {description: "source 私有 mapping；字段由所选 DataSource 严格验证。"}
           "sources[].source.params.dataset": {description: "`torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。"}
@@ -188,7 +188,7 @@ registries:
           source.materialization.verification: {description: "`manifest` 或 `full`；默认 `full`，strict resume 强制完整验证。"}
           image: {description: "必填 mapping；HR/LR size 必填，其余字段使用下列默认值。"}
           image.high_resolution: {description: "必填 HR `[height, width]`；两个维度均为正整数。"}
-          image.low_resolution: {description: "必填 LR `[height, width]`；两个维度均为正整数；paired 模式要求每轴 HR/LR 缩放比为整数。"}
+          image.low_resolution: {description: "必填 LR `[height, width]`；两个维度均为正整数；bicubic 模式要求每轴 LR 不大于 HR，paired 模式要求每轴 HR/LR 缩放比为整数。"}
           image.channels: {description: "HR/LR 输出通道数；默认 `3`，仅支持 `1` 或 `3`。"}
           image.normalize: {description: "是否将 HR/LR 从 `[0, 1]` 映射到 `[-1, 1]`；默认 `true`，必须为布尔值。"}
           image.random_horizontal_flip: {description: "训练时是否对 HR/LR 同步水平翻转；默认 `false`，必须为布尔值。"}

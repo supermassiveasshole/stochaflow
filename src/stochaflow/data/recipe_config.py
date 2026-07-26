@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -329,9 +330,22 @@ class SuperResolutionDataBuilderConfig:
         self.source.validate(path=f"{path}.source")
         self.image.validate(path=f"{path}.image")
         self.low_resolution.validate(path=f"{path}.low_resolution")
-        if self.low_resolution.kind == "paired":
-            high_resolution = self.image.resolved_high_resolution
-            low_resolution = self.image.resolved_low_resolution
+        high_resolution = self.image.resolved_high_resolution
+        low_resolution = self.image.resolved_low_resolution
+        if self.low_resolution.kind == "bicubic":
+            if any(
+                low > high
+                for high, low in zip(
+                    high_resolution,
+                    low_resolution,
+                    strict=True,
+                )
+            ):
+                raise ConfigError(
+                    f"{path}.image bicubic low_resolution must not exceed "
+                    "high_resolution on each axis"
+                )
+        else:
             if any(
                 high % low != 0
                 for high, low in zip(
@@ -363,12 +377,22 @@ class MultiResolutionSourceConfig:
         if not isinstance(source_id, str) or not source_id.strip():
             raise ConfigError(f"{path}.id must be a non-empty string")
         sampling_weight = cast(object, self.sampling_weight)
-        if sampling_weight is not None and (
-            not isinstance(sampling_weight, (int, float))
-            or isinstance(sampling_weight, bool)
-            or sampling_weight <= 0
-        ):
-            raise ConfigError(f"{path}.sampling_weight must be positive")
+        if sampling_weight is not None:
+            if not isinstance(sampling_weight, (int, float)) or isinstance(
+                sampling_weight,
+                bool,
+            ):
+                raise ConfigError(
+                    f"{path}.sampling_weight must be a finite positive number"
+                )
+            try:
+                is_finite = math.isfinite(sampling_weight)
+            except OverflowError:
+                is_finite = False
+            if sampling_weight <= 0 or not is_finite:
+                raise ConfigError(
+                    f"{path}.sampling_weight must be a finite positive number"
+                )
         self.source.validate(path=f"{path}.source")
 
 

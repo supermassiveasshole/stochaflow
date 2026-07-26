@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 import random
-from collections import defaultdict
+from array import array
+from bisect import bisect_right
 from collections.abc import Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -92,10 +93,16 @@ class BucketedDataset(Protocol):
     """Structural metadata required by :class:`MixtureBatchSampler`."""
 
     @property
-    def bucket_ids(self) -> Sequence[str]: ...
+    def bucket_codes(self) -> Sequence[int]: ...
 
     @property
-    def source_ids(self) -> Sequence[str]: ...
+    def source_codes(self) -> Sequence[int]: ...
+
+    @property
+    def bucket_names(self) -> Sequence[str]: ...
+
+    @property
+    def source_names(self) -> Sequence[str]: ...
 
     def __len__(self) -> int: ...
 
@@ -126,16 +133,20 @@ class EpochRandomSampler(Sampler[int]):
 class CyclingIndexPool:
     """Draw shuffled indices indefinitely while retaining every sample."""
 
-    def __init__(self, indices: Sequence[int], rng: random.Random) -> None:
+    def __init__(
+        self,
+        indices: CompactSamplerIndex,
+        rng: random.Random,
+    ) -> None:
         if not indices:
             raise ValueError("cycling index pools must not be empty")
-        self._source = list(indices)
+        self._source = indices
         self._rng = rng
-        self._current: list[int] = []
+        self._current = array(indices.typecode)
         self._offset = 0
 
     def _refill(self) -> None:
-        self._current = list(self._source)
+        self._current = self._source.mutable_copy()
         self._rng.shuffle(self._current)
         self._offset = 0
 
@@ -148,6 +159,59 @@ class CyclingIndexPool:
             values.extend(self._current[self._offset : self._offset + available])
             self._offset += available
         return values
+
+
+class CompactSamplerIndex(Sequence[int]):
+    """Packed sampler indices with controlled mutable copies for shuffling."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, *, maximum: int) -> None:
+        if maximum < 0:
+            raise ValueError("sampler index maximum must be non-negative")
+        if maximum < 2**32:
+            typecode = "I"
+        elif maximum < 2**64:
+            typecode = "Q"
+        else:
+            raise ValueError("sampler index maximum exceeds 64-bit storage")
+        self._values = array(typecode)
+
+    @property
+    def typecode(self) -> str:
+        """Return the selected packed-array type code."""
+
+        return self._values.typecode
+
+    @property
+    def storage_bytes(self) -> int:
+        """Return packed payload bytes, excluding constant object overhead."""
+
+        return len(self._values) * self._values.itemsize
+
+    def append(self, value: int) -> None:
+        """Append one validated non-negative dataset index."""
+
+        if value < 0:
+            raise ValueError("sampler indices must be non-negative")
+        try:
+            self._values.append(value)
+        except OverflowError as exc:
+            raise ValueError("sampler index exceeds selected storage") from exc
+
+    def mutable_copy(self) -> array[int]:
+        """Return an isolated packed copy for one ephemeral shuffle."""
+
+        return array(self._values.typecode, self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __getitem__(self, index: int | slice) -> int | array[int]:
+        return self._values[index]
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(self._values)
 
 
 class MixtureBatchSampler(Sampler[list[int]]):
@@ -165,10 +229,16 @@ class MixtureBatchSampler(Sampler[list[int]]):
         source_weights: Mapping[str, float] | None = None,
         steps_per_epoch: int | str = "auto",
     ) -> None:
-        if len(dataset.bucket_ids) != len(dataset):
+        if len(dataset.bucket_codes) != len(dataset):
             raise ValueError("bucket metadata length must match dataset length")
-        if len(dataset.source_ids) != len(dataset):
+        if len(dataset.source_codes) != len(dataset):
             raise ValueError("source metadata length must match dataset length")
+        if not dataset.bucket_names or not dataset.source_names:
+            raise ValueError("bucket and source codebooks must not be empty")
+        if len(set(dataset.bucket_names)) != len(dataset.bucket_names):
+            raise ValueError("bucket metadata names must be unique")
+        if len(set(dataset.source_names)) != len(dataset.source_names):
+            raise ValueError("source metadata names must be unique")
         if base_batch_size <= 0:
             raise ValueError("base batch size must be positive")
         if steps_per_epoch != "auto" and (
@@ -188,21 +258,71 @@ class MixtureBatchSampler(Sampler[list[int]]):
         self.steps_per_epoch = steps_per_epoch
         self.epoch = 0
 
-        self._bucket_indices: dict[str, list[int]] = defaultdict(list)
-        self._source_bucket_indices: dict[tuple[str, str], list[int]] = defaultdict(
-            list
-        )
-        for index, (source_id, bucket_id) in enumerate(
-            zip(dataset.source_ids, dataset.bucket_ids, strict=True)
+        bucket_count = len(dataset.bucket_names)
+        source_count = len(dataset.source_names)
+        for name in dataset.bucket_names:
+            bucket_policy.resolve(name)
+        counts = [0] * bucket_count
+        maximum_index = len(dataset) - 1
+        self._bucket_indices: dict[int, CompactSamplerIndex] | None = None
+        self._source_bucket_indices: (
+            dict[tuple[int, int], CompactSamplerIndex] | None
+        ) = None
+        if self.source_weights is None:
+            self._bucket_indices = {}
+        else:
+            self._source_bucket_indices = {}
+        for index, (source_code, bucket_code) in enumerate(
+            zip(dataset.source_codes, dataset.bucket_codes, strict=True)
         ):
-            bucket_policy.resolve(bucket_id)
-            self._bucket_indices[bucket_id].append(index)
-            self._source_bucket_indices[(source_id, bucket_id)].append(index)
+            if source_code < 0 or source_code >= source_count:
+                raise ValueError("source metadata code is out of range")
+            if bucket_code < 0 or bucket_code >= bucket_count:
+                raise ValueError("bucket metadata code is out of range")
+            counts[bucket_code] += 1
+            if self._bucket_indices is not None:
+                selected = self._bucket_indices.setdefault(
+                    bucket_code,
+                    CompactSamplerIndex(maximum=maximum_index),
+                )
+            else:
+                assert self._source_bucket_indices is not None
+                selected = self._source_bucket_indices.setdefault(
+                    (source_code, bucket_code),
+                    CompactSamplerIndex(maximum=maximum_index),
+                )
+            selected.append(index)
 
         if self.source_weights is not None:
-            if any(weight <= 0 for weight in self.source_weights.values()):
-                raise ValueError("source weights must be positive")
-            present_sources = set(dataset.source_ids)
+            for weight in self.source_weights.values():
+                weight_value = cast(object, weight)
+                if isinstance(weight_value, bool) or not isinstance(
+                    weight_value,
+                    (int, float),
+                ):
+                    raise TypeError(
+                        "source weights must be finite positive numbers"
+                    )
+                try:
+                    is_finite = math.isfinite(weight_value)
+                except OverflowError:
+                    is_finite = False
+                if not is_finite or weight_value <= 0:
+                    raise ValueError(
+                        "source weights must be finite positive numbers"
+                    )
+            known_sources = set(dataset.source_names)
+            unknown = sorted(set(self.source_weights) - known_sources)
+            if unknown:
+                raise ValueError(
+                    "source weights contain unknown source(s): "
+                    + ", ".join(unknown)
+                )
+            present_codes = set(dataset.source_codes)
+            present_sources = {
+                dataset.source_names[code]
+                for code in present_codes
+            }
             missing = sorted(set(self.source_weights) - present_sources)
             if missing:
                 raise ValueError(
@@ -211,8 +331,13 @@ class MixtureBatchSampler(Sampler[list[int]]):
                 )
 
         natural_steps = sum(
-            self._batch_count(bucket_id, len(indices), drop_last=drop_last)
-            for bucket_id, indices in self._bucket_indices.items()
+            self._batch_count(
+                dataset.bucket_names[bucket_code],
+                count,
+                drop_last=drop_last,
+            )
+            for bucket_code, count in enumerate(counts)
+            if count
         )
         can_cycle_weighted_explicit_steps = (
             self.source_weights is not None
@@ -246,72 +371,127 @@ class MixtureBatchSampler(Sampler[list[int]]):
             return self.steps_per_epoch
         return self._natural_steps
 
-    def _natural_batches(self, rng: random.Random) -> list[list[int]]:
-        batches: list[list[int]] = []
+    def _natural_batches(
+        self,
+        rng: random.Random,
+    ) -> Iterator[list[int]]:
+        assert self._bucket_indices is not None
+        bucket_codes = {
+            name: code
+            for code, name in enumerate(self.dataset.bucket_names)
+        }
+        batch_ends: list[int] = []
+        bucket_batches: list[tuple[Sequence[int], int]] = []
+        batch_total = 0
         for bucket in self.bucket_policy.buckets:
-            indices = list(self._bucket_indices.get(bucket.name, ()))
-            if not indices:
+            packed = self._bucket_indices.get(bucket_codes[bucket.name])
+            if packed is None:
                 continue
             if self.shuffle:
+                indices: Sequence[int] = packed.mutable_copy()
                 rng.shuffle(indices)
+            else:
+                indices = packed
             batch_size = self._batch_size(bucket.name)
-            for offset in range(0, len(indices), batch_size):
-                batch = indices[offset : offset + batch_size]
-                if len(batch) < batch_size and self.drop_last:
-                    continue
-                batches.append(batch)
+            batch_count = self._batch_count(
+                bucket.name,
+                len(indices),
+                drop_last=self.drop_last,
+            )
+            if batch_count <= 0:
+                continue
+            batch_total += batch_count
+            batch_ends.append(batch_total)
+            bucket_batches.append((indices, batch_size))
+
+        if batch_total <= 0:
+            return
         if self.shuffle:
-            rng.shuffle(batches)
-        return batches
+            typecode = "I" if batch_total <= 2**32 else "Q"
+            batch_order: Sequence[int] = array(
+                typecode,
+                range(batch_total),
+            )
+            rng.shuffle(batch_order)
+        else:
+            batch_order = range(batch_total)
+
+        for batch_code in batch_order:
+            bucket_position = bisect_right(batch_ends, batch_code)
+            previous_end = (
+                0 if bucket_position == 0 else batch_ends[bucket_position - 1]
+            )
+            local_batch = batch_code - previous_end
+            indices, batch_size = bucket_batches[bucket_position]
+            offset = local_batch * batch_size
+            yield list(indices[offset : offset + batch_size])
 
     def _unweighted_batches(self, rng: random.Random) -> Iterator[list[int]]:
         target_steps = len(self)
         yielded = 0
         while yielded < target_steps:
-            batches = self._natural_batches(rng)
-            if not batches:
-                raise RuntimeError("batch sampler produced an empty epoch")
-            for batch in batches:
+            cycle_start = yielded
+            for batch in self._natural_batches(rng):
                 if yielded >= target_steps:
                     return
                 yielded += 1
                 yield batch
+            if yielded == cycle_start:
+                raise RuntimeError("batch sampler produced an empty epoch")
 
     def _weighted_batches(self, rng: random.Random) -> Iterator[list[int]]:
         assert self.source_weights is not None
-        sources = list(self.source_weights)
-        weights = [self.source_weights[source] for source in sources]
+        assert self._source_bucket_indices is not None
+        source_codes = {
+            name: code
+            for code, name in enumerate(self.dataset.source_names)
+        }
+        bucket_codes = {
+            name: code
+            for code, name in enumerate(self.dataset.bucket_names)
+        }
+        sources = [source_codes[name] for name in self.source_weights]
+        weights = [
+            self.source_weights[self.dataset.source_names[source_code]]
+            for source_code in sources
+        ]
         pools = {
             key: CyclingIndexPool(indices, rng)
             for key, indices in self._source_bucket_indices.items()
         }
-        source_buckets: dict[str, list[str]] = {}
-        source_bucket_weights: dict[str, list[int]] = {}
-        for source in sources:
-            bucket_names: list[str] = []
+        source_buckets: dict[int, list[int]] = {}
+        source_bucket_weights: dict[int, list[int]] = {}
+        for source_code in sources:
+            selected_bucket_codes: list[int] = []
             batch_counts: list[int] = []
             for bucket in self.bucket_policy.buckets:
-                indices = self._source_bucket_indices.get((source, bucket.name))
+                bucket_code = bucket_codes[bucket.name]
+                indices = self._source_bucket_indices.get(
+                    (source_code, bucket_code)
+                )
                 if not indices:
                     continue
-                bucket_names.append(bucket.name)
+                selected_bucket_codes.append(bucket_code)
                 batch_counts.append(
                     max(
                         1,
                         math.ceil(len(indices) / self._batch_size(bucket.name)),
                     )
                 )
-            source_buckets[source] = bucket_names
-            source_bucket_weights[source] = batch_counts
+            source_buckets[source_code] = selected_bucket_codes
+            source_bucket_weights[source_code] = batch_counts
 
         for _ in range(len(self)):
-            source = rng.choices(sources, weights=weights, k=1)[0]
-            bucket_id = rng.choices(
-                source_buckets[source],
-                weights=source_bucket_weights[source],
+            source_code = rng.choices(sources, weights=weights, k=1)[0]
+            bucket_code = rng.choices(
+                source_buckets[source_code],
+                weights=source_bucket_weights[source_code],
                 k=1,
             )[0]
-            yield pools[(source, bucket_id)].draw(self._batch_size(bucket_id))
+            bucket_name = self.dataset.bucket_names[bucket_code]
+            yield pools[(source_code, bucket_code)].draw(
+                self._batch_size(bucket_name)
+            )
 
     def __iter__(self) -> Iterator[list[int]]:
         rng = random.Random(self.seed + self.epoch)
@@ -323,6 +503,7 @@ class MixtureBatchSampler(Sampler[list[int]]):
 
 __all__ = [
     "BucketedDataset",
+    "CompactSamplerIndex",
     "CyclingIndexPool",
     "EpochRandomSampler",
     "MixtureBatchSampler",

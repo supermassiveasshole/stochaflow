@@ -21,10 +21,12 @@ from .builder import (
     build_data_loaders,
 )
 from .dataloaders import DataLoaders
-from .sources import (
+from .image_contracts import (
     IMAGE_DATA_SOURCES,
     ImageArtifactPayload,
     ImageDataSource,
+    ImageDimensions,
+    ImageDimensionTable,
     ImageFilePair,
     ImageFileRecord,
     ImageFolderArtifactPayload,
@@ -46,6 +48,8 @@ __all__ = [
     "ImageArtifactPayload",
     "ImageDataBuilder",
     "ImageDataSource",
+    "ImageDimensionTable",
+    "ImageDimensions",
     "ImageFilePair",
     "ImageFileRecord",
     "ImageFolderArtifactPayload",

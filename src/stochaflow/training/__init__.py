@@ -31,6 +31,7 @@ from .optimization import WarmupCosineLR
 from .reporting import FinalSummary, RichTrainingReporter, RunSummary
 from .strategy import (
     Batch,
+    DeviceTransferableBatch,
     ScalarMetric,
     TrainingStrategy,
     TrainStepOutput,
@@ -41,6 +42,7 @@ from .trainer import Trainer
 __all__ = [
     "Batch",
     "ContextAwareDiagnostic",
+    "DeviceTransferableBatch",
     "DiagnosticBuildContext",
     "ExponentialMovingAverage",
     "FinalSummary",

@@ -1,15 +1,17 @@
 """Tests for trainer reporting and validation checkpoint behavior."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, NamedTuple, cast
 
 import pytest
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import LRScheduler
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 
 from stochaflow.training import (
+    DeviceTransferableBatch,
     FitStartEvent,
     ManagedTrainingModule,
     SupervisedTrainingStrategy,
@@ -61,6 +63,7 @@ class MetricRecordingLogger(ExperimentLogger):
 class RecordingReporter:
     def __init__(self) -> None:
         self.phase_enabled: list[bool] = []
+        self.phase_totals: list[int | None] = []
         self.epoch_summaries = 0
 
     def on_epoch_start(self, epoch: int, total_epochs: int) -> None:
@@ -74,8 +77,9 @@ class RecordingReporter:
         total_batches: int | None,
         enabled: bool = True,
     ) -> None:
-        del phase, epoch, total_batches
+        del phase, epoch
         self.phase_enabled.append(enabled)
+        self.phase_totals.append(total_batches)
 
     def on_batch_end(
         self,
@@ -144,6 +148,28 @@ class CountingLoader:
 class NamedBatch(NamedTuple):
     inputs: torch.Tensor
     targets: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
+class DomainRegressionBatch:
+    inputs: torch.Tensor
+    targets: torch.Tensor
+    transferred_to: torch.device | None = None
+
+    def to_device(self, device: torch.device) -> "DomainRegressionBatch":
+        return DomainRegressionBatch(
+            inputs=self.inputs.to(device),
+            targets=self.targets.to(device),
+            transferred_to=device,
+        )
+
+
+class StreamingRegressionDataset(
+    IterableDataset[tuple[torch.Tensor, torch.Tensor]]
+):
+    def __iter__(self):
+        for _ in range(3):
+            yield torch.tensor([1.0]), torch.tensor([0.0])
 
 
 class RecordingDiagnostic(TrainingDiagnostic):
@@ -361,6 +387,24 @@ def test_fit_reports_epoch_summary_when_progress_bars_are_disabled(tmp_path) -> 
 
     assert reporter.phase_enabled == [False, False]
     assert reporter.epoch_summaries == 1
+
+
+def test_fit_reports_explicit_limit_for_pytorch_streaming_loader(tmp_path) -> None:
+    trainer = _make_trainer(tmp_path)
+    reporter = RecordingReporter()
+    loader = DataLoader(StreamingRegressionDataset(), batch_size=1)
+
+    history = trainer.fit(
+        loader,
+        num_epochs=1,
+        max_batches_per_epoch=2,
+        show_progress=False,
+        reporter=reporter,
+        track_best=False,
+    )
+
+    assert history[0]["num_batches"] == 2.0
+    assert reporter.phase_totals == [2]
 
 
 def test_fit_tracks_best_checkpoint_without_early_stopping(tmp_path) -> None:
@@ -595,6 +639,42 @@ def test_device_transfer_preserves_namedtuple_batch(tmp_path) -> None:
 
     trainer.train_epoch(
         [NamedBatch(torch.tensor([[1.0]]), torch.tensor([[0.0]]))],
+        show_progress=False,
+    )
+
+    assert len(observed) == 1
+
+
+def test_device_transfer_uses_domain_batch_capability(tmp_path) -> None:
+    model = TinyRegressor()
+    observed: list[DomainRegressionBatch] = []
+    objective = nn.MSELoss()
+
+    def train_step(batch: Any) -> TrainStepOutput:
+        assert isinstance(batch, DomainRegressionBatch)
+        assert isinstance(batch, DeviceTransferableBatch)
+        assert batch.transferred_to == trainer.device
+        assert batch.inputs.device == trainer.device
+        assert batch.targets.device == trainer.device
+        observed.append(batch)
+        return TrainStepOutput(loss=objective(model(batch.inputs), batch.targets))
+
+    trainer = _build_trainer(
+        tmp_path,
+        model=model,
+        optimizer=torch.optim.SGD(model.parameters(), lr=0.01),
+        objective=objective,
+        strategy=CallableTrainingStrategy(train_step),
+        checkpoint_every=None,
+    )
+
+    trainer.train_epoch(
+        [
+            DomainRegressionBatch(
+                inputs=torch.tensor([[1.0]]),
+                targets=torch.tensor([[0.0]]),
+            )
+        ],
         show_progress=False,
     )
 

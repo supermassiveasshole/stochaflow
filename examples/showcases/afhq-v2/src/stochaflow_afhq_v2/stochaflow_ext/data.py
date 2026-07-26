@@ -113,6 +113,8 @@ class AFHQV2DataSourceConfig:
 
 def _image_folder_payload(
     prepared: PreparedArtifact,
+    *,
+    resolution: int,
 ) -> ImageFolderArtifactPayload:
     roots = {
         role: prepared.root / role
@@ -135,6 +137,8 @@ def _image_folder_payload(
                 path=PurePosixPath(*parts[1:]).as_posix(),
                 size_bytes=record.size_bytes,
                 sha256=record.sha256,
+                width=resolution,
+                height=resolution,
             )
         )
     return ImageFolderArtifactPayload(
@@ -261,7 +265,10 @@ class AFHQV2ImageDataSource(ImageDataSource):
             artifact_root=prepared.root,
             manifest_path=prepared.manifest_path,
             identity=identity,
-            payload=_image_folder_payload(prepared),
+            payload=_image_folder_payload(
+                prepared,
+                resolution=config.resolution,
+            ),
         )
 
 

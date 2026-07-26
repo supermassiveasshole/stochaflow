@@ -28,6 +28,9 @@ from stochaflow.data.datasets import (
     PairedSuperResolutionDataset,
     combine_image_datasets,
 )
+from stochaflow.data.image_contracts import (
+    PairedImageFolderArtifactPayload,
+)
 from stochaflow.data.partition import partition_datasets
 from stochaflow.data.recipe_config import (
     ImageDataBuilderConfig,
@@ -35,9 +38,8 @@ from stochaflow.data.recipe_config import (
     SuperResolutionDataBuilderConfig,
 )
 from stochaflow.data.samplers import ResolutionBucketPolicy
-from stochaflow.data.sources import (
+from stochaflow.data.source_factory import (
     ImageSourceFactory,
-    PairedImageFolderArtifactPayload,
     artifact_bindings,
 )
 from stochaflow.data.transforms import (

@@ -5,12 +5,22 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Protocol, Self, cast, runtime_checkable
 
 import torch
 
 type Batch = Any
 type ScalarMetric = float | int | torch.Tensor
+
+
+@runtime_checkable
+class DeviceTransferableBatch(Protocol):
+    """Optional device-transfer capability for a domain-specific batch."""
+
+    def to_device(self, device: torch.device) -> Self:
+        """Return this batch with its tensor state on ``device``."""
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +86,7 @@ def validate_train_step_output(value: object) -> TrainStepOutput:
 
 __all__ = [
     "Batch",
+    "DeviceTransferableBatch",
     "ScalarMetric",
     "TrainStepOutput",
     "TrainingStrategy",

@@ -439,6 +439,30 @@ def test_config_requires_all_or_no_source_weights() -> None:
         build_data_loaders(config.data, seed=config.experiment.seed)
 
 
+@pytest.mark.parametrize("yaml_value", [".nan", ".inf", "-.inf"])
+def test_yaml_config_rejects_non_finite_source_sampling_weight(
+    tmp_path: Path,
+    yaml_value: str,
+) -> None:
+    source = Path("configs/ddpm_mnist_flowers102.yaml").read_text(
+        encoding="utf-8"
+    )
+    source = source.replace(
+        "sampling_weight: 0.4",
+        f"sampling_weight: {yaml_value}",
+        1,
+    )
+    config_path = tmp_path / "non_finite_weight.yaml"
+    config_path.write_text(source, encoding="utf-8")
+
+    config = load_config(config_path)
+    with pytest.raises(
+        ConfigError,
+        match=r"sources\[0\]\.sampling_weight.*finite positive number",
+    ):
+        build_data_loaders(config.data, seed=config.experiment.seed)
+
+
 def test_config_rejects_bucket_incompatible_with_unet_depth() -> None:
     raw = load_config(Path("configs/ddpm_mnist_flowers102.yaml")).to_dict()
     raw["data"]["params"]["batching"]["buckets"][0]["height"] = 0

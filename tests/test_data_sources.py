@@ -30,19 +30,25 @@ from stochaflow.data import (
     ManagedDataArtifactIdentity,
     ReferencedDataArtifact,
     artifact_io,
-    sources,
+    artifact_store,
+    folder_sources,
+    reference_artifacts,
+    torchvision_source,
 )
 from stochaflow.data.datasets import ImageDatasetFactory
+from stochaflow.data.folder_sources import (
+    ImageFolderDataSource,
+    PairedImageFolderDataSource,
+)
+from stochaflow.data.image_contracts import (
+    PairedImageFolderArtifactPayload,
+)
 from stochaflow.data.recipe_config import (
     DataSourceMaterializationConfig,
     ImageSourceConfig,
 )
-from stochaflow.data.sources import (
-    ImageFolderDataSource,
-    ImageSourceFactory,
-    PairedImageFolderArtifactPayload,
-    PairedImageFolderDataSource,
-)
+from stochaflow.data.source_factory import ImageSourceFactory
+from stochaflow.data.torchvision_source import TorchvisionImageDataSource
 from stochaflow.utils.registry import Registry
 
 TEST_IMAGE_SOURCES: Registry[type[ImageDataSource]] = Registry(
@@ -82,6 +88,8 @@ class FakeImageDataSource(ImageDataSource):
         root = Path(self.params["root"]).resolve()
         image_path = root / "sample.png"
         encoded = image_path.read_bytes()
+        with Image.open(image_path) as image:
+            width, height = image.size
         manifest = root / "manifest.json"
         digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
         identity = ManagedDataArtifactIdentity(
@@ -105,6 +113,8 @@ class FakeImageDataSource(ImageDataSource):
                         path="sample.png",
                         size_bytes=len(encoded),
                         sha256=hashlib.sha256(encoded).hexdigest(),
+                        width=width,
+                        height=height,
                     ),
                 ),
             ),
@@ -183,6 +193,14 @@ class FixtureManagedVisionDataset:
             (data_root / f"{marker}.bin").write_bytes(marker.encode("ascii"))
         if not (data_root / f"{marker}.bin").is_file():
             raise RuntimeError("fixture managed dataset is unavailable")
+
+    def __len__(self) -> int:
+        return 1
+
+    def __getitem__(self, index: int) -> tuple[Image.Image, int]:
+        if index != 0:
+            raise IndexError(index)
+        return Image.new("L", (28, 28)), 0
 
 
 def test_reference_source_indexes_without_copy_and_reads_manifest_order(
@@ -297,7 +315,7 @@ def test_manifest_verification_enumerates_paths_and_sizes_without_hashing_images
     )
     source.materialize(source_context(cache))
     scan_modes: list[bool] = []
-    original = sources._scan_regular_file_snapshots
+    original = reference_artifacts._scan_regular_file_snapshots
 
     def record_scan(
         root: Path,
@@ -315,7 +333,11 @@ def test_manifest_verification_enumerates_paths_and_sizes_without_hashing_images
             path_filter=path_filter,
         )
 
-    monkeypatch.setattr(sources, "_scan_regular_file_snapshots", record_scan)
+    monkeypatch.setattr(
+        reference_artifacts,
+        "_scan_regular_file_snapshots",
+        record_scan,
+    )
     source.materialize(
         source_context(cache, policy="require", verification="manifest")
     )
@@ -338,22 +360,32 @@ def test_reference_scan_hashes_only_inventory_images(
     write_image(image)
     ignored = root / "large-sidecar.txt"
     ignored.write_bytes(b"x" * 4096)
-    hashed_sizes: list[int] = []
-    original = artifact_io._digest_descriptor
+    read_paths: list[str] = []
+    original = reference_artifacts.read_regular_file
 
-    def record_digest(descriptor: int) -> str:
-        hashed_sizes.append(os.fstat(descriptor).st_size)
-        return original(descriptor)
+    def record_read(
+        selected_root: Path,
+        relative_path: str,
+        *,
+        label: str,
+    ) -> tuple[bytes, os.stat_result]:
+        if label == "referenced image":
+            read_paths.append(relative_path)
+        return original(selected_root, relative_path, label=label)
 
-    monkeypatch.setattr(artifact_io, "_digest_descriptor", record_digest)
+    monkeypatch.setattr(
+        reference_artifacts,
+        "read_regular_file",
+        record_read,
+    )
 
     ImageFolderDataSource(
         {"root": str(root)},
         config_path="data.params.source",
     ).materialize(source_context(tmp_path / "cache"))
 
-    assert image.stat().st_size in hashed_sizes
-    assert ignored.stat().st_size not in hashed_sizes
+    assert read_paths == ["sample.png"]
+    assert ignored.name not in read_paths
 
 
 def test_reference_scan_rejects_special_files(tmp_path: Path) -> None:
@@ -571,7 +603,7 @@ def test_reference_materialization_rejects_linked_index_cache_ancestor(
     root = tmp_path / "images"
     write_image(root / "sample.png")
     cache = tmp_path / "cache"
-    index_parent = sources._reference_index_path(
+    index_parent = reference_artifacts._reference_index_path(
         cache,
         "image_folder",
         "0" * 64,
@@ -596,7 +628,7 @@ def test_managed_materialization_rejects_linked_artifact_cache_ancestor(
 ) -> None:
     FixtureManagedVisionDataset.acquisitions = 0
     monkeypatch.setattr(
-        sources.datasets,
+        torchvision_source.datasets,
         "MNIST",
         FixtureManagedVisionDataset,
     )
@@ -610,7 +642,7 @@ def test_managed_materialization_rejects_linked_artifact_cache_ancestor(
     create_directory_link(artifact_parent, outside)
 
     with pytest.raises(ValueError, match=r"symlink|reparse|invalid"):
-        sources.TorchvisionImageDataSource(
+        TorchvisionImageDataSource(
             {"dataset": "MNIST"},
             config_path="data.params.source",
         ).materialize(source_context(cache))
@@ -631,7 +663,7 @@ def test_reference_scan_rejects_root_link_substitution(
     except OSError:
         pytest.skip("directory symlink creation is unavailable")
     probe.unlink()
-    original = sources._partition_roots
+    original = folder_sources.partition_roots
 
     def substitute_root(selected_root: Path, layout: str) -> dict[str, Path]:
         roots = original(selected_root, layout)
@@ -640,7 +672,7 @@ def test_reference_scan_rejects_root_link_substitution(
         selected_root.symlink_to(preserved, target_is_directory=True)
         return roots
 
-    monkeypatch.setattr(sources, "_partition_roots", substitute_root)
+    monkeypatch.setattr(folder_sources, "partition_roots", substitute_root)
 
     with pytest.raises(ValueError, match="link or reparse"):
         ImageFolderDataSource(
@@ -658,20 +690,29 @@ def test_reference_inventory_shards_at_one_hundred_thousand(
             path=f"{index:06d}.png",
             size_bytes=1,
             sha256="a" * 64,
+            width=1,
+            height=1,
         )
         for index in range(100_001)
     )
     index_root = tmp_path / "index"
     index_root.mkdir()
 
-    inventory = sources._write_inventory(tmp_path, index_root, records)
+    inventory = reference_artifacts._write_inventory(
+        tmp_path,
+        index_root,
+        records,
+    )
 
     assert inventory["record_count"] == 100_001
     assert [shard["record_count"] for shard in inventory["shards"]] == [
         100_000,
         1,
     ]
-    assert sources._read_inventory(index_root, inventory) == records
+    assert reference_artifacts._read_inventory(
+        index_root,
+        inventory,
+    ) == records
 
 
 @pytest.mark.parametrize(
@@ -689,35 +730,43 @@ def test_reference_inventory_rejects_non_integer_counts(
     value: object,
     message: str,
 ) -> None:
-    record = ImageFileRecord("train", "sample.png", 1, "a" * 64)
+    record = ImageFileRecord("train", "sample.png", 1, "a" * 64, 1, 1)
     index_root = tmp_path / "index"
     index_root.mkdir()
-    inventory = sources._write_inventory(tmp_path, index_root, (record,))
+    inventory = reference_artifacts._write_inventory(
+        tmp_path,
+        index_root,
+        (record,),
+    )
     inventory[field] = value
 
     with pytest.raises(ValueError, match=message):
-        sources._read_inventory(index_root, inventory)
+        reference_artifacts._read_inventory(index_root, inventory)
 
 
 def test_reference_inventory_requires_canonical_shard_shape(
     tmp_path: Path,
 ) -> None:
-    record = ImageFileRecord("train", "sample.png", 1, "a" * 64)
+    record = ImageFileRecord("train", "sample.png", 1, "a" * 64, 1, 1)
     index_root = tmp_path / "index"
     index_root.mkdir()
-    inventory = sources._write_inventory(tmp_path, index_root, (record,))
+    inventory = reference_artifacts._write_inventory(
+        tmp_path,
+        index_root,
+        (record,),
+    )
 
     non_integer = cast(dict[str, Any], inventory["shards"][0]).copy()
     non_integer["record_count"] = True
     malformed = {**inventory, "shards": [non_integer]}
     with pytest.raises(ValueError, match="record count is not canonical"):
-        sources._read_inventory(index_root, malformed)
+        reference_artifacts._read_inventory(index_root, malformed)
 
     extra = cast(dict[str, Any], inventory["shards"][0]).copy()
     extra["path"] = "inventory/000001.jsonl"
     malformed = {**inventory, "shards": [inventory["shards"][0], extra]}
     with pytest.raises(ValueError, match="shard count is not canonical"):
-        sources._read_inventory(index_root, malformed)
+        reference_artifacts._read_inventory(index_root, malformed)
 
     malformed = {
         **inventory,
@@ -725,7 +774,7 @@ def test_reference_inventory_requires_canonical_shard_shape(
         "shards": [inventory["shards"][0]],
     }
     with pytest.raises(ValueError, match="shard count is not canonical"):
-        sources._read_inventory(index_root, malformed)
+        reference_artifacts._read_inventory(index_root, malformed)
 
 
 def test_paired_source_matches_relative_stems_and_detects_missing_pairs(
@@ -874,7 +923,9 @@ def test_orphan_reference_index_with_type_error_is_quarantined_and_rebuilt(
     locator.unlink()
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
     manifest["artifact_type"] = 7
-    first.manifest_path.write_bytes(sources._canonical_json_bytes(manifest))
+    first.manifest_path.write_bytes(
+        artifact_store.canonical_json_bytes(manifest)
+    )
 
     rebuilt = source.materialize(source_context(cache))
 
@@ -910,7 +961,9 @@ def test_reference_locator_recovery_is_policy_aware(tmp_path: Path) -> None:
     rebuilt = source.materialize(source_context(cache))
 
     assert rebuilt.identity == first.identity
-    assert sources._read_locator(locator) == first.identity.artifact_digest
+    assert artifact_store.read_locator(
+        locator
+    ) == first.identity.artifact_digest
     assert len(list(locator.parent.glob("*.corrupt"))) == 1
 
 
@@ -919,7 +972,7 @@ def test_pointer_digest_is_strict_lowercase_sha256(tmp_path: Path) -> None:
     pointer.write_bytes(b'{"artifact_digest":"XYZ"}\n')
 
     with pytest.raises(ValueError, match="artifact_digest is invalid"):
-        sources._read_locator(pointer)
+        artifact_store.read_locator(pointer)
 
 
 def test_reference_index_directory_must_match_artifact_digest(
@@ -935,10 +988,10 @@ def test_reference_index_directory_must_match_artifact_digest(
     artifact.index_root.rename(wrong_root)
 
     with pytest.raises(ValueError, match=r"directory.*artifact digest"):
-        sources._load_reference_index(
+        reference_artifacts._load_reference_index(
             wrong_root,
             source_name="image_folder",
-            artifact_type="stochaflow.image-folder-reference.v1",
+            artifact_type="stochaflow.image-folder-reference.v2",
             roots=artifact.payload.roots,
             layout={
                 "type": "image_folder",
@@ -962,13 +1015,15 @@ def test_reference_manifest_rejects_boolean_schema_version(
         artifact.manifest_path.read_text(encoding="utf-8")
     )
     manifest["schema_version"] = True
-    artifact.manifest_path.write_bytes(sources._canonical_json_bytes(manifest))
+    artifact.manifest_path.write_bytes(
+        artifact_store.canonical_json_bytes(manifest)
+    )
 
     with pytest.raises(ValueError, match="unsupported schema"):
-        sources._load_reference_index(
+        reference_artifacts._load_reference_index(
             artifact.index_root,
             source_name="image_folder",
-            artifact_type="stochaflow.image-folder-reference.v1",
+            artifact_type="stochaflow.image-folder-reference.v2",
             roots=artifact.payload.roots,
             layout={
                 "type": "image_folder",
@@ -988,13 +1043,13 @@ def test_reference_lock_identity_includes_external_roots(
         "trees": ["train"],
     }
 
-    first = sources._reference_lock_path(
+    first = reference_artifacts._reference_lock_path(
         tmp_path / "cache",
         "image_folder",
         {"train": tmp_path / "first"},
         layout,
     )
-    second = sources._reference_lock_path(
+    second = reference_artifacts._reference_lock_path(
         tmp_path / "cache",
         "image_folder",
         {"train": tmp_path / "second"},
@@ -1009,7 +1064,7 @@ def test_materialization_lock_wait_is_bounded_and_preserves_owner(
 ) -> None:
     lock_path = tmp_path / "materialize.lock"
 
-    with sources.ArtifactMaterializationLock(lock_path):
+    with artifact_store.ArtifactMaterializationLock(lock_path):
         owner = json.loads(lock_path.read_text(encoding="utf-8"))
         assert owner["hostname"]
         assert owner["pid"] > 0
@@ -1021,7 +1076,7 @@ def test_materialization_lock_wait_is_bounded_and_preserves_owner(
                 RuntimeError,
                 match=r"timed out.*observed owner",
             ),
-            sources.ArtifactMaterializationLock(
+            artifact_store.ArtifactMaterializationLock(
                 lock_path,
                 wait_seconds=0.02,
                 poll_seconds=0.005,
@@ -1042,7 +1097,7 @@ def test_materialization_lock_reuses_persistent_unlocked_file(
     stale = b'{"hostname":"other-host","pid":123}\n'
     lock_path.write_bytes(stale)
 
-    with sources.ArtifactMaterializationLock(lock_path):
+    with artifact_store.ArtifactMaterializationLock(lock_path):
         current = json.loads(lock_path.read_text(encoding="utf-8"))
         assert current["hostname"]
         assert current["nonce"]
@@ -1062,7 +1117,7 @@ def test_materialization_lock_release_preserves_replacement_owner(
     displaced = tmp_path / "displaced.lock"
     replacement = b'{"hostname":"replacement","pid":999}\n'
 
-    with sources.ArtifactMaterializationLock(lock_path):
+    with artifact_store.ArtifactMaterializationLock(lock_path):
         lock_path.rename(displaced)
         lock_path.write_bytes(replacement)
 
@@ -1080,7 +1135,7 @@ def test_windows_materialization_lock_blocks_path_replacement(
     lock_path = tmp_path / "materialize.lock"
 
     with (
-        sources.ArtifactMaterializationLock(lock_path),
+        artifact_store.ArtifactMaterializationLock(lock_path),
         pytest.raises(PermissionError),
     ):
         lock_path.rename(tmp_path / "replacement.lock")
@@ -1093,14 +1148,14 @@ def test_managed_torchvision_require_miss_is_read_only(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        sources.datasets,
+        torchvision_source.datasets,
         "MNIST",
         FixtureManagedVisionDataset,
     )
     cache = tmp_path / "cache"
 
     with pytest.raises(FileNotFoundError, match="required torchvision"):
-        sources.TorchvisionImageDataSource(
+        TorchvisionImageDataSource(
             {"dataset": "MNIST"},
             config_path="data.params.source",
         ).materialize(source_context(cache, policy="require"))
@@ -1114,12 +1169,12 @@ def test_managed_torchvision_cache_hit_and_verification_modes(
 ) -> None:
     FixtureManagedVisionDataset.acquisitions = 0
     monkeypatch.setattr(
-        sources.datasets,
+        torchvision_source.datasets,
         "MNIST",
         FixtureManagedVisionDataset,
     )
     cache = tmp_path / "cache"
-    source = sources.TorchvisionImageDataSource(
+    source = TorchvisionImageDataSource(
         {"dataset": "MNIST"},
         config_path="data.params.source",
     )
@@ -1148,12 +1203,12 @@ def test_managed_locator_recovery_is_policy_aware(
 ) -> None:
     FixtureManagedVisionDataset.acquisitions = 0
     monkeypatch.setattr(
-        sources.datasets,
+        torchvision_source.datasets,
         "MNIST",
         FixtureManagedVisionDataset,
     )
     cache = tmp_path / "cache"
-    source = sources.TorchvisionImageDataSource(
+    source = TorchvisionImageDataSource(
         {"dataset": "MNIST"},
         config_path="data.params.source",
     )
@@ -1171,7 +1226,9 @@ def test_managed_locator_recovery_is_policy_aware(
     rebuilt = source.materialize(source_context(cache))
 
     assert rebuilt.identity == first.identity
-    assert sources._read_locator(pointer) == first.identity.artifact_digest
+    assert artifact_store.read_locator(
+        pointer
+    ) == first.identity.artifact_digest
     assert len(list(pointer.parent.glob("*.corrupt"))) == 1
 
 
@@ -1180,11 +1237,11 @@ def test_managed_artifact_directory_must_match_digest(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        sources.datasets,
+        torchvision_source.datasets,
         "MNIST",
         FixtureManagedVisionDataset,
     )
-    artifact = sources.TorchvisionImageDataSource(
+    artifact = TorchvisionImageDataSource(
         {"dataset": "MNIST"},
         config_path="data.params.source",
     ).materialize(source_context(tmp_path / "cache"))
@@ -1192,7 +1249,7 @@ def test_managed_artifact_directory_must_match_digest(
     artifact.artifact_root.rename(wrong_root)
 
     with pytest.raises(ValueError, match=r"directory.*artifact digest"):
-        sources._load_managed_torchvision(
+        torchvision_source.load_managed_torchvision(
             wrong_root,
             dataset="mnist",
             verification="full",
@@ -1204,11 +1261,11 @@ def test_managed_manifest_rejects_boolean_schema_version(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        sources.datasets,
+        torchvision_source.datasets,
         "MNIST",
         FixtureManagedVisionDataset,
     )
-    artifact = sources.TorchvisionImageDataSource(
+    artifact = TorchvisionImageDataSource(
         {"dataset": "MNIST"},
         config_path="data.params.source",
     ).materialize(source_context(tmp_path / "cache"))
@@ -1216,10 +1273,12 @@ def test_managed_manifest_rejects_boolean_schema_version(
         artifact.manifest_path.read_text(encoding="utf-8")
     )
     manifest["schema_version"] = True
-    artifact.manifest_path.write_bytes(sources._canonical_json_bytes(manifest))
+    artifact.manifest_path.write_bytes(
+        artifact_store.canonical_json_bytes(manifest)
+    )
 
     with pytest.raises(ValueError, match="incompatible"):
-        sources._load_managed_torchvision(
+        torchvision_source.load_managed_torchvision(
             artifact.artifact_root,
             dataset="mnist",
             verification="full",
@@ -1232,11 +1291,11 @@ def test_concurrent_managed_ensure_rechecks_published_winner(
 ) -> None:
     FixtureManagedVisionDataset.acquisitions = 0
     monkeypatch.setattr(
-        sources.datasets,
+        torchvision_source.datasets,
         "MNIST",
         FixtureManagedVisionDataset,
     )
-    original = sources._acquire_torchvision
+    original = torchvision_source.torchvision_datasets
     entered = Event()
     release = Event()
     call_lock = Lock()
@@ -1247,20 +1306,24 @@ def test_concurrent_managed_ensure_rechecks_published_winner(
         root: Path,
         *,
         download: bool,
-    ) -> None:
+    ) -> dict[str, Any]:
         nonlocal calls
         with call_lock:
             calls += 1
         entered.set()
         if not release.wait(timeout=5):
             raise RuntimeError("test acquisition release timed out")
-        original(dataset, root, download=download)
+        return original(dataset, root, download=download)
 
-    monkeypatch.setattr(sources, "_acquire_torchvision", blocking_acquisition)
+    monkeypatch.setattr(
+        torchvision_source,
+        "torchvision_datasets",
+        blocking_acquisition,
+    )
     cache = tmp_path / "cache"
 
     def materialize() -> ManagedDataArtifact[Any]:
-        return sources.TorchvisionImageDataSource(
+        return TorchvisionImageDataSource(
             {"dataset": "MNIST"},
             config_path="data.params.source",
         ).materialize(source_context(cache))
@@ -1285,12 +1348,12 @@ def test_managed_corruption_is_quarantined_and_strict_ensure_rebuilds(
 ) -> None:
     FixtureManagedVisionDataset.acquisitions = 0
     monkeypatch.setattr(
-        sources.datasets,
+        torchvision_source.datasets,
         "MNIST",
         FixtureManagedVisionDataset,
     )
     cache = tmp_path / "cache"
-    source = sources.TorchvisionImageDataSource(
+    source = TorchvisionImageDataSource(
         {"dataset": "MNIST"},
         config_path="data.params.source",
     )
@@ -1378,17 +1441,19 @@ def test_image_file_record_rejects_unsafe_paths(unsafe_path: str) -> None:
             path=unsafe_path,
             size_bytes=1,
             sha256="a" * 64,
+            width=1,
+            height=1,
         )
 
 
 def test_record_collection_rejects_casefold_collision() -> None:
     records = (
-        ImageFileRecord("train", "A.png", 1, "a" * 64),
-        ImageFileRecord("train", "a.png", 1, "b" * 64),
+        ImageFileRecord("train", "A.png", 1, "a" * 64, 1, 1),
+        ImageFileRecord("train", "a.png", 1, "b" * 64, 1, 1),
     )
 
     with pytest.raises(ValueError, match="duplicate paths"):
-        sources._assert_unique_records(records)
+        reference_artifacts._assert_unique_records(records)
 
 
 def test_image_file_record_rejects_non_nfc_path() -> None:
@@ -1398,4 +1463,6 @@ def test_image_file_record_rejects_non_nfc_path() -> None:
             path="e\u0301.png",
             size_bytes=1,
             sha256="a" * 64,
+            width=1,
+            height=1,
         )

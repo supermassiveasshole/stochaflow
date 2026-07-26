@@ -39,7 +39,9 @@ from stochaflow.extensions import ...
 | `ReferencedDataArtifactIdentity` | referenced ownership discriminator 与完整 identity |
 | `DataArtifactBinding` | 一个稳定 role/id 到完整 artifact identity 的绑定 |
 | `DataArtifactBindings` | 严格排序、唯一且可序列化的 binding 集合 |
-| `ImageFileRecord` | reference inventory 中的相对路径、字节数与 SHA-256 |
+| `ImageDimensions` | 一条由 artifact 认证的图像宽高记录 |
+| `ImageDimensionTable` | 紧凑、只读、可按索引读取的认证图像尺寸表 |
+| `ImageFileRecord` | reference inventory 中的相对路径、字节数、SHA-256 与认证宽高 |
 | `ImageFilePair` | paired image payload 中严格对齐的 HR/LR 记录 |
 | `TorchvisionImageArtifactPayload` | torchvision source 交给 image recipe 的公开 payload |
 | `ImageFolderArtifactPayload` | 单目录或 split image folders 的公开 payload |
@@ -94,6 +96,7 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 | `TrainingPlan` | Strategy、primary model、可选 Process/Objective 和具名 auxiliary modules |
 | `ManagedTrainingModule` | 辅助 `nn.Module` 及其 core-managed mode policy |
 | `TrainingStrategy` | 只定义 batch interpretation、forward、loss 与 metric 计算 |
+| `DeviceTransferableBatch` | 自定义领域 batch 可选择实现的显式设备迁移 capability |
 | `TrainStepOutput` | Strategy 返回的 scalar loss、metrics 与 diagnostics |
 | `MSEObjective` | 内置 task-neutral scalar MSE Objective |
 | `PerSampleObjective` | 可选的逐样本 loss capability |
@@ -107,6 +110,11 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 
 Strategy 不是 `nn.Module`，也不移动、冻结、选择或序列化资产；这些生命周期由
 TrainingPlan 和核心 runtime 管理。
+
+Trainer 会递归迁移 batch 中的 `Tensor`、`Mapping` 的 value、tuple（包括
+namedtuple）和 list；mapping key 及其他 leaf 保持不变。领域 dataclass 或自定义容器若
+持有 Tensor，必须实现 `DeviceTransferableBatch.to_device(device)` 并返回迁移后的 batch；
+核心不会反射 dataclass 字段，也不提供通用 batch/sample registry。
 
 core 会在每次 `TrainingDiagnostic` public callback 外保存并恢复 Python、NumPy、
 Torch CPU 以及相关 CUDA/MPS device 的 global RNG state。一个 callback 内使用 global
@@ -128,6 +136,11 @@ class TrainingStrategy(ABC):
     def training_step(self, batch: Any) -> TrainStepOutput: ...
 
     def evaluation_step(self, batch: Any) -> TrainStepOutput: ...
+
+
+@runtime_checkable
+class DeviceTransferableBatch(Protocol):
+    def to_device(self, device: torch.device) -> Self: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,5 +301,5 @@ partial decorator registration 后应重启进程。
 
 ## 完整性约束
 
-本页列出的 87 个名称与当前 `stochaflow.extensions.__all__` 一一对应。新增公共契约时应先
+本页列出的 90 个名称与当前 `stochaflow.extensions.__all__` 一一对应。新增公共契约时应先
 更新该 `__all__`，再同步本页；仅存在于内部 package 的名称不应被 extension 依赖。

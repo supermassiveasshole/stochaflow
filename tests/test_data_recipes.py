@@ -8,14 +8,16 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from stochaflow.data import build_data_loaders, sources
+from stochaflow.data import build_data_loaders, torchvision_source
 from stochaflow.data import datasets as dataset_module
 from stochaflow.data.artifacts import DataSourceContext
 from stochaflow.data.datasets import ImageDatasetFactory
-from stochaflow.data.sources import TorchvisionImageDataSource
+from stochaflow.data.torchvision_source import TorchvisionImageDataSource
+from stochaflow.data.transforms import GeneratedSuperResolutionTransform
 from stochaflow.utils.config import ComponentConfig, ConfigError
 
 
@@ -299,7 +301,7 @@ def test_torchvision_sources_preserve_official_splits(
     dataset_name: str,
 ) -> None:
     monkeypatch.setattr(
-        sources.datasets,
+        torchvision_source.datasets,
         dataset_name,
         FixtureTinyVisionDataset,
     )
@@ -399,6 +401,55 @@ def test_generated_and_paired_super_resolution_batches(
     assert condition["low_res"].shape == (2, 3, 4, 4)
     assert high.min() >= -1
     assert high.max() <= 1
+
+
+@pytest.mark.parametrize(
+    ("normalize", "minimum", "maximum"),
+    [(False, 0.0, 1.0), (True, -1.0, 1.0)],
+)
+def test_generated_bicubic_condition_clamps_high_contrast_overshoot(
+    normalize: bool,
+    minimum: float,
+    maximum: float,
+) -> None:
+    image = torch.zeros((1, 8, 8), dtype=torch.float32)
+    image[:, :, 4:] = 1.0
+    transform = GeneratedSuperResolutionTransform(
+        (8, 8),
+        (5, 5),
+        role="validation",
+        channels=1,
+        normalize=normalize,
+        random_horizontal_flip=False,
+    )
+
+    _, low = transform(image)
+
+    assert low.min().item() >= minimum
+    assert low.max().item() <= maximum
+
+
+@pytest.mark.parametrize(
+    ("high_resolution", "low_resolution"),
+    [
+        ([8, 8], [9, 4]),
+        ([8, 8], [4, 9]),
+    ],
+)
+def test_generated_bicubic_rejects_low_resolution_larger_on_either_axis(
+    tmp_path: Path,
+    high_resolution: list[int],
+    low_resolution: list[int],
+) -> None:
+    component = super_resolution_component(tmp_path / "images")
+    component.params["image"]["high_resolution"] = high_resolution
+    component.params["image"]["low_resolution"] = low_resolution
+
+    with pytest.raises(
+        ConfigError,
+        match=r"bicubic low_resolution must not exceed high_resolution",
+    ):
+        build_data_loaders(component, seed=9)
 
 
 def test_paired_super_resolution_preserves_official_splits(
@@ -590,13 +641,20 @@ def test_multi_resolution_rejects_duplicate_source_ids() -> None:
     ("first_weight", "second_weight", "message"),
     [
         (0.5, None, "must be set for every source or none"),
-        (0.5, 0.0, "must be positive"),
-        (0.5, True, "must be positive"),
+        (0.5, 0.0, "finite positive number"),
+        (0.5, True, "finite positive number"),
+        (0.5, "0.5", "finite positive number"),
+        (0.5, [], "finite positive number"),
+        (0.5, {}, "finite positive number"),
+        (0.5, float("nan"), "finite positive number"),
+        (0.5, float("inf"), "finite positive number"),
+        (0.5, -float("inf"), "finite positive number"),
+        (0.5, 10**1000, "finite positive number"),
     ],
 )
 def test_multi_resolution_rejects_invalid_weight_sets(
-    first_weight: float,
-    second_weight: float | bool | None,
+    first_weight: object,
+    second_weight: object,
     message: str,
 ) -> None:
     component = multi_resolution_component(

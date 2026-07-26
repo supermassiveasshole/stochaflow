@@ -140,6 +140,7 @@ class GeneratedSuperResolutionTransform:
             interpolation=InterpolationMode.BICUBIC,
             antialias=True,
         )
+        low = low.clamp(0.0, 1.0)
         if self.normalize:
             high = high.mul(2.0).sub(1.0)
             low = low.mul(2.0).sub(1.0)

@@ -1,7 +1,7 @@
 """Generic training loop utilities."""
 
 import time
-from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sized
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from copy import copy
 from dataclasses import dataclass
 from itertools import islice
@@ -31,12 +31,14 @@ from stochaflow.training.diagnostics.contracts import (
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.training.strategy import (
     Batch,
+    DeviceTransferableBatch,
     ScalarMetric,
     TrainStepOutput,
     validate_train_step_output,
 )
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.device import move_module_to_device
+from stochaflow.utils.iterables import try_length
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
 from stochaflow.utils.seed import preserve_global_rng_state
 
@@ -46,6 +48,8 @@ def _move_to_device(batch: Batch, device: torch.device) -> Batch:
 
     if isinstance(batch, torch.Tensor):
         return batch.to(device)
+    if isinstance(batch, DeviceTransferableBatch):
+        return batch.to_device(device)
     if isinstance(batch, Mapping):
         moved_items = {
             key: _move_to_device(value, device) for key, value in batch.items()
@@ -106,8 +110,8 @@ def _resolve_total_batches(
 ) -> int | None:
     """Resolve the number of displayed batches for a progress reporter."""
 
-    if isinstance(dataloader, Sized):
-        total = len(dataloader)
+    total = try_length(dataloader)
+    if total is not None:
         if max_batches is not None:
             return min(total, max_batches)
         return total

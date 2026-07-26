@@ -12,6 +12,8 @@ from stochaflow.data import (
     DataSource,
     DataSourceContext,
     ImageDataSource,
+    ImageDimensions,
+    ImageDimensionTable,
     ImageFilePair,
     ImageFileRecord,
     ImageFolderArtifactPayload,
@@ -56,6 +58,7 @@ from stochaflow.sampling import (
     normalize_gaussian_prediction,
 )
 from stochaflow.training import (
+    DeviceTransferableBatch,
     DiagnosticBuildContext,
     FitStartEvent,
     GaussianDiagnosticSemantics,
@@ -111,6 +114,7 @@ __all__ = [
     "DataLoaders",
     "DataSource",
     "DataSourceContext",
+    "DeviceTransferableBatch",
     "DiagnosticBuildContext",
     "DiscreteGaussianDenoisingProcess",
     "DiscreteGaussianProcess",
@@ -139,6 +143,8 @@ __all__ = [
     "GaussianTransition",
     "GenerativeDynamics",
     "ImageDataSource",
+    "ImageDimensionTable",
+    "ImageDimensions",
     "ImageFilePair",
     "ImageFileRecord",
     "ImageFolderArtifactPayload",

@@ -491,6 +491,11 @@ Strategy 没有统一的构造参数 schema；每个 Builder 可以直接向它�
 Objective、Process capability 或 callable。统一的是 step 的输入输出和职责边界，而不是
 把所有训练任务压进一个包含大量可选字段的 Strategy context。
 
+Trainer 原生递归迁移 `Tensor`、`Mapping` value、tuple/namedtuple 和 list。其他 leaf
+保持原样；包含 Tensor 的领域 dataclass 或自定义容器应实现公开的
+`DeviceTransferableBatch.to_device(device)` capability。这个 capability 只负责迁移一个
+已构建 batch，不定义字段、collate 或 DataLoader，也不引入额外 registry。
+
 离散 Gaussian 自定义 Strategy 可直接复用 `gaussian_training_target()` 构造 epsilon、x0、
 v 或 score target，并用 `compute_objective()` 获得统一的 scalar/per-sample Objective 校验。
 batch 解释、condition、timestep sampling、模型调用和 diagnostics 仍由具体 Strategy 拥有；

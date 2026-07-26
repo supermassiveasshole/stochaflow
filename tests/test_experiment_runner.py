@@ -14,7 +14,7 @@ import torch
 import yaml
 from torch import nn
 from torch.optim import SGD
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 
 from stochaflow.data import (
     DataArtifactBinding,
@@ -83,6 +83,12 @@ class RecordingLogger:
         self.closed = True
 
 
+class StreamingTensorDataset(IterableDataset[torch.Tensor]):
+    def __iter__(self):
+        for value in range(3):
+            yield torch.tensor([float(value)])
+
+
 def _loader() -> DataLoader:
     dataset = TensorDataset(torch.zeros(2, 1))
     return DataLoader(dataset, batch_size=1)
@@ -94,6 +100,21 @@ def _loaders(*, validation: bool = False, test: bool = False) -> DataLoaders:
         validation=_loader() if validation else None,
         test=_loader() if test else None,
     )
+
+
+def test_runner_uses_explicit_steps_for_pytorch_streaming_loader() -> None:
+    train_loader = DataLoader(StreamingTensorDataset(), batch_size=None)
+    loaders = DataLoaders(train=train_loader, steps_per_epoch=3)
+
+    assert experiment_runner._effective_steps_per_epoch(
+        loaders,
+        max_batches=None,
+    ) == 3
+    assert experiment_runner._effective_steps_per_epoch(
+        loaders,
+        max_batches=2,
+    ) == 2
+    assert experiment_runner._dataset_size(train_loader) is None
 
 
 def _data_artifact_binding(

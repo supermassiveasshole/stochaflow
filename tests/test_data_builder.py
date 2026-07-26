@@ -9,6 +9,7 @@ from dataclasses import is_dataclass
 from textwrap import dedent
 
 import pytest
+from torch.utils.data import DataLoader, IterableDataset
 
 from stochaflow import data
 from stochaflow.data import (
@@ -55,6 +56,11 @@ class FiniteIterable:
         yield from (1, 2)
 
 
+class StreamingIntegerDataset(IterableDataset[int]):
+    def __iter__(self):
+        yield from range(3)
+
+
 @REGISTRIES.data_builders.register("test_streaming_builder")
 class StreamingBuilder(DataBuilder):
     def build(self) -> DataLoaders:
@@ -98,6 +104,20 @@ def test_sized_and_streaming_loaders_validate_epoch_length() -> None:
     assert list(finite_iterable.train) == [1, 2]
     assert streaming.steps_per_epoch == 3
     assert next(iter(streaming.train))["condition"] == {"value": 2}
+
+
+def test_pytorch_streaming_loader_uses_explicit_epoch_length() -> None:
+    train_loader = DataLoader(
+        StreamingIntegerDataset(),
+        batch_size=None,
+    )
+
+    loaders = DataLoaders(train=train_loader, steps_per_epoch=2)
+
+    assert loaders.train is train_loader
+    assert loaders.steps_per_epoch == 2
+    with pytest.raises(ValueError, match="expose len"):
+        DataLoaders(train=train_loader)
 
 
 def test_data_runtime_types_reside_in_responsibility_modules() -> None:
@@ -244,6 +264,8 @@ def test_only_new_data_contract_is_public() -> None:
         "ImageArtifactPayload",
         "ImageDataBuilder",
         "ImageDataSource",
+        "ImageDimensionTable",
+        "ImageDimensions",
         "ImageFilePair",
         "ImageFileRecord",
         "ImageFolderArtifactPayload",

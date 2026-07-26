@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sized
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -19,6 +19,7 @@ from stochaflow.data.samplers import (
     MixtureBatchSampler,
     ResolutionBucketPolicy,
 )
+from stochaflow.utils.iterables import try_length
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,12 +49,12 @@ class DataLoaders:
                 or steps_per_epoch <= 0
             ):
                 raise ValueError("steps_per_epoch must be a positive integer")
-        elif not isinstance(self.train, Sized):
+        train_length = try_length(self.train)
+        if self.steps_per_epoch is None and train_length is None:
             raise ValueError(
                 "train loader must expose len() or set steps_per_epoch"
             )
-        if isinstance(self.train, Sized):
-            train_length = len(self.train)
+        if train_length is not None:
             if train_length <= 0:
                 raise ValueError("train loader must yield at least one batch")
             if (

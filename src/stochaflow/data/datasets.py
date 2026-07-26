@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import io
+from array import array
 from bisect import bisect_right
-from collections.abc import Mapping, Sequence, Sized
+from collections.abc import Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast, overload, runtime_checkable
 
 import torch
 from PIL import Image
@@ -17,20 +18,21 @@ from torchvision import datasets
 
 from stochaflow.data.artifact_io import read_regular_file
 from stochaflow.data.artifacts import DataArtifact
-from stochaflow.data.samplers import ResolutionBucketPolicy
-from stochaflow.data.sources import (
+from stochaflow.data.image_contracts import (
+    ImageDimensions,
+    ImageDimensionTable,
     ImageFilePair,
     ImageFileRecord,
     ImageFolderArtifactPayload,
     PairedImageFolderArtifactPayload,
     TorchvisionImageArtifactPayload,
 )
+from stochaflow.data.samplers import ResolutionBucketPolicy
 from stochaflow.data.transforms import (
     GeneratedSuperResolutionTransform,
     ImageTransform,
     PairedSuperResolutionTransform,
     extract_image,
-    image_size,
 )
 
 
@@ -41,6 +43,60 @@ class ImageDatasetPartitions:
     train: Dataset[Any]
     validation: Dataset[Any] | None = None
     test: Dataset[Any] | None = None
+
+
+@runtime_checkable
+class ImageDimensionProvider(Protocol):
+    """Narrow metadata capability used by the multi-resolution recipe."""
+
+    def image_dimensions(self, index: int) -> ImageDimensions:
+        """Return trusted dimensions without reading or decoding a sample."""
+        ...
+
+
+def dataset_image_dimensions(
+    dataset: Dataset[Any],
+    index: int,
+) -> ImageDimensions:
+    """Resolve dimensions through metadata-preserving dataset wrappers."""
+
+    if isinstance(dataset, Subset):
+        return dataset_image_dimensions(
+            dataset.dataset,
+            int(dataset.indices[index]),
+        )
+    if isinstance(dataset, ImageDimensionProvider):
+        return dataset.image_dimensions(index)
+    raise TypeError(
+        "multi-resolution datasets require authenticated image dimensions"
+    )
+
+
+class TorchvisionMetadataDataset(Dataset[Any]):
+    """Attach artifact-authenticated dimensions to a torchvision Dataset."""
+
+    def __init__(
+        self,
+        dataset: Dataset[Any],
+        dimensions: ImageDimensionTable,
+    ) -> None:
+        if len(cast(Sized, dataset)) != len(dimensions):
+            raise ValueError(
+                "torchvision dimension metadata length does not match dataset"
+            )
+        self.dataset = dataset
+        self.dimensions = dimensions
+
+    def __len__(self) -> int:
+        return len(cast(Sized, self.dataset))
+
+    def __getitem__(self, index: int) -> Any:
+        return self.dataset[index]
+
+    def image_dimensions(self, index: int) -> ImageDimensions:
+        """Return dimensions loaded from the managed artifact sidecar."""
+
+        return self.dimensions[index]
 
 
 def _verified_image(root: Path, record: ImageFileRecord) -> Image.Image:
@@ -86,6 +142,11 @@ class ImageFolderDataset(Dataset[Image.Image]):
         record = self.records[index]
         return _verified_image(self.roots[record.tree], record)
 
+    def image_dimensions(self, index: int) -> ImageDimensions:
+        """Return dimensions authenticated by the reference inventory."""
+
+        return self.records[index].dimensions
+
 
 class PairedImageFolderDataset(
     Dataset[tuple[Image.Image, Image.Image]]
@@ -117,6 +178,11 @@ class PairedImageFolderDataset(
                 pair.low_resolution,
             ),
         )
+
+    def image_dimensions(self, index: int) -> ImageDimensions:
+        """Return authenticated high-resolution dimensions for this pair."""
+
+        return self.pairs[index].high_resolution.dimensions
 
 
 class ImageRecipeDataset(Dataset[tuple[torch.Tensor, dict[str, Any]]]):
@@ -191,16 +257,20 @@ class SourceConcatDataset(Dataset[Any]):
         if not datasets:
             raise ValueError("multi-resolution sources must not be empty")
         self.datasets = tuple(datasets)
-        self.ends: list[int] = []
-        self.source_ids: list[str] = []
+        ends: list[int] = []
+        source_names: list[str] = []
         total = 0
         for source_id, dataset in self.datasets:
             dataset_size = len(cast(Sized, dataset))
             total += dataset_size
-            self.ends.append(total)
-            self.source_ids.extend([source_id] * dataset_size)
+            ends.append(total)
+            source_names.append(source_id)
         if total <= 0:
             raise ValueError("multi-resolution sources contain no samples")
+        if len(source_names) != len(set(source_names)):
+            raise ValueError("multi-resolution source names must be unique")
+        self.ends = tuple(ends)
+        self.source_names = tuple(source_names)
 
     def __len__(self) -> int:
         return self.ends[-1]
@@ -212,13 +282,141 @@ class SourceConcatDataset(Dataset[Any]):
         start = 0 if source_index == 0 else self.ends[source_index - 1]
         return self.datasets[source_index][1][index - start]
 
+    def source_code(self, index: int) -> int:
+        """Return the compact source code for one concatenated sample."""
 
-def _source_id(dataset: Dataset[Any], index: int) -> str:
+        if index < 0:
+            index += len(self)
+        return bisect_right(self.ends, index)
+
+    def image_dimensions(self, index: int) -> ImageDimensions:
+        """Resolve dimensions without reading the concatenated sample."""
+
+        source_index = self.source_code(index)
+        start = 0 if source_index == 0 else self.ends[source_index - 1]
+        return dataset_image_dimensions(
+            self.datasets[source_index][1],
+            index - start,
+        )
+
+
+def dataset_source_names(dataset: Dataset[Any]) -> tuple[str, ...]:
+    """Resolve the stable source codebook through partition wrappers."""
+
     if isinstance(dataset, Subset):
-        return _source_id(dataset.dataset, int(dataset.indices[index]))
+        return dataset_source_names(dataset.dataset)
     if isinstance(dataset, SourceConcatDataset):
-        return dataset.source_ids[index]
+        return dataset.source_names
     raise TypeError("multi-resolution dataset lost source metadata")
+
+
+def dataset_source_code(dataset: Dataset[Any], index: int) -> int:
+    """Resolve one source code through partition wrappers."""
+
+    if isinstance(dataset, Subset):
+        return dataset_source_code(
+            dataset.dataset,
+            int(dataset.indices[index]),
+        )
+    if isinstance(dataset, SourceConcatDataset):
+        return dataset.source_code(index)
+    raise TypeError("multi-resolution dataset lost source metadata")
+
+
+class CompactIndexSequence(Sequence[int]):
+    """Read-only view over a packed unsigned integer array."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Iterable[int], *, maximum: int) -> None:
+        if maximum < 0:
+            raise ValueError("compact index maximum must be non-negative")
+        if maximum < 2**8:
+            typecode = "B"
+        elif maximum < 2**16:
+            typecode = "H"
+        elif maximum < 2**32:
+            typecode = "I"
+        elif maximum < 2**64:
+            typecode = "Q"
+        else:
+            raise ValueError("compact index maximum exceeds 64-bit storage")
+        try:
+            self._values = array(typecode, values)
+        except OverflowError as exc:
+            raise ValueError(
+                "compact index value exceeds selected storage"
+            ) from exc
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    @overload
+    def __getitem__(self, index: int) -> int: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[int, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> int | tuple[int, ...]:
+        if isinstance(index, slice):
+            return tuple(self._values[index])
+        return self._values[index]
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(self._values)
+
+    @property
+    def storage_bytes(self) -> int:
+        """Return packed payload bytes, excluding constant object overhead."""
+
+        return len(self._values) * self._values.itemsize
+
+
+def compact_unsigned(
+    values: Iterable[int],
+    *,
+    maximum: int,
+) -> CompactIndexSequence:
+    """Store non-negative codes in the narrowest portable unsigned array."""
+
+    return CompactIndexSequence(values, maximum=maximum)
+
+
+class CodedLabelSequence(Sequence[str]):
+    """Read-only string labels backed by compact integer codes."""
+
+    __slots__ = ("_codes", "_labels")
+
+    def __init__(
+        self,
+        codes: Sequence[int],
+        labels: Sequence[str],
+    ) -> None:
+        self._codes = codes
+        self._labels = tuple(labels)
+
+    def __len__(self) -> int:
+        return len(self._codes)
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[str, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> str | tuple[str, ...]:
+        if isinstance(index, slice):
+            return tuple(
+                self._labels[self._codes[position]]
+                for position in range(*index.indices(len(self)))
+            )
+        return self._labels[self._codes[index]]
+
+    def __iter__(self) -> Iterator[str]:
+        return (
+            self._labels[code]
+            for code in self._codes
+        )
 
 
 class MultiResolutionDataset(
@@ -238,15 +436,44 @@ class MultiResolutionDataset(
     ) -> None:
         self.dataset = dataset
         dataset_size = len(cast(Sized, dataset))
-        self.source_ids = tuple(
-            _source_id(dataset, index) for index in range(dataset_size)
+        self.source_names = dataset_source_names(dataset)
+        self.source_codes = compact_unsigned(
+            (
+                dataset_source_code(dataset, index)
+                for index in range(dataset_size)
+            ),
+            maximum=len(self.source_names) - 1,
         )
-        self.bucket_ids: list[str] = []
-        for index in range(dataset_size):
-            width, height = image_size(extract_image(dataset[index]))
-            self.bucket_ids.append(policy.select(width, height).name)
-        self.transforms = {
-            bucket.name: ImageTransform(
+        self.bucket_names = tuple(bucket.name for bucket in policy.buckets)
+        bucket_codes = {
+            bucket.name: index
+            for index, bucket in enumerate(policy.buckets)
+        }
+        self.bucket_codes = compact_unsigned(
+            (
+                bucket_codes[
+                    policy.select(
+                        dimensions.width,
+                        dimensions.height,
+                    ).name
+                ]
+                for index in range(dataset_size)
+                for dimensions in (
+                    dataset_image_dimensions(dataset, index),
+                )
+            ),
+            maximum=len(self.bucket_names) - 1,
+        )
+        self.source_ids = CodedLabelSequence(
+            self.source_codes,
+            self.source_names,
+        )
+        self.bucket_ids = CodedLabelSequence(
+            self.bucket_codes,
+            self.bucket_names,
+        )
+        self.transforms = tuple(
+            ImageTransform(
                 (bucket.height, bucket.width),
                 role=role,
                 channels=channels,
@@ -254,14 +481,14 @@ class MultiResolutionDataset(
                 random_horizontal_flip=random_horizontal_flip,
             )
             for bucket in policy.buckets
-        }
+        )
 
     def __len__(self) -> int:
         return len(cast(Sized, self.dataset))
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, dict[str, Any]]:
         image = extract_image(self.dataset[index])
-        return self.transforms[self.bucket_ids[index]](image), {}
+        return self.transforms[self.bucket_codes[index]](image), {}
 
 
 def combine_image_datasets(
@@ -341,65 +568,106 @@ class ImageDatasetFactory:
         root = str(payload.root)
         if payload.dataset == "mnist":
             return ImageDatasetPartitions(
-                train=datasets.MNIST(
-                    root,
-                    train=True,
-                    transform=None,
-                    download=False,
+                train=TorchvisionMetadataDataset(
+                    datasets.MNIST(
+                        root,
+                        train=True,
+                        transform=None,
+                        download=False,
+                    ),
+                    payload.train_dimensions,
                 ),
-                test=datasets.MNIST(
-                    root,
-                    train=False,
-                    transform=None,
-                    download=False,
+                test=TorchvisionMetadataDataset(
+                    datasets.MNIST(
+                        root,
+                        train=False,
+                        transform=None,
+                        download=False,
+                    ),
+                    cast(
+                        ImageDimensionTable,
+                        payload.test_dimensions,
+                    ),
                 ),
             )
         if payload.dataset == "cifar10":
             return ImageDatasetPartitions(
-                train=datasets.CIFAR10(
-                    root,
-                    train=True,
-                    transform=None,
-                    download=False,
+                train=TorchvisionMetadataDataset(
+                    datasets.CIFAR10(
+                        root,
+                        train=True,
+                        transform=None,
+                        download=False,
+                    ),
+                    payload.train_dimensions,
                 ),
-                test=datasets.CIFAR10(
-                    root,
-                    train=False,
-                    transform=None,
-                    download=False,
+                test=TorchvisionMetadataDataset(
+                    datasets.CIFAR10(
+                        root,
+                        train=False,
+                        transform=None,
+                        download=False,
+                    ),
+                    cast(
+                        ImageDimensionTable,
+                        payload.test_dimensions,
+                    ),
                 ),
             )
         return ImageDatasetPartitions(
-            train=datasets.Flowers102(
-                root,
-                split="train",
-                transform=None,
-                download=False,
+            train=TorchvisionMetadataDataset(
+                datasets.Flowers102(
+                    root,
+                    split="train",
+                    transform=None,
+                    download=False,
+                ),
+                payload.train_dimensions,
             ),
-            validation=datasets.Flowers102(
-                root,
-                split="val",
-                transform=None,
-                download=False,
+            validation=TorchvisionMetadataDataset(
+                datasets.Flowers102(
+                    root,
+                    split="val",
+                    transform=None,
+                    download=False,
+                ),
+                cast(
+                    ImageDimensionTable,
+                    payload.validation_dimensions,
+                ),
             ),
-            test=datasets.Flowers102(
-                root,
-                split="test",
-                transform=None,
-                download=False,
+            test=TorchvisionMetadataDataset(
+                datasets.Flowers102(
+                    root,
+                    split="test",
+                    transform=None,
+                    download=False,
+                ),
+                cast(
+                    ImageDimensionTable,
+                    payload.test_dimensions,
+                ),
             ),
         )
 
 
 __all__ = [
+    "CodedLabelSequence",
+    "CompactIndexSequence",
     "GeneratedSuperResolutionDataset",
     "ImageDatasetFactory",
     "ImageDatasetPartitions",
+    "ImageDimensionProvider",
     "ImageFolderDataset",
     "ImageRecipeDataset",
     "MultiResolutionDataset",
     "PairedImageFolderDataset",
     "PairedSuperResolutionDataset",
     "SourceConcatDataset",
+    "TorchvisionMetadataDataset",
     "combine_image_datasets",
+    "compact_unsigned",
+    "dataset_image_dimensions",
+    "dataset_source_code",
+    "dataset_source_names",
 ]

@@ -5,7 +5,6 @@ import gc
 import hashlib
 import math
 import warnings
-from collections.abc import Sized
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -42,6 +41,7 @@ from stochaflow.utils.config import (
     load_config_dict,
 )
 from stochaflow.utils.factory import TrainingComponents, build_training_components
+from stochaflow.utils.iterables import try_length
 from stochaflow.utils.plugins import (
     ExtensionPluginProvenance,
     ExtensionSelectionPolicy,
@@ -269,9 +269,7 @@ def _dataset_size(loader: object | None) -> int | None:
     if loader is None:
         return None
     dataset = getattr(loader, "dataset", None)
-    if isinstance(dataset, Sized):
-        return len(dataset)
-    return None
+    return try_length(dataset)
 
 
 def _effective_steps_per_epoch(
@@ -281,9 +279,10 @@ def _effective_steps_per_epoch(
 ) -> int:
     steps_per_epoch = loaders.steps_per_epoch
     if steps_per_epoch is None:
-        if not isinstance(loaders.train, Sized):
+        train_length = try_length(loaders.train)
+        if train_length is None:
             raise TypeError("training loader does not expose a finite epoch length")
-        steps_per_epoch = len(loaders.train)
+        steps_per_epoch = train_length
     if max_batches is not None:
         steps_per_epoch = min(steps_per_epoch, max_batches)
     if steps_per_epoch <= 0:

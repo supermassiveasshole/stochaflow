@@ -25,7 +25,9 @@ class DataLoaders:
 ```
 
 loader 必须可重复迭代，不能直接返回一次性的 generator/iterator。训练 loader 没有
-`len()` 时，builder 必须显式提供正数 `steps_per_epoch`；有长度时可省略。
+可用的 `len()` 时，builder 必须显式提供正数 `steps_per_epoch`；有长度时可省略。核心
+通过实际调用 `len()` 探测能力，并把 `TypeError` 解释为未知长度，因此底层
+`IterableDataset` 没有长度的标准 PyTorch `DataLoader` 可以配合显式步数使用。
 `--limit-batches` 会在最终训练步数上取更小值。validation 和 test 不要求长度，CLI
 limit 仍可限制无限或未知长度的可重复 iterable。
 
@@ -75,8 +77,10 @@ source 的私有参数，`materialization` 声明缓存、获取策略与验证�
 
 现有本地/NFS 图片目录使用 `image_folder`，它创建 reference artifact：缓存中只保存
 canonical manifest 和分片 inventory，不复制原图。第一次 `ensure` 会完整枚举并读取
-每个文件以记录大小与 SHA-256。`manifest` 校验索引、路径和大小，`full` 还会重新计算
-全部内容哈希。Dataset 只按 manifest 的固定顺序读取，并在解码同一份字节前校验 SHA-256，
+每个文件，以一次内容读取记录规范路径、字节数、SHA-256 和图片宽高。宽高与内容摘要
+一起进入 canonical inventory 和 artifact identity，后续 resolution bucket 不需要再次
+解码图片来推断尺寸。`manifest` 校验索引、路径和大小，`full` 还会重新计算全部内容哈希
+并核对尺寸。Dataset 只按 manifest 的固定顺序读取，并在解码同一份字节前校验 SHA-256，
 因此外部文件被替换时会 fail-stop；但外部目录被删除后，Stochaflow 无法仅凭 reference
 artifact 重建图片。示例：
 
@@ -150,6 +154,10 @@ data:
       num_workers: 4
       steps_per_epoch: auto
 ```
+
+`bicubic` 模式要求 LR 的高度和宽度均不大于对应 HR 维度。resize
+结果会在归一化前截断到 `[0, 1]`，因此启用 `normalize` 后 LR condition
+始终保持在 `[-1, 1]`。
 
 在线模式先对 HR 做对齐 crop 和可选 flip，再生成 LR。配对模式使用以下 source，并将
 `low_resolution.kind` 设为 `paired`：
@@ -228,6 +236,13 @@ $$
 B_b = \max\left(1, \left\lfloor B_0
 \frac{H_{base}W_{base}}{H_bW_b}\right\rfloor\right)
 $$
+
+`sampling_weight` 若启用，所有 source 都必须提供有限正数；NaN 和 Infinity 会在配置
+边界被拒绝。reference source 的 bucket 直接读取 identity 认证的 inventory 宽高；
+torchvision managed artifact 在首次物化时生成并认证尺寸 sidecar。构造
+`MultiResolutionDataset` 不调用 `dataset[index]`，因此不会在 DataLoader worker 启动前
+重复读取、哈希或解码全量图片。运行期只保留紧凑的 source/bucket 数值 code；batch
+sampler 根据当前是否启用加权混合，只构造 bucket 索引或 `(source, bucket)` 索引中的一种。
 
 ## Epoch 与恢复边界
 
