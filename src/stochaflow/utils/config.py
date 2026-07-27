@@ -45,9 +45,11 @@ class ExperimentConfig:
 
 @dataclass(slots=True)
 class SamplingConfig:
-    """Standalone and post-training sampling configuration."""
+    """Checkpoint-bound sampling defaults without composition internals."""
 
-    builder: ComponentConfig | None = None
+    run_after_training: bool = False
+    sampler: ComponentConfig | None = None
+    options: dict[str, Any] = field(default_factory=dict)
     shape: list[int] | None = None
     num_samples: int = 16
     batch_size: int = 16
@@ -55,6 +57,27 @@ class SamplingConfig:
     writers: list[ComponentConfig] = field(
         default_factory=lambda: [ComponentConfig(name="tensor")]
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SampleRequest:
+    """Typed partial override for one checkpoint-bound sampling invocation."""
+
+    sampler: ComponentConfig | None = None
+    options: dict[str, Any] = field(default_factory=dict)
+    shape: list[int] | None = None
+    num_samples: int | None = None
+    batch_size: int | None = None
+    seed: int | None = None
+    writers: list[ComponentConfig] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedSampleRequest:
+    """A typed request together with the fields explicitly supplied by its user."""
+
+    request: SampleRequest
+    provided_fields: frozenset[str]
 
 
 @dataclass(slots=True)
@@ -217,37 +240,7 @@ class StochaflowConfig:
                 raise ConfigError("process.name must be a non-empty registry name")
             if not isinstance(cast(object, self.process.params), dict):
                 raise ConfigError("process.params must be a mapping")
-        if self.sampling.builder is not None:
-            builder_name = cast(object, self.sampling.builder.name)
-            if not isinstance(builder_name, str) or not builder_name.strip():
-                raise ConfigError("sampling.builder.name must be a non-empty string")
-            if not isinstance(cast(object, self.sampling.builder.params), dict):
-                raise ConfigError("sampling.builder.params must be a mapping")
-        if self.sampling.num_samples <= 0:
-            raise ConfigError("sampling.num_samples must be positive")
-        if self.sampling.batch_size <= 0:
-            raise ConfigError("sampling.batch_size must be positive")
-        if self.sampling.shape is not None:
-            if not self.sampling.shape:
-                raise ConfigError("sampling.shape must not be empty when provided")
-            for index, declared_dimension in enumerate(self.sampling.shape):
-                dimension = cast(object, declared_dimension)
-                if not isinstance(dimension, int) or isinstance(dimension, bool):
-                    raise ConfigError(f"sampling.shape[{index}] must be an integer")
-                if dimension <= 0:
-                    raise ConfigError(f"sampling.shape[{index}] must be positive")
-        if not self.sampling.writers:
-            raise ConfigError("sampling.writers must declare at least one writer")
-        for index, writer in enumerate(self.sampling.writers):
-            writer_name = cast(object, writer.name)
-            if not isinstance(writer_name, str) or not writer_name.strip():
-                raise ConfigError(
-                    f"sampling.writers[{index}].name must be a non-empty string"
-                )
-            if not isinstance(cast(object, writer.params), dict):
-                raise ConfigError(
-                    f"sampling.writers[{index}].params must be a mapping"
-                )
+        _validate_sampling_config(self.sampling, path="sampling")
         optimizer_name = cast(object, self.optimizer.name)
         if not isinstance(optimizer_name, str) or not optimizer_name.strip():
             raise ConfigError("optimizer.name must be a non-empty string")
@@ -378,6 +371,161 @@ def coerce_config_section(cls: type[Any], raw: Any, path: str) -> Any:
     if not _is_dataclass_type(cls):
         raise TypeError("configuration section type must be a dataclass")
     return _coerce_dataclass(cls, deepcopy(raw), path)
+
+
+def parse_sample_request(raw: object) -> ParsedSampleRequest:
+    """Parse a strict partial sampling request without applying checkpoint defaults."""
+
+    if not isinstance(raw, dict):
+        raise ConfigError("config.sampling must be a mapping")
+    request = cast(
+        SampleRequest,
+        coerce_config_section(SampleRequest, raw, "config.sampling"),
+    )
+    _validate_sample_request(
+        request,
+        provided_fields=frozenset(raw),
+        path="sampling",
+    )
+    return ParsedSampleRequest(request, frozenset(raw))
+
+
+def apply_sample_request(
+    base: SamplingConfig,
+    parsed: ParsedSampleRequest,
+) -> SamplingConfig:
+    """Apply a typed field-wise request to checkpoint sampling defaults."""
+
+    request = parsed.request
+    provided = parsed.provided_fields
+    sampler = (
+        deepcopy(request.sampler)
+        if "sampler" in provided
+        else deepcopy(base.sampler)
+    )
+    shape = deepcopy(request.shape) if "shape" in provided else deepcopy(base.shape)
+    num_samples = (
+        cast(int, request.num_samples)
+        if "num_samples" in provided
+        else base.num_samples
+    )
+    batch_size = (
+        cast(int, request.batch_size)
+        if "batch_size" in provided
+        else base.batch_size
+    )
+    seed = request.seed if "seed" in provided else base.seed
+    writers = (
+        deepcopy(request.writers)
+        if "writers" in provided
+        else deepcopy(base.writers)
+    )
+    options = deepcopy(base.options)
+    if "options" in provided:
+        options.update(deepcopy(request.options))
+    result = SamplingConfig(
+        run_after_training=base.run_after_training,
+        sampler=sampler,
+        options=options,
+        shape=shape,
+        num_samples=num_samples,
+        batch_size=batch_size,
+        seed=seed,
+        writers=writers,
+    )
+    _validate_sampling_config(result, path="sampling")
+    return result
+
+
+def _validate_sampling_config(config: SamplingConfig, *, path: str) -> None:
+    if not isinstance(cast(object, config.run_after_training), bool):
+        raise ConfigError(f"{path}.run_after_training must be boolean")
+    if config.sampler is not None:
+        _validate_component(config.sampler, path=f"{path}.sampler")
+    _validate_options(config.options, path=f"{path}.options")
+    _validate_shape(config.shape, path=f"{path}.shape")
+    _positive_int(config.num_samples, path=f"{path}.num_samples")
+    _positive_int(config.batch_size, path=f"{path}.batch_size")
+    _optional_int(config.seed, path=f"{path}.seed")
+    _validate_writers(config.writers, path=f"{path}.writers")
+
+
+def _validate_sample_request(
+    request: SampleRequest,
+    *,
+    provided_fields: frozenset[str],
+    path: str,
+) -> None:
+    if "sampler" in provided_fields and request.sampler is not None:
+        _validate_component(request.sampler, path=f"{path}.sampler")
+    if "options" in provided_fields:
+        _validate_options(request.options, path=f"{path}.options")
+    if "shape" in provided_fields:
+        _validate_shape(request.shape, path=f"{path}.shape")
+    if "num_samples" in provided_fields:
+        _positive_int(request.num_samples, path=f"{path}.num_samples")
+    if "batch_size" in provided_fields:
+        _positive_int(request.batch_size, path=f"{path}.batch_size")
+    if "seed" in provided_fields:
+        _optional_int(request.seed, path=f"{path}.seed")
+    if "writers" in provided_fields:
+        _validate_writers(request.writers, path=f"{path}.writers")
+
+
+def _validate_component(value: ComponentConfig, *, path: str) -> None:
+    name = cast(object, value.name)
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigError(f"{path}.name must be a non-empty string")
+    if name != name.strip():
+        raise ConfigError(f"{path}.name must not contain surrounding whitespace")
+    if not isinstance(cast(object, value.params), dict):
+        raise ConfigError(f"{path}.params must be a mapping")
+
+
+def _validate_options(value: object, *, path: str) -> None:
+    if not isinstance(value, dict):
+        raise ConfigError(f"{path} must be a mapping")
+    for key in value:
+        if not isinstance(key, str) or not key:
+            raise ConfigError(f"{path} keys must be non-empty strings")
+    if "sampler" in value:
+        raise ConfigError(
+            f"{path}.sampler is reserved; use the top-level sampling.sampler field"
+        )
+
+
+def _validate_shape(value: object, *, path: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list) or not value:
+        raise ConfigError(f"{path} must be a non-empty list or null")
+    for index, declared_dimension in enumerate(value):
+        dimension = cast(object, declared_dimension)
+        if not isinstance(dimension, int) or isinstance(dimension, bool):
+            raise ConfigError(f"{path}[{index}] must be an integer")
+        if dimension <= 0:
+            raise ConfigError(f"{path}[{index}] must be positive")
+
+
+def _positive_int(value: object, *, path: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ConfigError(f"{path} must be a positive integer")
+
+
+def _optional_int(value: object, *, path: str) -> None:
+    if value is not None and (
+        not isinstance(value, int) or isinstance(value, bool)
+    ):
+        raise ConfigError(f"{path} must be an integer or null")
+
+
+def _validate_writers(value: object, *, path: str) -> None:
+    if not isinstance(value, list) or not value:
+        raise ConfigError(f"{path} must declare at least one writer")
+    for index, writer in enumerate(value):
+        if not isinstance(writer, ComponentConfig):
+            raise ConfigError(f"{path}[{index}] must be a component mapping")
+        _validate_component(writer, path=f"{path}[{index}]")
 
 
 def load_config(path: str | Path) -> StochaflowConfig:

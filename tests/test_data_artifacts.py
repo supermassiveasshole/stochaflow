@@ -1,4 +1,4 @@
-"""Tests for materialized-data identity and binding contracts."""
+"""Tests for schema-v2 data artifact identities and bindings."""
 
 from __future__ import annotations
 
@@ -8,106 +8,69 @@ from pathlib import Path
 
 import pytest
 
-from stochaflow.data import (
+from stochaflow.data.artifacts import (
     DataArtifact,
     DataArtifactBinding,
     DataArtifactBindings,
     DataArtifactIdentity,
     DataSource,
     DataSourceContext,
-    ManagedDataArtifact,
-    ManagedDataArtifactIdentity,
-    ReferencedDataArtifact,
-    ReferencedDataArtifactIdentity,
 )
 from stochaflow.utils.config import ConfigError
 
 
-def managed_identity(
+def identity(
     *,
-    source_name: str = "example-source",
+    kind: str = "managed",
     manifest_sha256: str = "e" * 64,
-) -> ManagedDataArtifactIdentity:
-    return ManagedDataArtifactIdentity(
-        artifact_type="image-folder",
-        source_name=source_name,
+) -> DataArtifactIdentity:
+    return DataArtifactIdentity(
+        kind=kind,  # type: ignore[arg-type]
+        artifact_type="tests.payload.v1",
+        source_name="tests-source",
         source_digest="a" * 64,
-        materializer_name="example-materializer",
+        materializer_name="tests-materializer",
         materialization_digest="b" * 64,
-        artifact_digest="c" * 64,
-        manifest_sha256=manifest_sha256,
-    )
-
-
-def referenced_identity(
-    *,
-    source_name: str = "example-reference",
-    manifest_sha256: str = "e" * 64,
-) -> ReferencedDataArtifactIdentity:
-    return ReferencedDataArtifactIdentity(
-        artifact_type="image-folder-reference",
-        source_name=source_name,
-        source_digest="1" * 64,
-        materializer_name="example-indexer",
-        materialization_digest="2" * 64,
-        artifact_digest="3" * 64,
+        content_digest="c" * 64,
+        artifact_digest="d" * 64,
         manifest_sha256=manifest_sha256,
     )
 
 
 def binding(binding_id: str) -> DataArtifactBinding:
-    return DataArtifactBinding(
-        id=binding_id,
-        identity=managed_identity(source_name=f"source-{binding_id}"),
-    )
+    return DataArtifactBinding(id=binding_id, identity=identity())
 
 
-def test_semantic_roots_are_abstract() -> None:
-    assert inspect.isabstract(DataArtifactIdentity)
-    assert inspect.isabstract(DataArtifact)
+def test_only_data_source_remains_abstract() -> None:
+    assert not inspect.isabstract(DataArtifactIdentity)
+    assert not inspect.isabstract(DataArtifact)
     assert inspect.isabstract(DataSource)
 
 
-@pytest.mark.parametrize(
-    "identity",
-    [managed_identity(), referenced_identity()],
-)
-def test_identity_strict_round_trip(identity: DataArtifactIdentity) -> None:
-    serialized = identity.to_dict()
+@pytest.mark.parametrize("kind", ["managed", "referenced"])
+def test_identity_schema_v2_strict_round_trip(kind: str) -> None:
+    value = identity(kind=kind)
 
-    assert serialized["kind"] == identity.kind
-    assert DataArtifactIdentity.from_dict(serialized) == identity
+    assert value.schema_version == 2
+    assert DataArtifactIdentity.from_dict(value.to_dict()) == value
 
 
 @pytest.mark.parametrize(
     ("value", "match"),
     [
         ([], "must be a mapping"),
-        ({"schema_version": 1}, "missing"),
+        ({"schema_version": 2}, "missing"),
+        ({**identity().to_dict(), "unexpected": True}, "unknown unexpected"),
+        ({**identity().to_dict(), "schema_version": 1}, "must be 2"),
+        ({**identity().to_dict(), "schema_version": True}, "must be 2"),
+        ({**identity().to_dict(), "kind": "remote"}, "managed or referenced"),
         (
-            {
-                **managed_identity().to_dict(),
-                "unexpected": True,
-            },
-            "unknown unexpected",
-        ),
-        (
-            {
-                **managed_identity().to_dict(),
-                "kind": "remote",
-            },
-            "kind must be managed or referenced",
-        ),
-        (
-            {
-                **managed_identity().to_dict(),
-                "artifact_digest": "NOT-A-SHA256",
-            },
-            "artifact_digest must be a lowercase SHA-256",
+            {**identity().to_dict(), "content_digest": "not-a-digest"},
+            "content_digest must be a lowercase SHA-256",
         ),
     ],
 )
-def test_identity_rejects_malformed_values(
+def test_identity_rejects_v1_and_malformed_values(
     value: object,
     match: str,
 ) -> None:
@@ -115,126 +78,45 @@ def test_identity_rejects_malformed_values(
         DataArtifactIdentity.from_dict(value)
 
 
-def test_managed_and_referenced_artifacts_have_distinct_roots(
+def test_unified_artifact_has_fixed_manifest_path_and_kind(
     tmp_path: Path,
 ) -> None:
-    managed_root = tmp_path / "managed"
-    managed_root.mkdir()
-    managed_manifest = managed_root / "manifest.json"
-    managed_manifest.write_bytes(b"{}\n")
-    managed = ManagedDataArtifact(
-        artifact_root=managed_root,
-        manifest_path=managed_manifest,
-        identity=managed_identity(
-            manifest_sha256=hashlib.sha256(b"{}\n").hexdigest()
-        ),
-        payload={"split": "train"},
-    )
-
-    external_root = tmp_path / "external"
-    external_root.mkdir()
-    index_root = tmp_path / "index"
-    index_root.mkdir()
-    reference_manifest = index_root / "manifest.json"
-    reference_manifest.write_bytes(b"{}\n")
-    referenced = ReferencedDataArtifact(
-        index_root=index_root,
-        manifest_path=reference_manifest,
-        identity=referenced_identity(
-            manifest_sha256=hashlib.sha256(b"{}\n").hexdigest()
-        ),
-        payload={"external_root": external_root},
-    )
-
-    assert managed.artifact_root == managed_root.resolve()
-    assert referenced.index_root == index_root.resolve()
-    assert referenced.payload["external_root"] == external_root
-
-    with pytest.raises(ValueError, match="inside its artifact_root"):
-        ManagedDataArtifact(
-            artifact_root=managed_root,
-            manifest_path=reference_manifest,
-            identity=managed.identity,
-            payload=None,
-        )
-
-
-def test_artifact_constructor_rejects_linked_manifest(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "artifact"
-    root.mkdir()
-    target = tmp_path / "manifest-target.json"
-    target.write_bytes(b"{}\n")
-    manifest = root / "manifest.json"
-    try:
-        manifest.symlink_to(target)
-    except OSError:
-        pytest.skip("symlink creation is unavailable")
-    identity = managed_identity(
-        manifest_sha256=hashlib.sha256(b"{}\n").hexdigest()
-    )
-
-    with pytest.raises((OSError, ValueError), match=r"link|reparse"):
-        ManagedDataArtifact(
-            artifact_root=root,
-            manifest_path=manifest,
-            identity=identity,
-            payload=None,
-        )
-
-
-def test_artifact_constructor_rejects_linked_root_ancestor(
-    tmp_path: Path,
-) -> None:
-    real_parent = tmp_path / "real-parent"
-    root = real_parent / "artifact"
-    root.mkdir(parents=True)
-    manifest = root / "manifest.json"
-    manifest.write_bytes(b"{}\n")
-    linked_parent = tmp_path / "linked-parent"
-    try:
-        linked_parent.symlink_to(real_parent, target_is_directory=True)
-    except OSError:
-        pytest.skip("directory symlink creation is unavailable")
-    identity = managed_identity(
-        manifest_sha256=hashlib.sha256(b"{}\n").hexdigest()
-    )
-
-    with pytest.raises((OSError, ValueError), match=r"link|reparse"):
-        ManagedDataArtifact(
-            artifact_root=linked_parent / "artifact",
-            manifest_path=linked_parent / "artifact" / "manifest.json",
-            identity=identity,
-            payload=None,
-        )
-
-
-def test_artifact_kind_and_identity_kind_must_match(tmp_path: Path) -> None:
-    root = tmp_path / "root"
+    root = tmp_path / "object"
     root.mkdir()
     manifest = root / "manifest.json"
     manifest.write_bytes(b"{}\n")
-    wrong_identity = referenced_identity(
-        manifest_sha256=hashlib.sha256(b"{}\n").hexdigest()
+    artifact = DataArtifact(
+        root=root,
+        identity=identity(
+            kind="referenced",
+            manifest_sha256=hashlib.sha256(b"{}\n").hexdigest(),
+        ),
+        payload={"value": 1},
     )
 
-    with pytest.raises(TypeError, match="ManagedDataArtifactIdentity"):
-        ManagedDataArtifact(
-            artifact_root=root,
-            manifest_path=manifest,
-            identity=wrong_identity,  # type: ignore[arg-type]
-            payload=None,
-        )
+    assert artifact.root == root.resolve()
+    assert artifact.manifest_path == root.resolve() / "manifest.json"
+    assert artifact.kind == "referenced"
 
 
-def test_binding_collection_is_canonical_and_strict() -> None:
+def test_unified_artifact_rejects_manifest_digest_mismatch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "object"
+    root.mkdir()
+    (root / "manifest.json").write_bytes(b"{}\n")
+
+    with pytest.raises(ValueError, match="manifest SHA-256"):
+        DataArtifact(root=root, identity=identity(), payload=None)
+
+
+def test_binding_collection_is_schema_v2_canonical_and_strict() -> None:
     collection = DataArtifactBindings(
         (binding("validation"), binding("primary"))
     )
 
     assert collection.ids == ("primary", "validation")
-    assert collection.identity_for("primary").source_name == "source-primary"
+    assert collection.to_dict()["schema_version"] == 2
     assert DataArtifactBindings.from_dict(collection.to_dict()) == collection
 
     with pytest.raises(ValueError, match="ids must be unique"):
@@ -242,17 +124,19 @@ def test_binding_collection_is_canonical_and_strict() -> None:
     with pytest.raises(KeyError, match="missing data artifact binding"):
         collection.identity_for("missing")
 
-    serialized = collection.to_dict()
+    v1 = collection.to_dict()
+    v1["schema_version"] = 1
+    with pytest.raises(ValueError, match="schema_version must be 2"):
+        DataArtifactBindings.from_dict(v1)
+
+
+def test_binding_collection_requires_canonical_order() -> None:
+    serialized = DataArtifactBindings(
+        (binding("primary"), binding("validation"))
+    ).to_dict()
     serialized["bindings"].reverse()
+
     with pytest.raises(ValueError, match="must be sorted"):
-        DataArtifactBindings.from_dict(serialized)
-
-
-def test_binding_collection_rejects_unknown_wire_fields() -> None:
-    serialized = DataArtifactBindings((binding("source"),)).to_dict()
-    serialized["unexpected"] = True
-
-    with pytest.raises(ValueError, match="unknown unexpected"):
         DataArtifactBindings.from_dict(serialized)
 
 
@@ -261,7 +145,7 @@ def test_expected_identity_forces_full_verification(tmp_path: Path) -> None:
         cache_root=tmp_path,
         policy="require",
         verification="manifest",
-        expected_identity=referenced_identity(),
+        expected_identity=identity(kind="referenced"),
     )
 
     assert context.verification == "full"

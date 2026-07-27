@@ -2,8 +2,9 @@
 
 仓库在 `examples/extension-projects/` 提供两个彼此独立、可安装的 Python
 distribution。它们不是核心内置 recipe，也不规定用户必须采用相同的仓库布局或包管理器。
-它们用于展示一个任务如何同时使用 entry point、DataBuilder、TrainingBuilder/Strategy、
-checkpoint、SamplingBuilder 和领域 writer，而不修改 Stochaflow runner。
+它们用于展示一个任务如何在 extension 内遵守 DataSource/DataArtifact/DataBuilder
+边界，并同时使用 entry point、TrainingBuilder/Strategy、checkpoint、SamplingBuilder
+和领域 writer，而不修改 Stochaflow runner。
 
 | 项目 | 主要展示 | 不代表 |
 | --- | --- | --- |
@@ -18,7 +19,9 @@ checkpoint、SamplingBuilder 和领域 writer，而不修改 Stochaflow runner�
 
 这个项目展示三帧 Kolmogorov-vorticity reconstruction。项目代码拥有：
 
-- mmap 数据读取、trajectory 范围划分和连续三帧 batch；
+- extension-local NumPy trajectory DataSource，通过 framework `DataArtifactStore`
+  发布 referenced `DataArtifact`，不复制外部 `.npy`；
+- DataBuilder 所拥有的 mmap Dataset view、trajectory 范围划分和连续三帧 batch；
 - conditional denoiser、normalization 与 PDE 常数；
 - 将原始物理场 batch 转换为 Gaussian marginal/target 的 TrainingStrategy；
 - 从 sparse observation 构造 partial-noised initial state 的 SamplingBuilder；
@@ -31,6 +34,11 @@ condition gradient 与 post-transition correction 是两种不同策略。前者
 Gaussian Dynamics 的模型 callable 中，继续使用内置 DDPM/DDIM；后者改变数值 transition，
 因此由项目自己的 Sampler 实现。核心 Process、内置 Sampler 和顶层 YAML 都没有
 physics-specific 分支。
+
+Physics 只拥有 `.npy` header、shape/dtype、trajectory range、external inventory 与
+mmap payload 等领域语义。schema-v2 manifest、identity、locator、lock、publication 和
+quarantine 全部由 framework store 负责。其 cache 使用
+`./.stochaflow-cache`，与 external `data/` root 分离。
 
 ### Tiny end-to-end
 
@@ -96,11 +104,17 @@ production path 可以执行，不代表收敛训练、1272-sample 全量运行�
 
 这个项目展示一个 deterministic classification student 如何使用冻结 teacher：
 
+- 无外部输入 artifact 的 synthetic DataBuilder；配置与 experiment seed 确定全部
+  in-memory splits，不在 Builder 中隐藏 download/acquisition；
 - TrainingBuilder 构建 teacher 与 temperature-KL Objective，加载普通 PyTorch
   bootstrap `state_dict`，冻结 teacher，并声明稳定命名的 managed assets；
 - TrainingStrategy 只执行 student/teacher forward，并组合 task 与 distillation loss；
 - checkpoint 把 teacher 和额外 Objective 写入 `training_assets_state_dict`；
 - sampling-only Builder 只构建 primary student，不构建 teacher 或训练 Objective。
+
+该 synthetic recipe 明确返回 `artifact_bindings=None`，也不会创建
+`.stochaflow-cache`。teacher bootstrap 是 TrainingBuilder 的模型构造输入，不是 dataset
+artifact。
 
 安装和首次训练：
 

@@ -51,15 +51,13 @@ ema:
   use_for_sampling: true
 
 sampling:
+  run_after_training: true
   shape: null
   num_samples: 8
   batch_size: 4
-  builder:
-    name: __STOCHAFLOW_PROJECT_SLUG__.regression-predictions
-    params:
-      input_features: 3
-      input_min: -1.0
-      input_max: 1.0
+  options:
+    input_min: -1.0
+    input_max: 1.0
   writers:
     - name: tensor
       params: {}

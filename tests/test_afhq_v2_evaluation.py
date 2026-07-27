@@ -16,8 +16,8 @@ import stochaflow.utils.plugins as plugin_runtime
 from stochaflow.data import (
     DataArtifactBinding,
     DataArtifactBindings,
+    DataArtifactIdentity,
     DataLoaders,
-    ManagedDataArtifactIdentity,
 )
 from stochaflow.sampling.runtime import (
     ResolvedSamplingInputs,
@@ -34,6 +34,10 @@ from stochaflow.utils.plugins import (
     ExtensionActivationPlan,
     ExtensionSelectionPolicy,
     ResolvedExtensions,
+)
+from stochaflow.utils.sampling_recipe import (
+    SamplingRecipe,
+    sampling_recipe_to_dict,
 )
 
 _REPOSITORY = Path(__file__).resolve().parents[1]
@@ -147,13 +151,15 @@ class FakeEntryPoint:
         return FakeDistribution()
 
 
-def _identity() -> ManagedDataArtifactIdentity:
-    return ManagedDataArtifactIdentity(
+def _identity() -> DataArtifactIdentity:
+    return DataArtifactIdentity(
+        kind="managed",
         artifact_type="image-folder",
         source_name="afhq-v2.official",
         source_digest="1" * 64,
         materializer_name="afhq-v2.prepare",
         materialization_digest="2" * 64,
+        content_digest="3" * 64,
         artifact_digest="3" * 64,
         manifest_sha256="4" * 64,
     )
@@ -170,7 +176,7 @@ def _small_evaluation_config(path: Path) -> Path:
     raw["sampling"]["num_samples"] = 6
     raw["sampling"]["batch_size"] = 3
     raw["sampling"]["seed"] = 123
-    raw["sampling"]["builder"]["params"]["conditions"] = [
+    raw["sampling"]["options"]["conditions"] = [
         {"class_label": 0, "count": 2},
         {"class_label": 1, "count": 2},
         {"class_label": 2, "count": 2},
@@ -188,15 +194,19 @@ def _small_evaluation_config(path: Path) -> Path:
 
 
 def _resolved_inputs(
-    overlay_path: Path,
+    request_path: Path,
     checkpoint_path: Path,
     bindings: DataArtifactBindings,
 ) -> ResolvedSamplingInputs:
+    recipe = SamplingRecipe(
+        name="class_conditional_denoising",
+        contract={"prediction_type": "v"},
+    )
     base = load_config(_PRODUCTION_CONFIG)
-    overlay = yaml.safe_load(overlay_path.read_text(encoding="utf-8"))
+    request = yaml.safe_load(request_path.read_text(encoding="utf-8"))
     merged = base.to_dict()
-    merged["extensions"] = overlay["extensions"]
-    merged["sampling"] = overlay["sampling"]
+    merged["extensions"] = request["extensions"]
+    merged["sampling"] = request["sampling"]
     config = load_config_dict(merged)
     plan = ExtensionActivationPlan(
         config=config,
@@ -208,10 +218,12 @@ def _resolved_inputs(
         config=config,
         checkpoint_path=checkpoint_path,
         checkpoint={
-            "format_version": 9,
+            "format_version": CHECKPOINT_FORMAT_VERSION,
+            "inference_recipe": sampling_recipe_to_dict(recipe),
             "metadata": {"data_artifacts": bindings.to_dict()},
         },
-        config_source="sampling-overlay",
+        recipe=recipe,
+        config_source="sample-request",
         extension_plan=plan,
     )
 
@@ -219,9 +231,8 @@ def _resolved_inputs(
 def _tiny_evaluation_config(path: Path) -> Path:
     _small_evaluation_config(path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    params = raw["sampling"]["builder"]["params"]
-    params["weights"] = "raw"
-    params["sampler"]["params"]["num_inference_steps"] = 2
+    raw["sampling"]["options"]["weights"] = "raw"
+    raw["sampling"]["sampler"]["params"]["num_inference_steps"] = 2
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     return path
 
@@ -271,6 +282,12 @@ def _tiny_checkpoint(
     process = build_process(config.process)
     payload = {
         "format_version": CHECKPOINT_FORMAT_VERSION,
+        "inference_recipe": sampling_recipe_to_dict(
+            SamplingRecipe(
+                name="class_conditional_denoising",
+                contract={"prediction_type": "v"},
+            )
+        ),
         "model_state_dict": model.state_dict(),
         "process_state_dict": process.state_dict(),
         "rng_state": capture_rng_state(),
@@ -298,8 +315,8 @@ def _tiny_checkpoint(
 def test_checked_in_evaluation_protocol_is_frozen_and_balanced() -> None:
     document = evaluation.load_evaluation_document(_EVALUATION_CONFIG)
     protocol = document.protocol
-    sampling = document.sampling_overlay["sampling"]
-    params = sampling["builder"]["params"]
+    sampling = document.sample_request["sampling"]
+    options = sampling["options"]
 
     assert protocol.class_mapping == {"cat": 0, "dog": 1, "wild": 2}
     assert protocol.split == "test"
@@ -310,18 +327,20 @@ def test_checked_in_evaluation_protocol_is_frozen_and_balanced() -> None:
     ]
     assert sampling["num_samples"] == 900
     assert sampling["seed"] == 20260726
-    assert params["weights"] == "ema"
-    assert params["guidance_scale"] == 2.0
-    assert params["conditions"] == [
+    assert "run_after_training" not in sampling
+    assert "builder" not in sampling
+    assert options["weights"] == "ema"
+    assert options["guidance_scale"] == 2.0
+    assert options["conditions"] == [
         {"class_label": 0, "count": 300},
         {"class_label": 1, "count": 300},
         {"class_label": 2, "count": 300},
     ]
-    assert params["sampler"] == {
+    assert sampling["sampler"] == {
         "name": "ddim",
         "params": {"num_inference_steps": 50, "eta": 0.0},
     }
-    assert params["trajectory"]["enabled"] is False
+    assert options["trajectory"]["enabled"] is False
 
 
 def test_evaluation_uses_core_sampling_strict_test_data_and_fake_providers(
@@ -437,7 +456,7 @@ def test_evaluation_uses_core_sampling_strict_test_data_and_fake_providers(
         return SamplingRunResult(
             checkpoint_path=checkpoint_path,
             output_dir=target,
-            builder_name="class_conditional_denoising",
+            recipe_name="class_conditional_denoising",
             device=torch.device("cpu"),
             seed=123,
             metadata=metadata,
@@ -543,6 +562,8 @@ def test_evaluation_uses_core_sampling_strict_test_data_and_fake_providers(
         "real": "authenticated-manifest-order",
         "fake": "ordered-class-label-blocks",
     }
+    assert payload["sampling"]["recipe"] == "class_conditional_denoising"
+    assert "builder" not in payload["sampling"]
     assert set(payload["metrics"]["aggregate"]) == {"kid_score", "fid_score"}
     assert set(payload["metrics"]["per_class"]) == {"cat", "dog", "wild"}
     assert payload["sampling"]["artifacts"]["samples"]["sha256"] == (
@@ -555,10 +576,23 @@ def test_evaluation_uses_core_sampling_strict_test_data_and_fake_providers(
 def test_evaluation_requires_explicit_frozen_weights(tmp_path: Path) -> None:
     config_path = _small_evaluation_config(tmp_path / "evaluation.yaml")
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    raw["sampling"]["builder"]["params"]["weights"] = "auto"
+    raw["sampling"]["options"]["weights"] = "auto"
     config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
     with pytest.raises(ValueError, match="explicitly select raw or ema"):
+        evaluation.load_evaluation_document(config_path)
+
+
+def test_evaluation_rejects_legacy_sampling_builder(tmp_path: Path) -> None:
+    config_path = _small_evaluation_config(tmp_path / "evaluation.yaml")
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["sampling"]["builder"] = {
+        "name": "class_conditional_denoising",
+        "params": {},
+    }
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"legacy sampling\.builder is unsupported"):
         evaluation.load_evaluation_document(config_path)
 
 
@@ -619,7 +653,9 @@ def test_result_checkpoint_header_drops_tensor_state(tmp_path: Path) -> None:
 
     retained = evaluation_inputs.retain_result_checkpoint_header(inputs)
 
-    assert retained.checkpoint == {"format_version": 9}
+    assert retained.checkpoint == {
+        "format_version": CHECKPOINT_FORMAT_VERSION,
+    }
     assert retained.config is inputs.config
     assert retained.extension_plan is inputs.extension_plan
     assert "model_state_dict" in inputs.checkpoint

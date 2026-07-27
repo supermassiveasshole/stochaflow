@@ -103,7 +103,7 @@ checkpoint、日志和 artifact 全部塞进一个万能 `DistributedManager`。
 | DataBuilder composition root | `data/builder.py` | 可以直接构建 rank-aware loader，不需要 core 重写 batch |
 | deterministic loader helpers | `data/dataloaders.py` | 已有 generator、worker seed、epoch sampler |
 | precision runtime | `training/precision.py` | autocast、GradScaler、step success 已集中 |
-| checkpoint v9 | `utils/checkpoint.py` | portable full-state 格式、严格验证、事务式 restore |
+| checkpoint v10 | `utils/checkpoint.py` | portable full-state、固定 inference recipe、严格验证与事务式 restore |
 | sampling builder/runtime | `sampling/builder.py`、`sampling/runtime.py` | task composition 与 artifact writing 已分离 |
 | data artifact locks | `data/artifact_store.py`、`data/artifact_io.py` | 多进程 materialization 可复用已有锁与 publish 语义 |
 
@@ -422,7 +422,7 @@ sampling:
 | 字段 | 所有者 | strict resume |
 | --- | --- | --- |
 | `trainer.parallelism.name/params` | 训练算法 topology | 默认冻结 |
-| `sampling.parallelism` | sampling-only runtime | 可由 sampling overlay 覆盖 |
+| `sampling.parallelism` | future sampling-only runtime field | 若本计划加入该字段，可由 strict partial sample request 覆盖 |
 | `distributed.backend` | invocation runtime | 可覆盖，但必须兼容设备 |
 | `distributed.timeout_seconds` | invocation runtime | 可覆盖 |
 | `WORLD_SIZE/RANK/LOCAL_RANK` | launcher environment | 不进入 config |
@@ -430,6 +430,9 @@ sampling:
 
 规则：
 
+- `sampling.parallelism` 是本提案的未来 schema 扩展，当前 v10
+  `SamplingConfig`/sample request 尚不接受该字段；实施前必须同步严格 parser、
+  checkpoint defaults 和 request merge contract；
 - 在 `world_size>1` 下选择 `trainer.parallelism.name: single` 时 fail，避免每 rank
   各自开始一个独立实验；
 - distributed strategy 在没有 torchrun 环境时允许 `world_size=1` smoke，但 manifest

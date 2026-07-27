@@ -7,9 +7,10 @@ Sampler、collate 或 DataLoader，而是一次性接收 builder 已经组装好
 flowchart LR
     A["data.name / data.params"] --> B["data_builders Registry"]
     B --> C["DataBuilder.build()"]
-    C --> D["ImageDataSource.materialize()（仅 image recipes）"]
-    D --> E["DataArtifact / ImageDatasetFactory"]
-    E --> F["Dataset / partition / transform / sampler / DataLoader"]
+    C --> D["DataSource.materialize()（source-aware recipe）"]
+    D --> E["DataArtifact[payload]"]
+    E --> V["Builder 验证 binding 与 accepted contract"]
+    V --> F["recipe-private partition / Dataset / transform / sampler / loader"]
     F --> G["DataLoaders"]
     G --> H["Runner / Trainer"]
 ```
@@ -68,14 +69,28 @@ data:
 
 `source` 只有一种规范结构：`name` 选择已注册的 `ImageDataSource`，`params` 是该
 source 的私有参数，`materialization` 声明缓存、获取策略与验证强度。
-`materialization` 是必填 mapping；其中字段省略时依次使用 `cache_root: ./data`、
+`materialization` 是必填 mapping；其中字段省略时依次使用
+`cache_root: ./.stochaflow-cache`、
 `policy: ensure` 和 `verification: full`。持久化实验配置建议显式写出三者，避免工作目录
 改变缓存位置。内置 `torchvision` 支持 MNIST、CIFAR10 和 Flowers102；
 `policy: ensure` 允许在 exact managed artifact 不存在时下载并发布，
 `policy: require` 则只接受已有的 exact artifact。`verification` 可选 `manifest` 或
 `full`；strict resume 会强制完整验证。
 
-现有本地/NFS 图片目录使用 `image_folder`，它创建 reference artifact：缓存中只保存
+所有 DataSource 都通过 framework `DataArtifactStore` 使用同一个 schema-v2 cache
+lifecycle。`managed` source 把实际数据发布到 cache；`referenced` source 只发布
+inventory/sidecar，外部数据不复制。两者返回同一个 `DataArtifact` runtime handle，
+ownership strategy 记录在 `artifact.identity.kind`。source 不应自行维护 manifest、
+identity、current pointer、lock 或 publication 状态机。
+
+schema-v2 cache 固定在
+`<cache_root>/data-artifacts/v2/<kind>/<artifact-type-digest>/` 下，并包含 immutable
+objects、locators、locks、staging 与 quarantine。`require` 是完全只读的；`ensure`
+才会在缺失或已持久化内容验证失败时构建、隔离和修复。旧 cache layout、manifest、
+locator、identity 与 checkpoint binding 不受支持，也不会自动迁移；升级后应重新
+materialize 并创建新 run。
+
+现有本地/NFS 图片目录使用 `image_folder`，它创建 referenced artifact：缓存中只保存
 canonical manifest 和分片 inventory，不复制原图。第一次 `ensure` 会完整枚举并读取
 每个文件，以一次内容读取记录规范路径、字节数、SHA-256 和图片宽高。宽高与内容摘要
 一起进入 canonical inventory 和 artifact identity，后续 resolution bucket 不需要再次
@@ -91,7 +106,7 @@ source:
     root: G:/datasets/images
     layout: flat
   materialization:
-    cache_root: ./data
+    cache_root: ./.stochaflow-cache
     policy: ensure
     verification: full
 ```
@@ -118,7 +133,16 @@ batch 为 `(images, {})`。`loader.pin_memory` 的可移植默认值为 `false`�
 `class_labeled_image` 消费 DataSource 发布的标准
 `ClassLabeledImageFolderArtifactPayload`。payload 必须认证连续的
 `class_mapping`（label 为 `0..N-1`）和每条记录的 `class_label`；Builder 不从目录名
-猜测标签，也不读取 source 私有参数：
+猜测标签，也不读取 source 私有参数。该 payload 类型可以表达 native validation，但
+当前 Builder 的 accepted contract 更窄：
+
+- finite、authenticated、map-style train inventory；
+- 连续 class mapping 和逐样本 class label；
+- `validation is None`；
+- optional official test；
+- 使用正数 `validation_per_class` 从 train 派生 holdout。
+
+配置示例：
 
 ```yaml
 data:
@@ -128,7 +152,7 @@ data:
       name: my-project.animals
       params: {}
       materialization:
-        cache_root: ./data
+        cache_root: ./.stochaflow-cache
         policy: require
         verification: full
     partition:
@@ -158,8 +182,10 @@ source 不提供原生 validation，test 可选。默认 batch 为
 
 训练 sampler 总是把 epoch 随 index 传给 Dataset。crop 与 flip 使用由 run seed、epoch
 和认证 sample identity 派生的无状态随机值，因此 `num_workers=0`、persistent workers
-和 epoch-boundary strict resume 会产生相同的 batch Tensor。新的兼容数据集只需实现并
-注册 `ImageDataSource`，将来源 materialize 成上述 payload；无需自定义 DataBuilder。
+和 epoch-boundary strict resume 会产生相同的 batch Tensor。新来源只有既能 materialize
+为上述完整 accepted artifact contract，又需要同样的 derived holdout、transform、
+sampler、loader、resume 和 batch 语义时，才只需注册 `ImageDataSource`。相同 payload
+type 不自动代表 recipe 兼容。
 
 ## `super_resolution` recipe
 
@@ -183,7 +209,7 @@ data:
         root: ./data/hr
         layout: flat
       materialization:
-        cache_root: ./data
+        cache_root: ./.stochaflow-cache
         policy: ensure
         verification: full
     partition:
@@ -218,7 +244,7 @@ source:
     low_resolution_root: ./data/lr
     layout: flat
   materialization:
-    cache_root: ./data
+    cache_root: ./.stochaflow-cache
     policy: ensure
     verification: full
 ```
@@ -245,7 +271,7 @@ data:
           params:
             dataset: MNIST
           materialization:
-            cache_root: ./data
+            cache_root: ./.stochaflow-cache
             policy: ensure
             verification: manifest
       - id: flowers
@@ -256,7 +282,7 @@ data:
             root: ./data/flowers
             layout: flat
           materialization:
-            cache_root: ./data
+            cache_root: ./.stochaflow-cache
             policy: ensure
             verification: full
     image:
@@ -294,17 +320,19 @@ sampler 根据当前是否启用加权混合，只构造 bucket 索引或 `(sour
 
 ## Epoch 与恢复边界
 
-四个内置 recipe 的训练 sampler 都根据 experiment seed 与 epoch 重建索引顺序：
-`image`/`super_resolution` 使用 recipe 私有的 epoch-aware shuffle，
-`class_labeled_image` 还把 epoch 传入无状态增强，`multi_resolution_image` 使用自己的
-`set_epoch()` batch sampler。因此在数据与配置不变时，strict resume 可以重建对应
-epoch 的索引/batch 顺序。
+启用训练 shuffle 时，`image`/`super_resolution` 使用 recipe 私有的 epoch-aware
+sampler；关闭 shuffle 时按 Dataset 顺序读取，不构造该 sampler。
+`class_labeled_image` 无论是否 shuffle 都通过 sampler 把 epoch 传入无状态增强，
+`multi_resolution_image` 使用自己的 `set_epoch()` batch sampler。因此在相应 sampler
+实际启用、数据与配置不变时，strict resume 可以重建对应 epoch 的索引/batch 顺序。
 
 每个 source 的完整 artifact identity 会按 source id 排序后写入 run manifest 与
 checkpoint。strict resume 在构建数据前注入 checkpoint 中的 expected bindings；任何
-缺失、source/recipe/content identity 不一致都会在恢复模型、optimizer 或 scheduler
-之前失败。managed artifact 可从固定来源与 recipe 重新构建；reference artifact 只保证
-对当前外部字节 fail-stop，不宣称拥有或版本化外部目录。
+缺失、source/materialization/content/manifest identity 不一致都会在恢复 model、
+optimizer 或 scheduler 之前失败。runtime partition 与其他 data recipe policy 不属于
+artifact identity，由 checkpoint 的 resolved config 与 experiment seed 固定。managed
+artifact 可从固定来源与 materialization recipe 重新构建；referenced artifact 只保证对
+当前外部字节 fail-stop，不宣称拥有或版本化外部目录。
 
 POSIX 路径读取与缓存变更使用从文件系统根逐级 no-follow 的 descriptor-relative 操作。
 Windows 会拒绝 symlink/junction/reparse point，并在操作前后复核祖先与目标 identity；
@@ -318,6 +346,17 @@ crop/flip，不保证与不中断运行产生逐位相同的 batch Tensor；
 `class_labeled_image` 已内置 stateless `(seed, epoch, sample identity)` 增强。其他
 需要逐位恢复保证的任务也应采用无 worker 随机增强、无状态增强，或在自定义
 DataBuilder 中明确自己的恢复契约。
+
+## 选择扩展路径
+
+| 需求 | 接入方式 |
+| --- | --- |
+| 新来源满足现有 Builder 的完整 artifact contract，且所需 runtime recipe 完全一致 | 只实现并注册 DataSource |
+| 一次性 Python 实验，Dataset/DataLoader 已经组合完成 | 直接调用 `Trainer.fit(train_iterable, num_epochs=10, validation_dataloader=...)` |
+| 新的 partition、Dataset、sampler、streaming、resume 或 batch 语义 | 注册一个 recipe-level DataBuilder |
+
+DataBuilder 对应可配置、可重建的一份 runtime recipe，不与 dataset 名称、DataSource 或
+具体 Dataset 类一一对应。
 
 ## 自定义 DataBuilder
 

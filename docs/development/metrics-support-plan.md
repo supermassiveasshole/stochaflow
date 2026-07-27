@@ -6,7 +6,7 @@
 - 架构复核：2026-07-26；明确为 Training/Diagnostic/Evaluation/AutoML 共用的
   task-neutral 统计子系统
 - 前置范围：现有单 optimizer 自动训练循环、validation/test iterable、训练期
-  diagnostic、checkpoint v8 与 extension registry
+  diagnostic、checkpoint v10 与 extension registry
 - 目标范围：内置与第三方 epoch metrics、train/validation/test 聚合、diagnostic
   指标参与统一监控、best checkpoint、early stopping 与未来 HPO
 - 关联计划：

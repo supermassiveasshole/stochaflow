@@ -354,7 +354,7 @@ Recipe entry 必须按 tagged entry type 物化为对应 operation 的严格配�
 | entry type | 配置 authority |
 | --- | --- |
 | Training | 完整 `StochaflowConfig` |
-| Sampling | 当前合法 sampling-only overlay，经 checkpoint resolver 得到 resolved config |
+| Sampling | 当前合法 strict partial sample request，经 checkpoint recipe resolver 得到 resolved config |
 | Evaluation | 独立 `EvaluationConfig` |
 
 未来若新增 Export 等 core operation，再增加其窄 entry/config type；不能把所有字段塞回
@@ -1046,25 +1046,26 @@ SR SamplingBuilder 的输入 source 是任务私有参数，不增加顶层通�
 
 ```yaml
 sampling:
-  builder:
-    name: gaussian_super_resolution
-    params:
-      source:
-        name: image_folder
-        params:
-          root: data/low-resolution
-          layout: flat
-        materialization:
-          cache_root: ./data
-          policy: ensure
-          verification: full
-      native_scale: 4
-      weights: auto
-      prediction_type: epsilon
-      sampler:
-        name: ddim
-        params: {num_steps: 50, eta: 0.0}
+  sampler:
+    name: ddim
+    params: {num_inference_steps: 50, eta: 0.0}
+  options:
+    source:
+      name: image_folder
+      params:
+        root: data/low-resolution
+        layout: flat
+      materialization:
+        cache_root: ./.stochaflow-cache
+        policy: ensure
+        verification: full
+    native_scale: 4
+    weights: auto
 ```
+
+`gaussian_super_resolution` 是 TrainingBuilder 写入 checkpoint 的内部
+`inference_recipe.name`，`prediction_type: epsilon` 属于其 fixed contract；request
+只表达 input、solver 和其他允许变化的 options。
 
 v1 source：
 
@@ -1417,7 +1418,7 @@ strict dataclass parser 和 round-trip tests 冻结。
 - unknown fields、duplicate entry/id、invalid media type 失败；
 - 每个 materialized training config 通过 `load_config_dict()`；
 - 每个 evaluation entry 通过独立 EvaluationConfig strict parser；
-- sampling overlay 通过现有 resolver；
+- strict partial sample request 通过 checkpoint recipe resolver；
 - materialization 不修改现有文件；
 - recipe 名称不影响 runtime dispatch。
 

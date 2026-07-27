@@ -39,15 +39,17 @@ fields:
   ema.update_after_step: {description: 在全局 step 达到该值后才开始更新 EMA。, constraints: 非负整数。}
   ema.update_every: {description: 每隔多少个 optimizer step 更新一次 EMA。, constraints: 正整数。}
   ema.use_for_sampling: {description: 采样和诊断 artifact 是否优先使用 EMA 权重。}
-  sampling: {description: 独立采样和训练结束验收采样的默认设置。}
-  sampling.builder: {description: 完整拥有采样装配和执行的 sampling_builders Registry 声明；null 禁用默认训练后采样。}
-  sampling.builder.name: {description: sampling_builders Registry 名称。}
-  sampling.builder.params: {description: Builder 独占参数；standard_denoising 在其中声明权重、prediction type、sampler 和 trajectory。}
-  sampling.shape: {description: 单个生成 state 的形状，不含 batch 维；null 允许不需要固定 shape 的自定义运行时。, constraints: 非 null 时为非空正整数列表。}
-  sampling.num_samples: {description: 一次采样生成的总样本数。, constraints: 正整数。}
-  sampling.batch_size: {description: 采样时每批样本数，与 DataBuilder 独立。, constraints: 正整数。}
-  sampling.seed: {description: 采样专用随机种子；null 使用 experiment.seed。}
-  sampling.writers: {description: 按声明顺序运行的 sampling_artifact_writers 组件。, constraints: 至少一个。}
+  sampling: {description: checkpoint-bound inference 的可覆盖请求默认值，以及训练后是否自动运行该 recipe。}
+  sampling.run_after_training: {description: 训练完成并恢复 selected best checkpoint 后是否运行其固化 inference recipe。, interactions: train --skip-final-sample 可仅对本次调用禁止执行；sample request 不允许声明该字段。}
+  sampling.sampler: {description: 交给 checkpoint inference recipe 的可替换数值 Sampler 声明；null 仅适用于不需要 Sampler 或由固定 contract 决定求解器的 recipe。, interactions: sample request 显式提供时原子替换 checkpoint 默认值；不能覆盖 recipe fixed contract 中的 sampler。}
+  sampling.sampler.name: {description: samplers Registry 名称。}
+  sampling.sampler.params: {description: 原样交给所选 Sampler 的构造参数 mapping。}
+  sampling.options: {description: checkpoint inference recipe 拥有的任务级可调参数，例如 weights、condition、guidance、trajectory 或输入 locator。, interactions: sample request 只做一层 key merge；不得含 sampler，也不得覆盖 checkpoint fixed contract 字段。}
+  sampling.shape: {description: 单个 inference state 的可选形状，不含 batch 维；null 允许 recipe 自行决定输入或 state。, constraints: 非 null 时为非空正整数列表。}
+  sampling.num_samples: {description: 一次 checkpoint-backed inference 产生的总 item 数。, constraints: 正整数。}
+  sampling.batch_size: {description: inference 时每批 item 数，与 DataBuilder 独立。, constraints: 正整数。}
+  sampling.seed: {description: inference 专用随机种子；null 使用 checkpoint config 的 experiment.seed。}
+  sampling.writers: {description: 按声明顺序运行的 sampling_artifact_writers 组件。, constraints: 至少一个。, interactions: sample request 显式提供时原子替换 checkpoint 默认列表。}
   "sampling.writers[].name": {description: sampling_artifact_writers Registry 名称。}
   "sampling.writers[].params": {description: writer 构造参数；图像网格与 GIF 参数属于 image writer。}
   diagnostics: {description: 训练期间按声明顺序实例化的 diagnostics Registry 组件列表。}
@@ -130,16 +132,16 @@ registries:
     config_path: data.name / data.params
     entries:
       class_labeled_image:
-        description: 带认证类别标签的单一图像来源、逐类 validation 划分与无状态增强 recipe。
+        description: 不含 native validation 的认证 class-labeled artifact、逐类 derived holdout 与无状态增强 recipe。
         runtime_parameters: [context]
         inspect: context_parameters
         parameters:
-          source: {description: "必填 mapping；注册的 ImageDataSource 必须返回 `ClassLabeledImageFolderArtifactPayload`。"}
+          source: {description: "必填 mapping；注册的 ImageDataSource 必须返回 finite authenticated `ClassLabeledImageFolderArtifactPayload`，其 validation 必须为 null、test 可选；相同 payload type 不自动代表 runtime recipe 兼容。"}
           source.name: {description: "必填非空注册名；Builder 不检查具体名称或读取 source 私有参数。"}
           source.params: {description: "source 私有 mapping；字段由所选 DataSource 严格验证。"}
-          source.materialization: {description: "必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。"}
-          source.materialization.cache_root: {description: "artifact/index 缓存根目录；默认 `./data`。"}
-          source.materialization.policy: {description: "`ensure` 可创建 exact artifact，`require` 只接受已存在 artifact；默认 `ensure`。"}
+          source.materialization: {description: "必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。"}
+          source.materialization.cache_root: {description: "schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。"}
+          source.materialization.policy: {description: "`ensure` 可创建或修复 exact artifact；`require` 完全只读，只接受已存在 artifact；默认 `ensure`。"}
           source.materialization.verification: {description: "`manifest` 校验索引与大小，`full` 重新校验全部内容；默认 `full`，strict resume 强制完整验证。"}
           image: {description: "必填 mapping；`size` 必填，其余字段使用下列默认值。"}
           image.size: {description: "必填 `[height, width]`；两个维度均为正整数。"}
@@ -167,9 +169,9 @@ registries:
           source.params.dataset: {description: "`torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。"}
           source.params.root: {description: "`image_folder` 时必填的本地/NFS 根目录。"}
           source.params.layout: {description: "folder source 布局；`flat` 递归读取单一根目录，`split` 读取 train/validation/test 子目录。"}
-          source.materialization: {description: "必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。"}
-          source.materialization.cache_root: {description: "artifact/index 缓存根目录；默认 `./data`。"}
-          source.materialization.policy: {description: "`ensure` 可创建 exact artifact，`require` 只接受已存在 artifact；默认 `ensure`。"}
+          source.materialization: {description: "必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。"}
+          source.materialization.cache_root: {description: "schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。"}
+          source.materialization.policy: {description: "`ensure` 可创建或修复 exact artifact；`require` 完全只读，只接受已存在 artifact；默认 `ensure`。"}
           source.materialization.verification: {description: "`manifest` 校验索引与大小，`full` 重新校验全部内容；默认 `full`，strict resume 强制完整验证。"}
           image: {description: "必填 mapping；`size` 必填，其余字段使用下列默认值。"}
           image.size: {description: "必填 `[height, width]`；两个维度均为正整数。"}
@@ -201,9 +203,9 @@ registries:
           "sources[].source.params.dataset": {description: "`torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。"}
           "sources[].source.params.root": {description: "`image_folder` 时必填的本地/NFS 根目录。"}
           "sources[].source.params.layout": {description: "folder source 布局；`flat` 或 `split`。"}
-          "sources[].source.materialization": {description: "必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。"}
-          "sources[].source.materialization.cache_root": {description: "artifact/index 缓存根目录；默认 `./data`。"}
-          "sources[].source.materialization.policy": {description: "`ensure` 或 `require`；默认 `ensure`。"}
+          "sources[].source.materialization": {description: "必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。"}
+          "sources[].source.materialization.cache_root": {description: "schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。"}
+          "sources[].source.materialization.policy": {description: "`ensure` 可创建或修复，`require` 完全只读；默认 `ensure`。"}
           "sources[].source.materialization.verification": {description: "`manifest` 或 `full`；默认 `full`，strict resume 强制完整验证。"}
           image: {description: "必填 mapping；内部字段均使用下列默认值。"}
           image.channels: {description: "输出通道数；默认 `3`，仅支持 `1` 或 `3`。"}
@@ -241,9 +243,9 @@ registries:
           source.params.high_resolution_root: {description: "`paired_image_folders` 时必填的 HR 根目录。"}
           source.params.low_resolution_root: {description: "`paired_image_folders` 时必填的 LR 根目录；与 HR 按相对路径 stem 配对。"}
           source.params.layout: {description: "folder source 布局；`flat` 或 `split`。"}
-          source.materialization: {description: "必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。"}
-          source.materialization.cache_root: {description: "artifact/index 缓存根目录；默认 `./data`。"}
-          source.materialization.policy: {description: "`ensure` 或 `require`；默认 `ensure`。"}
+          source.materialization: {description: "必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。"}
+          source.materialization.cache_root: {description: "schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。"}
+          source.materialization.policy: {description: "`ensure` 可创建或修复，`require` 完全只读；默认 `ensure`。"}
           source.materialization.verification: {description: "`manifest` 或 `full`；默认 `full`，strict resume 强制完整验证。"}
           image: {description: "必填 mapping；HR/LR size 必填，其余字段使用下列默认值。"}
           image.high_resolution: {description: "必填 HR `[height, width]`；两个维度均为正整数。"}
@@ -313,7 +315,7 @@ registries:
   samplers:
     description: 在与算法 family 兼容的 Dynamics 和 initial state 上执行完整 solver 生命周期。
     base: stochaflow.sampling.Sampler
-    config_path: sampling.builder.params.sampler 或自定义 SamplingBuilder 参数
+    config_path: sampling.sampler；也可由 checkpoint inference recipe 的 fixed contract 私有决定
     entries:
       ddim:
         description: 支持非均匀 state schedule 与 eta 随机性的 DDIM solver；具体类公开 schedule resolver 与 selected-pair transition primitive。
@@ -328,36 +330,36 @@ registries:
           end_time: {description: 结束 state time；默认 0。}
 
   sampling_builders:
-    description: 装配 initial state、模型、Dynamics、Sampler、observer 和 writer-ready batch。
+    description: checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingPlan 固化 recipe name 与 contract，sample request 不直接选择 Builder。
     base: stochaflow.sampling.SamplingBuilder
-    config_path: sampling.builder.name / sampling.builder.params
+    config_path: checkpoint.inference_recipe.name；运行参数来自 fixed contract、sampling.options 与 sampling.sampler
     entries:
       class_conditional_denoising:
         description: 为离散 Gaussian denoising 显式分配 class labels，并通过 classifier-free guidance 组合条件与 null prediction。
         runtime_parameters: [context]
         inspect: context_parameters
         parameters:
-          weights: {description: "模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`。"}
-          prediction_type: {description: "模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。"}
-          clip_denoised: {description: "是否把预测 clean state 裁剪到 `[-1, 1]`；默认 `true`。"}
-          guidance_scale: {description: "有限非负 CFG scale；0 只执行 null branch，1 只执行 conditional branch，其他值使用 fused double batch。"}
-          conditions: {description: "必填有序列表；每项为 `{class_label, count}`，count 总和必须等于 sampling.num_samples。"}
-          sampler.name: {description: "必填的 Gaussian-family samplers Registry 名称。"}
-          sampler.params: {description: "传给所选 Sampler 构造器的 mapping。"}
-          trajectory.enabled: {description: "是否保留 solver trajectory observations；默认 `false`。"}
-          trajectory.every_steps: {description: "trajectory 的 accepted-step 保留间隔；默认 `1`。"}
+          weights: {description: "来自 `sampling.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`。"}
+          prediction_type: {description: "训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample request 不可覆盖。"}
+          clip_denoised: {description: "来自 `sampling.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。"}
+          guidance_scale: {description: "来自 `sampling.options.guidance_scale`；有限非负 CFG scale。"}
+          conditions: {description: "来自 `sampling.options.conditions` 的必填有序列表；count 总和必须等于 sampling.num_samples。"}
+          sampler.name: {description: "来自顶层 `sampling.sampler.name` 的 Gaussian-family Sampler；若 recipe contract 固定 sampler，则请求不得替换。"}
+          sampler.params: {description: "来自顶层 `sampling.sampler.params` 的构造 mapping。"}
+          trajectory.enabled: {description: "来自 `sampling.options.trajectory.enabled`；是否保留 solver observations，默认 `false`。"}
+          trajectory.every_steps: {description: "来自 `sampling.options.trajectory.every_steps`；accepted-step 保留间隔，默认 `1`。"}
       standard_denoising:
         description: 固定 Tensor shape 的标准 Gaussian denoising sampling recipe；要求 sampling.shape、离散 Gaussian Process，以及返回 Tensor 的 model(state, model_time)。
         runtime_parameters: [context]
         inspect: context_parameters
         parameters:
-          weights: {description: "模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`；选择 `ema` 时 checkpoint 必须含 EMA state。"}
-          prediction_type: {description: "模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。"}
-          clip_denoised: {description: "是否把预测 clean state 裁剪到 `[-1, 1]`；默认 `true`，必须为布尔值。"}
-          sampler.name: {description: "必填的 samplers Registry 名称；Sampler 必须兼容离散 Gaussian Dynamics，并在此 Builder 中发出 terminal-to-clean 的完整 observation lifecycle；partial 路径需自定义 Builder。"}
-          sampler.params: {description: "传给所选 Sampler 构造器的 mapping；默认 `{}`。"}
-          trajectory.enabled: {description: "是否保留 trajectory observations；默认 `false`，必须为布尔值。"}
-          trajectory.every_steps: {description: "trajectory 的 accepted-step 保留间隔；默认 `1`，必须为正整数；initial/final 始终保留。"}
+          weights: {description: "来自 `sampling.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`；选择 `ema` 时 checkpoint 必须含 EMA state。"}
+          prediction_type: {description: "训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample request 不可覆盖。"}
+          clip_denoised: {description: "来自 `sampling.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。"}
+          sampler.name: {description: "来自顶层 `sampling.sampler.name` 的 Sampler；必须兼容离散 Gaussian Dynamics。"}
+          sampler.params: {description: "来自顶层 `sampling.sampler.params` 的构造 mapping。"}
+          trajectory.enabled: {description: "来自 `sampling.options.trajectory.enabled`；是否保留 trajectory observations，默认 `false`。"}
+          trajectory.every_steps: {description: "来自 `sampling.options.trajectory.every_steps`；accepted-step 保留间隔，默认 `1`；initial/final 始终保留。"}
 
   training_builders:
     description: 组装 primary model、可选 Process/Objective、TrainingStrategy 和辅助训练资产。
@@ -485,10 +487,10 @@ cli:
   "train.--no-progress": {description: 禁用 Rich 进度条。}
   "train.--resume": {description: 从显式 checkpoint 文件或运行目录执行严格完整恢复；使用 checkpoint 保存的配置和训练状态，并与 --config 互斥。}
   "train.--observability-config": {description: 仅在 strict resume 启动时原子替换 diagnostics，并逐字段覆盖显式 logging 字段；顶层只允许 diagnostics 与 logging。}
-  "train.--skip-final-sample": {description: 跳过训练完成后的最佳 checkpoint 验收采样。}
+  "train.--skip-final-sample": {description: 即使 sampling.run_after_training 为 true，也跳过本次训练完成后的 selected-best checkpoint inference。}
   "train.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}
-  "sample.--config": {description: 可选完整外部配置（整体权威），或在显式 checkpoint 上应用的 sampling/extensions 轻量 overlay。}
-  "sample.--checkpoint": {description: checkpoint 文件或运行目录；仅给 config 时自动查找最新 best.pt。}
+  "sample.--config": {description: 可选 partial sample request；顶层只允许 sampling 与 optional extensions，且不能声明 sampling.run_after_training 或 Builder。}
+  "sample.--checkpoint": {description: 必填 checkpoint 文件或运行目录；目录递归选择最近修改的 best.pt。}
   "sample.--device": {description: 覆盖采样设备。}
   "sample.--output-dir": {description: 覆盖生成 artifact 的目录。}
   "sample.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}

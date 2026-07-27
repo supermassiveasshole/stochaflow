@@ -8,6 +8,7 @@ Gaussian diffusion、DDPM/DDIM、图像数据 recipe 和自动训练生命周期
 :maxdepth: 2
 :caption: 框架与使用
 
+design/scope
 framework
 configuration/index
 tutorials/tensorboard
@@ -30,6 +31,8 @@ research-notes/part-3-ddim
 
 ## 快速入口
 
+- [架构范围与非目标](design/scope.md)：长期职责边界、明确拒绝的复杂度和新公共抽象的
+  准入门槛。
 - [框架特性与架构](framework.md)：稳定职责边界、当前内置能力和 extension 心智模型。
 - [配置手册](configuration/index.md)：从最小 YAML 到多源数据、K-fold、自定义组件、
   训练恢复与排错。
@@ -45,7 +48,7 @@ research-notes/part-3-ddim
 - [条件 Gaussian 超分辨率](tutorials/super-resolution.md)：从内置 SR 数据 recipe 到
   condition-aware 训练和复用 DDPM/DDIM 的完整组合。
 - [Checkpoint、配置权威与可移植性](configuration/compatibility-and-migration.md)：
-  checkpoint 内容、sampling override 和跨环境恢复边界。
+  checkpoint v10、fixed inference recipe、partial sample request 和跨环境恢复边界。
 - [扩展公共 API](api/extensions.md)：第三方 extension 的稳定 Python import surface。
 - [Sampling artifact 容量](configuration/sampling-capacity.md)：整体物化生命周期、
   内存估算、trajectory 限制和参考主机证据。

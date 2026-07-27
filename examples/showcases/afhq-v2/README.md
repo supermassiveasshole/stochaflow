@@ -41,7 +41,7 @@ packaged source lock 固定：
 上游没有发布 checksum；这里的摘要是本项目对固定官方下载内容的审计值。source 不会在
 官方入口失败时静默切换到第三方镜像。
 
-DataSource 对外提供 official train/test 及经过 source lock 认证的类别标签，数量为
+`AFHQV2ImageDataSource` 对外提供 official train/test 及经过 source lock 认证的类别标签，数量为
 14,336/1,467，不决定某次训练的 validation。内置 Builder 按
 `partition.validation_per_class: 300` 从 official train 进行确定性、逐类分层划分；
 loader 最终使用的 train/validation/test 数量为 13,436/900/1,467，其中 train 的
@@ -75,7 +75,9 @@ uv sync --project examples/showcases/afhq-v2 --locked --extra quality
 
 ## 1. 准备并验证数据
 
-第一次运行使用 `ensure`。它可以下载官方 archive，也可以使用已经下载的本地文件：
+第一次运行使用 `ensure`。它可以下载官方 archive，也可以使用已经下载的本地文件。
+如果 v2 object 已存在，`ensure` 与 `require` 都直接从最终 artifact root 加载 payload，
+不会进入下载或图片转换逻辑，也不要求原始 ZIP 仍然存在：
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-prepare \
@@ -112,25 +114,41 @@ prepare 命令通过注册的 `AFHQV2ImageDataSource` 执行，与内置 Builder
 source 参数解析、materialization policy 和 identity 校验。命令只准备并汇报 official
 train/test artifact；validation 参数属于 Builder，不是 prepare CLI 的输入。
 
-默认缓存根为：
+未显式传入时，prepare CLI 的默认缓存根是 `./.stochaflow-cache`；checked-in 训练配置
+显式使用 `./data`。统一 v2 cache 的相关部分如下：
 
 ```text
 data/
-├── raw/afhq-v2/<source-sha256>/afhq_v2.zip
-└── prepared/afhq-v2/128/<preparation-key>/
-    ├── train/{cat,dog,wild}/
-    ├── test/{cat,dog,wild}/
-    ├── files.sha256
-    └── dataset_manifest.yaml
+├── source-acquisition/afhq-v2/raw/afhq-v2/<source-sha256>/afhq_v2.zip
+└── data-artifacts/v2/managed/<artifact-type-digest>/
+    ├── objects/<artifact-digest>/
+    │   ├── manifest.json
+    │   ├── inventory/
+    │   └── data/
+    │       ├── _index/images.json
+    │       ├── train/{cat,dog,wild}/
+    │       └── test/{cat,dog,wild}/
+    ├── locators/
+    ├── locks/
+    ├── quarantine/
+    └── staging/
 ```
 
 消费者必须使用 payload inventory，不应绕过 DataSource 直接扫描缓存目录。
-DataSource 对外只暴露 official train/test。
+`AFHQV2ImageDataSource` 对外只暴露 official train/test。
 准备阶段执行一次 Lanczos resize，不 crop，并使用固定 PNG 编码。训练阶段要求
 authenticated size 精确为 128×128，不再在线 resize。DataBuilder 在内存中从 official
 train 生成分层 validation，并输出 `(images, {"class_label": labels})`；shuffle 和
 horizontal flip 都由 `(seed, epoch, sample identity)` 确定，因此 `num_workers: 2` 与
 persistent workers 下的 epoch-boundary resume 仍可重建同一顺序和增强。
+
+`manifest.json` 是 framework schema-v2 envelope；AFHQ 的 domain 只声明 resolution、
+class mapping、official partition roots/counts 和 `_index/images.json` descriptor。
+`verification: manifest` 验证 envelope 与这个 producer-defined cheap contract；
+`verification: full` 还会认证 framework inventory 中的全部转换后 PNG。expected
+identity 总是强制 full。旧 `prepared/afhq-v2` cache、`dataset_manifest.yaml`、
+`files.sha256` 和 schema-v1 checkpoint binding 没有 reader 或迁移路径；升级后必须重新
+materialize，并从新 run 开始。
 
 ## 2. 真实训练容量报告
 
@@ -243,10 +261,12 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
   --epochs 200
 ```
 
-checkpoint v9 严格恢复 model、Process、Objective、optimizer、scheduler、EMA、
+checkpoint v10 严格恢复 model、Process、Objective、optimizer、scheduler、EMA、
 precision/scaler topology、global step、epoch-boundary RNG、训练循环状态和 data
 artifact identity。恢复前会用 `require/full` 重新验证同一个 prepared artifact；source、
-recipe、manifest 或内容 identity 不一致时，在恢复训练资产前失败。
+materialization、manifest 或内容 identity 不一致时，在恢复训练资产前失败。运行时
+validation policy 不进入 artifact identity，而由 checkpoint 的 resolved config 与 seed
+固定。
 
 resume 创建新的 sibling run，不续写旧日志。它不能通过 config 替换 model、optimizer、
 precision 或 accumulation。`--observability-config` 只用于允许的 diagnostics/logging
@@ -263,10 +283,11 @@ uv run --project examples/showcases/afhq-v2 stochaflow sample \
   --output-dir outputs/afhq-v2/samples/adm-ddim50-cfg2
 ```
 
-sampling overlay 固定 seed `20260726`、CFG 2.0、EMA `auto` selection 和每 5 个求解步
-保留一次 trajectory。class 顺序为 cat、dog、wild。非平凡 CFG scale 将 conditional
-和 null labels 拼成双 batch，只进行一次模型 forward；DDIM 本身不解释 class 或
-guidance。
+这份 partial request 只显式选择 DDIM-50 和 CFG 2.0。sample 数量、batch、seed、
+class allocation、weights、trajectory 和 writers 都从 checkpoint defaults 继承；
+checkpoint-required AFHQ extension 也不需要重复声明。class 顺序为 cat、dog、wild。
+非平凡 CFG scale 将 conditional 和 null labels 拼成双 batch，只进行一次模型
+forward；DDIM 本身不解释 class 或 guidance。
 
 一次 production run 的主要结果如下：
 
@@ -314,7 +335,7 @@ real images，并以相同 class allocation、EMA、seed `20260726`、DDIM-50 �
 命令先验证 checkpoint、execution device、quality provider 和严格
 `DataArtifactBindings`，再调用现有 DataBuilder 与 SamplingBuilder。输出包含
 `evaluation-result.json`、其 SHA-256 sidecar、immutable result manifest、规范化
-sampling overlay，以及完整 sampling artifacts。结果冻结 checkpoint SHA-256、
+sample request，以及完整 sampling artifacts。结果冻结 checkpoint SHA-256、
 epoch/global step、raw/EMA、data identity、extension provenance、metric protocol、
 依赖版本和所有 artifact hashes。
 

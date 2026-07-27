@@ -23,6 +23,11 @@ class ArtifactFileSnapshot:
     relative_path: str
     size_bytes: int
     sha256: str | None
+    device: int
+    inode: int
+    mode: int
+    modified_ns: int
+    changed_ns: int
 
 
 def canonical_directory(path: Path, *, label: str) -> Path:
@@ -376,57 +381,76 @@ def publish_cache_directory(
         destination,
         label=f"{label} destination",
     )
-    if canonical_staging.parent != canonical_destination.parent:
-        raise ValueError(f"{label} staging and destination must share a parent")
-    parent = canonical_directory(
+    source_parent = canonical_directory(
         canonical_staging.parent,
-        label=f"{label} parent",
+        label=f"{label} staging parent",
+    )
+    destination_parent = ensure_cache_directory(
+        canonical_root,
+        canonical_destination.parent,
+        label=f"{label} destination parent",
     )
     if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
-        parent_descriptor = _open_posix_directory_chain(
-            parent,
-            label=f"{label} parent",
+        source_parent_descriptor = _open_posix_directory_chain(
+            source_parent,
+            label=f"{label} staging parent",
         )
         try:
-            source_metadata = os.stat(
-                canonical_staging.name,
-                dir_fd=parent_descriptor,
-                follow_symlinks=False,
+            destination_parent_descriptor = _open_posix_directory_chain(
+                destination_parent,
+                label=f"{label} destination parent",
             )
-            if _is_link_or_reparse(source_metadata) or not stat.S_ISDIR(
-                source_metadata.st_mode
-            ):
-                raise ValueError(f"{label} staging is not a real directory")
             try:
-                os.stat(
-                    canonical_destination.name,
-                    dir_fd=parent_descriptor,
+                source_metadata = os.stat(
+                    canonical_staging.name,
+                    dir_fd=source_parent_descriptor,
                     follow_symlinks=False,
                 )
-            except FileNotFoundError:
-                pass
-            else:
-                raise FileExistsError(canonical_destination)
-            _rename_posix_no_replace(
-                parent_descriptor,
-                canonical_staging.name,
-                canonical_destination.name,
-            )
-            published = os.stat(
-                canonical_destination.name,
-                dir_fd=parent_descriptor,
-                follow_symlinks=False,
-            )
-            if not _same_stable_file(source_metadata, published):
-                raise ValueError(f"{label} destination changed during publication")
-            os.fsync(parent_descriptor)
+                if _is_link_or_reparse(source_metadata) or not stat.S_ISDIR(
+                    source_metadata.st_mode
+                ):
+                    raise ValueError(f"{label} staging is not a real directory")
+                try:
+                    os.stat(
+                        canonical_destination.name,
+                        dir_fd=destination_parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise FileExistsError(canonical_destination)
+                _rename_posix_no_replace_between(
+                    source_parent_descriptor,
+                    canonical_staging.name,
+                    destination_parent_descriptor,
+                    canonical_destination.name,
+                )
+                published = os.stat(
+                    canonical_destination.name,
+                    dir_fd=destination_parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if not _same_stable_file(source_metadata, published):
+                    raise ValueError(
+                        f"{label} destination changed during publication"
+                    )
+                os.fsync(source_parent_descriptor)
+                if destination_parent_descriptor != source_parent_descriptor:
+                    os.fsync(destination_parent_descriptor)
+            finally:
+                os.close(destination_parent_descriptor)
         finally:
-            os.close(parent_descriptor)
+            os.close(source_parent_descriptor)
         return canonical_destination
 
     parent_snapshots = _windows_directory_snapshots(
-        parent,
-        label=f"{label} parent",
+        source_parent,
+        label=f"{label} staging parent",
+    )
+    destination_snapshots = _windows_directory_snapshots(
+        destination_parent,
+        label=f"{label} destination parent",
     )
     source_metadata = canonical_staging.lstat()
     if _is_link_or_reparse(source_metadata) or not stat.S_ISDIR(
@@ -448,6 +472,7 @@ def publish_cache_directory(
     ):
         raise ValueError(f"{label} destination changed during publication")
     _validate_windows_mutation_snapshots(parent_snapshots, label=label)
+    _validate_windows_mutation_snapshots(destination_snapshots, label=label)
     return canonical_destination
 
 
@@ -470,57 +495,76 @@ def publish_cache_file(
         destination,
         label=f"{label} destination",
     )
-    if canonical_staging.parent != canonical_destination.parent:
-        raise ValueError(f"{label} staging and destination must share a parent")
-    parent = canonical_directory(
+    source_parent = canonical_directory(
         canonical_staging.parent,
-        label=f"{label} parent",
+        label=f"{label} staging parent",
+    )
+    destination_parent = ensure_cache_directory(
+        canonical_root,
+        canonical_destination.parent,
+        label=f"{label} destination parent",
     )
     if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
-        parent_descriptor = _open_posix_directory_chain(
-            parent,
-            label=f"{label} parent",
+        source_parent_descriptor = _open_posix_directory_chain(
+            source_parent,
+            label=f"{label} staging parent",
         )
         try:
-            source_metadata = os.stat(
-                canonical_staging.name,
-                dir_fd=parent_descriptor,
-                follow_symlinks=False,
+            destination_parent_descriptor = _open_posix_directory_chain(
+                destination_parent,
+                label=f"{label} destination parent",
             )
-            if _is_link_or_reparse(source_metadata) or not stat.S_ISREG(
-                source_metadata.st_mode
-            ):
-                raise ValueError(f"{label} staging is not a regular file")
             try:
-                os.stat(
-                    canonical_destination.name,
-                    dir_fd=parent_descriptor,
+                source_metadata = os.stat(
+                    canonical_staging.name,
+                    dir_fd=source_parent_descriptor,
                     follow_symlinks=False,
                 )
-            except FileNotFoundError:
-                pass
-            else:
-                raise FileExistsError(canonical_destination)
-            _rename_posix_no_replace(
-                parent_descriptor,
-                canonical_staging.name,
-                canonical_destination.name,
-            )
-            published = os.stat(
-                canonical_destination.name,
-                dir_fd=parent_descriptor,
-                follow_symlinks=False,
-            )
-            if not _same_stable_file(source_metadata, published):
-                raise ValueError(f"{label} destination changed during publication")
-            os.fsync(parent_descriptor)
+                if _is_link_or_reparse(source_metadata) or not stat.S_ISREG(
+                    source_metadata.st_mode
+                ):
+                    raise ValueError(f"{label} staging is not a regular file")
+                try:
+                    os.stat(
+                        canonical_destination.name,
+                        dir_fd=destination_parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise FileExistsError(canonical_destination)
+                _rename_posix_no_replace_between(
+                    source_parent_descriptor,
+                    canonical_staging.name,
+                    destination_parent_descriptor,
+                    canonical_destination.name,
+                )
+                published = os.stat(
+                    canonical_destination.name,
+                    dir_fd=destination_parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if not _same_stable_file(source_metadata, published):
+                    raise ValueError(
+                        f"{label} destination changed during publication"
+                    )
+                os.fsync(source_parent_descriptor)
+                if destination_parent_descriptor != source_parent_descriptor:
+                    os.fsync(destination_parent_descriptor)
+            finally:
+                os.close(destination_parent_descriptor)
         finally:
-            os.close(parent_descriptor)
+            os.close(source_parent_descriptor)
         return canonical_destination
 
     parent_snapshots = _windows_directory_snapshots(
-        parent,
-        label=f"{label} parent",
+        source_parent,
+        label=f"{label} staging parent",
+    )
+    destination_snapshots = _windows_directory_snapshots(
+        destination_parent,
+        label=f"{label} destination parent",
     )
     source_metadata = canonical_staging.lstat()
     if _is_link_or_reparse(source_metadata) or not stat.S_ISREG(
@@ -542,6 +586,7 @@ def publish_cache_file(
     ):
         raise ValueError(f"{label} destination changed during publication")
     _validate_windows_mutation_snapshots(parent_snapshots, label=label)
+    _validate_windows_mutation_snapshots(destination_snapshots, label=label)
     return canonical_destination
 
 
@@ -1049,6 +1094,83 @@ def _rename_posix_no_replace(
     )
 
 
+def _rename_posix_no_replace_between(
+    source_parent_descriptor: int,
+    source_name: str,
+    destination_parent_descriptor: int,
+    destination_name: str,
+) -> None:
+    """Atomically rename between two directories without replacement."""
+
+    source = os.fsencode(source_name)
+    destination = os.fsencode(destination_name)
+    if sys.platform.startswith("linux"):
+        library = ctypes.CDLL(None, use_errno=True)
+        rename = getattr(library, "renameat2", None)
+        if rename is None:
+            raise OSError(
+                errno.ENOTSUP,
+                "atomic no-replace publication is unavailable",
+            )
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(
+            source_parent_descriptor,
+            source,
+            destination_parent_descriptor,
+            destination,
+            1,
+        )
+    elif sys.platform == "darwin":
+        library = ctypes.CDLL(None, use_errno=True)
+        rename = getattr(library, "renameatx_np", None)
+        if rename is None:
+            raise OSError(
+                errno.ENOTSUP,
+                "atomic no-replace publication is unavailable",
+            )
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(
+            source_parent_descriptor,
+            source,
+            destination_parent_descriptor,
+            destination,
+            0x00000004,
+        )
+    else:
+        raise OSError(
+            errno.ENOTSUP,
+            "atomic no-replace publication is unsupported on this platform",
+        )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(
+            error_number,
+            os.strerror(error_number),
+            destination_name,
+        )
+    raise OSError(
+        error_number,
+        os.strerror(error_number),
+        destination_name,
+    )
+
+
 def _open_posix_directory_chain(path: Path, *, label: str) -> int:
     flags = _posix_directory_flags()
     anchor = path.anchor or os.sep
@@ -1248,6 +1370,11 @@ def _scan_posix_directory(
                             relative_path=rendered,
                             size_bytes=opened.st_size,
                             sha256=digest,
+                            device=opened.st_dev,
+                            inode=opened.st_ino,
+                            mode=opened.st_mode,
+                            modified_ns=opened.st_mtime_ns,
+                            changed_ns=opened.st_ctime_ns,
                         )
                     )
             finally:
@@ -1458,6 +1585,11 @@ def _scan_windows_directory(
                             relative_path=relative,
                             size_bytes=opened.st_size,
                             sha256=digest,
+                            device=opened.st_dev,
+                            inode=opened.st_ino,
+                            mode=opened.st_mode,
+                            modified_ns=opened.st_mtime_ns,
+                            changed_ns=opened.st_ctime_ns,
                         )
                     )
             finally:

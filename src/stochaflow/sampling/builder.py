@@ -94,7 +94,7 @@ class SamplingBuilderContext:
 
 @dataclass(frozen=True, slots=True)
 class SamplingOutput:
-    """Generated batches and builder-owned resolved metadata."""
+    """Generated batches and recipe-resolved metadata."""
 
     batches: tuple[SamplingBatch, ...]
     metadata: Mapping[str, Any]
@@ -299,7 +299,6 @@ class StandardDenoisingBuilder(SamplingBuilder):
         return SamplingOutput(
             tuple(batches),
             {
-                "builder": "standard_denoising",
                 "weights": resolved_weights,
                 "prediction_type": config.prediction_type,
                 "clip_denoised": config.clip_denoised,

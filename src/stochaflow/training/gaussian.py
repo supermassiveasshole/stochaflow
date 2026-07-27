@@ -13,6 +13,7 @@ from stochaflow.training.builder import TrainingBuilder, TrainingPlan
 from stochaflow.training.objectives import compute_objective
 from stochaflow.training.strategy import TrainingStrategy, TrainStepOutput
 from stochaflow.utils.registry import REGISTRIES
+from stochaflow.utils.sampling_recipe import SamplingRecipe
 
 
 @runtime_checkable
@@ -163,6 +164,10 @@ class GaussianDenoisingTrainingBuilder(TrainingBuilder):
             primary_model=self.context.primary_model,
             process=process,
             objective=objective,
+            inference_recipe=SamplingRecipe(
+                name="standard_denoising",
+                contract={"prediction_type": prediction_type},
+            ),
         )
 
 

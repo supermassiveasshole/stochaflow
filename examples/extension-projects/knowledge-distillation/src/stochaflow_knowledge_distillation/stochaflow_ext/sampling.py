@@ -46,8 +46,12 @@ class StudentPredictionBuilder(SamplingBuilder):
             )
 
         params: dict[str, Any] = dict(self.context.params)
+        if "input_features" not in params:
+            raise ValueError(
+                "student prediction inference recipe requires input_features"
+            )
         input_features = _positive_int(
-            params.pop("input_features", 8),
+            params.pop("input_features"),
             "input_features",
         )
         mean = _number(params.pop("mean", 0.0), "mean")

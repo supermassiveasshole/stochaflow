@@ -8,15 +8,11 @@ import pytest
 
 from stochaflow import data, processes, sampling, training
 from stochaflow import extensions as public
-from stochaflow.data import artifact_store
 from stochaflow.utils import config, logging, plugins, registry
 
 
 def test_public_extension_contracts_reexport_runtime_types() -> None:
     expected = {
-        "ArtifactMaterializationLock": (
-            artifact_store.ArtifactMaterializationLock
-        ),
         "ComponentConfig": config.ComponentConfig,
         "ConfigError": config.ConfigError,
         "ClassLabeledImageFileRecord": data.ClassLabeledImageFileRecord,
@@ -27,11 +23,17 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "DataArtifactBinding": data.DataArtifactBinding,
         "DataArtifactBindings": data.DataArtifactBindings,
         "DataArtifactIdentity": data.DataArtifactIdentity,
+        "DataArtifactLoadContext": data.DataArtifactLoadContext,
+        "DataArtifactStore": data.DataArtifactStore,
+        "DataArtifactValidationError": data.DataArtifactValidationError,
         "DataBuilder": data.DataBuilder,
         "DataBuilderContext": data.DataBuilderContext,
         "DataLoaders": data.DataLoaders,
         "DataSource": data.DataSource,
         "DataSourceContext": data.DataSourceContext,
+        "DataSourceMaterializationConfig": (
+            data.DataSourceMaterializationConfig
+        ),
         "DDIMSampler": sampling.DDIMSampler,
         "DDPMAncestralSampler": sampling.DDPMAncestralSampler,
         "DiagnosticBuildContext": training.DiagnosticBuildContext,
@@ -72,8 +74,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "ImageFilePair": data.ImageFilePair,
         "ImageFileRecord": data.ImageFileRecord,
         "ImageFolderArtifactPayload": data.ImageFolderArtifactPayload,
-        "ManagedDataArtifact": data.ManagedDataArtifact,
-        "ManagedDataArtifactIdentity": data.ManagedDataArtifactIdentity,
+        "ManagedDataArtifactBuild": data.ManagedDataArtifactBuild,
         "MSEObjective": training.MSEObjective,
         "ManagedTrainingModule": training.ManagedTrainingModule,
         "PerSampleObjective": training.PerSampleObjective,
@@ -85,10 +86,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "REGISTRIES": registry.REGISTRIES,
         "Registry": registry.Registry,
         "RegistryError": registry.RegistryError,
-        "ReferencedDataArtifact": data.ReferencedDataArtifact,
-        "ReferencedDataArtifactIdentity": (
-            data.ReferencedDataArtifactIdentity
-        ),
+        "ReferencedDataArtifactBuild": data.ReferencedDataArtifactBuild,
         "ResolvedExtensions": plugins.ResolvedExtensions,
         "Sampler": sampling.Sampler,
         "SamplerResult": sampling.SamplerResult,
@@ -100,6 +98,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "SamplingObservation": sampling.SamplingObservation,
         "SamplingObserver": sampling.SamplingObserver,
         "SamplingOutput": sampling.SamplingOutput,
+        "SamplingRecipe": sampling.SamplingRecipe,
         "TrainBatchEndEvent": training.TrainBatchEndEvent,
         "TrainEpochEndEvent": training.TrainEpochEndEvent,
         "TrainStepOutput": training.TrainStepOutput,
@@ -114,6 +113,10 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "TrajectoryObserver": sampling.TrajectoryObserver,
         "TabulatedDiscreteVPSchedule": processes.TabulatedDiscreteVPSchedule,
         "activate_extension_plugins": plugins.activate_extension_plugins,
+        "canonical_artifact_digest": data.canonical_artifact_digest,
+        "canonical_artifact_json_bytes": (
+            data.canonical_artifact_json_bytes
+        ),
         "compute_objective": training.compute_objective,
         "extension_plugin_provenance_to_dicts": (
             plugins.extension_plugin_provenance_to_dicts
@@ -131,12 +134,17 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         assert getattr(public, name) is component
 
     for removed in (
+        "ArtifactMaterializationLock",
         "DataPipeline",
         "DataBundle",
         "SplitData",
         "DatasetFactory",
         "DatasetView",
         "DatasetBuildRequest",
+        "ManagedDataArtifact",
+        "ManagedDataArtifactIdentity",
+        "ReferencedDataArtifact",
+        "ReferencedDataArtifactIdentity",
     ):
         assert not hasattr(public, removed)
     assert not hasattr(registry.REGISTRIES, "data_pipelines")

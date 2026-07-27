@@ -51,8 +51,8 @@ stochaflow-afhq-v2-capacity
 stochaflow-afhq-v2-evaluate
 ```
 
-prepare 命令和训练配置使用同一个已注册 `AFHQV2ImageDataSource`、packaged source
-lock 与 artifact identity contract。
+prepare 命令和训练配置使用同一个已注册 `AFHQV2ImageDataSource`、公开
+`DataArtifactStore`、packaged source lock 与 schema-v2 artifact identity contract。
 正式 KID/FID 评估需要同步 showcase 声明的 optional `quality` extra：
 
 ```bash
@@ -89,8 +89,9 @@ uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-prepare \
 2. 拒绝 traversal、链接、重复或大小写冲突路径、异常压缩比和非预期文件；
 3. 验证完整 split/class count，以及每张 512×512 RGB PNG；
 4. 一次 Lanczos resize 到 128×128，不 crop，并使用固定 PNG 参数；
-5. 以 official train/test inventory 写入 `files.sha256` 和
-   `dataset_manifest.yaml`，完整复核后原子发布。
+5. 把 official train/test record 写入 managed `data/_index/images.json` sidecar；
+6. 由 framework 为 sidecar 与全部 PNG 生成分片 stored-file inventory、写入统一
+   `manifest.json`，完整复核后原子发布。
 
 DataSource artifact 保留上游 official split：
 
@@ -104,17 +105,29 @@ DataBuilder 随后根据训练配置，从 official train 的每类按固定 sam
 13,436/900/1,467。partition policy 不进入 source artifact identity，而是由 resolved
 training config 和 seed 固定。
 
-缓存结构：
+未显式传入时 prepare CLI 默认使用 `./.stochaflow-cache`；本教程命令和 checked-in
+训练配置显式使用 `./data`。统一 v2 cache 的相关结构为：
 
 ```text
 data/
-├── raw/afhq-v2/<source-sha256>/afhq_v2.zip
-└── prepared/afhq-v2/128/<preparation-key>/
-    ├── train/{cat,dog,wild}/
-    ├── test/{cat,dog,wild}/
-    ├── files.sha256
-    └── dataset_manifest.yaml
+├── source-acquisition/afhq-v2/raw/afhq-v2/<source-sha256>/afhq_v2.zip
+└── data-artifacts/v2/managed/<artifact-type-digest>/
+    ├── objects/<artifact-digest>/
+    │   ├── manifest.json
+    │   ├── inventory/
+    │   └── data/
+    │       ├── _index/images.json
+    │       ├── train/{cat,dog,wild}/
+    │       └── test/{cat,dog,wild}/
+    ├── locators/
+    ├── locks/
+    ├── quarantine/
+    └── staging/
 ```
+
+raw archive cache 只服务于可恢复 acquisition，不是第二套 DataArtifact lifecycle，也不进入
+artifact identity。archive override、downloader、proxy 和 credentials 同样不进入
+identity 或 manifest。
 
 ## 切换到只读离线模式
 
@@ -128,14 +141,21 @@ uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-prepare \
   --verification full
 ```
 
-`require` 不下载、不重建、不隔离损坏项。production 与 smoke YAML 已固定
-`policy: require` 和 `verification: full`；缺失、替换或内容漂移会在 run directory、
-model 和 optimizer 创建前失败。
+`require` 不创建目录、lock 或 locator，不下载、不重建、不隔离损坏项。production 与
+smoke YAML 已固定 `policy: require` 和 `verification: full`；缺失、替换或内容漂移会在
+run directory、model 和 optimizer 创建前失败。cache hit 不进入 acquisition callback，
+因此即使 raw ZIP 被删除或不可访问，仍可离线加载已发布 artifact。
+
+统一 `manifest.json` 是 framework envelope 加 AFHQ producer-defined cheap contract：
+domain 只保存 resolution、class mapping、official partition roots/counts 与 canonical
+sidecar descriptor。`manifest` 验证该 envelope 和 sidecar；`full` 还认证 represented
+content 的全部 stored-file inventory。strict resume 注入 expected identity，并无条件
+强制 `full`。
 
 prepared artifact 已经是精确 128×128，只公开 official train/test，并认证每个样本的
 class label。内置 `class_labeled_image` Builder 通过 core `ImageSourceConfig`、
 `ImageSourceFactory`、`ImageRecipeConfig`、`LoaderRecipeConfig`、verified
-`ImageFolderDataset` 和 loader helpers 完成通用解析与组装。它在 Dataset 构建前执行
+`ClassLabeledImageDataset` 和 loader helpers 完成通用解析与组装。它在 Dataset 构建前执行
 逐类 validation 划分，并提供确定性 shuffle/horizontal flip；split、shuffle 和增强都由
 显式 seed 与 sample identity 决定。persistent workers 不拥有推进中的增强随机状态，
 因此 epoch-boundary resume 可以重建同一 sample order 和 batch Tensor。
@@ -143,6 +163,11 @@ class label。内置 `class_labeled_image` Builder 通过 core `ImageSourceConfi
 artifact 的 source、materialization recipe、prepared content 与 manifest identity 会写入
 `run_manifest.yaml` 和 checkpoint metadata。strict resume 在构建 Dataset 前注入并比对
 expected binding。
+
+这是 breaking cache/checkpoint contract。旧 `prepared/afhq-v2` layout、
+`dataset_manifest.yaml`、`files.sha256` 和 schema-v1 artifact binding 不会被发现或升级；
+需要重新 materialize，并开始新的 run。capacity report 与 evaluation result lifecycle
+仍是 showcase 私有能力；framework 尚未提供通用 provenance 或 capacity model。
 
 ## 在目标主机检查容量
 
@@ -200,7 +225,8 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
 4. 执行 limited validation；
 5. 保存 best/latest/epoch checkpoint；
 6. 恢复 best checkpoint 并执行 limited official test；
-7. 生成每类一张的 CFG acceptance sample 和 conditional diagnostic artifacts。
+7. 从 selected best checkpoint 运行每类一张的 CFG final inference，并写 conditional
+   diagnostic artifacts。
 
 smoke 只证明 end-to-end wiring、state 和 artifact contract，不证明收敛质量或
 production 吞吐。
@@ -274,8 +300,10 @@ production diagnostic `class_conditional_diffusion_quality`：
 这些结果是训练监控，不是正式 post-training dataset metric。`reference.enabled: false`
 明确禁用不具备 class-aware protocol 的 reference metric。
 
-checkpoint v9 保存完整 managed training state、precision/scaler topology、resolved
-config、data binding 和 epoch-boundary RNG。production 每 5 epochs 写
+checkpoint v10 保存完整 managed training state、precision/scaler topology、resolved
+config、data binding、epoch-boundary RNG，以及 TrainingBuilder 固化的
+`class_conditional_denoising` inference recipe。它把 `v` prediction 固定在 contract
+中，独立 request 不能覆盖。production 每 5 epochs 写
 `epoch_*.pt`，每 epoch 更新 `latest.pt`，并维护 `best.pt`。
 
 strict resume：
@@ -300,8 +328,11 @@ uv run --project examples/showcases/afhq-v2 stochaflow sample \
   --output-dir outputs/afhq-v2/samples/adm-ddim50-cfg2
 ```
 
-overlay 固定每类 12 张、batch 12、seed `20260726`、CFG 2.0 和每 5 solver steps 的
-trajectory。CFG 公式为：
+这份 partial request 只把 checkpoint 默认 solver 原子替换为 DDIM-50，并把
+`guidance_scale` 调整为 2.0。count、batch、seed、class allocation、weights、
+trajectory 和 writers 都继续继承 checkpoint；request 不重复声明这些值。`options`
+只做 top-level shallow merge，recipe name 与 `v` prediction contract 保持不变。
+CFG 公式为：
 
 ```text
 prediction = unconditional
@@ -403,7 +434,9 @@ registry 或 AFHQ-specific config hierarchy：
 - Trainer 只管理自动优化、precision、accumulation、EMA、checkpoint 和 diagnostic
   cadence。
 
-因此，新的同类数据集只需实现一个窄的 ImageDataSource，把来源适配并 materialize
-为标准 class-labeled payload；配置即可直接复用内置 Builder。兼容
-`ClassConditionalDenoiser` 的新模型可以通过注册与配置进入同一训练和采样流程，
-而不需要修改 runner。
+因此，只有来源能够发布不含 native validation 的完整 class-labeled artifact，并且
+实验也需要相同的逐类 derived holdout、augmentation、sampler、loader、resume 与
+`class_label` batch 语义时，才只需实现一个窄的 ImageDataSource。official validation、
+sharded storage 或其他 runtime recipe 需要独立 DataBuilder，不能仅凭 payload 类型
+判断兼容。兼容 `ClassConditionalDenoiser` 的新模型仍可通过注册与配置进入同一训练和
+采样流程，而不需要修改 runner。

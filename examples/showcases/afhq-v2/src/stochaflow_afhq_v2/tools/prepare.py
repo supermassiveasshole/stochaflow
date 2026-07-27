@@ -23,7 +23,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     """Build the standalone preparation command parser."""
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cache-root", type=Path, default=Path("data"))
+    parser.add_argument(
+        "--cache-root",
+        type=Path,
+        default=Path(".stochaflow-cache"),
+    )
     parser.add_argument("--archive", type=Path, default=None)
     parser.add_argument("--lock-file", type=Path, default=None)
     parser.add_argument("--resolution", type=int, default=128)
@@ -91,7 +95,7 @@ def prepare_artifact(
             "registered AFHQ-v2 source must expose official train/test only"
         )
     return {
-        "artifact_root": str(artifact.artifact_root),
+        "root": str(artifact.root),
         "manifest_path": str(artifact.manifest_path),
         "identity": artifact.identity.to_dict(),
         "class_mapping": dict(payload.class_mapping),

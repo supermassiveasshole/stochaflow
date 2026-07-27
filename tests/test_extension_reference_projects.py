@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tomllib
 import zipfile
-from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -21,6 +20,12 @@ import torch
 import yaml
 from packaging.utils import canonicalize_name
 from packaging.version import Version
+
+from stochaflow.utils.config import (
+    apply_sample_request,
+    load_config,
+    parse_sample_request,
+)
 
 _REPOSITORY: Final = Path(__file__).resolve().parents[1]
 _REFERENCE_ROOT: Final = _REPOSITORY / "examples/extension-projects"
@@ -148,6 +153,7 @@ def _copy_reference_project(project: FixtureReferenceProject, destination: Path)
                 "*.egg-info",
                 ".pytest_cache",
                 ".ruff_cache",
+                ".stochaflow-cache",
                 "build",
                 "data",
                 "dist",
@@ -491,24 +497,30 @@ def test_physics_real_smoke_profiles_preserve_production_solver_math(
             encoding="utf-8"
         )
     )
-    normalized_smoke = deepcopy(smoke_document)
-    normalized_sampling = normalized_smoke["sampling"]
-    production_sampling = production_document["sampling"]
-    normalized_sampling["num_samples"] = production_sampling["num_samples"]
-    normalized_sampling["batch_size"] = production_sampling["batch_size"]
-    normalized_sampling["builder"]["params"]["weights"] = production_sampling[
-        "builder"
-    ]["params"]["weights"]
-    assert normalized_smoke == production_document
+    checkpoint_defaults = load_config(
+        _PHYSICS.source / "experiments/production/train.yaml"
+    ).sampling
+    production = apply_sample_request(
+        checkpoint_defaults,
+        parse_sample_request(production_document["sampling"]),
+    )
+    smoke = apply_sample_request(
+        checkpoint_defaults,
+        parse_sample_request(smoke_document["sampling"]),
+    )
 
-    smoke = smoke_document["sampling"]
-    smoke_params = smoke["builder"]["params"]
-    assert smoke["shape"] == [3, 256, 256]
-    assert smoke["num_samples"] == smoke["batch_size"] == 1
-    assert smoke_params["weights"] == "raw"
-    schedule = smoke_params["sampler"]["params"]["schedule"]
-    assert smoke_params["partial_noise_time"] == partial_noise_time
-    assert smoke_params["sampler"]["name"] == sampler_name
+    assert smoke.shape == production.shape == [3, 256, 256]
+    assert smoke.num_samples == smoke.batch_size == 1
+    assert smoke.seed == production.seed
+    assert smoke.writers == production.writers
+    assert smoke.sampler == production.sampler
+    expected_options = dict(production.options)
+    expected_options["weights"] = "raw"
+    assert smoke.options == expected_options
+    assert smoke.sampler is not None
+    schedule = smoke.sampler.params["schedule"]
+    assert smoke.options["partial_noise_time"] == partial_noise_time
+    assert smoke.sampler.name == sampler_name
     assert len(schedule) - 1 == accepted_steps
     assert schedule[0] == partial_noise_time
     assert schedule[-1] == 0
@@ -669,7 +681,15 @@ for registry_name, component_name in arguments["registry_names"]:
 
 assert config.extensions.plugins == [arguments["plugin"]]
 assert config.data.name == "physics-reconstruction.kolmogorov-trajectories"
-assert config.data.params["path"] == "data/kolmogorov.npy"
+assert config.data.params["source"]["name"] == (
+    "physics-reconstruction.numpy-trajectories"
+)
+assert config.data.params["source"]["params"]["path"] == "data/kolmogorov.npy"
+assert config.data.params["source"]["materialization"] == {
+    "cache_root": "./.stochaflow-cache",
+    "policy": "ensure",
+    "verification": "full",
+}
 assert config.data.params["loader"]["batch_size"] == 4
 assert config.model.name == "physics-reconstruction.conditional-denoiser"
 assert {
@@ -689,8 +709,10 @@ assert config.objective.name == "mse"
 assert config.optimizer.name == "torch.optim.Adam"
 assert config.lr_scheduler is not None
 assert config.lr_scheduler.name == "torch.optim.lr_scheduler.CosineAnnealingLR"
-assert config.sampling.builder is not None
-assert config.sampling.builder.name == "physics-reconstruction.reconstruction"
+assert config.sampling.run_after_training is True
+assert config.sampling.sampler is not None
+assert config.sampling.sampler.name == "ddim"
+assert "prediction_type" not in config.sampling.options
 assert [writer.name for writer in config.sampling.writers] == [
     "physics-reconstruction.reconstruction-artifacts"
 ]
@@ -711,6 +733,13 @@ assert training_plan.process is process
 assert training_plan.objective is objective
 assert type(model).__name__ == "ConditionalDenoiser"
 assert type(training_plan.strategy).__name__ == "PhysicsDenoisingStrategy"
+assert training_plan.inference_recipe is not None
+assert training_plan.inference_recipe.name == (
+    "physics-reconstruction.reconstruction"
+)
+assert dict(training_plan.inference_recipe.contract) == {
+    "prediction_type": "epsilon"
+}
 assert training_plan.auxiliary_modules == {}
 """
     arguments = {
@@ -795,6 +824,11 @@ def test_distillation_cli_train_resume_and_student_only_sample(
         first_run / "run_manifest.yaml",
         first_checkpoint,
     )
+    first_manifest = yaml.safe_load(
+        (first_run / "run_manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert first_manifest["data_artifacts"] is None
+    assert not (project_root / ".stochaflow-cache").exists()
     first_assets = _checkpoint_assets(first_checkpoint)
     assert set(first_assets) == {"distillation_objective", "teacher"}
     assert set(first_assets["distillation_objective"]) == {"temperature"}
@@ -851,6 +885,11 @@ def test_distillation_cli_train_resume_and_student_only_sample(
         resumed_run / "run_manifest.yaml",
         resumed_checkpoint,
     )
+    resumed_manifest = yaml.safe_load(
+        (resumed_run / "run_manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert resumed_manifest["data_artifacts"] is None
+    assert not (project_root / ".stochaflow-cache").exists()
 
     teacher_state.unlink()
     sample_root = project_root / "sample-output"
@@ -880,7 +919,7 @@ def test_distillation_cli_train_resume_and_student_only_sample(
     sample_manifest = yaml.safe_load(
         (sample_root / "resolved_sampling.yaml").read_text(encoding="utf-8")
     )
-    assert sample_manifest["builder"]["name"] == (
+    assert sample_manifest["recipe"]["name"] == (
         "stochaflow-knowledge-distillation.predictions"
     )
 
@@ -930,6 +969,20 @@ def test_physics_cli_train_resume_and_sample_variants(
         first_run / "run_manifest.yaml",
         first_checkpoint,
     )
+    first_manifest = yaml.safe_load(
+        (first_run / "run_manifest.yaml").read_text(encoding="utf-8")
+    )
+    first_bindings = first_manifest["data_artifacts"]["bindings"]
+    assert [binding["id"] for binding in first_bindings] == ["source"]
+    source_identity = first_bindings[0]["identity"]
+    assert source_identity["schema_version"] == 2
+    assert source_identity["kind"] == "referenced"
+    assert source_identity["source_name"] == (
+        "physics-reconstruction.numpy-trajectories"
+    )
+    cache_root = project_root / ".stochaflow-cache"
+    assert (cache_root / "data-artifacts/v2/referenced").is_dir()
+    assert not tuple(cache_root.rglob("*.npy"))
 
     resumed_root = project_root / "outputs/resumed"
     _run_cli(
@@ -959,6 +1012,10 @@ def test_physics_cli_train_resume_and_sample_variants(
         resumed_run / "run_manifest.yaml",
         resumed_checkpoint,
     )
+    resumed_manifest = yaml.safe_load(
+        (resumed_run / "run_manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert resumed_manifest["data_artifacts"] == first_manifest["data_artifacts"]
 
     variants = (
         ("sample-baseline-ddim.yaml", "ddim"),
@@ -982,18 +1039,17 @@ def test_physics_cli_train_resume_and_sample_variants(
             "cpu",
         )
         reconstruction = np.load(sample_root / "reconstructions.npy")
-        overlay_config = yaml.safe_load(overlay.read_text(encoding="utf-8"))
-        num_samples = overlay_config["sampling"]["num_samples"]
+        manifest_path = sample_root / "resolved_sampling.yaml"
+        _assert_manifest_provenance(manifest_path, _PHYSICS)
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        num_samples = manifest["sampling"]["num_samples"]
         assert reconstruction.shape == (num_samples, 3, 8, 8)
         assert reconstruction.dtype == np.float32
         metrics = json.loads(
             (sample_root / "metrics.json").read_text(encoding="utf-8")
         )
         assert metrics["num_samples"] == num_samples
-        manifest_path = sample_root / "resolved_sampling.yaml"
-        _assert_manifest_provenance(manifest_path, _PHYSICS)
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-        assert manifest["builder"]["name"] == (
+        assert manifest["recipe"]["name"] == (
             "physics-reconstruction.reconstruction"
         )
         assert manifest["metadata"]["sampler"]["name"] == sampler_name

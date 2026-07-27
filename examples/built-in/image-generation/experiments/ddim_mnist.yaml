@@ -1,7 +1,8 @@
+# Built-in MNIST DDIM training example.
 experiment:
-  name: ddpm_mnist
+  name: ddim_mnist
   seed: 42
-  output_dir: outputs/ddpm_mnist
+  output_dir: outputs/ddim_mnist
 
 extensions:
   plugins: []
@@ -92,22 +93,22 @@ ema:
   use_for_sampling: true
 
 sampling:
+  run_after_training: true
+  sampler:
+    name: ddim
+    params:
+      num_inference_steps: 100
+      eta: 0.0
+  options:
+    weights: auto
+    clip_denoised: true
+    trajectory:
+      enabled: true
+      every_steps: 5
   shape: [1, 32, 32]
   num_samples: 64
   batch_size: 64
   seed: null
-  builder:
-    name: standard_denoising
-    params:
-      weights: auto
-      prediction_type: v
-      clip_denoised: true
-      sampler:
-        name: ddpm
-        params: {}
-      trajectory:
-        enabled: true
-        every_steps: 50
   writers:
     - name: tensor
       params: {}

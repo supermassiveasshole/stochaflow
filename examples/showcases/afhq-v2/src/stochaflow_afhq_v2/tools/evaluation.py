@@ -25,12 +25,12 @@ from stochaflow_afhq_v2.tools import (
     evaluation_workspace,
 )
 from stochaflow_afhq_v2.tools.evaluation_config import (
-    SAMPLING_BUILDER_NAME,
+    SAMPLING_RECIPE_NAME,
     AFHQV2EvaluationDocument,
     AFHQV2EvaluationProtocol,
     AFHQV2MetricSpec,
     load_evaluation_document,
-    sampling_overlay_bytes,
+    sample_request_bytes,
     sampling_parameters,
 )
 from stochaflow_afhq_v2.tools.evaluation_metrics import (
@@ -44,7 +44,7 @@ from stochaflow_afhq_v2.tools.evaluation_metrics import (
     split_fake_samples,
 )
 from stochaflow_afhq_v2.tools.evaluation_result import (
-    SAMPLING_OVERLAY_NAME,
+    SAMPLE_REQUEST_NAME,
     AFHQV2EvaluationResult,
     materialize_result,
     write_exclusive,
@@ -62,8 +62,8 @@ def _validate_sampling_result(
     metadata = sampling.metadata
     if sampling.device != expected_device:
         raise ValueError("sampling runtime device changed after execution preflight")
-    if metadata.get("builder") != SAMPLING_BUILDER_NAME:
-        raise ValueError("sampling metadata contains the wrong builder")
+    if sampling.recipe_name != SAMPLING_RECIPE_NAME:
+        raise ValueError("sampling runtime selected the wrong inference recipe")
     if metadata.get("weights") != params["weights"]:
         raise ValueError("sampling did not use the explicitly frozen weight set")
     if metadata.get("guidance_scale") != params["guidance_scale"]:
@@ -72,7 +72,7 @@ def _validate_sampling_result(
         raise ValueError("sampling metadata class allocation does not match protocol")
     if metadata.get("sampler") != params["sampler"]:
         raise ValueError("sampling metadata sampler does not match protocol")
-    expected_seed = cast(int, document.sampling_overlay["sampling"]["seed"])
+    expected_seed = cast(int, document.sample_request["sampling"]["seed"])
     if sampling.seed != expected_seed:
         raise ValueError("sampling runtime seed does not match evaluation protocol")
 
@@ -90,7 +90,7 @@ def evaluate_checkpoint(
     """Evaluate one checkpoint through strict data and sampling lifecycles."""
 
     document = load_evaluation_document(config_path)
-    overlay_encoded = sampling_overlay_bytes(document)
+    request_encoded = sample_request_bytes(document)
     source_checkpoint = evaluation_inputs.resolve_checkpoint_source(checkpoint)
     workspace = evaluation_workspace.EvaluationWorkspace.create(
         checkpoint_path=source_checkpoint,
@@ -101,14 +101,14 @@ def evaluate_checkpoint(
             source_checkpoint,
             workspace.staging_root / "checkpoint.snapshot.pt",
         )
-        overlay_path = workspace.staging_root / SAMPLING_OVERLAY_NAME
-        write_exclusive(overlay_path, overlay_encoded)
+        request_path = workspace.staging_root / SAMPLE_REQUEST_NAME
+        write_exclusive(request_path, request_encoded)
         checkpoint_progress = evaluation_inputs.checkpoint_progress(
             snapshot.snapshot_path
         )
         evaluation_inputs.verify_checkpoint_snapshot(snapshot)
         inputs = resolve_sampling_inputs(
-            config_path=overlay_path,
+            config_path=request_path,
             checkpoint=snapshot.snapshot_path,
         )
         evaluation_inputs.verify_checkpoint_snapshot(snapshot)
@@ -186,7 +186,7 @@ def evaluate_checkpoint(
                 provider_identities=provider_identities,
                 checkpoint_sha256=snapshot.sha256,
                 checkpoint_progress=checkpoint_progress,
-                overlay_path=overlay_path,
+            request_path=request_path,
             )
         )
         published_sampling = workspace.published_sampling_result(sampling)

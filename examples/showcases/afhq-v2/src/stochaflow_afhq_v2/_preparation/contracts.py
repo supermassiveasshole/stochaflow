@@ -77,36 +77,3 @@ class SourceImage:
     filename: str
     file_size: int
     crc32: int
-
-
-@dataclass(frozen=True)
-class PreparedImageRecord:
-    """One verified prepared image described by the artifact inventory."""
-
-    relative_path: str
-    size_bytes: int
-    sha256: str
-
-
-@dataclass(frozen=True)
-class PreparedArtifact:
-    """Published prepared artifact and its stable identity."""
-
-    root: Path
-    manifest_path: Path
-    manifest_sha256: str
-    artifact_digest: str
-    preparation_key: str
-    file_count: int
-    image_records: tuple[PreparedImageRecord, ...]
-    cache_hit: bool
-
-
-@dataclass(frozen=True)
-class PreparationPlan:
-    """Source-locked identity of one requested prepared artifact."""
-
-    recipe: Mapping[str, object]
-    recipe_sha256: str
-    preparation_key: str
-    counts: Mapping[str, Mapping[str, int]]

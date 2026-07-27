@@ -13,18 +13,25 @@ from zipfile import ZIP_STORED, ZipFile
 import numpy as np
 import pytest
 import torch
+from torch.utils.data import DataLoader
 
 from stochaflow.extensions import (
     REGISTRIES,
+    DataArtifactLoadContext,
+    DataArtifactStore,
+    DataArtifactValidationError,
     DataBuilderContext,
+    DataSourceMaterializationConfig,
     DDIMSampler,
     DiscreteGaussianProcess,
     GaussianPrediction,
     GaussianTransition,
+    ManagedDataArtifactBuild,
     MSEObjective,
     PredictionType,
     SamplingArtifactContext,
     SamplingBatch,
+    TrainingBuilderContext,
     TrajectoryObserver,
     gaussian_training_target,
 )
@@ -33,6 +40,11 @@ from stochaflow_physics_reconstruction.stochaflow_ext.data import (
     EpochShuffleSampler,
     KolmogorovDataBuilder,
     TrajectoryTripletDataset,
+)
+from stochaflow_physics_reconstruction.stochaflow_ext.data_source import (
+    PHYSICS_DATA_SOURCES,
+    KolmogorovTrajectoryArtifactPayload,
+    NumpyTrajectoryDataSource,
 )
 from stochaflow_physics_reconstruction.stochaflow_ext.model import (
     ConditionalDenoiser,
@@ -49,6 +61,7 @@ from stochaflow_physics_reconstruction.stochaflow_ext.sampling import (
 )
 from stochaflow_physics_reconstruction.stochaflow_ext.training import (
     PhysicsDenoisingStrategy,
+    PhysicsTrainingBuilder,
 )
 from stochaflow_physics_reconstruction.stochaflow_ext.writers import (
     ReconstructionArtifactWriter,
@@ -86,6 +99,7 @@ def _model() -> ConditionalDenoiser:
 
 def test_registered_components_are_namespaced() -> None:
     assert "physics-reconstruction.kolmogorov-trajectories" in REGISTRIES.data_builders
+    assert "physics-reconstruction.numpy-trajectories" in PHYSICS_DATA_SOURCES
     assert "physics-reconstruction.conditional-denoiser" in REGISTRIES.models
     assert "physics-reconstruction.gaussian-denoising" in REGISTRIES.training_builders
     assert "physics-reconstruction.reconstruction" in REGISTRIES.sampling_builders
@@ -165,7 +179,15 @@ def test_data_builder_rejects_overlapping_trajectory_partitions(tmp_path: Path) 
     builder = KolmogorovDataBuilder(
         DataBuilderContext(
             params={
-                "path": str(paths["trajectories"]),
+                "source": {
+                    "name": "physics-reconstruction.numpy-trajectories",
+                    "params": {"path": str(paths["trajectories"])},
+                    "materialization": {
+                        "cache_root": str(tmp_path / "cache"),
+                        "policy": "ensure",
+                        "verification": "full",
+                    },
+                },
                 "train_trajectories": [0, 4],
                 "validation_trajectories": [3, 5],
                 "test_trajectories": [5, 6],
@@ -176,6 +198,173 @@ def test_data_builder_rejects_overlapping_trajectory_partitions(tmp_path: Path) 
     )
     with pytest.raises(ValueError, match="overlap"):
         builder.build()
+
+
+def test_data_builder_binds_a_verified_source_artifact(tmp_path: Path) -> None:
+    paths = write_tiny_data(tmp_path / "external")
+    cache_root = tmp_path / "cache"
+    params = {
+        "source": {
+            "name": "physics-reconstruction.numpy-trajectories",
+            "params": {"path": str(paths["trajectories"])},
+            "materialization": {
+                "cache_root": str(cache_root),
+                "policy": "ensure",
+                "verification": "full",
+            },
+        },
+        "train_trajectories": [0, 4],
+        "validation_trajectories": [4, 5],
+        "test_trajectories": [5, 6],
+        "loader": {"batch_size": 2, "num_workers": 0},
+    }
+
+    first = KolmogorovDataBuilder(
+        DataBuilderContext(params=params, seed=11)
+    ).build()
+
+    assert first.artifact_bindings is not None
+    assert first.artifact_bindings.ids == ("source",)
+    assert (
+        first.artifact_bindings.identity_for("source").source_name
+        == "physics-reconstruction.numpy-trajectories"
+    )
+    identity = first.artifact_bindings.identity_for("source")
+    assert identity.schema_version == 2
+    assert identity.kind == "referenced"
+    assert identity.content_digest
+    assert not tuple(cache_root.rglob("*.npy"))
+    assert isinstance(first.train, DataLoader)
+    assert isinstance(first.train.dataset, TrajectoryTripletDataset)
+    payload = KolmogorovTrajectoryArtifactPayload(
+        path=paths["trajectories"],
+        shape=(6, 6, 8, 8),
+        dtype="<f4",
+    )
+    assert first.train.dataset.path == payload.path
+
+    resumed = KolmogorovDataBuilder(
+        DataBuilderContext(
+            params=params,
+            seed=11,
+            strict_resume=True,
+            expected_artifacts=first.artifact_bindings,
+        )
+    ).build()
+    assert resumed.artifact_bindings == first.artifact_bindings
+
+
+def test_data_builder_accepts_compatible_managed_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external = write_tiny_data(tmp_path / "external")["trajectories"]
+
+    def build(data_root: Path) -> ManagedDataArtifactBuild:
+        target = data_root / "trajectory.npy"
+        target.write_bytes(external.read_bytes())
+        return ManagedDataArtifactBuild(
+            source_digest="a" * 64,
+            materialization_digest="b" * 64,
+            domain={"schema_version": 1},
+        )
+
+    def load(
+        context: DataArtifactLoadContext,
+    ) -> KolmogorovTrajectoryArtifactPayload:
+        path = context.data_root / "trajectory.npy"
+        array = np.load(path, mmap_mode="r", allow_pickle=False)
+        return KolmogorovTrajectoryArtifactPayload(
+            path=path,
+            shape=cast(tuple[int, int, int, int], tuple(array.shape)),
+            dtype=array.dtype.str,
+        )
+
+    artifact = DataArtifactStore(
+        DataSourceMaterializationConfig(
+            cache_root=str(tmp_path / "managed-cache"),
+            verification="full",
+        ).context()
+    ).materialize_managed(
+        artifact_type="tests.physics-managed.v1",
+        source_name="physics-reconstruction.numpy-trajectories",
+        materializer_name="tests.physics-managed",
+        locator_key={"fixture": "managed"},
+        build=build,
+        load=load,
+    )
+    monkeypatch.setattr(
+        NumpyTrajectoryDataSource,
+        "materialize",
+        lambda _self, _context: artifact,
+    )
+    loaders = KolmogorovDataBuilder(
+        DataBuilderContext(
+            params={
+                "source": {
+                    "name": "physics-reconstruction.numpy-trajectories",
+                    "params": {"path": str(external)},
+                    "materialization": {
+                        "cache_root": str(tmp_path / "unused-cache"),
+                        "policy": "ensure",
+                        "verification": "full",
+                    },
+                },
+                "train_trajectories": [0, 4],
+                "validation_trajectories": [4, 5],
+                "test_trajectories": [5, 6],
+                "loader": {"batch_size": 2, "num_workers": 0},
+            },
+            seed=11,
+        )
+    ).build()
+
+    assert loaders.artifact_bindings is not None
+    assert loaders.artifact_bindings.identity_for("source").kind == "managed"
+    assert isinstance(loaders.train, DataLoader)
+    assert isinstance(loaders.train.dataset, TrajectoryTripletDataset)
+    assert loaders.train.dataset.path == artifact.payload.path
+
+
+def test_strict_resume_authenticates_same_size_external_mutation(
+    tmp_path: Path,
+) -> None:
+    paths = write_tiny_data(tmp_path / "external")
+    params = {
+        "source": {
+            "name": "physics-reconstruction.numpy-trajectories",
+            "params": {"path": str(paths["trajectories"])},
+            "materialization": {
+                "cache_root": str(tmp_path / "cache"),
+                "policy": "ensure",
+                "verification": "manifest",
+            },
+        },
+        "train_trajectories": [0, 4],
+        "validation_trajectories": [4, 5],
+        "test_trajectories": [5, 6],
+        "loader": {"batch_size": 2},
+    }
+    first = KolmogorovDataBuilder(
+        DataBuilderContext(params=params, seed=11)
+    ).build()
+    assert first.artifact_bindings is not None
+    original_size = paths["trajectories"].stat().st_size
+    mutated = np.load(paths["trajectories"], mmap_mode="r+")
+    mutated[0, 0, 0, 0] += np.float32(1.0)
+    mutated.flush()
+    del mutated
+    assert paths["trajectories"].stat().st_size == original_size
+
+    with pytest.raises(DataArtifactValidationError):
+        KolmogorovDataBuilder(
+            DataBuilderContext(
+                params=params,
+                seed=11,
+                strict_resume=True,
+                expected_artifacts=first.artifact_bindings,
+            )
+        ).build()
 
 
 def _reference_residual(state: torch.Tensor, model: ConditionalDenoiser) -> torch.Tensor:
@@ -244,6 +433,29 @@ def test_training_strategy_reuses_objective_and_backpropagates() -> None:
     assert output.loss.ndim == 0
     assert "per_sample_loss" in output.diagnostics
     assert any(parameter.grad is not None for parameter in model.parameters())
+
+
+def test_training_builder_declares_checkpoint_sampling_recipe() -> None:
+    model = _model()
+    process = _process()
+    objective = MSEObjective()
+    plan = PhysicsTrainingBuilder(
+        TrainingBuilderContext(
+            params={
+                "prediction_type": "v",
+                "conditioning_strength": 0.0001,
+            },
+            primary_model=model,
+            process=process,
+            objective=objective,
+            model_factory=lambda _declaration: model,
+            objective_factory=lambda _declaration: objective,
+        )
+    ).build()
+
+    assert plan.inference_recipe is not None
+    assert plan.inference_recipe.name == "physics-reconstruction.reconstruction"
+    assert dict(plan.inference_recipe.contract) == {"prediction_type": "v"}
 
 
 @pytest.mark.parametrize("prediction_type", ["epsilon", "x0", "v", "score"])

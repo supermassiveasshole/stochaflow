@@ -1,7 +1,7 @@
 """Component registries and builder utilities."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib import import_module
 from typing import Any, cast
 
@@ -26,6 +26,7 @@ from stochaflow.training.optimization import build_lr_scheduler, build_optimizer
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
     ComponentConfig,
+    ConfigError,
     EMAConfig,
     ExperimentConfig,
     LoggingConfig,
@@ -37,6 +38,7 @@ from stochaflow.utils.logging import (
     configure_torch_logging,
 )
 from stochaflow.utils.registry import REGISTRIES, Registry, RegistryError
+from stochaflow.utils.sampling_recipe import resolve_sampling_recipe_params
 
 BUILTIN_COMPONENT_MODULES = (
     "stochaflow.data",
@@ -243,6 +245,26 @@ def build_training_components(
         model_factory=build_model,
         objective_factory=build_objective,
     )
+    if config.sampling.run_after_training and plan.inference_recipe is None:
+        raise ValueError(
+            "sampling.run_after_training requires the TrainingPlan to provide "
+            "an inference recipe"
+        )
+    if plan.inference_recipe is not None:
+        try:
+            resolve_sampling_recipe_params(
+                plan.inference_recipe,
+                options=config.sampling.options,
+                sampler=(
+                    asdict(config.sampling.sampler)
+                    if config.sampling.sampler is not None
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            raise ConfigError(
+                f"sampling defaults are incompatible with the inference recipe: {exc}"
+            ) from exc
     parameters = trainable_parameters(plan)
     optimizer = build_optimizer(config.optimizer, parameters)
     lr_scheduler = build_lr_scheduler(config.lr_scheduler, optimizer)
@@ -264,6 +286,7 @@ def build_training_components(
         ema=ema,
         precision_kind=precision.kind,
         grad_scaler=precision.grad_scaler,
+        inference_recipe=plan.inference_recipe,
     )
     logger = build_logger(
         config.logging,

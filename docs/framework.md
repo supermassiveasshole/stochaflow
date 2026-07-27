@@ -17,7 +17,7 @@ Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它
 | 概率过程 | 离散 VP Gaussian Process 与 linear/cosine schedule | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
 | 采样 | DDPM、DDIM、class-conditional CFG、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
 | 输出 | Tensor、PNG、trajectory grid/GIF | `SamplingArtifactWriter` 可输出 NetCDF、Zarr 等领域格式 |
-| 生命周期 | EMA、checkpoint v9、strict resume、diagnostic、Rich/TensorBoard/W&B 日志 | 注册 Objective、diagnostic 和 logger |
+| 生命周期 | EMA、checkpoint v10、strict resume、checkpoint-bound inference、diagnostic、Rich/TensorBoard/W&B 日志 | 注册 Objective、diagnostic 和 logger |
 | 项目扩展 | `stochaflow init`、Python packaging entry point、插件 provenance | 普通可安装 Python distribution；不绑定 `uv` 或固定仓库布局 |
 
 内置 `super_resolution` 只负责数据配对和退化，不自动提供条件模型或训练/采样策略。
@@ -40,9 +40,10 @@ SamplingBuilder；这些组件可以继续复用离散 Gaussian Process 和 DDPM
   class allocation 和 guidance 生成训练期 diagnostic artifacts。
 
 Process、Sampler 和 `GenerativeDynamics` 根接口都没有增加 class 或 CFG 方法。新的
-单标签图像来源只需发布标准 class-labeled artifact，即可复用内置
-`class_labeled_image` Builder；只有不同的 batch 或数据生命周期才需要自定义
-DataBuilder。新增兼容 denoiser 只需注册模型，不需要修改 runner。完整可运行例子见
+单标签图像来源只有同时满足 `class_labeled_image` 的完整 artifact contract，并需要
+相同的 partition、Dataset、augmentation、sampler、loader、resume 与 batch 语义时，
+才只需实现 DataSource。任何一层 runtime recipe 语义不同都应使用独立 DataBuilder。
+新增兼容 denoiser 只需注册模型，不需要修改 runner。完整可运行例子见
 [AFHQ-v2 类条件生成](tutorials/afhq-v2.md)。
 
 ## 三层组织方式
@@ -146,10 +147,32 @@ DataBuilder.build() -> DataLoaders
 condition 字段或图像尺寸。
 
 内置 `image`、`class_labeled_image`、`super_resolution` 和
-`multi_resolution_image` recipe 提供各自的划分与加载策略。兼容标准 payload 的新来源
-只需实现 DataSource；不同 batch 或运行时组合才实现自定义 DataBuilder，且不需要、
-也不应被迫支持其他 recipe 的私有能力。具体配置与 batch 约定见
-[数据构建](configuration/data-pipeline.md)。
+`multi_resolution_image` recipe 提供各自的划分与加载策略。新来源只有在 artifact
+满足目标 Builder 的完整 accepted contract，且所需 runtime recipe 语义也一致时，才只需
+实现 DataSource。新的 partition、Dataset、sampler、streaming、resume 或 batch 语义
+属于自定义 DataBuilder，且不需要、也不应被迫支持其他 recipe 的私有能力。具体配置与
+batch 约定见[数据构建](configuration/data-pipeline.md)。
+
+### Data artifact producer lifecycle
+
+`DataSource` 通过统一的 `DataArtifactStore` 把来源变成 schema-v2
+`DataArtifact`。store 拥有 canonical manifest、文件 inventory、identity、locator、
+locking、atomic publication、quarantine 和 strict-resume expected-identity 校验；
+built-in 与 extension 使用同一公共路径。
+
+`managed` 与 `referenced` 只是 ownership strategy：
+
+- managed artifact 的实际内容位于 framework cache，可以从固定来源和 materialization
+  recipe 重建；
+- referenced artifact 只把索引/sidecar 放入 cache，represented content 保留在外部目录。
+
+两者使用同一个 runtime handle；差异由 `artifact.identity.kind` 表达。payload 与
+`domain` 仍由 producer family 定义，Builder 再检查更窄的 accepted artifact contract。
+这个 lifecycle 不引入通用 dataset metadata、provenance、capacity 或 Dataset registry。
+
+当前 identity、manifest、locator、cache layout 和 checkpoint binding 都是 schema v2
+breaking contract。框架不读取或迁移旧格式；升级后数据需要重新 materialize，旧
+artifact-aware checkpoint 不能 strict resume。
 
 ## 训练组合边界
 
@@ -164,22 +187,25 @@ TrainingPlan
   ├── TrainingStrategy
   ├── primary model
   ├── optional Process / Objective
-  └── named managed auxiliary modules
+  ├── named managed auxiliary modules
+  └── optional fixed inference recipe
         ↓
 Trainer lifecycle
 ```
 
 core 先构造 primary model、可选 Process/Objective，再注入 Builder；Plan 必须原样保留
-这些对象。Builder 可以构造、加载、冻结并声明 auxiliary assets，Strategy 只负责一次 batch
-的训练计算。Trainer 负责自动优化生命周期，包括全部 managed assets 的 device/mode、
-backward、一个 optimizer、可选 scheduler 和 checkpoint。EMA 仅跟踪 primary model；
-Process、Objective 与 auxiliary modules 只保存 raw state。
+这些对象。Builder 可以构造、加载、冻结并声明 auxiliary assets，也可以声明一个
+`SamplingRecipe(name, contract)`。recipe 固定与训练语义绑定的内部 SamplingBuilder
+identity 和 JSON-safe contract；可调 request defaults 仍来自顶层 `sampling`。Strategy
+只负责一次 batch 的训练计算。Trainer 负责自动优化生命周期，包括全部 managed assets
+的 device/mode、backward、一个 optimizer、可选 scheduler 和 checkpoint。EMA 仅跟踪
+primary model；Process、Objective 与 auxiliary modules 只保存 raw state。
 
 自动循环还拥有 `fp32`、`bf16-mixed`、`fp16-mixed` precision 与固定
 `accumulate_grad_batches`。autocast、GradScaler、unscale/clip/step 顺序和 partial-window
 flush 都属于 Trainer/PrecisionRuntime，不散落在 Strategy 中。scheduler、EMA、global
 step 和 update-level diagnostics 只在 optimizer step 成功后推进。precision 与
-accumulation 会进入 checkpoint v9 的 strict resume 边界，不能用 observability overlay
+accumulation 会进入 checkpoint v10 的 strict resume 边界，不能用 observability config
 改写。
 
 冻结 teacher 蒸馏仍属于这套边界：Builder 加载并冻结 teacher，Strategy 组合
@@ -190,7 +216,13 @@ backward 属于新的训练循环 family，不应被塞入通用 Strategy mode�
 当前 PyTorch 版本；Stochaflow 不复制上游构造参数和默认值。第三方子类仍可注册到对应
 Registry。
 
-## 采样组合边界
+## Checkpoint inference 与采样组合边界
+
+`stochaflow sample` 表示 checkpoint-backed inference，而不只表示随机图像生成。生成、
+重建和 prediction 都通过同一 operation 解析 v10 checkpoint 中的 `inference_recipe`；
+recipe 为 null 的 checkpoint 不支持该 operation。外部 sample request 只能调整
+checkpoint 已公开的 sampler、options、shape、数量、batch、seed 和 writers，不能重新
+选择内部 SamplingBuilder 或覆盖 fixed contract。
 
 所有数值 Sampler 共享一个完整执行入口：
 
@@ -223,13 +255,14 @@ writer 才开始工作。它适合有界离线采样，但不是 streaming contr
 | --- | --- | --- |
 | 新训练 | `train --config` 指向的完整 YAML | 文档化的训练 CLI runtime options |
 | Strict resume | checkpoint 内保存的完整 config | device/output/epoch/limit 等明确 runtime options |
-| Checkpoint sampling | checkpoint config | sampling-only overlay 和 sampling CLI runtime options |
-| 外部完整 sampling | `sample --config` 指向的完整 config | checkpoint 只提供可加载 state |
+| Checkpoint inference | 显式 v10 checkpoint 的 config、state 与 `inference_recipe` | 可选 partial sample request；device/output 等 sampling CLI runtime options |
 
-checkpoint 保存 resolved config 和 managed state，但不冻结 extension 的 Python class、
-源码、wheel、数据或环境。extension provenance 记录 entry-point name、distribution、
-version 和 module target；版本差异可以显式接受，身份或 state 不兼容仍会失败。项目应使用
-自己的 lockfile/environment specification 固定可复现实验环境。
+checkpoint 保存 resolved config、managed state 和 fixed inference recipe，但不冻结
+extension 的 Python class、源码、wheel、数据或环境，因此是自描述 artifact，不是
+自包含可执行环境。extension provenance 记录 entry-point name、distribution、version
+和 module target；sample request 只能追加插件，不能删除 checkpoint-required plugin。
+版本差异可以显式接受，身份或 state 不兼容仍会失败。项目应使用自己的
+lockfile/environment specification 固定可复现实验环境。
 
 extension 是普通 Python distribution，通过标准 entry point 声明一个聚合注册模块：
 

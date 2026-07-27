@@ -1,0 +1,24 @@
+# DDPM sampling profile for the 200-epoch MNIST checkpoint.
+# Both sampling profiles use the same EMA weights, seed, and 6x6 sample grid.
+sampling:
+  sampler:
+    name: ddpm
+    params: {}
+  options:
+    weights: ema
+    clip_denoised: true
+    trajectory:
+      enabled: true
+      every_steps: 200
+  shape: [1, 32, 32]
+  num_samples: 36
+  batch_size: 36
+  seed: 123
+  writers:
+    - name: tensor
+      params: {}
+    - name: image
+      params:
+        grid_nrow: 6
+        gif_fps: 3
+        denormalize: true

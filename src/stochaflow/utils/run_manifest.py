@@ -17,6 +17,8 @@ from stochaflow.utils.plugins import (
 
 def selected_component_identities(
     config: StochaflowConfig,
+    *,
+    sampling_recipe: str | None = None,
 ) -> dict[str, str | list[str] | None]:
     """Summarize selected framework-level components without inspecting params."""
 
@@ -30,9 +32,10 @@ def selected_component_identities(
         "lr_scheduler": (
             config.lr_scheduler.name if config.lr_scheduler is not None else None
         ),
-        "sampling_builder": (
-            config.sampling.builder.name
-            if config.sampling.builder is not None
+        "sampling_recipe": sampling_recipe,
+        "sampling_sampler": (
+            config.sampling.sampler.name
+            if config.sampling.sampler is not None
             else None
         ),
         "sampling_artifact_writers": [

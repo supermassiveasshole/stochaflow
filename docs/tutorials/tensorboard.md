@@ -32,7 +32,8 @@ strict resume 启动时加载 observation-only 配置：
 ```powershell
 uv run stochaflow train `
   --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt `
-  --observability-config configs/overlays/mnist_observability.yaml
+  --observability-config `
+  examples/built-in/image-generation/experiments/overlays/mnist_observability.yaml
 ```
 
 该示例完整替换 diagnostic 列表，使用 EMA、固定 `seed: 123`、32 个样本和确定性
@@ -52,7 +53,8 @@ manifest 与 checkpoint metadata，便于确认曲线使用的监控协议。
 先启动训练：
 
 ```powershell
-uv run stochaflow train --config configs/ddpm_mnist.yaml
+uv run stochaflow train `
+  --config examples/built-in/image-generation/experiments/ddpm_mnist.yaml
 ```
 
 终端表格中的 `Output` 是本次运行目录，例如

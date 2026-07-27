@@ -1,4 +1,4 @@
-"""Managed torchvision acquisition and authenticated image metadata."""
+"""Managed torchvision producer using the unified artifact lifecycle."""
 
 from __future__ import annotations
 
@@ -7,60 +7,34 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
-from uuid import uuid4
+from typing import Any, cast
 
 from PIL import Image
 from torchvision import datasets
 
-from stochaflow.data.artifact_io import (
-    create_cache_directory,
-    publish_cache_directory,
-    read_regular_file,
-    remove_cache_directory,
-    scan_regular_files,
-    write_cache_file,
-)
+from stochaflow.data.artifact_io import read_regular_file
 from stochaflow.data.artifact_store import (
-    ArtifactMaterializationLock,
-    canonical_digest,
-    canonical_json_bytes,
-    load_canonical_json,
-    path_exists_without_following,
-    quarantine_path,
-    read_locator_for_policy,
-    sha256_bytes,
-    strict_mapping,
-    write_locator,
+    DataArtifactLoadContext,
+    DataArtifactStore,
+    DataArtifactValidationError,
+    ManagedDataArtifactBuild,
+    canonical_artifact_digest,
+    canonical_artifact_json_bytes,
 )
-from stochaflow.data.artifacts import (
-    DataSourceContext,
-    ManagedDataArtifact,
-    ManagedDataArtifactIdentity,
-)
+from stochaflow.data.artifacts import DataArtifact, DataSourceContext
 from stochaflow.data.image_contracts import (
     IMAGE_DATA_SOURCES,
     ImageDataSource,
     ImageDimensionTable,
     TorchvisionImageArtifactPayload,
-    validate_relative_image_path,
 )
 from stochaflow.utils.config import ConfigError, coerce_config_section
 
-MANAGED_FILE_FIELDS = frozenset({"path", "size_bytes", "sha256"})
-MANAGED_MANIFEST_FIELDS = frozenset(
-    {
-        "schema_version",
-        "kind",
-        "artifact_type",
-        "source_name",
-        "source_digest",
-        "materializer_name",
-        "materialization_digest",
-        "artifact_digest",
-        "files",
-    }
-)
+_ARTIFACT_TYPE = "stochaflow.torchvision-image.v2"
+_MATERIALIZER_NAME = "stochaflow.torchvision-download"
+_DOMAIN_FIELDS = frozenset({"schema_version", "dataset", "dimensions"})
+_DIMENSION_DESCRIPTOR_FIELDS = frozenset({"path", "size_bytes", "sha256"})
+_DIMENSION_SIDECAR = "image_dimensions.json"
 
 
 @dataclass(slots=True)
@@ -156,12 +130,11 @@ def torchvision_dimension_table(
 
 
 def write_torchvision_dimensions(
-    cache_root: Path,
-    artifact_root: Path,
+    data_root: Path,
     *,
     dataset_name: str,
     partitions: Mapping[str, Any],
-) -> None:
+) -> dict[str, object]:
     """Write an identity-bound canonical dimension sidecar."""
 
     serialized = {
@@ -171,40 +144,75 @@ def write_torchvision_dimensions(
         ).to_pairs()
         for role, partition in sorted(partitions.items())
     }
-    write_cache_file(
-        cache_root,
-        artifact_root / "image_dimensions.json",
-        canonical_json_bytes(
-            {
-                "schema_version": 1,
-                "dataset": dataset_name,
-                "partitions": serialized,
-            }
-        ),
-        label="torchvision image dimensions",
+    encoded = canonical_artifact_json_bytes(
+        {
+            "schema_version": 1,
+            "dataset": dataset_name,
+            "partitions": serialized,
+        }
     )
+    (data_root / _DIMENSION_SIDECAR).write_bytes(encoded)
+    return {
+        "path": _DIMENSION_SIDECAR,
+        "size_bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _strict_mapping(
+    value: object,
+    *,
+    fields: frozenset[str],
+    label: str,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{label} must be a mapping")
+    raw = cast(dict[object, object], value)
+    if any(not isinstance(key, str) for key in raw):
+        raise TypeError(f"{label} field names must be strings")
+    if set(raw) != fields:
+        raise ValueError(f"{label} must contain exactly {sorted(fields)}")
+    return cast(dict[str, Any], value)
 
 
 def load_torchvision_dimensions(
-    artifact_root: Path,
+    data_root: Path,
     *,
     dataset_name: str,
-    expected_record: Mapping[str, Any],
+    expected_record: Mapping[str, object],
 ) -> dict[str, ImageDimensionTable]:
-    """Load a sidecar after always verifying its manifest digest."""
+    """Load a sidecar after verifying its domain descriptor."""
 
+    record = _strict_mapping(
+        dict(expected_record),
+        fields=_DIMENSION_DESCRIPTOR_FIELDS,
+        label="torchvision dimensions descriptor",
+    )
+    if record["path"] != _DIMENSION_SIDECAR:
+        raise ValueError("torchvision dimensions path is invalid")
+    size_bytes = record["size_bytes"]
+    digest = record["sha256"]
+    if (
+        type(size_bytes) is not int
+        or size_bytes <= 0
+        or not isinstance(digest, str)
+        or len(digest) != 64
+        or digest != digest.lower()
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError("torchvision dimensions descriptor is invalid")
     encoded, metadata = read_regular_file(
-        artifact_root,
-        "image_dimensions.json",
+        data_root,
+        _DIMENSION_SIDECAR,
         label="torchvision image dimensions",
     )
     if (
-        metadata.st_size != expected_record["size_bytes"]
-        or len(encoded) != expected_record["size_bytes"]
-        or hashlib.sha256(encoded).hexdigest() != expected_record["sha256"]
+        metadata.st_size != size_bytes
+        or len(encoded) != size_bytes
+        or hashlib.sha256(encoded).hexdigest() != digest
     ):
         raise ValueError(
-            "torchvision image dimensions do not match the managed manifest"
+            "torchvision image dimensions do not match their descriptor"
         )
     try:
         raw_value = json.loads(encoded.decode("utf-8"))
@@ -214,7 +222,7 @@ def load_torchvision_dimensions(
         ) from exc
     if (
         not isinstance(raw_value, dict)
-        or encoded != canonical_json_bytes(raw_value)
+        or encoded != canonical_artifact_json_bytes(raw_value)
     ):
         raise ValueError(
             "torchvision image dimensions are not canonical JSON"
@@ -265,209 +273,110 @@ def load_torchvision_dimensions(
     return result
 
 
-def managed_files(
-    root: Path,
-    *,
-    hash_contents: bool,
-) -> tuple[dict[str, Any], ...]:
-    """Inventory all managed files except the root manifest."""
-
-    files: list[dict[str, Any]] = []
-    snapshots = scan_regular_files(
-        root,
-        hash_contents=hash_contents,
-        label="managed artifact",
-        path_filter=lambda relative: relative != "manifest.json",
-    )
-    for snapshot in snapshots:
-        digest = snapshot.sha256 if hash_contents else "0" * 64
-        if digest is None:
-            raise RuntimeError("hashed managed scan did not return a digest")
-        files.append(
-            {
-                "path": snapshot.relative_path,
-                "size_bytes": snapshot.size_bytes,
-                "sha256": digest,
-            }
-        )
-    files.sort(key=lambda record: cast(str, record["path"]))
-    if not files:
-        raise ValueError("managed torchvision artifact contains no files")
-    return tuple(files)
-
-
-def managed_identity(
-    manifest: Mapping[str, Any],
-    *,
-    manifest_sha256: str,
-) -> ManagedDataArtifactIdentity:
-    """Construct the strict identity represented by a managed manifest."""
-
-    return ManagedDataArtifactIdentity(
-        artifact_type=manifest["artifact_type"],
-        source_name=manifest["source_name"],
-        source_digest=manifest["source_digest"],
-        materializer_name=manifest["materializer_name"],
-        materialization_digest=manifest["materialization_digest"],
-        artifact_digest=manifest["artifact_digest"],
-        manifest_sha256=manifest_sha256,
-    )
-
-
-def load_managed_torchvision(
-    artifact_root: Path,
-    *,
-    dataset: str,
-    verification: Literal["manifest", "full"],
-) -> ManagedDataArtifact[TorchvisionImageArtifactPayload]:
-    """Load and verify a content-addressed managed torchvision artifact."""
-
-    manifest_path = artifact_root / "manifest.json"
-    raw, manifest_bytes = load_canonical_json(
-        manifest_path,
-        label="managed manifest",
-    )
-    manifest = strict_mapping(
-        raw,
-        fields=MANAGED_MANIFEST_FIELDS,
-        path="managed manifest",
-    )
-    if (
-        type(manifest["schema_version"]) is not int
-        or manifest["schema_version"] != 1
-        or manifest["kind"] != "managed"
-        or manifest["source_name"] != "torchvision"
-        or manifest["artifact_type"] != "stochaflow.torchvision-image.v2"
-    ):
-        raise ValueError("managed torchvision manifest is incompatible")
-    identity = managed_identity(
-        manifest,
-        manifest_sha256=sha256_bytes(manifest_bytes),
-    )
-    if artifact_root.name != identity.artifact_digest:
-        raise ValueError(
-            "managed artifact directory does not match its artifact digest"
-        )
-    files = manifest["files"]
-    if not isinstance(files, list) or not files:
-        raise ValueError("managed manifest files must be a non-empty list")
-    normalized_files: list[dict[str, Any]] = []
-    for index, value in enumerate(files):
-        record = strict_mapping(
-            value,
-            fields=MANAGED_FILE_FIELDS,
-            path=f"managed manifest.files[{index}]",
-        )
-        relative_path = record["path"]
-        if not isinstance(relative_path, str):
-            raise TypeError("managed manifest file path must be a string")
-        validate_relative_image_path(
-            relative_path,
-            path=f"managed manifest.files[{index}].path",
-        )
-        size_bytes = record["size_bytes"]
-        if (
-            not isinstance(size_bytes, int)
-            or isinstance(size_bytes, bool)
-            or size_bytes < 0
-        ):
-            raise ValueError(
-                "managed manifest file size_bytes must be non-negative"
-            )
-        digest = record["sha256"]
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or digest != digest.lower()
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
-            raise ValueError("managed manifest file sha256 is invalid")
-        normalized_files.append(record)
-    recorded_paths = [record["path"] for record in normalized_files]
-    if recorded_paths != sorted(recorded_paths) or len(recorded_paths) != len(
-        set(recorded_paths)
-    ):
-        raise ValueError("managed manifest files must be sorted and unique")
-    live = managed_files(
-        artifact_root,
-        hash_contents=verification == "full",
-    )
-    expected_without_hash = tuple(
-        (record["path"], record["size_bytes"])
-        for record in normalized_files
-    )
-    live_without_hash = tuple(
-        (record["path"], record["size_bytes"]) for record in live
-    )
-    if live_without_hash != expected_without_hash:
-        raise ValueError("managed artifact paths or sizes changed")
-    if verification == "full" and tuple(normalized_files) != live:
-        raise ValueError("managed artifact content digest changed")
-    if identity.source_digest != canonical_digest(normalized_files):
-        raise ValueError("managed manifest source digest is invalid")
-    materializer_name = "stochaflow.torchvision-download"
-    expected_materialization_digest = canonical_digest(
+def _source_digest(dataset: str) -> str:
+    return canonical_artifact_digest(
         {
-            "name": materializer_name,
-            "version": 2,
+            "provider": "torchvision",
+            "dataset": dataset,
+            "selection_schema_version": 1,
+        }
+    )
+
+
+def _materialization_digest(dataset: str) -> str:
+    return canonical_artifact_digest(
+        {
+            "name": _MATERIALIZER_NAME,
+            "version": 3,
             "dataset": dataset,
         }
     )
-    if (
-        identity.materializer_name != materializer_name
-        or identity.materialization_digest != expected_materialization_digest
-    ):
-        raise ValueError(
-            "managed manifest materialization identity is invalid"
-        )
-    expected_artifact_digest = canonical_digest(
-        {
-            "kind": "managed",
-            "artifact_type": identity.artifact_type,
-            "source_name": identity.source_name,
-            "source_digest": identity.source_digest,
-            "materializer_name": identity.materializer_name,
-            "materialization_digest": identity.materialization_digest,
-        }
-    )
-    if identity.artifact_digest != expected_artifact_digest:
-        raise ValueError("managed manifest artifact digest is invalid")
-    dimension_records = [
-        record
-        for record in normalized_files
-        if record["path"] == "image_dimensions.json"
-    ]
-    if len(dimension_records) != 1:
-        raise ValueError(
-            "managed torchvision artifact requires image_dimensions.json"
-        )
-    dimensions = load_torchvision_dimensions(
-        artifact_root,
+
+
+def _build_torchvision(
+    data_root: Path,
+    *,
+    dataset: str,
+) -> ManagedDataArtifactBuild:
+    partitions = torchvision_datasets(dataset, data_root, download=True)
+    dimensions = write_torchvision_dimensions(
+        data_root,
         dataset_name=dataset,
-        expected_record=dimension_records[0],
+        partitions=partitions,
     )
-    return ManagedDataArtifact(
-        artifact_root=artifact_root,
-        manifest_path=manifest_path,
-        identity=identity,
-        payload=TorchvisionImageArtifactPayload(
+    return ManagedDataArtifactBuild(
+        source_digest=_source_digest(dataset),
+        materialization_digest=_materialization_digest(dataset),
+        domain={
+            "schema_version": 1,
+            "dataset": dataset,
+            "dimensions": dimensions,
+        },
+    )
+
+
+def _load_torchvision(
+    context: DataArtifactLoadContext,
+    *,
+    dataset: str,
+) -> TorchvisionImageArtifactPayload:
+    try:
+        domain = _strict_mapping(
+            dict(context.domain),
+            fields=_DOMAIN_FIELDS,
+            label="torchvision artifact domain",
+        )
+        if (
+            type(domain["schema_version"]) is not int
+            or domain["schema_version"] != 1
+            or domain["dataset"] != dataset
+        ):
+            raise ValueError("torchvision artifact domain is incompatible")
+        if context.identity.source_digest != _source_digest(dataset):
+            raise ValueError("torchvision source identity is invalid")
+        if (
+            context.identity.materialization_digest
+            != _materialization_digest(dataset)
+        ):
+            raise ValueError("torchvision materialization identity is invalid")
+        dimensions = load_torchvision_dimensions(
+            context.data_root,
+            dataset_name=dataset,
+            expected_record=cast(Mapping[str, object], domain["dimensions"]),
+        )
+        partitions = torchvision_datasets(
+            dataset,
+            context.data_root,
+            download=False,
+        )
+        if set(partitions) != set(dimensions):
+            raise ValueError("torchvision artifact partitions are incompatible")
+        for role, partition in partitions.items():
+            if len(partition) != len(dimensions[role]):
+                raise ValueError(
+                    f"torchvision {role} dimensions do not match its dataset"
+                )
+        return TorchvisionImageArtifactPayload(
             dataset=cast(Any, dataset),
-            root=artifact_root / "data",
+            root=context.data_root,
             train_dimensions=dimensions["train"],
             validation_dimensions=dimensions.get("validation"),
             test_dimensions=dimensions.get("test"),
-        ),
-    )
+        )
+    except DataArtifactValidationError:
+        raise
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise DataArtifactValidationError(str(exc)) from exc
 
 
 @IMAGE_DATA_SOURCES.register("torchvision")
 class TorchvisionImageDataSource(ImageDataSource):
-    """Acquire and content-address one allowlisted torchvision dataset."""
+    """Acquire one allowlisted dataset through the managed artifact store."""
 
     def materialize(
         self,
         context: DataSourceContext,
-    ) -> ManagedDataArtifact[TorchvisionImageArtifactPayload]:
+    ) -> DataArtifact[TorchvisionImageArtifactPayload]:
         config = cast(
             TorchvisionImageSourceConfig,
             coerce_config_section(
@@ -477,244 +386,26 @@ class TorchvisionImageDataSource(ImageDataSource):
             ),
         )
         config.validate(path=f"{self.config_path}.params")
-        expected = context.expected_identity
-        pointer = (
-            context.cache_root
-            / "managed"
-            / "torchvision"
-            / config.dataset
-            / "current.json"
-        )
-        if expected is not None:
-            if not isinstance(expected, ManagedDataArtifactIdentity):
-                raise ValueError(
-                    "strict resume expected a different data artifact kind"
-                )
-            if expected.source_name != "torchvision":
-                raise ValueError(
-                    "strict resume expected a different managed data source"
-                )
-            artifact_digest: str | None = expected.artifact_digest
-        else:
-            artifact_digest = read_locator_for_policy(
-                context.cache_root,
-                pointer,
-                policy=context.policy,
-                quarantine_on_error=False,
-            )
-        artifact_parent = (
-            context.cache_root
-            / "managed"
-            / "torchvision"
-            / config.dataset
-            / "artifacts"
-        )
-        if artifact_digest is not None:
-            try:
-                artifact = load_managed_torchvision(
-                    artifact_parent / artifact_digest,
-                    dataset=config.dataset,
-                    verification=context.verification,
-                )
-                if expected is not None and artifact.identity != expected:
-                    raise ValueError(
-                        "strict resume managed data identity does not match"
-                    )
-                return artifact
-            except (FileNotFoundError, OSError, TypeError, ValueError):
-                if context.policy == "require":
-                    raise
-        if context.policy == "require":
-            raise FileNotFoundError(
-                f"required torchvision artifact is missing: {config.dataset}"
-            )
-        lock = (
-            context.cache_root
-            / "managed"
-            / "torchvision"
-            / config.dataset
-            / "materialize.lock"
-        )
-        with ArtifactMaterializationLock(
-            lock,
-            cache_root=context.cache_root,
-        ):
-            winner_digest = (
-                expected.artifact_digest
-                if expected is not None
-                else read_locator_for_policy(
-                    context.cache_root,
-                    pointer,
-                    policy="ensure",
-                )
-            )
-            if winner_digest is not None:
-                winner_root = artifact_parent / winner_digest
-                try:
-                    winner = load_managed_torchvision(
-                        winner_root,
-                        dataset=config.dataset,
-                        verification=context.verification,
-                    )
-                    if expected is not None and winner.identity != expected:
-                        raise ValueError(
-                            "strict resume managed data identity does not match"
-                        )
-                    return winner
-                except (FileNotFoundError, OSError, TypeError, ValueError):
-                    if path_exists_without_following(
-                        context.cache_root,
-                        winner_root,
-                    ):
-                        quarantine_path(context.cache_root, winner_root)
-            staging = artifact_parent / f".staging.{uuid4().hex}"
-            data_root = staging / "data"
-            create_cache_directory(
-                context.cache_root,
-                staging,
-                label="managed artifact staging directory",
-            )
-            create_cache_directory(
-                context.cache_root,
+        return DataArtifactStore(context).materialize_managed(
+            artifact_type=_ARTIFACT_TYPE,
+            source_name="torchvision",
+            materializer_name=_MATERIALIZER_NAME,
+            locator_key={"dataset": config.dataset},
+            build=lambda data_root: _build_torchvision(
                 data_root,
-                label="managed artifact data directory",
-            )
-            try:
-                partitions = torchvision_datasets(
-                    config.dataset,
-                    data_root,
-                    download=True,
-                )
-                write_torchvision_dimensions(
-                    context.cache_root,
-                    staging,
-                    dataset_name=config.dataset,
-                    partitions=partitions,
-                )
-                files = managed_files(staging, hash_contents=True)
-                source_digest = canonical_digest(files)
-                materializer_name = "stochaflow.torchvision-download"
-                materialization_digest = canonical_digest(
-                    {
-                        "name": materializer_name,
-                        "version": 2,
-                        "dataset": config.dataset,
-                    }
-                )
-                artifact_digest = canonical_digest(
-                    {
-                        "kind": "managed",
-                        "artifact_type": "stochaflow.torchvision-image.v2",
-                        "source_name": "torchvision",
-                        "source_digest": source_digest,
-                        "materializer_name": materializer_name,
-                        "materialization_digest": materialization_digest,
-                    }
-                )
-                manifest = {
-                    "schema_version": 1,
-                    "kind": "managed",
-                    "artifact_type": "stochaflow.torchvision-image.v2",
-                    "source_name": "torchvision",
-                    "source_digest": source_digest,
-                    "materializer_name": materializer_name,
-                    "materialization_digest": materialization_digest,
-                    "artifact_digest": artifact_digest,
-                    "files": list(files),
-                }
-                manifest_bytes = canonical_json_bytes(manifest)
-                write_cache_file(
-                    context.cache_root,
-                    staging / "manifest.json",
-                    manifest_bytes,
-                    label="managed artifact manifest",
-                )
-                staging_identity = managed_identity(
-                    manifest,
-                    manifest_sha256=sha256_bytes(manifest_bytes),
-                )
-                if expected is not None and staging_identity != expected:
-                    raise ValueError(
-                        "strict resume managed data identity does not match"
-                    )
-                final = artifact_parent / artifact_digest
-                if path_exists_without_following(context.cache_root, final):
-                    try:
-                        winner = load_managed_torchvision(
-                            final,
-                            dataset=config.dataset,
-                            verification="full",
-                        )
-                    except (FileNotFoundError, OSError, TypeError, ValueError):
-                        quarantine_path(context.cache_root, final)
-                    else:
-                        remove_cache_directory(
-                            context.cache_root,
-                            staging,
-                            label="managed artifact staging directory",
-                        )
-                        if expected is not None and winner.identity != expected:
-                            raise ValueError(
-                                "strict resume managed data identity "
-                                "does not match"
-                            )
-                        if expected is None:
-                            write_locator(
-                                context.cache_root,
-                                context.cache_root
-                                / "managed"
-                                / "torchvision"
-                                / config.dataset
-                                / "current.json",
-                                winner.identity.artifact_digest,
-                            )
-                        return winner
-                publish_cache_directory(
-                    context.cache_root,
-                    staging,
-                    final,
-                    label="managed artifact",
-                )
-                artifact = load_managed_torchvision(
-                    final,
-                    dataset=config.dataset,
-                    verification=context.verification,
-                )
-                if expected is not None and artifact.identity != expected:
-                    raise ValueError(
-                        "strict resume managed data identity does not match"
-                    )
-                if expected is None:
-                    write_locator(
-                        context.cache_root,
-                        context.cache_root
-                        / "managed"
-                        / "torchvision"
-                        / config.dataset
-                        / "current.json",
-                        artifact.identity.artifact_digest,
-                    )
-                return artifact
-            except BaseException:
-                if path_exists_without_following(
-                    context.cache_root,
-                    staging,
-                ):
-                    remove_cache_directory(
-                        context.cache_root,
-                        staging,
-                        label="managed artifact staging directory",
-                    )
-                raise
+                dataset=config.dataset,
+            ),
+            load=lambda load_context: _load_torchvision(
+                load_context,
+                dataset=config.dataset,
+            ),
+        )
 
 
 __all__ = [
     "TorchvisionImageDataSource",
     "TorchvisionImageSourceConfig",
-    "load_managed_torchvision",
     "load_torchvision_dimensions",
-    "managed_files",
-    "managed_identity",
     "torchvision_datasets",
     "torchvision_dimension_table",
     "write_torchvision_dimensions",

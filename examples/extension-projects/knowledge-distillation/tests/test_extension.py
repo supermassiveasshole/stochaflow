@@ -56,8 +56,7 @@ def test_components_are_namespaced_and_registered() -> None:
 
 def test_synthetic_data_is_deterministic() -> None:
     params = {
-        "source": {
-            "name": "synthetic",
+        "synthetic": {
             "input_features": 3,
             "num_classes": 2,
             "train_samples": 8,
@@ -72,6 +71,8 @@ def test_synthetic_data_is_deterministic() -> None:
     second_inputs, second_labels = next(iter(second.train))
     assert torch.equal(first_inputs, second_inputs)
     assert torch.equal(first_labels, second_labels)
+    assert first.artifact_bindings is None
+    assert second.artifact_bindings is None
 
 
 @pytest.mark.parametrize("noise_std", [float("nan"), float("inf")])
@@ -79,8 +80,7 @@ def test_synthetic_data_rejects_non_finite_noise(noise_std: float) -> None:
     builder = ClassificationDataBuilder(
         DataBuilderContext(
             {
-                "source": {
-                    "name": "synthetic",
+                "synthetic": {
                     "train_samples": 8,
                     "validation_samples": 4,
                     "test_samples": 4,
@@ -95,10 +95,24 @@ def test_synthetic_data_rejects_non_finite_noise(noise_std: float) -> None:
         builder.build()
 
 
+def test_synthetic_builder_rejects_external_source_configuration() -> None:
+    builder = ClassificationDataBuilder(
+        DataBuilderContext(
+            {
+                "source": {"name": "torchvision", "download": True},
+                "loader": {"batch_size": 4},
+            },
+            seed=7,
+        )
+    )
+
+    with pytest.raises(ValueError, match="unknown data builder params: source"):
+        builder.build()
+
+
 def test_shuffle_order_is_epoch_derived_and_resume_rebuild_safe() -> None:
     params = {
-        "source": {
-            "name": "synthetic",
+        "synthetic": {
             "input_features": 3,
             "num_classes": 2,
             "train_samples": 12,
@@ -130,8 +144,7 @@ def test_shuffle_order_is_epoch_derived_and_resume_rebuild_safe() -> None:
 
 def test_shuffle_false_preserves_sequential_order() -> None:
     params = {
-        "source": {
-            "name": "synthetic",
+        "synthetic": {
             "input_features": 3,
             "num_classes": 2,
             "train_samples": 8,
@@ -214,6 +227,9 @@ def test_builder_freezes_teacher_and_strategy_updates_only_student(
     plan = _distillation_plan(bootstrap)
     student = plan.primary_model
     teacher = plan.auxiliary_modules["teacher"].module
+    assert plan.inference_recipe is not None
+    assert plan.inference_recipe.name == f"{_PREFIX}.predictions"
+    assert dict(plan.inference_recipe.contract) == {"input_features": 3}
     assert not teacher.training
     assert all(not parameter.requires_grad for parameter in teacher.parameters())
 
@@ -330,3 +346,40 @@ def test_sampling_builds_only_student_predictions() -> None:
         torch.Size((1, 2)),
     ]
     assert output.metadata["workflow"] == "student-only-classification"
+
+
+def test_sampling_requires_checkpoint_input_width_contract() -> None:
+    model = StudentClassifier(input_features=3, hidden_features=4, num_classes=2)
+    state = {
+        name: value.detach().clone()
+        for name, value in model.state_dict().items()
+    }
+    provider = InferenceModelProvider(
+        model_factory=lambda: StudentClassifier(
+            input_features=3,
+            hidden_features=4,
+            num_classes=2,
+        ),
+        raw_state_dict=state,
+        ema_state_dict=None,
+        device=torch.device("cpu"),
+        prefer_ema=False,
+    )
+    builder = StudentPredictionBuilder(
+        SamplingBuilderContext(
+            params={"weights": "raw"},
+            process=None,
+            model_provider=provider,
+            device=torch.device("cpu"),
+            seed=9,
+            shape=None,
+            num_samples=2,
+            batch_size=2,
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="inference recipe requires input_features",
+    ):
+        builder.run()

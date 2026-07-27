@@ -17,8 +17,8 @@ CLI 安装在同一 Python environment。Stochaflow 不扫描源码目录、工�
 | `models` | `torch.nn.Module` 类 | `model.name` |
 | `noise_schedules` | `GaussianNoiseSchedule` 类 | `process.params.schedule` |
 | `processes` | `Process` 类 | `process.name` |
-| `samplers` | `Sampler` 类 | SamplingBuilder 专属参数 |
-| `sampling_builders` | `SamplingBuilder` 类 | `sampling.builder.name` |
+| `samplers` | `Sampler` 类 | `sampling.sampler`，或 checkpoint recipe 的 fixed contract |
+| `sampling_builders` | `SamplingBuilder` 类 | `TrainingPlan.inference_recipe.name` 固化进 checkpoint；sample request 不直接选择 |
 | `training_builders` | `TrainingBuilder` 类 | `training.name` |
 | `objectives` | `torch.nn.Module` 类 | `objective.name` |
 | `optimizers` | 第三方 `torch.optim.Optimizer` 子类 | `optimizer.name` |
@@ -30,7 +30,7 @@ Dataset、partition、degradation、PyTorch 数据 sampler、collate 和 DataLoa
 全局 Registry。`IMAGE_DATA_SOURCES` 是内置 image recipes 专用的窄 source-adapter
 Registry，不属于 `RegistryCatalog`，也不是通用 Dataset Registry。一个自定义
 `DataBuilder` 完整拥有不同的数据组合及其兼容性。生成算法的 `Sampler` 则通过
-`REGISTRIES.samplers` 注册，由 SamplingBuilder 组合。
+`REGISTRIES.samplers` 注册，由 checkpoint 选定的 SamplingBuilder 组合。
 
 标准 PyTorch optimizer 和 LR scheduler 不在上述 Registry 中逐项注册。配置可以直接写
 受限原生 target：
@@ -117,8 +117,9 @@ distribution 的聚合注册模块，`my-project.physics-operator` 选择该模�
 - 写 `plugins: null`：显式选择当前环境发现的全部插件；
 - 写非空列表：只选择精确匹配的 entry-point names；
 - resolved config 始终保存经过解析的确定插件列表，不保存 `null`；
-- sampling-only overlay 若明确包含 `extensions.plugins`，该值完整替换 checkpoint selection，
-  不执行追加或去重 merge；仅写 `extensions: {}` 则保留 checkpoint selection。
+- partial sample request 若明确包含 `extensions.plugins`，该列表只追加插件；不能删除
+  checkpoint-required selection，也不能写 `null`。仅写 `extensions: {}` 或空列表保留
+  checkpoint selection。
 
 `load_config()` 与 `load_config_dict()` 是无副作用解析函数，不导入插件。runtime 先发现
 distribution metadata、解析 selection，并在任何插件代码运行前检查 checkpoint 中保存的
@@ -144,9 +145,9 @@ point、缺失插件、非 module target、非法 distribution metadata 或导�
 checkpoint 保存 entry-point name、distribution、version 和 target，但不保存或 freeze
 extension class/source。恢复时必须在当前 CLI 环境安装相应 distribution：
 
-- checkpoint config 作为 base 时，resolved plugin names 必须与 checkpoint provenance
-  完全一致；完整外部 sampling config 或显式 plugin overlay 可以增加/删除 selection，但
-  复用的同名插件仍必须通过 identity/version 检查；
+- strict resume 与 checkpoint-only inference 使用 checkpoint selection；partial sample
+  request 可以追加插件，但不能删除 checkpoint provenance 中的 required selection；
+- 复用的同名插件仍必须通过 identity/version 检查，新增插件也进入本次 sampling manifest；
 - name、distribution 或 target 变化是 identity mismatch，始终失败；
 - 仅 version 不一致时，CLI 会在导入插件前集中警告并在交互式终端询问，默认答案为 No；
 - 非交互式运行默认失败；`--force-extension-version-mismatch` 可明确接受版本差异，但不会
@@ -161,17 +162,17 @@ editable install 在版本号不变时修改源码无法由 distribution metadat
 
 训练 manifest、checkpoint metadata 和 sampling manifest 还保存
 `selected_components`，列出最终 typed config 选择的 DataBuilder、model、
-TrainingBuilder、Objective、Process、optimizer、scheduler、SamplingBuilder、writers、
+TrainingBuilder、Objective、Process、optimizer、scheduler、checkpoint sampling recipe、
+writers、
 loggers 和 diagnostics。这个摘要保留显式 `null` 与列表顺序，但不会遍历任何 `params`：
 具体 sampler、noise schedule、teacher、source 或 condition 仍由其 Builder/Process
 私有拥有。它用于快速审计，不冻结 class/source，不参与 Registry dispatch、plugin
 ownership 推断或 compatibility 判断；checkpoint 中的完整 config 与 runtime state
 仍是恢复权威。
 
-当前 checkpoint v9 使用 `torch.load(..., weights_only=True)`，payload 只允许
-Tensor、primitive 和普通 container。runtime 还可以按
-[受限迁移规则](compatibility-and-migration.md#v8-到-v9-的受限迁移)读取 legacy v8。
-扩展组件的 `state_dict` 或 extra state 也必须编码为这些数据类型；不能要求
+当前 checkpoint v10 使用 `torch.load(..., weights_only=True)`，payload 只允许
+Tensor、primitive 和普通 container，且不读取旧格式。扩展组件的 `state_dict`、
+extra state 与 `SamplingRecipe.contract` 也必须编码为受支持的数据类型；不能要求
 `safe_globals`、保存自定义 class instance 或 custom Tensor subclass。这个约束让 runtime
 能在导入扩展前安全读取 config/provenance，但不是针对恶意超大 Tensor 的完整资源沙箱。
 
@@ -233,8 +234,17 @@ registration 在 runtime 激活 YAML 选中的插件后发生。
 `ImageDataSource`、`IMAGE_DATA_SOURCES`、`DataArtifact`、identity/binding 类型以及公开
 image payload 是受限的 source-adapter 契约：source 只读取、处理并物化带 identity 的
 artifact，不构造 Dataset、transform、sampler 或 DataLoader。标准
-`ClassLabeledImageFolderArtifactPayload` 由内置 `class_labeled_image` Builder 消费；
-只有不同的 payload/batch 生命周期才需要注册自定义 DataBuilder。
+`ClassLabeledImageFolderArtifactPayload` 只是数据载体；内置 `class_labeled_image`
+Builder 还要求没有 native validation，并拥有自己的 derived holdout、augmentation、
+sampler、loader、resume 与 batch contract。只有 artifact 完整契约和这些 runtime recipe
+语义都匹配时才使用 Source-only extension，否则注册自定义 DataBuilder。
+
+自定义 DataSource 必须从 `stochaflow.extensions` 使用 `DataArtifactStore`。managed 与
+referenced producer 共享一个 schema-v2 manifest/cache lifecycle，并都返回统一
+`DataArtifact`；前者由 cache 拥有内容，后者只拥有索引并引用 cache 外部内容。
+extension 只实现领域 build/load callback，不自行计算最终 identity，也不维护 locator、
+locking、publication 或 quarantine。完整符号与 callback 契约见
+[Extension 公共 API](../api/extensions.md)。
 
 需要查看跨 data/training/sampling 三条扩展轴的完整实现时，参考两个彼此独立、可安装的
 [纵向扩展项目](reference-projects.md)。它们分别展示 Physics reconstruction 对离散

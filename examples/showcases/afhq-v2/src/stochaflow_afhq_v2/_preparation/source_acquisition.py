@@ -27,7 +27,7 @@ from .downloading import (
     _quarantine_invalid_download,
     download_official_archive,
 )
-from .locking import ArtifactPreparationLock
+from .locking import SourceAcquisitionLock
 from .safe_file import (
     _open_regular_file_without_links,
     _regular_file_state,
@@ -182,9 +182,8 @@ def acquire_official_archive(
     raw_root = cache_root / "raw" / "afhq-v2"
     internal_download = raw_root / ".downloads" / lock.archive_name
     locks_root = cache_root / ".locks"
-    with ArtifactPreparationLock(
+    with SourceAcquisitionLock(
         locks_root / "afhq-v2-download.lock",
-        cache_root=cache_root,
     ):
         if archive_override is not None:
             candidate = lexical_absolute_path(archive_override)

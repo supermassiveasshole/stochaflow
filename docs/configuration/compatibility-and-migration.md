@@ -4,10 +4,29 @@
 Stochaflow 不把 checkpoint 当作源码或环境快照，也不会静默猜测其他 checkpoint 格式的
 语义。
 
-## Checkpoint v9
+## Data artifact schema v2 是 breaking boundary
 
-当前 writer 只生成 `format_version: 9`。runtime 接受 v9，也接受满足下述严格迁移规则的
-v8；其他版本在修改任何 runtime state 前失败。payload 通过
+当前 `DataArtifactIdentity`、`DataArtifactBindings`、manifest、locator 和 cache layout
+只接受 schema v2。框架有意不提供旧格式 reader、alias、dual lookup 或 cache/checkpoint
+migration：
+
+- managed/referenced 现在共用一个 `DataArtifact` runtime handle 与
+  `DataArtifactStore` lifecycle；
+- cache 位于 `<cache_root>/data-artifacts/v2/...`，旧目录不会被发现或自动删除；
+- 升级后应以 `policy: ensure` 重新 materialize AFHQ、Torchvision、image-folder、
+  paired-folder 与 Physics 输入；
+- 保存旧 artifact binding 的 checkpoint 不能 strict resume，应启动新 run；
+- `require` 不会将旧 cache 转换为新格式，也不会产生任何修复写入。
+
+这是数据 artifact 格式的断代，不改变 `DataSource → DataArtifact → DataBuilder →
+DataLoaders` 的职责边界。完全 synthetic、没有外部 artifact binding 的 recipe 不受该
+格式迁移影响。
+
+## Checkpoint v10
+
+当前 writer 和 runtime 只接受 `format_version: 10`；不读取或迁移 v8/v9。旧
+checkpoint 不能 strict resume，也不能作为 `stochaflow sample` 的输入，应由新运行重新
+生成。payload 通过
 `torch.load(..., weights_only=True)` 读取，并递归限制为 Tensor/Parameter、primitive 和
 普通 `dict`、`OrderedDict`、`list`、`tuple` 等 data-only 值。
 
@@ -20,13 +39,16 @@ v8；其他版本在修改任何 runtime state 前失败。payload 通过
 - EMA runtime shadows 与可直接推理的 EMA model projection；
 - `precision_kind`，以及仅在 `fp16-mixed` 时存在的 GradScaler class/state；
 - 始终存在的 typed `inference_asset_descriptors` mapping；没有外部推理资产时为 `{}`；
+- 始终存在的 `inference_recipe`；`null` 表示不支持 checkpoint-backed inference，
+  否则严格保存 `{schema_version: 1, name, contract}`；
 - Python、NumPy、Torch CPU 及可用 CUDA/MPS 的 epoch-boundary RNG snapshot；
 - extension provenance、lineage、`selected_components` 和可选 data artifact bindings。
 
-v9 恢复是事务性的。manager 先验证完整 header、precision/scaler topology、inference
-descriptors、module key/shape/dtype/layout、optimizer parameter groups、scheduler、
-EMA 与可选资产拓扑，再加载 state；后期 load hook 或任一资产失败时，已触及的 runtime
-对象会回滚到恢复前快照。strict resume 因而是完整恢复，不是 weights-only warm start。
+v10 恢复是事务性的。manager 先验证完整 header、precision/scaler topology、inference
+descriptors、fixed inference recipe、module key/shape/dtype/layout、optimizer parameter
+groups、scheduler、EMA 与可选资产拓扑，再加载 state；后期 load hook 或任一资产失败时，
+已触及的 runtime 对象会回滚到恢复前快照。strict resume 因而是完整恢复，不是
+weights-only warm start。
 
 可选资产按“存在性 + state”严格配对：runtime 有 Process/Objective 时 checkpoint 必须有
 对应 state，runtime 没有时 payload 也不能含该 key。辅助资产名称、
@@ -55,28 +77,28 @@ micro-batch 数归一化。只有成功的 optimizer update 才推进 global ste
 EMA 和 update-level diagnostics。precision、scaler state 和 accumulation 都属于 strict
 resume config/state 边界，不能通过 observability overlay 改写。
 
-### v8 到 v9 的受限迁移
+### v9 到 v10 是 breaking migration
 
-v8 只在没有任何 v9-only header/config 字段时迁移。runtime 确定性补入：
+v10 把训练时确定的 inference composition 从用户可改写的 sampling 配置中移出，固定为
+checkpoint `inference_recipe`。框架不会根据旧 `sampling.builder` 猜测 recipe，不会为
+v9 payload 补写 contract，也不提供 dual reader。迁移方式是用新 schema 启动 fresh run；
+无法仅通过编辑 YAML 把旧 checkpoint 升级为可信 v10。
 
-```yaml
-format_version: 9
-precision_kind: fp32
-inference_asset_descriptors: {}
-config:
-  trainer:
-    precision: fp32
-    accumulate_grad_batches: 1
-```
+旧 sampling 文件也不再有效：
 
-v8 不能携带或推断 GradScaler state，也不能被解释为历史 FP16/BF16 或 accumulation
-训练。若一个标记为 v8 的 payload 已含 precision、accumulation、scaler 或 descriptors
-等 v9-only 字段，迁移直接拒绝，而不是猜测它们的来源。迁移只规范 header；其余资产、
-class identity、RNG 和 data provenance 仍按当前 strict restore 规则验证。
+| 旧字段/行为 | v10 替换 |
+| --- | --- |
+| `sampling.builder.name` | 由 `TrainingPlan.inference_recipe.name` 固化进 checkpoint |
+| `sampling.builder.params.prediction_type` 等训练语义 | `inference_recipe.contract`，request 不可覆盖 |
+| `sampling.builder.params.sampler` | `sampling.sampler` |
+| 其他 Builder 可调参数 | `sampling.options` |
+| sampling-only 整段 replacement | partial sample request；普通字段继承 checkpoint |
+| 完整外部 config + checkpoint | 不支持；`sample` 必须以显式 checkpoint 为唯一 base |
+| `extensions.plugins` 替换 selection | 只追加，不得删除 checkpoint-required plugin |
 
 ### 不在 checkpoint 中的状态
 
-v9 不保存：
+v10 不保存：
 
 - extension 的 Python class、源码、wheel、依赖环境或 lockfile；
 - DataBuilder/TrainingBuilder/Strategy/SamplingBuilder 实例；
@@ -92,12 +114,11 @@ CPU/CUDA/MPS RNG snapshot 只覆盖相应全局 generator，不扩展 DataLoader
 私有 generator 的持久化边界。需要 epoch-boundary 逐 batch 重建的 DataBuilder 应使用
 epoch-aware sampler 和 stateless `(seed, epoch, sample identity)` augmentation。
 
-sampling 使用单独的 inference view：它只保留 model、可选 EMA、可选 Process、声明的
-inference assets 和必要 metadata，不构建或加载 Objective、optimizer、scheduler 或其他
-training-only assets。checkpoint config 或 sampling-only overlay 会保留 checkpoint 的
-Process 声明和 state 配对；完整外部 sampling config 可以声明 `process: null` 并忽略未
-使用的 Process state。无论哪条路径，实际构建的 model/Process 仍必须严格加载被复用的
-state。
+`sample` 使用单独的 inference view：它只保留 model、可选 EMA、可选 Process、声明的
+inference assets、fixed recipe 和必要 metadata，不构建或加载 Objective、optimizer、
+scheduler 或其他 training-only assets。checkpoint config 始终保留 Process 声明与 state
+配对；sample request 不能删除或替换 model、Process、TrainingBuilder 或 recipe。实际构建
+的 model/Process 仍必须严格加载被复用的 state。
 
 ## Config authority
 
@@ -107,24 +128,26 @@ state。
 - strict resume 以 checkpoint 内的 config 为 base，`--config` 与 `--resume` 互斥；
   可选 `--observability-config` 只允许原子替换 `diagnostics`，以及逐字段替换显式声明的
   `logging` 字段；
-- checkpoint-only sampling 默认使用 checkpoint config；
-- sampling 可以改用一份完整外部 config，或在 checkpoint config 上应用
-  sampling-only overlay；sampling CLI flags 最后覆盖本次调用允许的字段。
+- checkpoint-backed inference 始终要求显式 `--checkpoint`，以其中的 config、state 和
+  fixed `inference_recipe` 为 base；
+- 可选 `--config` 只能是 partial sample request，顶层只允许 `sampling` 与 optional
+  `extensions`；sampling CLI runtime flags 最后覆盖 device/output 等调用事实。
 
-因此，改变采样数量、shape、Builder、Sampler 私有参数或 writer 是 sampling workflow 的
-正常能力，不构成训练配置“冲突”。resume observability config 也只能改变没有恢复状态的
-监控表面，不能改变 extension selection，也不能引入 checkpoint 未选择的 diagnostic
-provider module。它的有效配置和 provenance 会写入新兄弟 run 及其 checkpoint，旧
-logger/event 文件不会续写。除此之外，resume 不接受任意模型、训练资产或 optimizer
-替换；需要改变它们时应启动新的训练 workflow。
+request 可改变 shape、数量、batch、seed、Sampler、writers 和 recipe 公开的 options。
+`options` 浅合并，Sampler/writers 原子替换；Builder identity 和 fixed contract 不可修改。
+resume observability config 也只能改变没有恢复状态的监控表面，不能改变 extension
+selection，也不能引入 checkpoint 未选择的 diagnostic provider module。它的有效配置和
+provenance 会写入新兄弟 run 及其 checkpoint，旧 logger/event 文件不会续写。除此之外，
+resume 不接受任意模型、训练资产或 optimizer 替换；需要改变它们时应启动新的训练
+workflow。
 
 ## `selected_components` 的含义
 
 训练 manifest、checkpoint metadata 和 sampling manifest 使用同一
 `selected_components` schema 与纯函数，分别从各自的最终 typed config 生成。一次训练的
-run manifest 与其 checkpoint metadata 保存相同值；sampling overlay 或完整外部 sampling
-config 可以合法改变 Builder/writers，因此 sampling manifest 的值可以不同。摘要显式保留
-可选 role 的 `null` 和 writers/loggers/diagnostics 的声明顺序。
+run manifest 与其 checkpoint metadata 保存相同值；sample request 可以合法改变
+Sampler/options/writers，但 `selected_components.sampling_recipe` 始终来自 checkpoint。
+摘要显式保留可选 role 的 `null` 和 writers/loggers/diagnostics 的声明顺序。
 
 该字段仅用于快速审计：
 
@@ -169,7 +192,7 @@ force；name/distribution/target identity 不匹配会失败。即使 provenance
    path 都以目标进程启动 cwd 解释；必要时从项目根运行并显式覆盖 output dir。
 5. 核对 device/backend。strict resume 若恢复 CUDA/MPS RNG，目标 backend 必须可用；
    CUDA device count 也必须兼容。跨 device、PyTorch 版本或第三方 kernel 不保证逐位一致。
-6. 先用小 batch 和有限 step 做 data/model/state-load smoke，再运行完整作业。sampling
+6. 先用小 batch 和有限 step 做 data/model/state-load smoke，再运行完整作业。inference
    不恢复 checkpoint RNG，而是按 `sampling.seed`（或 experiment seed）重新初始化。
 7. 在目标主机重新评估 RAM、accelerator memory、临时磁盘和 artifact 大小。当前 sampling
    是整体物化 contract；详细公式、基准方法和 trajectory 限制见

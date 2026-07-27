@@ -174,14 +174,37 @@ holdout 样本数为 0 或占满 train。浮点比例必须位于 0 与 1 之间
 
 降低 `num_folds`、增加训练样本，并为本次独立运行指定从 0 开始的 `fold_index`。
 
+### `required data artifact locator does not exist`
+
+`policy: require` 不会创建 cache 目录、lock、locator，也不会修复损坏候选。先确认
+`cache_root` 解析到预期位置；若这是新环境或刚升级到 schema v2，改用一次
+`policy: ensure` 重新 materialize，再恢复 `require`。
+
+旧 manifest、locator、cache layout 与 identity 不会被读取或迁移。不要手工把旧 current
+pointer 或 manifest 复制进 `data-artifacts/v2/`。
+
+### `expected data artifact identity is incompatible` / strict resume artifact mismatch
+
+strict resume 使用 checkpoint 的 schema-v2 binding 直接定位 immutable object，并强制
+`full` 验证。kind、artifact type、source、materializer 或任一 digest 不一致都会在恢复
+模型状态前失败。这不是 cache repair 场景：使用原始数据与配置重建 exact artifact，或
+启动新 run。旧 schema binding 没有 adapter，不能 strict resume。
+
+### referenced source 报 cache overlap
+
+referenced content 必须位于 `cache_root` 之外；否则 quarantine 或 cache 清理可能把外部
+数据误当成 framework-owned 内容。将数据放在例如 `./data`，把 materialization cache
+设为独立的 `./.stochaflow-cache`。
+
 ## bucket、batch 与 worker
 
 ### 一个 batch 出现不同形状
 
 自定义 DataBuilder 应通过 transform、Sampler 或 collate 保证 batch 兼容。
 `multi_resolution_image` 会在其私有实现中扫描图像尺寸、选择 bucket 并 resize/crop；
-兼容标准 payload 的新来源只需实现 ImageDataSource；若 payload 或 batch 生命周期不满足
-任何内置 recipe 的约束，再注册自己的 DataBuilder。
+新来源只有满足目标 Builder 的完整 artifact contract，且需要相同的 partition、
+transform、sampler、loader、resume 与 batch 语义时，才只需实现 ImageDataSource；
+任何一层不兼容都应注册自己的 recipe-level DataBuilder。
 
 ### batch size 与配置值不同
 
@@ -243,10 +266,10 @@ epoch 旁的 mutable `best.pt` 已被后续 epoch 覆盖，当前格式无法重
 
 Strict resume 还要求合法的 `epoch`、`global_step` 和 RNG snapshot；缺失或损坏会在修改训练
 资产前拒绝。只有 strict training resume 会从 checkpoint 恢复 RNG snapshot。普通
-checkpoint 读取不修改全局 RNG；sampling 不恢复该 snapshot，但会按 `sampling.seed`（为
-`null` 时使用 `experiment.seed`）重置 Python、NumPy 与 Torch 全局 RNG。strict resume
-恢复适用的 CPU/CUDA/MPS 全局 RNG；早期 v8 checkpoint 缺少 MPS RNG 字段时会警告，并且
-无法保证该随机流精确衔接。跨 backend 或不同 CUDA topology 不保证逐位复现。
+checkpoint 读取不修改全局 RNG；checkpoint-backed inference 不恢复该 snapshot，但会按
+resolved `sampling.seed`（为 `null` 时使用 checkpoint config 的 `experiment.seed`）
+重置 Python、NumPy 与 Torch 全局 RNG。strict resume 恢复适用的 CPU/CUDA/MPS 全局
+RNG；跨 backend 或不同 CUDA topology 不保证逐位复现。
 DataBuilder/DataLoader/Sampler/worker 的运行态不进入 checkpoint。内置图像 recipe 会从
 seed 与 epoch 重建 shuffle/batch 索引，但 worker 中的随机 crop/flip state 不恢复，因此
 这类增强不保证逐位连续。自定义随机 loader 应由 seed 与 epoch 确定，并按需实现
@@ -259,19 +282,32 @@ reference provider 会在 MPS 运行中把 FID feature accumulation 和 compute 
 KID 不使用这条 fallback，仍保留配置的 runtime device。CPU transfer 可能增加 diagnostic
 耗时，但不会改变训练资产所在设备。
 
-### 完整外部 sampling config 加载 checkpoint state 失败
+### `sample` 拒绝完整 config 或缺少 checkpoint
 
-同时传完整 `--config` 与 `--checkpoint` 时，外部 config 整体权威，checkpoint 只提供
-state；核心不会先比较两份完整配置。可以自由改变 sampling 数量、shape、Builder、Sampler、
-solver、trajectory、writers 和 raw/EMA 选择。primary model 始终必须满足 checkpoint
-state contract；若外部 config 选择 Process，该 Process 也必须严格加载对应 state。
-完整外部 config 还可以明确写 `process: null`，用兼容的 direct-transform Builder 丢弃
-checkpoint 中未使用的 Process state。除此之外的 missing/unexpected key 或 shape mismatch
-应通过修改外部组件配置解决，而不是期待自动 merge。
+v10 `sample` 必须显式提供 `--checkpoint`。可选 `--config` 是 partial sample request，
+不是另一份完整实验配置；顶层只能包含 `sampling` 与 optional `extensions`。model、
+Process、TrainingBuilder 和内部 SamplingBuilder 都由 checkpoint config/recipe 决定。
 
-只想改变 sampling 时，可以提供仅含完整 `sampling` 段与可选 `extensions` 的 lightweight
-overlay。`extensions: {}` 保留 checkpoint selection；只有明确写出 `extensions.plugins`
-才完整替换列表，不与 checkpoint 插件追加。
+若要改变可调 inference 行为，只声明需要覆盖的字段。普通字段继承 checkpoint；
+`sampling.options` 做一层 key merge，`sampling.sampler` 与 `sampling.writers` 在显式
+提供时原子替换。`sampling.run_after_training`、`sampling.builder`、完整
+`experiment/model/process` 等字段会被明确拒绝。
+
+### sample request 无法覆盖某个 option
+
+checkpoint v10 的 `inference_recipe.contract` 固定训练时语义。request 的
+`sampling.options` 若使用同名 key 会失败；例如 Gaussian recipe 已固定
+`prediction_type`，不能把 epsilon checkpoint 当作 v-prediction 使用。
+`sampling.options.sampler` 也始终非法，应把可替换求解器声明放在
+`sampling.sampler`。如果 recipe contract 自己固定 sampler，则顶层 sampler 同样不能
+替换；需要新的训练/recipe，而不是绕过 contract。
+
+### sample request 的插件没有替换 checkpoint selection
+
+这是预期行为。`extensions.plugins` 是 additive list：checkpoint-required plugins
+始终保留，请求只能追加新的 provider。`plugins: null` 被拒绝，空列表或
+`extensions: {}` 都不会删除 checkpoint selection。缺少 required distribution 时应在
+当前 CLI environment 安装它，而不是尝试从 request 中移除。
 
 ### 预期 EMA 采样但 manifest 显示 raw
 
@@ -281,7 +317,7 @@ overlay。`extensions: {}` 保留 checkpoint selection；只有明确写出 `ext
 ### trajectory 不生成
 
 对 `standard_denoising` 设置
-`sampling.builder.params.trajectory.enabled: true` 和正整数 `every_steps`。所有 Sampler
+`sampling.options.trajectory.enabled: true` 和正整数 `every_steps`。所有 Sampler
 共用 observer 契约，不再提供 sampler-specific trajectory 方法。还需声明能保存
 trajectory 的 writer，例如 `tensor` 或 `image`。
 
@@ -314,8 +350,9 @@ RSS 和编码峰值只能视为对应主机/backend 的证据，不是跨平台�
 ### `sampling.shape is required`
 
 `standard_denoising` 需要固定 shape。把单样本形状（不含 batch 维）写入
-`sampling.shape`。该值与 DataBuilder 独立，外部 sampling 配置可以覆盖它。自定义
-SamplingBuilder 可以在 shape 为 null 时构造自己的 initial state。
+`sampling.shape`。该值与 DataBuilder 独立，sample request 可以显式覆盖
+checkpoint 默认值。自定义 SamplingBuilder 可以在 shape 为 null 时构造自己的
+initial state。
 
 ### image writer 报 NCHW 或通道错误
 
@@ -324,11 +361,11 @@ Tensor 只声明 `tensor` writer，或注册领域 writer。
 
 ### `checkpoint format version ... is unsupported`
 
-当前 checkpoint writer 只生成 v9，分别保存 primary model、可选 Process/Objective、
-可选 EMA model、带 concrete class identity 的 optimizer/scheduler，以及按稳定名称组织的
-training assets。runtime 只额外接受满足
-[受限迁移规则](compatibility-and-migration.md#v8-到-v9-的受限迁移)的 legacy v8；
-v7 及更早格式会在修改 runtime state 前失败。请用当前代码重新训练或重新生成 checkpoint。
+当前 checkpoint writer/runtime 只支持 v10。它保存 primary model、可选
+Process/Objective、可选 EMA model、带 concrete class identity 的 optimizer/scheduler、
+按稳定名称组织的 training assets，以及始终存在的 `inference_recipe` 字段。v8/v9
+不读取、不补写 recipe，也不能 strict resume 或用于 `sample`；请使用新 schema 启动
+fresh run。
 
 ### 蒸馏 resume 找不到 teacher bootstrap state
 
@@ -347,11 +384,11 @@ partial-noised initial state 使用 public state time `t` 时，显式 DDIM sche
 
 ### checkpoint state 不是 weights-only 安全值
 
-当前 v9 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor
-subclass 和其他 `torch.load(..., weights_only=True)` 默认值域之外的对象；同一约束也适用
-于可迁移的 legacy v8。自定义 module、optimizer 或 scheduler 的 extra state 应转换为
-Tensor、primitive、list/tuple/dict 等普通 container；不要添加 `safe_globals` 或依赖导入
-extension class 才能读取的 pickle 对象。异常中的 state path 会定位具体非法值。
+当前 v10 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor
+subclass 和其他 `torch.load(..., weights_only=True)` 默认值域之外的对象。自定义
+module、optimizer 或 scheduler 的 extra state 应转换为 Tensor、primitive、
+list/tuple/dict 等普通 container；不要添加 `safe_globals` 或依赖导入 extension class
+才能读取的 pickle 对象。异常中的 state path 会定位具体非法值。
 
 ## 文档生成与 CI
 

@@ -11,38 +11,30 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, Sampler
 
-from stochaflow.extensions import REGISTRIES, DataBuilder, DataLoaders
+from stochaflow.extensions import (
+    REGISTRIES,
+    DataArtifact,
+    DataArtifactBinding,
+    DataArtifactBindings,
+    DataBuilder,
+    DataLoaders,
+    DataSourceMaterializationConfig,
+)
 
 from ._config import (
     copied_mapping,
     pop_bool,
     pop_int,
     pop_optional_range,
-    pop_path,
+    pop_string,
     reject_unknown,
     required_mapping,
 )
-
-
-def _open_trajectories(path: Path) -> np.ndarray:
-    if not path.is_file():
-        raise FileNotFoundError(f"trajectory array does not exist: {path}")
-    value = np.load(path, mmap_mode="r", allow_pickle=False)
-    if not isinstance(value, np.ndarray):
-        raise TypeError(f"trajectory source must be a NumPy array: {path}")
-    if value.ndim != 4:
-        raise ValueError(
-            "trajectory array must have shape [trajectory, time, height, width]"
-        )
-    if value.shape[1] < 3:
-        raise ValueError("trajectory array must contain at least three time frames")
-    if value.shape[2] < 2 or value.shape[3] < 2:
-        raise ValueError("trajectory spatial dimensions must be at least 2x2")
-    if value.shape[2] != value.shape[3] or value.shape[2] % 2:
-        raise ValueError("trajectory fields must use an even, square spectral grid")
-    if not np.issubdtype(value.dtype, np.floating):
-        raise TypeError("trajectory array must contain floating-point values")
-    return value
+from .data_source import (
+    PHYSICS_DATA_SOURCES,
+    KolmogorovTrajectoryArtifactPayload,
+    open_trajectory_array,
+)
 
 
 class TrajectoryTripletDataset(Dataset[torch.Tensor]):
@@ -51,7 +43,7 @@ class TrajectoryTripletDataset(Dataset[torch.Tensor]):
     def __init__(self, path: Path, trajectory_range: tuple[int, int]) -> None:
         self.path = path
         self.trajectory_range = trajectory_range
-        array = _open_trajectories(path)
+        array = open_trajectory_array(path)
         _, stop = trajectory_range
         if stop > array.shape[0]:
             raise ValueError(
@@ -101,7 +93,7 @@ class TrajectoryTripletDataset(Dataset[torch.Tensor]):
 
     def _data(self) -> np.ndarray:
         if self._array is None:
-            self._array = _open_trajectories(self.path)
+            self._array = open_trajectory_array(self.path)
         return self._array
 
     def __getstate__(self) -> dict[str, Any]:
@@ -241,15 +233,111 @@ def _validate_disjoint_ranges(
                 )
 
 
+def _materialize_source(
+    raw: Mapping[str, Any],
+    *,
+    builder: DataBuilder,
+) -> tuple[KolmogorovTrajectoryArtifactPayload, DataArtifactBindings]:
+    source_config = copied_mapping(raw, path="data.params.source")
+    name = pop_string(source_config, "name", path="data.params.source")
+    source_params = copied_mapping(
+        source_config.pop("params", {}),
+        path="data.params.source.params",
+    )
+    materialization = required_mapping(
+        source_config,
+        "materialization",
+        path="data.params.source",
+    )
+    reject_unknown(source_config, path="data.params.source")
+    cache_root = pop_string(
+        materialization,
+        "cache_root",
+        path="data.params.source.materialization",
+        default="./.stochaflow-cache",
+    )
+    policy = pop_string(
+        materialization,
+        "policy",
+        path="data.params.source.materialization",
+        default="ensure",
+    )
+    if policy not in {"ensure", "require"}:
+        raise ValueError(
+            "data.params.source.materialization.policy must be ensure or require"
+        )
+    verification = pop_string(
+        materialization,
+        "verification",
+        path="data.params.source.materialization",
+        default="full",
+    )
+    if verification not in {"manifest", "full"}:
+        raise ValueError(
+            "data.params.source.materialization.verification must be "
+            "manifest or full"
+        )
+    reject_unknown(
+        materialization,
+        path="data.params.source.materialization",
+    )
+    builder.context.require_artifact_ids(("source",))
+    expected = (
+        builder.context.expected_artifacts.identity_for("source")
+        if builder.context.strict_resume
+        and builder.context.expected_artifacts is not None
+        else None
+    )
+    if expected is not None and expected.source_name != name:
+        raise ValueError(
+            "strict resume expected a different registered physics data source"
+        )
+    source = PHYSICS_DATA_SOURCES.create(
+        name,
+        source_params,
+        config_path="data.params.source",
+    )
+    artifact = source.materialize(
+        DataSourceMaterializationConfig(
+            cache_root=cache_root,
+            policy=policy,
+            verification=verification,
+        ).context(
+            expected_identity=expected,
+            path="data.params.source.materialization",
+        )
+    )
+    if not isinstance(artifact, DataArtifact):
+        raise TypeError("physics data source must return DataArtifact")
+    if not isinstance(
+        artifact.payload,
+        KolmogorovTrajectoryArtifactPayload,
+    ):
+        raise TypeError(
+            "physics data source must return "
+            "KolmogorovTrajectoryArtifactPayload"
+        )
+    if artifact.identity.source_name != name:
+        raise ValueError(
+            f"physics source '{name}' returned identity for "
+            f"'{artifact.identity.source_name}'"
+        )
+    bindings = DataArtifactBindings(
+        (DataArtifactBinding(id="source", identity=artifact.identity),)
+    )
+    builder.context.verify_artifacts(bindings)
+    return artifact.payload, bindings
+
+
 @REGISTRIES.data_builders.register(
     "physics-reconstruction.kolmogorov-trajectories"
 )
 class KolmogorovDataBuilder(DataBuilder):
-    """Build raw triplet loaders from explicit trajectory ranges."""
+    """Compose trajectory views and loaders from one verified artifact."""
 
     def build(self) -> DataLoaders:
         params = copied_mapping(self.context.params, path="data.params")
-        path = pop_path(params, "path", path="data.params")
+        source_config = required_mapping(params, "source", path="data.params")
         train_range = pop_optional_range(
             params, "train_trajectories", path="data.params"
         )
@@ -270,14 +358,18 @@ class KolmogorovDataBuilder(DataBuilder):
                 "test": test_range,
             }
         )
-        train_dataset = TrajectoryTripletDataset(path, train_range)
+        payload, bindings = _materialize_source(
+            source_config,
+            builder=self,
+        )
+        train_dataset = TrajectoryTripletDataset(payload.path, train_range)
         validation_dataset = (
-            TrajectoryTripletDataset(path, validation_range)
+            TrajectoryTripletDataset(payload.path, validation_range)
             if validation_range is not None
             else None
         )
         test_dataset = (
-            TrajectoryTripletDataset(path, test_range)
+            TrajectoryTripletDataset(payload.path, test_range)
             if test_range is not None
             else None
         )
@@ -312,6 +404,7 @@ class KolmogorovDataBuilder(DataBuilder):
             validation=validation,
             test=test,
             steps_per_epoch=_steps_per_epoch(loader_params),
+            artifact_bindings=bindings,
         )
 
 

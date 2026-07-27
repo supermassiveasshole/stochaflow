@@ -1,5 +1,7 @@
 """Sampling builders, solvers, observers, and artifact writers."""
 
+from stochaflow.utils.sampling_recipe import SamplingRecipe
+
 from .builder import (
     InferenceModelProvider,
     SamplingBuilder,
@@ -63,6 +65,7 @@ __all__ = [
     "SamplingObservation",
     "SamplingObserver",
     "SamplingOutput",
+    "SamplingRecipe",
     "StandardDenoisingBuilder",
     "TensorSamplingArtifactWriter",
     "TrajectoryObserver",

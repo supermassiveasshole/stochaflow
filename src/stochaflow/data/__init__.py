@@ -1,5 +1,14 @@
 """Data builders, artifact contracts, and image-source extension points."""
 
+from .artifact_store import (
+    DataArtifactLoadContext,
+    DataArtifactStore,
+    DataArtifactValidationError,
+    ManagedDataArtifactBuild,
+    ReferencedDataArtifactBuild,
+    canonical_artifact_digest,
+    canonical_artifact_json_bytes,
+)
 from .artifacts import (
     DataArtifact,
     DataArtifactBinding,
@@ -7,10 +16,6 @@ from .artifacts import (
     DataArtifactIdentity,
     DataSource,
     DataSourceContext,
-    ManagedDataArtifact,
-    ManagedDataArtifactIdentity,
-    ReferencedDataArtifact,
-    ReferencedDataArtifactIdentity,
 )
 from .builder import (
     ClassLabeledImageDataBuilder,
@@ -36,6 +41,7 @@ from .image_contracts import (
     PairedImageFolderArtifactPayload,
     TorchvisionImageArtifactPayload,
 )
+from .recipe_config import DataSourceMaterializationConfig
 
 __all__ = [
     "IMAGE_DATA_SOURCES",
@@ -46,11 +52,15 @@ __all__ = [
     "DataArtifactBinding",
     "DataArtifactBindings",
     "DataArtifactIdentity",
+    "DataArtifactLoadContext",
+    "DataArtifactStore",
+    "DataArtifactValidationError",
     "DataBuilder",
     "DataBuilderContext",
     "DataLoaders",
     "DataSource",
     "DataSourceContext",
+    "DataSourceMaterializationConfig",
     "ImageArtifactPayload",
     "ImageDataBuilder",
     "ImageDataSource",
@@ -59,13 +69,13 @@ __all__ = [
     "ImageFilePair",
     "ImageFileRecord",
     "ImageFolderArtifactPayload",
-    "ManagedDataArtifact",
-    "ManagedDataArtifactIdentity",
+    "ManagedDataArtifactBuild",
     "MultiResolutionImageDataBuilder",
     "PairedImageFolderArtifactPayload",
-    "ReferencedDataArtifact",
-    "ReferencedDataArtifactIdentity",
+    "ReferencedDataArtifactBuild",
     "SuperResolutionDataBuilder",
     "TorchvisionImageArtifactPayload",
     "build_data_loaders",
+    "canonical_artifact_digest",
+    "canonical_artifact_json_bytes",
 ]

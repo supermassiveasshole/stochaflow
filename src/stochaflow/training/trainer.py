@@ -301,6 +301,10 @@ def _validate_checkpoint_manager(
         raise ValueError("CheckpointManager precision must match Trainer")
     if manager.grad_scaler is not precision.grad_scaler:
         raise ValueError("CheckpointManager GradScaler must match Trainer")
+    if manager.inference_recipe != plan.inference_recipe:
+        raise ValueError(
+            "CheckpointManager inference recipe must match TrainingPlan"
+        )
 
 
 def _validate_checkpoint_training_config(

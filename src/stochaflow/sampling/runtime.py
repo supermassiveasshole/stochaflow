@@ -2,7 +2,6 @@
 
 import json
 from collections.abc import Mapping
-from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,14 +31,18 @@ from stochaflow.utils.checkpoint import (
 from stochaflow.utils.config import (
     ConfigError,
     ExtensionsConfig,
+    ParsedSampleRequest,
     StochaflowConfig,
+    apply_sample_request,
     coerce_config_section,
     load_config_dict,
+    parse_sample_request,
 )
 from stochaflow.utils.device import move_module_to_device
 from stochaflow.utils.factory import build_model, build_process, resolve_device
 from stochaflow.utils.plugins import (
     ExtensionActivationPlan,
+    ExtensionIdentityError,
     ExtensionSelectionPolicy,
     ExtensionVersionPolicy,
     ResolvedExtensions,
@@ -53,7 +56,15 @@ from stochaflow.utils.run_manifest import (
     selected_component_identities,
     write_yaml_manifest,
 )
+from stochaflow.utils.sampling_recipe import (
+    SamplingRecipe,
+    resolve_sampling_recipe_params,
+    sampling_recipe_from_dict,
+    sampling_recipe_to_dict,
+)
 from stochaflow.utils.seed import set_seed
+
+_MISSING_EXTENSIONS = object()
 
 
 class SamplingCheckpointView(TypedDict, total=False):
@@ -61,6 +72,7 @@ class SamplingCheckpointView(TypedDict, total=False):
 
     format_version: int
     config: dict[str, Any]
+    inference_recipe: dict[str, Any] | None
     metadata: dict[str, Any]
     model_state_dict: dict[str, Any]
     ema_model_state_dict: dict[str, Any]
@@ -74,6 +86,7 @@ class ResolvedSamplingInputs:
     config: StochaflowConfig
     checkpoint_path: Path
     checkpoint: SamplingCheckpointView
+    recipe: SamplingRecipe
     config_source: str
     extension_plan: ExtensionActivationPlan
 
@@ -84,7 +97,7 @@ class SamplingRunResult:
 
     checkpoint_path: Path
     output_dir: Path
-    builder_name: str
+    recipe_name: str
     device: torch.device
     seed: int
     metadata: dict[str, Any]
@@ -96,61 +109,75 @@ def resolve_sampling_inputs(
     config_path: str | Path | None,
     checkpoint: str | Path | None,
 ) -> ResolvedSamplingInputs:
-    """Resolve checkpoint config and an optional sampling-section override."""
+    """Resolve one checkpoint recipe and an optional partial sample request."""
 
-    if config_path is None and checkpoint is None:
-        raise ValueError("sample requires --config, --checkpoint, or both")
-    external: StochaflowConfig | None = None
-    sampling_overlay: dict[str, Any] | None = None
+    if checkpoint is None:
+        raise ValueError("sample requires an explicit --checkpoint")
+    request: ParsedSampleRequest | None = None
+    raw_extensions: object = _MISSING_EXTENSIONS
     if config_path is not None:
         raw_external = _load_yaml_mapping(config_path)
         keys = set(raw_external)
-        if "sampling" in keys and keys <= {"sampling", "extensions"}:
-            if checkpoint is None:
-                raise ConfigError(
-                    "a sampling-only config requires an explicit --checkpoint"
-                )
-            sampling_overlay = raw_external
-        elif {"experiment", "data", "model", "training"} <= keys:
-            external = load_config_dict(raw_external)
-        else:
+        if not keys or not keys <= {"sampling", "extensions"}:
             raise ConfigError(
-                "sampling config must be either a complete Stochaflow config or "
-                "contain only 'sampling' and optional 'extensions'"
+                "sample request config may contain only 'sampling' and "
+                "optional 'extensions'"
             )
-    checkpoint_path = _resolve_checkpoint_path(checkpoint, external)
+        request = parse_sample_request(raw_external.get("sampling", {}))
+        if "extensions" in raw_external:
+            raw_extensions = raw_external["extensions"]
+    checkpoint_path = _resolve_checkpoint_path(checkpoint)
     payload = CheckpointManager.load_payload(checkpoint_path, map_location="cpu")
-    selection_policy = ExtensionSelectionPolicy.EXACT
-    if sampling_overlay is not None:
-        checkpoint_config = _load_checkpoint_config(payload)
-        config = _apply_sampling_overlay(checkpoint_config, sampling_overlay)
-        config_source = "sampling-overlay"
-        raw_extensions = sampling_overlay.get("extensions")
-        if isinstance(raw_extensions, dict) and "plugins" in raw_extensions:
-            selection_policy = ExtensionSelectionPolicy.INTERSECTION
-    elif external is not None:
-        config = external
-        config_source = "external"
-        selection_policy = ExtensionSelectionPolicy.INTERSECTION
-    else:
-        config = _load_checkpoint_config(payload)
-        config_source = "checkpoint"
+    checkpoint_config = _load_checkpoint_config(payload)
+    recipe = _load_checkpoint_recipe(payload)
     metadata = cast(object, payload.get("metadata"))
     if not isinstance(metadata, dict):
         raise TypeError("checkpoint is missing valid metadata")
     expected_provenance = parse_extension_plugin_provenance(
         metadata.get("extension_plugins")
     )
+    selection_policy = ExtensionSelectionPolicy.EXACT
+    parsed_request = request or parse_sample_request({})
+    config, added_plugins = _apply_sample_request(
+        checkpoint_config,
+        parsed_request,
+        raw_extensions=raw_extensions,
+        expected_plugin_names=tuple(
+            provenance.name for provenance in expected_provenance
+        ),
+    )
+    _sampling_recipe_params(recipe, config)
+    if request is not None:
+        config_source = "sample-request"
+        if added_plugins:
+            selection_policy = ExtensionSelectionPolicy.INTERSECTION
+    else:
+        config_source = "checkpoint"
     extension_plan = prepare_extension_plugins(
         config,
         expected_provenance=expected_provenance,
         selection_policy=selection_policy,
     )
+    selected_plugin_names = {
+        provenance.name for provenance in extension_plan.provenance
+    }
+    missing_required_plugins = sorted(
+        {
+            provenance.name for provenance in expected_provenance
+        }
+        - selected_plugin_names
+    )
+    if missing_required_plugins:
+        raise ExtensionIdentityError(
+            "sample request is missing checkpoint-required extension plugin(s): "
+            + ", ".join(missing_required_plugins)
+        )
     inference_payload = _sampling_checkpoint_view(payload)
     return ResolvedSamplingInputs(
         extension_plan.config,
         checkpoint_path,
         inference_payload,
+        recipe,
         config_source,
         extension_plan,
     )
@@ -167,14 +194,38 @@ def _load_yaml_mapping(path: str | Path) -> dict[str, Any]:
     return raw
 
 
-def _apply_sampling_overlay(
+def _apply_sample_request(
     checkpoint: StochaflowConfig,
-    overlay: dict[str, Any],
-) -> StochaflowConfig:
+    request: ParsedSampleRequest,
+    *,
+    raw_extensions: object,
+    expected_plugin_names: tuple[str, ...],
+) -> tuple[StochaflowConfig, bool]:
     merged = checkpoint.to_dict()
-    merged["sampling"] = deepcopy(overlay["sampling"])
-    if "extensions" in overlay:
-        raw_extensions = overlay["extensions"]
+    merged["sampling"] = asdict(
+        apply_sample_request(checkpoint.sampling, request)
+    )
+    added_plugins = False
+    resolved_plugins = list(expected_plugin_names)
+    checkpoint_plugins = checkpoint.extensions.plugins
+    if checkpoint_plugins is not None:
+        missing = sorted(set(expected_plugin_names) - set(checkpoint_plugins))
+        unexpected = sorted(set(checkpoint_plugins) - set(expected_plugin_names))
+        if missing or unexpected:
+            details: list[str] = []
+            if missing:
+                details.append(
+                    "missing provenance-required plugin(s): " + ", ".join(missing)
+                )
+            if unexpected:
+                details.append(
+                    "unproven config-only plugin(s): " + ", ".join(unexpected)
+                )
+            raise ExtensionIdentityError(
+                "checkpoint config extension selection conflicts with checkpoint "
+                "provenance: " + "; ".join(details)
+            )
+    if raw_extensions is not _MISSING_EXTENSIONS:
         if not isinstance(raw_extensions, dict):
             raise ConfigError("config.extensions must be a mapping")
         extensions = cast(
@@ -186,8 +237,26 @@ def _apply_sampling_overlay(
             ),
         )
         if "plugins" in raw_extensions:
-            merged["extensions"] = {"plugins": deepcopy(extensions.plugins)}
-    return load_config_dict(merged)
+            additions = extensions.plugins
+            if additions is None:
+                raise ConfigError(
+                    "sample request extensions.plugins must be an explicit list"
+                )
+            for plugin in additions:
+                if plugin not in resolved_plugins:
+                    resolved_plugins.append(plugin)
+                    added_plugins = True
+    merged["extensions"] = {"plugins": resolved_plugins}
+    config = load_config_dict(merged)
+    selected = config.extensions.plugins
+    if selected is not None:
+        missing = sorted(set(expected_plugin_names) - set(selected))
+        if missing:
+            raise ConfigError(
+                "sample request cannot remove checkpoint-required extension "
+                "plugin(s): " + ", ".join(missing)
+            )
+    return config, added_plugins
 
 
 def run_sampling(
@@ -199,7 +268,7 @@ def run_sampling(
     extension_version_policy: ExtensionVersionPolicy = ExtensionVersionPolicy.REJECT,
     extension_acceptance_method: str | None = None,
 ) -> SamplingRunResult:
-    """Run one configured SamplingBuilder and materialize its output."""
+    """Execute checkpoint-backed inference and materialize its output."""
 
     inputs = resolve_sampling_inputs(config_path=config_path, checkpoint=checkpoint)
     extensions = activate_extension_plugins(
@@ -226,9 +295,6 @@ def run_resolved_sampling(
     """Execute sampling after the caller has explicitly activated extensions."""
 
     config = extensions.config
-    declaration = config.sampling.builder
-    if declaration is None:
-        raise ValueError("sample requires sampling.builder to be configured")
     seed = config.experiment.seed if config.sampling.seed is None else config.sampling.seed
     set_seed(seed)
     device = resolve_device(device_name or config.trainer.device)
@@ -236,11 +302,11 @@ def run_resolved_sampling(
         config,
         inputs.checkpoint,
         device=device,
-        allow_unused_state=inputs.config_source == "external",
     )
     provider = _build_model_provider(config, inputs.checkpoint, device=device)
+    recipe_params = _sampling_recipe_params(inputs.recipe, config)
     context = SamplingBuilderContext(
-        params=declaration.params,
+        params=recipe_params,
         process=process,
         model_provider=provider,
         device=device,
@@ -251,7 +317,7 @@ def run_resolved_sampling(
     )
     builder = cast(
         SamplingBuilder,
-        REGISTRIES.sampling_builders.create(declaration.name, context),
+        REGISTRIES.sampling_builders.create(inputs.recipe.name, context),
     )
     with torch.no_grad():
         output_value = cast(object, builder.run())
@@ -275,7 +341,10 @@ def run_resolved_sampling(
         "checkpoint": str(inputs.checkpoint_path),
         "checkpoint_format_version": inputs.checkpoint.get("format_version"),
         **extension_runtime_metadata(extensions),
-        "selected_components": selected_component_identities(config),
+        "selected_components": selected_component_identities(
+            config,
+            sampling_recipe=inputs.recipe.name,
+        ),
         "lineage": {"checkpoint": str(inputs.checkpoint_path)},
         "startup_cwd": str(
             Path.cwd().resolve() if startup_cwd is None else Path(startup_cwd).resolve()
@@ -285,7 +354,7 @@ def run_resolved_sampling(
             "output_dir": str(output_dir) if output_dir is not None else None,
         },
         "process": asdict(config.process) if config.process is not None else None,
-        "builder": asdict(declaration),
+        "recipe": sampling_recipe_to_dict(inputs.recipe),
         "sampling": asdict(config.sampling),
         "seed": seed,
         "device": str(device),
@@ -297,7 +366,7 @@ def run_resolved_sampling(
     return SamplingRunResult(
         inputs.checkpoint_path,
         target_dir,
-        declaration.name,
+        inputs.recipe.name,
         device,
         seed,
         dict(output.metadata),
@@ -348,13 +417,7 @@ def validate_sampling_output(output: object) -> SamplingOutput:
     return output
 
 
-def _resolve_checkpoint_path(
-    checkpoint: str | Path | None,
-    external_config: StochaflowConfig | None,
-) -> Path:
-    if checkpoint is None:
-        assert external_config is not None
-        return CheckpointManager.find_best(external_config.experiment.output_dir)
+def _resolve_checkpoint_path(checkpoint: str | Path) -> Path:
     path = Path(checkpoint)
     if path.is_dir():
         return CheckpointManager.find_best(path)
@@ -378,12 +441,40 @@ def _load_checkpoint_config(payload: CheckpointState) -> StochaflowConfig:
     return load_config_dict(raw)
 
 
+def _load_checkpoint_recipe(payload: CheckpointState) -> SamplingRecipe:
+    if "inference_recipe" not in payload:
+        raise ValueError("checkpoint does not contain an inference recipe")
+    raw = cast(object, payload["inference_recipe"])
+    if raw is None:
+        raise ValueError("checkpoint does not support sampling")
+    return sampling_recipe_from_dict(raw)
+
+
+def _sampling_recipe_params(
+    recipe: SamplingRecipe,
+    config: StochaflowConfig,
+) -> dict[str, Any]:
+    try:
+        return resolve_sampling_recipe_params(
+            recipe,
+            options=config.sampling.options,
+            sampler=(
+                asdict(config.sampling.sampler)
+                if config.sampling.sampler is not None
+                else None
+            ),
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
 def _sampling_checkpoint_view(payload: CheckpointState) -> SamplingCheckpointView:
     """Drop training-only state before generated outputs begin to accumulate."""
 
     retained_keys = (
         "format_version",
         "config",
+        "inference_recipe",
         "metadata",
         "model_state_dict",
         "ema_model_state_dict",
@@ -401,11 +492,10 @@ def _build_checkpointed_process(
     payload: SamplingCheckpointView,
     *,
     device: torch.device,
-    allow_unused_state: bool = False,
 ) -> Process | None:
     has_state = "process_state_dict" in payload
     if config.process is None:
-        if has_state and not allow_unused_state:
+        if has_state:
             raise ValueError(
                 "checkpoint contains 'process_state_dict' but config.process is null"
             )

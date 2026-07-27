@@ -1,7 +1,8 @@
+# Built-in CIFAR-10 DDPM training example.
 experiment:
-  name: ddim_cifar10
+  name: ddpm_cifar10
   seed: 42
-  output_dir: outputs/ddim_cifar10
+  output_dir: outputs/ddpm_cifar10
 
 extensions:
   plugins: []
@@ -74,22 +75,20 @@ optimizer:
     eps: 1.0e-8
 
 sampling:
+  run_after_training: true
+  sampler:
+    name: ddpm
+    params: {}
+  options:
+    weights: auto
+    clip_denoised: true
+    trajectory:
+      enabled: false
+      every_steps: 1
   shape: [3, 32, 32]
   num_samples: 16
   batch_size: 16
   seed: null
-  builder:
-    name: standard_denoising
-    params:
-      weights: auto
-      prediction_type: epsilon
-      clip_denoised: true
-      sampler:
-        name: ddim
-        params: {num_inference_steps: 100, eta: 0.0}
-      trajectory:
-        enabled: false
-        every_steps: 1
   writers:
     - name: tensor
       params: {}

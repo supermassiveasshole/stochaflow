@@ -1,26 +1,4 @@
-extensions:
-  plugins: [physics-reconstruction]
 sampling:
-  shape: [3, 256, 256]
-  num_samples: 1272
-  batch_size: 4
-  seed: 42
-  builder:
-    name: physics-reconstruction.reconstruction
-    params:
-      weights: auto
-      prediction_type: epsilon
-      clip_denoised: false
-      partial_noise_time: 240
-      conditioning_strength: 1.0
-      correction_strength: 0.0
-      source: {path: data/kolmogorov_observations.npy, trajectories: [0, 4]}
-      reference: {path: data/kolmogorov.npy, trajectories: [36, 40]}
-      alignment: data/kolmogorov-alignment.json
-      sampler:
-        name: ddpm
-        params: {start_time: 240, end_time: 0}
-      trajectory: {enabled: false, every_steps: 1}
-  writers:
-    - name: physics-reconstruction.reconstruction-artifacts
-      params: {}
+  sampler:
+    name: ddpm
+    params: {start_time: 240, end_time: 0}

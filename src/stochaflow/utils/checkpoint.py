@@ -18,6 +18,12 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
 from stochaflow.utils.plugins import parse_extension_plugin_provenance
+from stochaflow.utils.sampling_recipe import (
+    SamplingRecipe,
+    sampling_recipe_from_dict,
+    sampling_recipe_to_dict,
+    validate_sampling_recipe,
+)
 
 if TYPE_CHECKING:
     from stochaflow.training.ema import EMAStateDict, ExponentialMovingAverage
@@ -26,18 +32,8 @@ else:
     ExponentialMovingAverage = Any
 
 
-CHECKPOINT_FORMAT_VERSION = 9
-
-_LEGACY_CHECKPOINT_FORMAT_VERSION = 8
+CHECKPOINT_FORMAT_VERSION = 10
 _PRECISION_KINDS = frozenset(("fp32", "bf16-mixed", "fp16-mixed"))
-_V9_ONLY_FIELDS = frozenset(
-    (
-        "precision_kind",
-        "grad_scaler_class",
-        "grad_scaler_state_dict",
-        "inference_asset_descriptors",
-    )
-)
 
 _CHECKPOINT_LEAF_TYPES = (type(None), bool, int, float, complex, str, bytes)
 
@@ -54,7 +50,7 @@ class InferenceAssetDeclaration(TypedDict):
 
 
 class InferenceAssetDescriptor(TypedDict):
-    """Version-9 projection of a managed asset needed during inference."""
+    """Checkpoint projection of a managed asset needed during inference."""
 
     training_asset_name: str
     declaration: InferenceAssetDeclaration
@@ -82,6 +78,7 @@ class CheckpointState(TypedDict, total=False):
     grad_scaler_class: str
     grad_scaler_state_dict: dict[str, Any]
     inference_asset_descriptors: dict[str, InferenceAssetDescriptor]
+    inference_recipe: dict[str, Any] | None
     rng_state: dict[str, Any]
     config: dict[str, Any]
     metrics: dict[str, float]
@@ -130,7 +127,7 @@ def validate_inference_asset_descriptors(
     *,
     path: str = "inference_asset_descriptors",
 ) -> dict[str, InferenceAssetDescriptor]:
-    """Validate and detach the fixed v9 embedded-inference-asset schema."""
+    """Validate and detach the embedded-inference-asset schema."""
 
     if type(value) is not dict:
         raise TypeError(f"{path} must be an exact dictionary")
@@ -219,6 +216,7 @@ class CheckpointManager:
     inference_asset_descriptors: dict[str, InferenceAssetDescriptor] = field(
         default_factory=dict
     )
+    inference_recipe: SamplingRecipe | None = None
 
     def __post_init__(self) -> None:
         """Validate the runtime precision assets owned by this manager."""
@@ -256,6 +254,14 @@ class CheckpointManager:
         self.inference_asset_descriptors = validate_inference_asset_descriptors(
             self.inference_asset_descriptors,
             path="checkpoint manager inference_asset_descriptors",
+        )
+        self.inference_recipe = (
+            validate_sampling_recipe(
+                self.inference_recipe,
+                path="checkpoint manager inference_recipe",
+            )
+            if self.inference_recipe is not None
+            else None
         )
         missing_assets = sorted(
             {
@@ -300,6 +306,11 @@ class CheckpointManager:
             "precision_kind": self.precision_kind,
             "inference_asset_descriptors": deepcopy(
                 self.inference_asset_descriptors
+            ),
+            "inference_recipe": (
+                sampling_recipe_to_dict(self.inference_recipe)
+                if self.inference_recipe is not None
+                else None
             ),
             "rng_state": capture_rng_state(),
         }
@@ -383,7 +394,7 @@ class CheckpointManager:
         checkpoint_metadata.setdefault("extension_plugins", [])
         state["metadata"] = checkpoint_metadata
         _validate_checkpoint_value(state, path="checkpoint")
-        _validate_v9_checkpoint_header(state)
+        _validate_v10_checkpoint_header(state)
         return state
 
     def save(
@@ -417,7 +428,7 @@ class CheckpointManager:
             raise TypeError("checkpoint payload must be an exact dictionary")
         _validate_checkpoint_value(payload, path="checkpoint")
         state = cast(CheckpointState, payload)
-        _validate_v9_checkpoint_header(state)
+        _validate_v10_checkpoint_header(state)
         _ensure_parent_directory(checkpoint_path)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{checkpoint_path.name}.",
@@ -476,6 +487,14 @@ class CheckpointManager:
             raise ValueError(
                 "checkpoint inference asset descriptors do not match runtime"
             )
+        checkpoint_recipe_value = state.get("inference_recipe")
+        checkpoint_recipe = (
+            sampling_recipe_from_dict(checkpoint_recipe_value)
+            if checkpoint_recipe_value is not None
+            else None
+        )
+        if checkpoint_recipe != self.inference_recipe:
+            raise ValueError("checkpoint inference recipe does not match runtime")
         model_state_dict = cast(object, state.get("model_state_dict"))
         if not isinstance(model_state_dict, dict):
             raise TypeError("checkpoint is missing a valid model_state_dict")
@@ -1273,158 +1292,22 @@ def _parse_rng_tensor(value: object, *, path: str) -> torch.Tensor:
 
 
 def _normalize_checkpoint_header(state: CheckpointState) -> CheckpointState:
-    """Validate and normalize a supported checkpoint header to effective v9."""
+    """Validate the only supported checkpoint header."""
 
     version = cast(object, state.get("format_version"))
     if type(version) is not int:
         raise TypeError("checkpoint format_version must be an exact integer")
-    if version == _LEGACY_CHECKPOINT_FORMAT_VERSION:
-        normalized = _migrate_v8_checkpoint(state)
-    elif version == CHECKPOINT_FORMAT_VERSION:
-        normalized = state
-    else:
+    if version != CHECKPOINT_FORMAT_VERSION:
         raise ValueError(
             f"checkpoint format version {version!r} is unsupported; "
-            "supported versions are 8 and 9"
+            f"expected version {CHECKPOINT_FORMAT_VERSION}"
         )
-    _validate_v9_checkpoint_header(normalized)
-    return normalized
+    _validate_v10_checkpoint_header(state)
+    return state
 
 
-def _migrate_v8_checkpoint(state: CheckpointState) -> CheckpointState:
-    """Strictly migrate an unextended v8 payload into the effective v9 shape."""
-
-    smuggled_fields = sorted(_V9_ONLY_FIELDS.intersection(state))
-    if smuggled_fields:
-        raise ValueError(
-            "v8 checkpoint contains v9-only field(s): "
-            + ", ".join(smuggled_fields)
-        )
-    config_value = cast(object, state.get("config"))
-    if config_value is None:
-        config: dict[str, Any] = {}
-    elif type(config_value) is not dict:
-        raise TypeError("v8 checkpoint config must be an exact dictionary")
-    else:
-        config = cast(dict[str, Any], config_value)
-    smuggled_config_fields = sorted(_V9_ONLY_FIELDS.intersection(config))
-    if smuggled_config_fields:
-        raise ValueError(
-            "v8 checkpoint config contains v9-only field(s): "
-            + ", ".join(smuggled_config_fields)
-        )
-    trainer_value = cast(object, config.get("trainer"))
-    if trainer_value is None:
-        trainer: dict[str, Any] = {}
-    elif type(trainer_value) is not dict:
-        raise TypeError(
-            "v8 checkpoint config.trainer must be an exact dictionary"
-        )
-    else:
-        trainer = cast(dict[str, Any], trainer_value)
-    smuggled_trainer_fields = sorted(
-        {"precision", "accumulate_grad_batches"}.intersection(trainer)
-    )
-    if smuggled_trainer_fields:
-        raise ValueError(
-            "v8 checkpoint config.trainer contains v9-only field(s): "
-            + ", ".join(smuggled_trainer_fields)
-        )
-    migrated_config = deepcopy(config)
-    migrated_trainer = deepcopy(trainer)
-    migrated_trainer["precision"] = "fp32"
-    migrated_trainer["accumulate_grad_batches"] = 1
-    migrated_config["trainer"] = migrated_trainer
-
-    normalized = cast(CheckpointState, dict(state))
-    normalized["format_version"] = CHECKPOINT_FORMAT_VERSION
-    normalized["precision_kind"] = "fp32"
-    normalized["inference_asset_descriptors"] = {}
-    normalized["config"] = migrated_config
-    _rebuild_legacy_ema_state_aliases(normalized)
-    return normalized
-
-
-def _rebuild_legacy_ema_state_aliases(state: CheckpointState) -> None:
-    """Materialize provable v8 tied-state relationships as valid v9 aliases."""
-
-    model_state_value = cast(object, state.get("model_state_dict"))
-    projection_value = cast(object, state.get("ema_model_state_dict"))
-    ema_state_value = cast(object, state.get("ema_state_dict"))
-    if not (
-        isinstance(model_state_value, dict)
-        and isinstance(projection_value, dict)
-        and type(ema_state_value) is dict
-    ):
-        return
-    ema_state = cast(dict[str, object], ema_state_value)
-    shadow_params = ema_state.get("shadow_params")
-    shadow_buffers = ema_state.get("shadow_buffers")
-    if not (
-        type(shadow_params) is OrderedDict
-        and type(shadow_buffers) is OrderedDict
-    ):
-        return
-
-    cloned_model_state = cast(
-        OrderedDict[str, Any] | dict[str, Any],
-        _clone_checkpoint_data(
-            model_state_value,
-            tensors_to_cpu=False,
-        ),
-    )
-    cloned_projection = cast(
-        OrderedDict[str, Any] | dict[str, Any],
-        _clone_checkpoint_data(
-            projection_value,
-            tensors_to_cpu=False,
-        ),
-    )
-    shadow_values = {
-        **cast(OrderedDict[str, torch.Tensor], shadow_params),
-        **cast(OrderedDict[str, torch.Tensor], shadow_buffers),
-    }
-    canonical_names = [
-        name
-        for name in shadow_values
-        if (
-            name in cloned_model_state
-            and name in cloned_projection
-            and isinstance(cloned_model_state[name], torch.Tensor)
-        )
-    ]
-    for key, raw_value in tuple(cloned_model_state.items()):
-        if (
-            key in shadow_values
-            or key not in cloned_projection
-            or not isinstance(raw_value, torch.Tensor)
-        ):
-            continue
-        matching_names = [
-            canonical_name
-            for canonical_name in canonical_names
-            if (
-                _checkpoint_values_equal(
-                    raw_value,
-                    cloned_model_state[canonical_name],
-                )
-                and _checkpoint_values_equal(
-                    cloned_projection[key],
-                    shadow_values[canonical_name],
-                )
-            )
-        ]
-        if len(matching_names) != 1:
-            continue
-        canonical_name = matching_names[0]
-        cloned_model_state[key] = cloned_model_state[canonical_name]
-        cloned_projection[key] = cloned_projection[canonical_name]
-    state["model_state_dict"] = cloned_model_state
-    state["ema_model_state_dict"] = cloned_projection
-
-
-def _validate_v9_checkpoint_header(state: CheckpointState) -> None:
-    """Validate the exact precision topology of a v9 checkpoint."""
+def _validate_v10_checkpoint_header(state: CheckpointState) -> None:
+    """Validate the exact inference and precision topology of a v10 checkpoint."""
 
     version = cast(object, state.get("format_version"))
     if type(version) is not int or version != CHECKPOINT_FORMAT_VERSION:
@@ -1440,6 +1323,11 @@ def _validate_v9_checkpoint_header(state: CheckpointState) -> None:
         state.get("inference_asset_descriptors"),
         path="checkpoint.inference_asset_descriptors",
     )
+    if "inference_recipe" not in state:
+        raise TypeError("v10 checkpoint is missing inference_recipe")
+    inference_recipe_value = state["inference_recipe"]
+    if inference_recipe_value is not None:
+        sampling_recipe_from_dict(inference_recipe_value)
     if descriptors:
         assets_value = cast(object, state.get("training_assets_state_dict"))
         if type(assets_value) is not dict:
@@ -1506,14 +1394,14 @@ def _validate_v9_checkpoint_header(state: CheckpointState) -> None:
             + ", ".join(unexpected)
         )
 
-    _validate_v9_ema_payload(state)
+    _validate_v10_ema_payload(state)
     _validate_checkpoint_config(state, precision_kind=precision_kind)
     _validate_extension_plugin_metadata(state)
     parse_rng_state(state.get("rng_state"))
 
 
-def _validate_v9_ema_payload(state: CheckpointState) -> None:
-    """Validate the self-contained EMA projection shared by all v9 readers."""
+def _validate_v10_ema_payload(state: CheckpointState) -> None:
+    """Validate the self-contained EMA projection shared by v10 readers."""
 
     has_ema_state = "ema_state_dict" in state
     has_ema_projection = "ema_model_state_dict" in state

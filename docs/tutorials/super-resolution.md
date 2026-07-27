@@ -133,6 +133,7 @@ from stochaflow.extensions import (
     DiscreteGaussianDenoisingProcess,
     PredictionType,
     REGISTRIES,
+    SamplingRecipe,
     TrainStepOutput,
     TrainingBuilder,
     TrainingPlan,
@@ -233,12 +234,17 @@ class ConditionalGaussianBuilder(TrainingBuilder):
             primary_model=model,
             process=process,
             objective=objective,
+            inference_recipe=SamplingRecipe(
+                name="my-sr.gaussian-super-resolution",
+                contract={"prediction_type": prediction_type_value},
+            ),
         )
 ```
 
 Builder 返回的 `primary_model`、`process` 和 `objective` 必须保留 context 注入的对象；
 设备、mode、optimizer、EMA 和 checkpoint 生命周期仍由核心管理。Strategy 只定义 batch
-解释、forward 和 loss。
+解释、forward 和 loss。`prediction_type` 是训练与 inference 必须一致的语义，因此由
+TrainingBuilder 固化进 v10 checkpoint recipe contract，而不是留给 sample request。
 
 ## 4. 用 LR closure 复用 DDPM/DDIM
 
@@ -456,7 +462,7 @@ class ConditionalSRSamplingBuilder(SamplingBuilder):
         return SamplingOutput(
             batches=tuple(batches),
             metadata={
-                "builder": "my-sr.gaussian-super-resolution",
+                "recipe": "my-sr.gaussian-super-resolution",
                 "weights": resolved_weights,
                 "prediction_type": prediction_type,
                 "sampler": {
@@ -498,7 +504,7 @@ data:
         root: data/hr
         layout: flat
       materialization:
-        cache_root: ./data
+        cache_root: ./.stochaflow-cache
         policy: ensure
         verification: full
     partition:
@@ -558,7 +564,7 @@ ema:
   use_for_sampling: true
 
 sampling:
-  builder: null
+  run_after_training: false
 
 diagnostics: []
 
@@ -585,7 +591,9 @@ artifacts:
 stochaflow train --config experiments/sr/train.yaml
 ```
 
-`sampling.builder: null` 避免训练结束时在没有明确 LR condition 的情况下自动采样。
+`sampling.run_after_training: false` 避免训练结束时在没有明确 LR condition 的情况下
+自动运行 checkpoint recipe。TrainingPlan 仍声明 recipe，因此之后可以显式执行
+`stochaflow sample`。
 
 ## 6. 条件采样
 
@@ -593,7 +601,7 @@ stochaflow train --config experiments/sr/train.yaml
 `data/sample-low-res.pt`。它的 batch 数必须等于 `num_samples`；不要把未归一化输入直接
 混入使用 `normalize: true` 训练的模型。
 
-sampling overlay：
+partial sample request：
 
 ```yaml
 sampling:
@@ -601,18 +609,15 @@ sampling:
   num_samples: 4
   batch_size: 2
   seed: 17
-  builder:
-    name: my-sr.gaussian-super-resolution
+  sampler:
+    name: ddim
     params:
-      weights: auto
-      low_res_path: data/sample-low-res.pt
-      prediction_type: epsilon
-      clip_denoised: true
-      sampler:
-        name: ddim
-        params:
-          num_inference_steps: 50
-          eta: 0.0
+      num_inference_steps: 50
+      eta: 0.0
+  options:
+    weights: auto
+    low_res_path: data/sample-low-res.pt
+    clip_denoised: true
   writers:
     - name: tensor
       params: {}
@@ -628,7 +633,7 @@ stochaflow sample \
   --config experiments/sr/sample.yaml
 ```
 
-改用 DDPM 时只替换 Builder 私有的 sampler declaration：
+改用 DDPM 时原子替换顶层 sampler declaration：
 
 ```yaml
 sampler:
@@ -638,9 +643,11 @@ sampler:
     end_time: 0
 ```
 
-训练和采样必须使用相同的 `prediction_type`、condition 语义及归一化。DDPM/DDIM 不读取
-这些任务字段；它们能够复用，是因为 `GaussianModelDynamics` 已把 condition-aware 模型
-适配为两者要求的 `GaussianDenoisingDynamics`。
+`prediction_type` 已由 checkpoint fixed contract 保证一致。condition 输入与归一化仍由
+recipe 的 `low_res_path`/代码契约验证。DDPM/DDIM 不读取这些任务字段；它们能够复用，是
+因为 `GaussianModelDynamics` 已把 condition-aware 模型适配为两者要求的
+`GaussianDenoisingDynamics`。request 不能选择另一个 SamplingBuilder，也不能用
+`options.prediction_type` 覆盖训练语义。
 
 本教程没有宣称该玩具网络达到任何 PSNR、SSIM、感知质量或科学重建精度。应使用独立
 validation/test 数据和任务适合的指标完成自己的实验验收。

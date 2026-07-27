@@ -9,9 +9,9 @@ from stochaflow.extensions import (
     IMAGE_DATA_SOURCES,
     ClassLabeledImageFolderArtifactPayload,
     ConfigError,
+    DataArtifact,
     DataSourceContext,
     ImageDataSource,
-    ManagedDataArtifact,
 )
 from stochaflow_afhq_v2.artifact import (
     AFHQV2_SOURCE_NAME,
@@ -69,7 +69,7 @@ class AFHQV2ImageDataSource(ImageDataSource):
     def materialize(
         self,
         context: DataSourceContext,
-    ) -> ManagedDataArtifact[ClassLabeledImageFolderArtifactPayload]:
+    ) -> DataArtifact[ClassLabeledImageFolderArtifactPayload]:
         """Acquire or verify the official source and expose official splits."""
 
         path = f"{self.config_path}.params"

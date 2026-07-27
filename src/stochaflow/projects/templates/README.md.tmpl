@@ -91,9 +91,12 @@ the same index order as an uninterrupted run.
 
 With `uv`, prefix the command with `uv run`.
 
-## Sample from a checkpoint
+## Run checkpoint-backed inference
 
-Run the registered direct-transform SamplingBuilder with the trained model:
+Run the checkpoint's fixed direct-transform inference recipe with the trained
+model. The `sample` command is the common checkpoint-backed inference entry
+point for generation, reconstruction, and prediction; this project produces
+regression predictions and does not construct a numerical Sampler:
 
 ```bash
 stochaflow sample \
@@ -102,6 +105,14 @@ stochaflow sample \
 ```
 
 The command writes `samples.pt` and `resolved_sampling.yaml` to the selected
-output directory. With no external sampling config, the checkpoint's saved
-configuration is the base; sampling CLI flags may still override supported
-runtime values.
+output directory. The checkpoint supplies the internal recipe and fixed
+contract. In particular, the model's validated input width is captured in that
+contract rather than repeated in `sampling.options`. With no request file, the
+checkpoint also supplies all sampling defaults.
+
+An optional request file must be used with an explicit `--checkpoint`, may
+contain only `sampling` and optional `extensions`, and cannot select a
+SamplingBuilder. Ordinary fields inherit the checkpoint when omitted;
+`sampling.options` shallow-merges by key, while `sampling.sampler` and
+`sampling.writers` replace their checkpoint defaults atomically when present.
+An option cannot override a field in the checkpoint's fixed recipe contract.

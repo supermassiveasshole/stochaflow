@@ -10,8 +10,7 @@ extensions:
 data:
   name: stochaflow-knowledge-distillation.classification
   params:
-    source:
-      name: synthetic
+    synthetic:
       input_features: 8
       num_classes: 4
       train_samples: 64
@@ -66,16 +65,15 @@ ema:
   enabled: false
 
 sampling:
+  run_after_training: true
   shape: null
   num_samples: 8
   batch_size: 4
-  builder:
-    name: stochaflow-knowledge-distillation.predictions
-    params:
-      weights: raw
-      input_features: 8
-      mean: 0.0
-      std: 1.0
+  sampler: null
+  options:
+    weights: raw
+    mean: 0.0
+    std: 1.0
   writers:
     - name: tensor
       params: {}

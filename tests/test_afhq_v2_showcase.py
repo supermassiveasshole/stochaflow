@@ -13,7 +13,12 @@ import torch
 import yaml
 
 from stochaflow.data import IMAGE_DATA_SOURCES
-from stochaflow.utils.config import StochaflowConfig, load_config
+from stochaflow.utils.config import (
+    StochaflowConfig,
+    apply_sample_request,
+    load_config,
+    parse_sample_request,
+)
 from stochaflow.utils.registry import REGISTRIES
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +46,7 @@ def _raw(path: Path) -> dict[str, Any]:
 
 
 def _condition_allocations(raw: dict[str, Any]) -> list[dict[str, int]]:
-    return raw["sampling"]["builder"]["params"]["conditions"]
+    return raw["sampling"]["options"]["conditions"]
 
 
 def _showcase_tool_module(name: str) -> ModuleType:
@@ -96,8 +101,26 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
     ]
     package = _SHOWCASE / "src" / "stochaflow_afhq_v2"
     assert (package / "resources" / "afhq-v2.lock.yaml").is_file()
-    assert (package / "preparation.py").is_file()
-    assert (package / "artifact.py").is_file()
+    assert {path.name for path in package.glob("*.py")} == {
+        "__init__.py",
+        "artifact.py",
+    }
+    assert {
+        path.name
+        for path in (package / "_preparation").glob("*.py")
+    } == {
+        "__init__.py",
+        "archive.py",
+        "contracts.py",
+        "downloading.py",
+        "image_transform.py",
+        "locking.py",
+        "materialization.py",
+        "safe_file.py",
+        "source_acquisition.py",
+        "source_lock.py",
+        "source_session.py",
+    }
     assert (package / "stochaflow_ext" / "source.py").is_file()
     assert not (package / "stochaflow_ext" / "builder.py").exists()
     assert not (package / "stochaflow_ext" / "batching.py").exists()
@@ -150,9 +173,10 @@ def test_afhq_production_configs_parse_and_share_one_pipeline_contract() -> None
         assert raw["trainer"]["accumulate_grad_batches"] == 4
         assert raw["trainer"]["num_epochs"] == 200
         assert raw["artifacts"]["checkpoint_every"] == 5
-        assert raw["sampling"]["builder"]["name"] == (
-            "class_conditional_denoising"
-        )
+        assert raw["sampling"]["run_after_training"] is True
+        assert raw["sampling"]["sampler"]["name"] == "ddim"
+        assert "builder" not in raw["sampling"]
+        assert "prediction_type" not in raw["sampling"]["options"]
         assert raw["diagnostics"][0]["name"] == (
             "class_conditional_diffusion_quality"
         )
@@ -265,24 +289,31 @@ def test_afhq_smoke_config_is_bounded_and_uses_the_real_data_contract() -> None:
     ]
 
 
-def test_afhq_sampling_overlay_is_balanced_and_checkpoint_driven() -> None:
+def test_afhq_sampling_request_is_minimal_and_checkpoint_driven() -> None:
     raw = _raw(_SAMPLING_CONFIG)
 
-    assert set(raw) == {"extensions", "sampling"}
-    assert raw["extensions"]["plugins"] == ["stochaflow-afhq-v2"]
-    assert raw["sampling"]["num_samples"] == 36
-    assert raw["sampling"]["batch_size"] == 12
-    assert raw["sampling"]["seed"] == 20260726
-    assert raw["sampling"]["builder"]["name"] == (
-        "class_conditional_denoising"
+    assert set(raw) == {"sampling"}
+    assert set(raw["sampling"]) == {"sampler", "options"}
+    assert "run_after_training" not in raw["sampling"]
+    assert "builder" not in raw["sampling"]
+    assert raw["sampling"]["sampler"]["name"] == "ddim"
+    assert raw["sampling"]["options"]["guidance_scale"] == 2.0
+    assert "prediction_type" not in raw["sampling"]["options"]
+
+    defaults = load_config(_ADM_CONFIG).sampling
+    resolved = apply_sample_request(
+        defaults,
+        parse_sample_request(raw["sampling"]),
     )
-    assert raw["sampling"]["builder"]["params"]["guidance_scale"] == 2.0
-    assert _condition_allocations(raw) == [
+    assert resolved.num_samples == 36
+    assert resolved.batch_size == 12
+    assert resolved.seed == 20260726
+    assert resolved.options["conditions"] == [
         {"class_label": 0, "count": 12},
         {"class_label": 1, "count": 12},
         {"class_label": 2, "count": 12},
     ]
-    assert raw["sampling"]["writers"][1]["params"]["grid_nrow"] == 12
+    assert resolved.writers[1].params["grid_nrow"] == 12
 
 
 def test_afhq_capacity_tool_runs_real_comparable_training_trials(
@@ -297,8 +328,8 @@ def test_afhq_capacity_tool_runs_real_comparable_training_trials(
 
         def to_dict(self) -> dict[str, Any]:
             return {
-                "schema_version": 1,
-                "artifacts": [{"id": "source"}],
+                "schema_version": 2,
+                "bindings": [{"id": "source"}],
             }
 
     def fake_profile_trials(
@@ -359,8 +390,8 @@ def test_afhq_capacity_tool_runs_real_comparable_training_trials(
     assert observed["device_name"] == "cpu"
     assert report["seed"] == 20260726
     assert report["data_artifact_bindings"] == {
-        "schema_version": 1,
-        "artifacts": [{"id": "source"}],
+        "schema_version": 2,
+        "bindings": [{"id": "source"}],
     }
     assert set(report["code_identity"]) == {"core", "extension"}
     assert report["precision_comparisons"] == [

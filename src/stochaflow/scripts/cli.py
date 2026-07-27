@@ -9,6 +9,7 @@ from stochaflow.sampling.runtime import (
     resolve_sampling_inputs,
     run_resolved_sampling,
 )
+from stochaflow.scripts.branding import print_ascii_art_logo
 from stochaflow.scripts.experiment_runner import (
     add_training_arguments,
     run_experiment_from_args,
@@ -30,22 +31,22 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     sample_parser = subparsers.add_parser(
         "sample",
-        help="Sample a portable Stochaflow checkpoint.",
+        help="Run checkpoint-backed inference from a Stochaflow checkpoint.",
     )
     sample_parser.add_argument(
         "--config",
         type=Path,
         default=None,
         help=(
-            "Optional complete config (fully authoritative) or a lightweight "
-            "sampling/extensions overlay for an explicit checkpoint."
+            "Optional partial sampling request and additive extension selection "
+            "for the explicit checkpoint."
         ),
     )
     sample_parser.add_argument(
         "--checkpoint",
         type=Path,
-        default=None,
-        help="Checkpoint file or run directory. Optional when --config is provided.",
+        required=True,
+        help="Required checkpoint file or run directory.",
     )
     sample_parser.add_argument(
         "--device",
@@ -83,6 +84,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> None:
     """Dispatch the selected Stochaflow subcommand."""
 
+    print_ascii_art_logo()
     parser = build_argument_parser()
     args = parser.parse_args(argv)
     if args.command == "train":
@@ -95,8 +97,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             parser.error(str(exc))
         print(f"Created project: {project_path}")
         return
-    if args.config is None and args.checkpoint is None:
-        parser.error("sample requires --config, --checkpoint, or both")
+    if args.checkpoint is None:
+        parser.error("sample requires --checkpoint")
 
     startup_cwd = Path.cwd()
     inputs = resolve_sampling_inputs(
@@ -115,10 +117,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         startup_cwd=startup_cwd,
     )
     print(f"Checkpoint: {result.checkpoint_path}")
-    print(f"Builder: {result.builder_name}")
+    print(f"Recipe: {result.recipe_name}")
     print(f"Device: {result.device}")
     print(f"Seed: {result.seed}")
-    print(f"Weights: {result.metadata.get('weights', 'builder-defined')}")
+    print(f"Weights: {result.metadata.get('weights', 'recipe-defined')}")
     print(f"Output: {result.output_dir}")
     for name, path in result.artifacts.items():
         print(f"{name}: {path}")

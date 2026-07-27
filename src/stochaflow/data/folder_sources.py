@@ -9,9 +9,13 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from stochaflow.data.artifact_io import canonical_directory
+from stochaflow.data.artifact_store import (
+    DataArtifactLoadContext,
+    DataArtifactStore,
+)
 from stochaflow.data.artifacts import (
+    DataArtifact,
     DataSourceContext,
-    ReferencedDataArtifact,
 )
 from stochaflow.data.image_contracts import (
     IMAGE_DATA_SOURCES,
@@ -21,7 +25,11 @@ from stochaflow.data.image_contracts import (
     ImageFolderArtifactPayload,
     PairedImageFolderArtifactPayload,
 )
-from stochaflow.data.reference_artifacts import materialize_reference
+from stochaflow.data.reference_artifacts import (
+    IMAGE_REFERENCE_MATERIALIZER,
+    build_image_reference,
+    load_image_reference,
+)
 from stochaflow.utils.config import ConfigError, coerce_config_section
 
 
@@ -153,7 +161,7 @@ class ImageFolderDataSource(ImageDataSource):
     def materialize(
         self,
         context: DataSourceContext,
-    ) -> ReferencedDataArtifact[ImageFolderArtifactPayload]:
+    ) -> DataArtifact[ImageFolderArtifactPayload]:
         config = cast(
             ImageFolderSourceConfig,
             coerce_config_section(
@@ -173,25 +181,39 @@ class ImageFolderDataSource(ImageDataSource):
             "mode": config.layout,
             "trees": sorted(roots),
         }
-        index_root, identity, records = materialize_reference(
-            context,
+        return DataArtifactStore(context).materialize_referenced(
             source_name="image_folder",
             artifact_type="stochaflow.image-folder-reference.v2",
-            roots=roots,
-            layout=layout,
-        )
-        grouped = records_by_tree(records)
-        return ReferencedDataArtifact(
-            index_root=index_root,
-            manifest_path=index_root / "manifest.json",
-            identity=identity,
-            payload=ImageFolderArtifactPayload(
+            materializer_name=IMAGE_REFERENCE_MATERIALIZER,
+            locator_key={"layout": layout},
+            referenced_roots=roots,
+            build=lambda data_root: build_image_reference(
+                data_root,
                 roots=roots,
-                train=grouped["train"],
-                validation=grouped.get("validation"),
-                test=grouped.get("test"),
+                layout=layout,
+            ),
+            load=lambda load_context: _load_image_folder_payload(
+                load_context,
+                roots=roots,
+                layout=layout,
             ),
         )
+
+
+def _load_image_folder_payload(
+    context: DataArtifactLoadContext,
+    *,
+    roots: dict[str, Path],
+    layout: dict[str, object],
+) -> ImageFolderArtifactPayload:
+    records = load_image_reference(context, roots=roots, layout=layout)
+    grouped = records_by_tree(records)
+    return ImageFolderArtifactPayload(
+        roots=roots,
+        train=grouped["train"],
+        validation=grouped.get("validation"),
+        test=grouped.get("test"),
+    )
 
 
 def paired_partition_roots(
@@ -268,7 +290,7 @@ class PairedImageFolderDataSource(ImageDataSource):
     def materialize(
         self,
         context: DataSourceContext,
-    ) -> ReferencedDataArtifact[PairedImageFolderArtifactPayload]:
+    ) -> DataArtifact[PairedImageFolderArtifactPayload]:
         config = cast(
             PairedImageFolderSourceConfig,
             coerce_config_section(
@@ -298,33 +320,49 @@ class PairedImageFolderDataSource(ImageDataSource):
             "mode": config.layout,
             "roles": list(roles),
         }
-        index_root, identity, records = materialize_reference(
-            context,
+        return DataArtifactStore(context).materialize_referenced(
             source_name="paired_image_folders",
             artifact_type="stochaflow.paired-image-folder-reference.v2",
-            roots=roots,
-            layout=layout,
-        )
-        grouped = records_by_tree(records)
-        pairs = {
-            role: pair_records(
-                grouped[f"{role}.high_resolution"],
-                grouped[f"{role}.low_resolution"],
-                role=role,
-            )
-            for role in roles
-        }
-        return ReferencedDataArtifact(
-            index_root=index_root,
-            manifest_path=index_root / "manifest.json",
-            identity=identity,
-            payload=PairedImageFolderArtifactPayload(
+            materializer_name=IMAGE_REFERENCE_MATERIALIZER,
+            locator_key={"layout": layout},
+            referenced_roots=roots,
+            build=lambda data_root: build_image_reference(
+                data_root,
                 roots=roots,
-                train=pairs["train"],
-                validation=pairs.get("validation"),
-                test=pairs.get("test"),
+                layout=layout,
             ),
+            load=lambda load_context: _load_paired_image_payload(
+                load_context,
+                roots=roots,
+                roles=roles,
+                layout=layout,
+            )
         )
+
+
+def _load_paired_image_payload(
+    context: DataArtifactLoadContext,
+    *,
+    roots: dict[str, Path],
+    roles: tuple[str, ...],
+    layout: dict[str, object],
+) -> PairedImageFolderArtifactPayload:
+    records = load_image_reference(context, roots=roots, layout=layout)
+    grouped = records_by_tree(records)
+    pairs = {
+        role: pair_records(
+            grouped[f"{role}.high_resolution"],
+            grouped[f"{role}.low_resolution"],
+            role=role,
+        )
+        for role in roles
+    }
+    return PairedImageFolderArtifactPayload(
+        roots=roots,
+        train=pairs["train"],
+        validation=pairs.get("validation"),
+        test=pairs.get("test"),
+    )
 
 
 __all__ = [

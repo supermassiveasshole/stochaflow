@@ -11,10 +11,13 @@ training loop, checkpoint, EMA, and sampling runtime.
 
 ## What is composed
 
-- `KolmogorovDataBuilder` memory-maps `[trajectory, time, H, W]` `.npy` data and
-  yields raw consecutive `[3, H, W]` triplets. Explicit trajectory ranges keep
-  train/test policy in this recipe; the production example deliberately has no
-  validation split.
+- `NumpyTrajectoryDataSource` validates a mmap-ready
+  `[trajectory, time, H, W]` `.npy` input and publishes an extension-local
+  referenced `DataArtifact` with content identity.
+- `KolmogorovDataBuilder` verifies the artifact binding before constructing
+  memory-mapped Dataset views and yields raw consecutive `[3, H, W]` triplets.
+  Explicit trajectory ranges keep train/test policy in this recipe; the
+  production example deliberately has no validation split.
 - `ConditionalDenoiser` checkpoints normalization statistics and PDE constants
   as model buffers. The included residual network is intentionally compact and
   replaceable; it is not PhysicsNeMo's SongUNet.
@@ -52,6 +55,17 @@ python -m stochaflow_physics_reconstruction.tools.prepare_tiny_data \
 stochaflow train --config experiments/tiny/train.yaml --skip-final-sample
 ```
 
+The training config selects
+`physics-reconstruction.numpy-trajectories` through an extension-local source
+registry. `materialization.policy: ensure` creates only an identity-bearing
+framework manifest and producer-owned array sidecar under
+`./.stochaflow-cache`; it does not copy the external array from `data/`.
+`verification: manifest` validates the framework envelope, stored sidecar, and
+cheap external array facts, while `verification: full` also hashes the complete
+external file. Strict resume supplies the expected identity and therefore
+always performs full verification before Dataset construction. The resulting
+artifact binding is stored in the run manifest and checkpoint.
+
 Use the emitted run directory or checkpoint for each independent sampling
 policy:
 
@@ -67,7 +81,16 @@ stochaflow sample --checkpoint outputs/tiny/<run> \
   --output-dir outputs/sample-guided-ddim
 ```
 
-Every overlay uses a mathematically aligned public state schedule: the marginal
+These files are partial sampling requests, not second training configurations.
+They contain only fields that select or differ from the checkpoint defaults:
+the baseline files select a `sampler`, while guided variants also override the
+relevant task `options`. Shape, counts, source/reference paths, writers, and the
+checkpoint-required extension are inherited unless a request explicitly changes
+them. The files do not expose the internal `SamplingBuilder` name or repeat
+`prediction_type`; the checkpoint's inference recipe fixes both the
+reconstruction workflow and its trained prediction semantics.
+
+Every request uses a mathematically aligned public state schedule: the marginal
 is sampled at `partial_noise_time`, the first reverse source is that same state,
 and the final target is clean state `0`. This intentionally avoids the legacy
 off-by-one path in which initial noising and the first reverse source differed.

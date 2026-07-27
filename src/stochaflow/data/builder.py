@@ -264,7 +264,12 @@ class ImageDataBuilder(DataBuilder):
 
 @REGISTRIES.data_builders.register("class_labeled_image")
 class ClassLabeledImageDataBuilder(DataBuilder):
-    """Class-conditioned image recipe for labeled folder artifacts."""
+    """Class-conditioned recipe with a derived per-class holdout.
+
+    The accepted artifact must expose a finite authenticated train inventory,
+    contiguous class labels, no native validation records, and an optional
+    native test inventory.
+    """
 
     def __init__(self, context: DataBuilderContext) -> None:
         super().__init__(context)

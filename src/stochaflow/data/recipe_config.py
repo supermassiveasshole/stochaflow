@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
 
+from stochaflow.data.artifacts import (
+    DataArtifactIdentity,
+    DataSourceContext,
+)
 from stochaflow.utils.config import ConfigError
 
 
@@ -187,7 +192,7 @@ class ClassStratifiedPartitionRecipeConfig:
 class DataSourceMaterializationConfig:
     """Cache, acquisition, and verification policy for one data source."""
 
-    cache_root: str = "./data"
+    cache_root: str = "./.stochaflow-cache"
     policy: str = "ensure"
     verification: str = "full"
 
@@ -206,6 +211,22 @@ class DataSourceMaterializationConfig:
             "full",
         }:
             raise ConfigError(f"{path}.verification must be manifest or full")
+
+    def context(
+        self,
+        *,
+        expected_identity: DataArtifactIdentity | None = None,
+        path: str = "data source materialization",
+    ) -> DataSourceContext:
+        """Build the canonical framework context for this source selection."""
+
+        self.validate(path=path)
+        return DataSourceContext(
+            cache_root=Path(self.cache_root),
+            policy=cast(Any, self.policy),
+            verification=cast(Any, self.verification),
+            expected_identity=expected_identity,
+        )
 
 
 @dataclass(slots=True)

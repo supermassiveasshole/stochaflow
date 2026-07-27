@@ -17,6 +17,7 @@ import torch
 from torch import nn
 from torch.optim.lr_scheduler import LRScheduler, StepLR
 
+from stochaflow.sampling import SamplingRecipe
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
@@ -211,7 +212,7 @@ def _inference_asset_descriptors() -> dict[str, InferenceAssetDescriptor]:
     }
 
 
-def test_v9_checkpoint_always_records_header_and_plugin_metadata() -> None:
+def test_v10_checkpoint_always_records_header_recipe_and_plugin_metadata() -> None:
     manager = CheckpointManager(nn.Linear(1, 1))
 
     default_state = manager.build_state()
@@ -229,9 +230,11 @@ def test_v9_checkpoint_always_records_header_and_plugin_metadata() -> None:
         }
     )
 
-    assert CHECKPOINT_FORMAT_VERSION == 9
+    assert CHECKPOINT_FORMAT_VERSION == 10
     assert default_state.get("precision_kind") == "fp32"
     assert default_state.get("inference_asset_descriptors") == {}
+    assert "inference_recipe" in default_state
+    assert default_state.get("inference_recipe") is None
     assert "grad_scaler_class" not in default_state
     assert "grad_scaler_state_dict" not in default_state
     default_metadata = default_state.get("metadata")
@@ -253,6 +256,49 @@ def test_v9_checkpoint_always_records_header_and_plugin_metadata() -> None:
         assert isinstance(rng_state["torch_mps"], torch.Tensor)
     else:
         assert rng_state["torch_mps"] is None
+
+
+def test_v10_checkpoint_round_trips_inference_recipe(tmp_path: Path) -> None:
+    recipe = SamplingRecipe(
+        name="project.generate",
+        contract={
+            "prediction_type": "v",
+            "schedule": {"steps": [4, 2, 0]},
+        },
+    )
+    manager = CheckpointManager(nn.Linear(1, 1), inference_recipe=recipe)
+    checkpoint = manager.save(tmp_path / "recipe.pt")
+
+    payload = CheckpointManager.load_payload(checkpoint)
+
+    assert payload.get("inference_recipe") == {
+        "schema_version": 1,
+        "name": "project.generate",
+        "contract": {
+            "prediction_type": "v",
+            "schedule": {"steps": [4, 2, 0]},
+        },
+    }
+    CheckpointManager(
+        nn.Linear(1, 1),
+        inference_recipe=recipe,
+    ).restore_payload(payload, path=checkpoint)
+
+
+def test_v10_checkpoint_rejects_non_json_recipe_contract_tuple(
+    tmp_path: Path,
+) -> None:
+    payload = CheckpointManager(nn.Linear(1, 1)).build_state()
+    payload["inference_recipe"] = {
+        "schema_version": 1,
+        "name": "project.generate",
+        "contract": {"steps": (4, 2, 0)},
+    }
+    checkpoint = tmp_path / "tuple-contract.pt"
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(TypeError, match=r"unsupported value type.*tuple"):
+        CheckpointManager.load_payload(checkpoint)
 
 
 def test_build_state_detaches_caller_owned_payload_metadata() -> None:
@@ -622,9 +668,9 @@ def test_inference_asset_descriptor_topology_mismatch_is_atomic(
 
 @pytest.mark.parametrize(
     "missing_field",
-    ["precision_kind", "inference_asset_descriptors"],
+    ["precision_kind", "inference_asset_descriptors", "inference_recipe"],
 )
-def test_v9_header_rejects_missing_required_fields(
+def test_v10_header_rejects_missing_required_fields(
     missing_field: str,
 ) -> None:
     manager = CheckpointManager(nn.Linear(1, 1))
@@ -632,7 +678,7 @@ def test_v9_header_rejects_missing_required_fields(
     state.pop(missing_field)
 
     with pytest.raises((TypeError, ValueError), match=missing_field):
-        manager.restore_payload(state, path="missing-v9-field.pt")
+        manager.restore_payload(state, path="missing-v10-field.pt")
 
 
 @pytest.mark.parametrize(
@@ -1211,62 +1257,16 @@ def test_tied_parameter_and_buffer_ema_round_trip(tmp_path: Path) -> None:
     target_ema.update(target_model)
 
 
-def test_legacy_v8_tied_ema_migration_is_idempotently_restorable(
-    tmp_path: Path,
-) -> None:
-    source_model = FixtureTiedStateModule()
-    source_model.first.weight.data.fill_(2.0)
-    source_ema = ExponentialMovingAverage(source_model)
-    source_ema.shadow_params["first.weight"].fill_(3.0)
-    legacy = _legacy_v8_payload(
-        CheckpointManager(source_model, ema=source_ema)
-    )
-    for field_name in ("model_state_dict", "ema_model_state_dict"):
-        field_value = legacy[field_name]
-        assert isinstance(field_value, dict)
-        legacy[field_name] = type(field_value)(
-            (name, tensor.detach().clone())
-            for name, tensor in field_value.items()
-        )
-    model_state = legacy["model_state_dict"]
-    assert model_state["first.weight"].data_ptr() != (
-        model_state["second.weight"].data_ptr()
-    )
-    checkpoint = tmp_path / "legacy-v8-tied.pt"
+def test_legacy_v8_checkpoint_is_not_migrated(tmp_path: Path) -> None:
+    legacy = _legacy_v8_payload(CheckpointManager(nn.Linear(1, 1)))
+    checkpoint = tmp_path / "legacy-v8.pt"
     torch.save(legacy, checkpoint)
 
-    target_model = FixtureTiedStateModule()
-    target_ema = ExponentialMovingAverage(target_model)
-    migrated = CheckpointManager.load_payload(checkpoint)
-    migrated_model_state = migrated.get("model_state_dict")
-    assert migrated_model_state is not None
-    assert migrated_model_state["first.weight"].data_ptr() == (
-        migrated_model_state["second.weight"].data_ptr()
-    )
-    CheckpointManager(target_model, ema=target_ema).restore_payload(
-        migrated,
-        path=checkpoint,
-    )
-
-    assert torch.equal(target_model.first.weight, torch.full((1, 1), 2.0))
-    assert torch.equal(
-        target_ema.shadow_params["first.weight"],
-        torch.full((1, 1), 3.0),
-    )
-
-    second_target_model = FixtureTiedStateModule()
-    second_target_ema = ExponentialMovingAverage(second_target_model)
-    CheckpointManager(
-        second_target_model,
-        ema=second_target_ema,
-    ).load(checkpoint)
-    assert torch.equal(
-        second_target_ema.shadow_params["first.weight"],
-        torch.full((1, 1), 3.0),
-    )
+    with pytest.raises(ValueError, match="expected version 10"):
+        CheckpointManager.load_payload(checkpoint)
 
 
-def test_native_v9_tied_ema_does_not_infer_aliases_from_equal_values() -> None:
+def test_native_v10_tied_ema_does_not_infer_aliases_from_equal_values() -> None:
     source_model = FixtureTiedStateModule()
     source_model.first.weight.data.fill_(2.0)
     source_ema = ExponentialMovingAverage(source_model)
@@ -1280,11 +1280,11 @@ def test_native_v9_tied_ema_does_not_infer_aliases_from_equal_values() -> None:
     )
 
     with pytest.raises(ValueError, match=r"second\.weight.*EMA state"):
-        CheckpointManager.save_payload(state, "native-v9-tied-invalid.pt")
+        CheckpointManager.save_payload(state, "native-v10-tied-invalid.pt")
 
 
 @pytest.mark.parametrize("missing_field", ["ema_state_dict", "ema_model_state_dict"])
-def test_shared_v9_header_rejects_incomplete_ema_topology_on_save_and_load(
+def test_shared_v10_header_rejects_incomplete_ema_topology_on_save_and_load(
     tmp_path: Path,
     missing_field: str,
 ) -> None:
@@ -1303,7 +1303,7 @@ def test_shared_v9_header_rejects_incomplete_ema_topology_on_save_and_load(
         CheckpointManager.load_payload(destination)
 
 
-def test_shared_v9_header_rejects_malformed_ema_and_projection(
+def test_shared_v10_header_rejects_malformed_ema_and_projection(
     tmp_path: Path,
 ) -> None:
     model = nn.Linear(1, 1)
@@ -1353,76 +1353,15 @@ def test_cpu_payload_restores_ema_to_cuda_runtime_and_remains_updatable() -> Non
     target_ema.update(target_model)
 
 
-def test_v8_migration_adds_effective_precision_and_preserves_data_metadata(
-    tmp_path: Path,
-) -> None:
-    metadata = {
-        "extension_plugins": [],
-        "data_artifacts": {
-            "bindings": [
-                {
-                    "binding_id": "source",
-                    "identity": {"kind": "managed", "digest": "abc"},
-                }
-            ]
-        },
-    }
-    legacy = _legacy_v8_payload(
-        CheckpointManager(nn.Linear(1, 1)),
-        config={
-            "experiment": {"name": "legacy"},
-            "trainer": {"device": "cpu"},
-        },
-        metadata=metadata,
-    )
-    checkpoint = tmp_path / "legacy-v8.pt"
-    torch.save(legacy, checkpoint)
+def test_legacy_v9_checkpoint_is_not_migrated(tmp_path: Path) -> None:
+    payload = CheckpointManager(nn.Linear(1, 1)).build_state()
+    payload["format_version"] = 9
+    payload.pop("inference_recipe")
+    checkpoint = tmp_path / "legacy-v9.pt"
+    torch.save(payload, checkpoint)
 
-    migrated = CheckpointManager.load_payload(checkpoint)
-
-    assert migrated.get("format_version") == 9
-    assert migrated.get("precision_kind") == "fp32"
-    assert migrated.get("inference_asset_descriptors") == {}
-    migrated_config = migrated.get("config")
-    assert migrated_config is not None
-    assert migrated_config["trainer"] == {
-        "device": "cpu",
-        "precision": "fp32",
-        "accumulate_grad_batches": 1,
-    }
-    assert migrated.get("metadata") == metadata
-    migrated_metadata = migrated.get("metadata")
-    assert migrated_metadata is not None
-    assert "data_provenance" not in migrated_metadata
-    assert legacy["format_version"] == 8
-    assert "precision_kind" not in legacy
-    assert legacy["config"]["trainer"] == {"device": "cpu"}
-
-    target_model = nn.Linear(1, 1)
-    loaded = CheckpointManager(target_model).restore_payload(
-        legacy,
-        path=checkpoint,
-    )
-    assert loaded.config == migrated_config
-    assert loaded.metadata == metadata
-
-
-def test_v8_migration_materializes_effective_trainer_defaults(
-    tmp_path: Path,
-) -> None:
-    legacy = _legacy_v8_payload(CheckpointManager(nn.Linear(1, 1)))
-    checkpoint = tmp_path / "legacy-without-config.pt"
-    torch.save(legacy, checkpoint)
-
-    migrated = CheckpointManager.load_payload(checkpoint)
-
-    assert migrated.get("config") == {
-        "trainer": {
-            "precision": "fp32",
-            "accumulate_grad_batches": 1,
-        }
-    }
-    assert "config" not in legacy
+    with pytest.raises(ValueError, match="expected version 10"):
+        CheckpointManager.load_payload(checkpoint)
 
 
 @pytest.mark.parametrize(
@@ -1434,12 +1373,14 @@ def test_v8_migration_materializes_effective_trainer_defaults(
         "inference_asset_descriptors",
     ],
 )
-def test_v8_rejects_smuggled_v9_payload_fields(field_name: str) -> None:
+def test_v8_is_rejected_regardless_of_newer_payload_fields(
+    field_name: str,
+) -> None:
     manager = CheckpointManager(nn.Linear(1, 1))
     legacy = _legacy_v8_payload(manager)
     legacy[field_name] = {} if field_name.endswith(("dict", "descriptors")) else "fp32"
 
-    with pytest.raises(ValueError, match=rf"v9-only field.*{field_name}"):
+    with pytest.raises(ValueError, match="expected version 10"):
         manager.restore_payload(legacy, path="smuggled-v8.pt")
 
 
@@ -1459,7 +1400,7 @@ def test_v8_rejects_smuggled_trainer_precision_fields(
         "fp32" if field_name == "precision" else 1
     )
 
-    with pytest.raises(ValueError, match=rf"config\.trainer.*{field_name}"):
+    with pytest.raises(ValueError, match="expected version 10"):
         manager.restore_payload(legacy, path="smuggled-config-v8.pt")
 
 
@@ -1472,7 +1413,7 @@ def test_v8_cannot_resume_into_fp16_runtime() -> None:
     target_model = nn.Linear(1, 1)
     original_weight = target_model.weight.detach().clone()
 
-    with pytest.raises(ValueError, match="precision kind does not match runtime"):
+    with pytest.raises(ValueError, match="expected version 10"):
         CheckpointManager(
             target_model,
             precision_kind="fp16-mixed",
@@ -1485,7 +1426,7 @@ def test_writer_rejects_legacy_v8_payload(tmp_path: Path) -> None:
     legacy = _legacy_v8_payload(CheckpointManager(nn.Linear(1, 1)))
     destination = tmp_path / "legacy.pt"
 
-    with pytest.raises(ValueError, match="writer requires format version 9"):
+    with pytest.raises(ValueError, match="writer requires format version 10"):
         CheckpointManager.save_payload(legacy, destination)
 
     assert not destination.exists()
@@ -1514,7 +1455,7 @@ def test_restore_payload_rejects_v7_and_missing_plugin_metadata(
     manager = CheckpointManager(nn.Linear(1, 1))
     v7 = manager.build_state()
     v7["format_version"] = 7
-    with pytest.raises(ValueError, match=r"version 7.*supported versions are 8 and 9"):
+    with pytest.raises(ValueError, match=r"version 7.*expected version 10"):
         manager.restore_payload(v7, path=tmp_path / "v7.pt")
 
     missing_plugins = manager.build_state()
@@ -1528,7 +1469,7 @@ def test_restore_payload_rejects_v7_and_missing_plugin_metadata(
         manager.restore_payload(missing_plugins, path=tmp_path / "missing.pt")
 
 
-def test_restore_payload_accepts_legacy_v8_rng_state_without_mps(
+def test_restore_payload_rejects_legacy_v8_rng_state_without_mps(
     tmp_path: Path,
 ) -> None:
     manager = CheckpointManager(nn.Linear(1, 1))
@@ -1537,12 +1478,11 @@ def test_restore_payload_accepts_legacy_v8_rng_state_without_mps(
     assert rng_state is not None
     rng_state.pop("torch_mps")
 
-    loaded = manager.restore_payload(
-        legacy_v8,
-        path=tmp_path / "legacy-v8.pt",
-    )
-
-    assert loaded.path == tmp_path / "legacy-v8.pt"
+    with pytest.raises(ValueError, match="expected version 10"):
+        manager.restore_payload(
+            legacy_v8,
+            path=tmp_path / "legacy-v8.pt",
+        )
 
 
 def test_save_rejects_custom_extra_state_with_precise_path(tmp_path: Path) -> None:

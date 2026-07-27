@@ -28,10 +28,7 @@ def test_selected_components_are_top_level_identities_only() -> None:
             },
             "lr_scheduler": None,
             "sampling": {
-                "builder": {
-                    "name": "project.direct",
-                    "params": {"sampler": {"name": "private.solver"}},
-                },
+                "sampler": {"name": "private.solver", "params": {}},
                 "writers": [
                     {"name": "project.writer-b", "params": {}},
                     {"name": "project.writer-a", "params": {}},
@@ -50,7 +47,10 @@ def test_selected_components_are_top_level_identities_only() -> None:
         }
     )
 
-    assert selected_component_identities(config) == {
+    assert selected_component_identities(
+        config,
+        sampling_recipe="project.direct",
+    ) == {
         "data_builder": "project.data",
         "model": "project.model",
         "training_builder": "project.training",
@@ -58,7 +58,8 @@ def test_selected_components_are_top_level_identities_only() -> None:
         "process": None,
         "optimizer": "torch.optim.AdamW",
         "lr_scheduler": None,
-        "sampling_builder": "project.direct",
+        "sampling_recipe": "project.direct",
+        "sampling_sampler": "private.solver",
         "sampling_artifact_writers": [
             "project.writer-b",
             "project.writer-a",
@@ -85,7 +86,7 @@ def test_selected_components_include_present_optional_roles() -> None:
                 "interval": "epoch",
                 "params": {"step_size": 1},
             },
-            "sampling": {"builder": None},
+            "sampling": {"sampler": None},
         }
     )
 
@@ -93,4 +94,5 @@ def test_selected_components_include_present_optional_roles() -> None:
     assert selected["objective"] == "project.objective"
     assert selected["process"] == "project.process"
     assert selected["lr_scheduler"] == "torch.optim.lr_scheduler.StepLR"
-    assert selected["sampling_builder"] is None
+    assert selected["sampling_recipe"] is None
+    assert selected["sampling_sampler"] is None

@@ -9,7 +9,14 @@ extensions:
 data:
   name: physics-reconstruction.kolmogorov-trajectories
   params:
-    path: data/tiny/trajectories.npy
+    source:
+      name: physics-reconstruction.numpy-trajectories
+      params:
+        path: data/tiny/trajectories.npy
+      materialization:
+        cache_root: ./.stochaflow-cache
+        policy: ensure
+        verification: full
     train_trajectories: [0, 4]
     validation_trajectories: [4, 5]
     test_trajectories: [5, 6]
@@ -68,30 +75,28 @@ ema:
   enabled: false
 
 sampling:
+  run_after_training: true
   shape: [3, 8, 8]
   num_samples: 4
   batch_size: 2
   seed: 7
-  builder:
-    name: physics-reconstruction.reconstruction
-    params:
-      weights: raw
-      prediction_type: epsilon
-      clip_denoised: false
-      partial_noise_time: 4
-      conditioning_strength: 0.0001
-      correction_strength: 0.0
-      source:
-        path: data/tiny/observations.npy
-        trajectories: [0, 1]
-      reference:
-        path: data/tiny/references.npy
-        trajectories: [0, 1]
-      alignment: data/tiny/alignment.json
-      sampler:
-        name: ddim
-        params: {schedule: [4, 2, 0], eta: 0.0}
-      trajectory: {enabled: false, every_steps: 1}
+  sampler:
+    name: ddim
+    params: {schedule: [4, 2, 0], eta: 0.0}
+  options:
+    weights: raw
+    clip_denoised: false
+    partial_noise_time: 4
+    conditioning_strength: 0.0001
+    correction_strength: 0.0
+    source:
+      path: data/tiny/observations.npy
+      trajectories: [0, 1]
+    reference:
+      path: data/tiny/references.npy
+      trajectories: [0, 1]
+    alignment: data/tiny/alignment.json
+    trajectory: {enabled: false, every_steps: 1}
   writers:
     - name: physics-reconstruction.reconstruction-artifacts
       params: {}

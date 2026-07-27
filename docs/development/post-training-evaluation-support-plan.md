@@ -140,7 +140,7 @@ validation split 混淆。
 | --- | --- |
 | `DataSource -> DataArtifact`、`DataBuilder -> DataLoaders` | source 负责可验证 artifact，Builder 负责 runtime data composition，batch 保持 `Any` |
 | `TrainingStrategy.evaluation_step()` | 现成的训练 phase batch/model 解释边界 |
-| checkpoint v8 与 safe loading | config、资产 state、epoch/global step、extension provenance |
+| checkpoint v10 与 safe loading | config、资产 state、inference recipe、epoch/global step、extension provenance |
 | best/latest checkpoint 选择 | 可解析默认候选，但 formal run 仍需冻结具体文件/hash |
 | `InferenceModelProvider` | sampling 已有 raw/EMA 只读权重投影经验 |
 | `SamplingBuilder` 与 `run_sampling()` | 独立 operation、overlay、manifest、structured result 的先例 |

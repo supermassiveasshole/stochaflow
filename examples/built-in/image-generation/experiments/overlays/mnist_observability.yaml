@@ -1,4 +1,4 @@
-# Strict-resume observability configuration for comparable MNIST quality checks.
+# Strict-resume observability overlay for comparable MNIST quality checks.
 # Use only with: stochaflow train --resume ... --observability-config <this-file>
 diagnostics:
   - name: diffusion_quality

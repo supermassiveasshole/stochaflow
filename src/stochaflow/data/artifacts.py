@@ -25,6 +25,7 @@ _IDENTITY_FIELDS = frozenset(
         "source_digest",
         "materializer_name",
         "materialization_digest",
+        "content_digest",
         "artifact_digest",
         "manifest_sha256",
     }
@@ -76,26 +77,27 @@ def _strict_mapping(
 
 
 @dataclass(frozen=True, slots=True)
-class DataArtifactIdentity(ABC):
-    """Location-independent identity shared by every materialized artifact."""
+class DataArtifactIdentity:
+    """Location-independent schema-v2 identity for one data artifact."""
 
+    kind: Literal["managed", "referenced"]
     artifact_type: str
     source_name: str
     source_digest: str
     materializer_name: str
     materialization_digest: str
+    content_digest: str
     artifact_digest: str
     manifest_sha256: str
-    schema_version: int = 1
-
-    @property
-    @abstractmethod
-    def kind(self) -> Literal["managed", "referenced"]:
-        """Return the persisted artifact ownership kind."""
+    schema_version: int = 2
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version != 1:
-            raise ValueError("data artifact identity schema_version must be 1")
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise ValueError("data artifact identity schema_version must be 2")
+        if self.kind not in {"managed", "referenced"}:
+            raise ValueError(
+                "data artifact identity.kind must be managed or referenced"
+            )
         for name in ("artifact_type", "source_name", "materializer_name"):
             _non_empty_string(
                 getattr(self, name),
@@ -104,6 +106,7 @@ class DataArtifactIdentity(ABC):
         for name in (
             "source_digest",
             "materialization_digest",
+            "content_digest",
             "artifact_digest",
             "manifest_sha256",
         ):
@@ -123,6 +126,7 @@ class DataArtifactIdentity(ABC):
             "source_digest": self.source_digest,
             "materializer_name": self.materializer_name,
             "materialization_digest": self.materialization_digest,
+            "content_digest": self.content_digest,
             "artifact_digest": self.artifact_digest,
             "manifest_sha256": self.manifest_sha256,
         }
@@ -134,158 +138,58 @@ class DataArtifactIdentity(ABC):
         *,
         path: str = "data artifact identity",
     ) -> DataArtifactIdentity:
-        """Parse and dispatch an identity while rejecting unknown fields."""
+        """Parse a strict schema-v2 identity."""
 
         raw = _strict_mapping(value, fields=_IDENTITY_FIELDS, path=path)
-        kind = raw["kind"]
-        identity_type: type[DataArtifactIdentity]
-        if kind == "managed":
-            identity_type = ManagedDataArtifactIdentity
-        elif kind == "referenced":
-            identity_type = ReferencedDataArtifactIdentity
-        else:
-            raise ValueError(f"{path}.kind must be managed or referenced")
-        if cls is not DataArtifactIdentity and cls is not identity_type:
-            raise ValueError(f"{path}.kind is incompatible with {cls.__name__}")
-        return identity_type(
+        return cls(
             schema_version=raw["schema_version"],
+            kind=raw["kind"],
             artifact_type=raw["artifact_type"],
             source_name=raw["source_name"],
             source_digest=raw["source_digest"],
             materializer_name=raw["materializer_name"],
             materialization_digest=raw["materialization_digest"],
+            content_digest=raw["content_digest"],
             artifact_digest=raw["artifact_digest"],
             manifest_sha256=raw["manifest_sha256"],
         )
 
 
-class ManagedDataArtifactIdentity(DataArtifactIdentity):
-    """Identity of content owned by a Stochaflow-managed artifact."""
+@dataclass(frozen=True, slots=True)
+class DataArtifact[ArtifactPayloadT]:
+    """Verified runtime handle for managed or referenced content."""
 
-    __slots__ = ()
-
-    @property
-    def kind(self) -> Literal["managed"]:
-        """Return the managed ownership discriminator."""
-
-        return "managed"
-
-
-class ReferencedDataArtifactIdentity(DataArtifactIdentity):
-    """Identity of externally owned content indexed without copying it."""
-
-    __slots__ = ()
-
-    @property
-    def kind(self) -> Literal["referenced"]:
-        """Return the referenced ownership discriminator."""
-
-        return "referenced"
-
-
-class DataArtifact[ArtifactPayloadT](ABC):
-    """Semantic root for a verified runtime artifact handle."""
-
+    root: Path
     identity: DataArtifactIdentity
     payload: ArtifactPayloadT
 
     @property
-    @abstractmethod
     def kind(self) -> Literal["managed", "referenced"]:
-        """Return the runtime artifact ownership kind."""
+        """Return the artifact ownership strategy."""
 
-
-def _verified_manifest(
-    root: Path,
-    manifest_path: Path,
-    identity: DataArtifactIdentity,
-    *,
-    root_label: str,
-) -> tuple[Path, Path]:
-    canonical_root = canonical_directory(
-        Path(root),
-        label=f"data artifact {root_label}",
-    )
-    canonical_manifest = lexical_absolute_path(Path(manifest_path))
-    try:
-        relative_manifest = canonical_manifest.relative_to(canonical_root)
-    except ValueError as exc:
-        raise ValueError(
-            f"data artifact manifest must be inside its {root_label}"
-        ) from exc
-    encoded, _ = read_regular_file(
-        canonical_root,
-        relative_manifest.as_posix(),
-        label="data artifact manifest",
-    )
-    digest = hashlib.sha256(encoded).hexdigest()
-    if digest != identity.manifest_sha256:
-        raise ValueError(
-            "data artifact manifest SHA-256 does not match its identity"
-        )
-    return canonical_root, canonical_manifest
-
-
-@dataclass(frozen=True, slots=True)
-class ManagedDataArtifact[ArtifactPayloadT](DataArtifact[ArtifactPayloadT]):
-    """Runtime handle for content published inside a managed artifact root."""
-
-    artifact_root: Path
-    manifest_path: Path
-    identity: ManagedDataArtifactIdentity
-    payload: ArtifactPayloadT
+        return self.identity.kind
 
     @property
-    def kind(self) -> Literal["managed"]:
-        """Return the managed ownership discriminator."""
+    def manifest_path(self) -> Path:
+        """Return the framework-owned manifest path."""
 
-        return "managed"
+        return self.root / "manifest.json"
 
     def __post_init__(self) -> None:
         identity = cast(object, self.identity)
-        if not isinstance(identity, ManagedDataArtifactIdentity):
-            raise TypeError(
-                "managed data artifact requires ManagedDataArtifactIdentity"
-            )
-        root, manifest = _verified_manifest(
-            self.artifact_root,
-            self.manifest_path,
-            self.identity,
-            root_label="artifact_root",
+        if not isinstance(identity, DataArtifactIdentity):
+            raise TypeError("data artifact identity must be DataArtifactIdentity")
+        root = canonical_directory(Path(self.root), label="data artifact root")
+        encoded, _ = read_regular_file(
+            root,
+            "manifest.json",
+            label="data artifact manifest",
         )
-        object.__setattr__(self, "artifact_root", root)
-        object.__setattr__(self, "manifest_path", manifest)
-
-
-@dataclass(frozen=True, slots=True)
-class ReferencedDataArtifact[ArtifactPayloadT](DataArtifact[ArtifactPayloadT]):
-    """Runtime handle for external content described by a cached index."""
-
-    index_root: Path
-    manifest_path: Path
-    identity: ReferencedDataArtifactIdentity
-    payload: ArtifactPayloadT
-
-    @property
-    def kind(self) -> Literal["referenced"]:
-        """Return the referenced ownership discriminator."""
-
-        return "referenced"
-
-    def __post_init__(self) -> None:
-        identity = cast(object, self.identity)
-        if not isinstance(identity, ReferencedDataArtifactIdentity):
-            raise TypeError(
-                "referenced data artifact requires ReferencedDataArtifactIdentity"
+        if hashlib.sha256(encoded).hexdigest() != self.identity.manifest_sha256:
+            raise ValueError(
+                "data artifact manifest SHA-256 does not match its identity"
             )
-        root, manifest = _verified_manifest(
-            self.index_root,
-            self.manifest_path,
-            self.identity,
-            root_label="index_root",
-        )
-        object.__setattr__(self, "index_root", root)
-        object.__setattr__(self, "manifest_path", manifest)
+        object.__setattr__(self, "root", root)
 
 
 class DataSource[ArtifactPayloadT](ABC):
@@ -308,8 +212,7 @@ class DataArtifactBinding:
 
     def __post_init__(self) -> None:
         _non_empty_string(self.id, path="data artifact binding.id")
-        identity = cast(object, self.identity)
-        if not isinstance(identity, DataArtifactIdentity):
+        if not isinstance(cast(object, self.identity), DataArtifactIdentity):
             raise TypeError(
                 "data artifact binding.identity must be DataArtifactIdentity"
             )
@@ -340,7 +243,7 @@ class DataArtifactBinding:
 
 @dataclass(frozen=True, slots=True)
 class DataArtifactBindings:
-    """Canonical, strictly serializable collection of artifact bindings."""
+    """Canonical schema-v2 collection of artifact bindings."""
 
     bindings: tuple[DataArtifactBinding, ...] = ()
 
@@ -405,7 +308,7 @@ class DataArtifactBindings:
         """Serialize this collection using canonical binding order."""
 
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "bindings": [binding.to_dict() for binding in self.bindings],
         }
 
@@ -416,11 +319,11 @@ class DataArtifactBindings:
         *,
         path: str = "metadata.data_artifacts",
     ) -> DataArtifactBindings:
-        """Parse a strict, canonically ordered binding collection."""
+        """Parse a strict, canonically ordered schema-v2 collection."""
 
         raw = _strict_mapping(value, fields=_COLLECTION_FIELDS, path=path)
-        if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
-            raise ValueError(f"{path}.schema_version must be 1")
+        if type(raw["schema_version"]) is not int or raw["schema_version"] != 2:
+            raise ValueError(f"{path}.schema_version must be 2")
         serialized = raw["bindings"]
         if not isinstance(serialized, list):
             raise TypeError(f"{path}.bindings must be a list")
@@ -483,8 +386,4 @@ __all__ = [
     "DataArtifactIdentity",
     "DataSource",
     "DataSourceContext",
-    "ManagedDataArtifact",
-    "ManagedDataArtifactIdentity",
-    "ReferencedDataArtifact",
-    "ReferencedDataArtifactIdentity",
 ]

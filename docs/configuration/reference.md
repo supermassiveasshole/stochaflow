@@ -342,42 +342,63 @@ Process 构造参数；模型、condition 和 sampler 不进入此处。
 (config-field-path-sampling)=
 ### `sampling`
 
-独立采样和训练结束验收采样的默认设置。
+checkpoint-bound inference 的可覆盖请求默认值，以及训练后是否自动运行该 recipe。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{batch_size: 16, builder: null, num_samples: 16, seed: null, shape: null, writers: [{name: tensor, params: {}}]}`
+- 默认值：`{batch_size: 16, num_samples: 16, options: {}, run_after_training: false, sampler: null, seed: null, shape: null, writers: [{name: tensor, params: {}}]}`
 
-(config-field-path-sampling-builder)=
-### `sampling.builder`
+(config-field-path-sampling-run-after-training)=
+### `sampling.run_after_training`
 
-完整拥有采样装配和执行的 sampling_builders Registry 声明；null 禁用默认训练后采样。
+训练完成并恢复 selected best checkpoint 后是否运行其固化 inference recipe。
+
+- 类型：`bool`
+- 必填：否
+- 默认值：`false`
+- 关联：train --skip-final-sample 可仅对本次调用禁止执行；sample request 不允许声明该字段。
+
+(config-field-path-sampling-sampler)=
+### `sampling.sampler`
+
+交给 checkpoint inference recipe 的可替换数值 Sampler 声明；null 仅适用于不需要 Sampler 或由固定 contract 决定求解器的 recipe。
 
 - 类型：`mapping | null`
 - 必填：否
 - 默认值：`null`
+- 关联：sample request 显式提供时原子替换 checkpoint 默认值；不能覆盖 recipe fixed contract 中的 sampler。
 
-(config-field-path-sampling-builder-name)=
-### `sampling.builder.name`
+(config-field-path-sampling-sampler-name)=
+### `sampling.sampler.name`
 
-sampling_builders Registry 名称。
+samplers Registry 名称。
 
 - 类型：`str`
 - 必填：是
 
-(config-field-path-sampling-builder-params)=
-### `sampling.builder.params`
+(config-field-path-sampling-sampler-params)=
+### `sampling.sampler.params`
 
-Builder 独占参数；standard_denoising 在其中声明权重、prediction type、sampler 和 trajectory。
+原样交给所选 Sampler 的构造参数 mapping。
 
 - 类型：`mapping[str, any]`
 - 必填：否
 - 默认值：`{}`
 
+(config-field-path-sampling-options)=
+### `sampling.options`
+
+checkpoint inference recipe 拥有的任务级可调参数，例如 weights、condition、guidance、trajectory 或输入 locator。
+
+- 类型：`mapping[str, any]`
+- 必填：否
+- 默认值：`{}`
+- 关联：sample request 只做一层 key merge；不得含 sampler，也不得覆盖 checkpoint fixed contract 字段。
+
 (config-field-path-sampling-shape)=
 ### `sampling.shape`
 
-单个生成 state 的形状，不含 batch 维；null 允许不需要固定 shape 的自定义运行时。
+单个 inference state 的可选形状，不含 batch 维；null 允许 recipe 自行决定输入或 state。
 
 - 类型：`list[int] | null`
 - 必填：否
@@ -387,7 +408,7 @@ Builder 独占参数；standard_denoising 在其中声明权重、prediction typ
 (config-field-path-sampling-num-samples)=
 ### `sampling.num_samples`
 
-一次采样生成的总样本数。
+一次 checkpoint-backed inference 产生的总 item 数。
 
 - 类型：`int`
 - 必填：否
@@ -397,7 +418,7 @@ Builder 独占参数；standard_denoising 在其中声明权重、prediction typ
 (config-field-path-sampling-batch-size)=
 ### `sampling.batch_size`
 
-采样时每批样本数，与 DataBuilder 独立。
+inference 时每批 item 数，与 DataBuilder 独立。
 
 - 类型：`int`
 - 必填：否
@@ -407,7 +428,7 @@ Builder 独占参数；standard_denoising 在其中声明权重、prediction typ
 (config-field-path-sampling-seed)=
 ### `sampling.seed`
 
-采样专用随机种子；null 使用 experiment.seed。
+inference 专用随机种子；null 使用 checkpoint config 的 experiment.seed。
 
 - 类型：`int | null`
 - 必填：否
@@ -422,6 +443,7 @@ Builder 独占参数；standard_denoising 在其中声明权重、prediction typ
 - 必填：否
 - 默认值：`[{name: tensor, params: {}}]`
 - 约束：至少一个。
+- 关联：sample request 显式提供时原子替换 checkpoint 默认列表。
 
 (config-field-path-sampling-writers-item-name)=
 ### `sampling.writers[].name`
@@ -769,18 +791,18 @@ native provider，扩展 Registry 不能占用。
 (config-component-data_builders-class-labeled-image)=
 #### `class_labeled_image`
 
-带认证类别标签的单一图像来源、逐类 validation 划分与无状态增强 recipe。
+不含 native validation 的认证 class-labeled artifact、逐类 derived holdout 与无状态增强 recipe。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `source` | 必填 mapping；注册的 ImageDataSource 必须返回 `ClassLabeledImageFolderArtifactPayload`。 |
+| `source` | 必填 mapping；注册的 ImageDataSource 必须返回 finite authenticated `ClassLabeledImageFolderArtifactPayload`，其 validation 必须为 null、test 可选；相同 payload type 不自动代表 runtime recipe 兼容。 |
 | `source.name` | 必填非空注册名；Builder 不检查具体名称或读取 source 私有参数。 |
 | `source.params` | source 私有 mapping；字段由所选 DataSource 严格验证。 |
-| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。 |
-| `source.materialization.cache_root` | artifact/index 缓存根目录；默认 `./data`。 |
-| `source.materialization.policy` | `ensure` 可创建 exact artifact，`require` 只接受已存在 artifact；默认 `ensure`。 |
+| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。 |
+| `source.materialization.cache_root` | schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。 |
+| `source.materialization.policy` | `ensure` 可创建或修复 exact artifact；`require` 完全只读，只接受已存在 artifact；默认 `ensure`。 |
 | `source.materialization.verification` | `manifest` 校验索引与大小，`full` 重新校验全部内容；默认 `full`，strict resume 强制完整验证。 |
 | `image` | 必填 mapping；`size` 必填，其余字段使用下列默认值。 |
 | `image.size` | 必填 `[height, width]`；两个维度均为正整数。 |
@@ -813,9 +835,9 @@ native provider，扩展 Registry 不能占用。
 | `source.params.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
 | `source.params.root` | `image_folder` 时必填的本地/NFS 根目录。 |
 | `source.params.layout` | folder source 布局；`flat` 递归读取单一根目录，`split` 读取 train/validation/test 子目录。 |
-| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。 |
-| `source.materialization.cache_root` | artifact/index 缓存根目录；默认 `./data`。 |
-| `source.materialization.policy` | `ensure` 可创建 exact artifact，`require` 只接受已存在 artifact；默认 `ensure`。 |
+| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。 |
+| `source.materialization.cache_root` | schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。 |
+| `source.materialization.policy` | `ensure` 可创建或修复 exact artifact；`require` 完全只读，只接受已存在 artifact；默认 `ensure`。 |
 | `source.materialization.verification` | `manifest` 校验索引与大小，`full` 重新校验全部内容；默认 `full`，strict resume 强制完整验证。 |
 | `image` | 必填 mapping；`size` 必填，其余字段使用下列默认值。 |
 | `image.size` | 必填 `[height, width]`；两个维度均为正整数。 |
@@ -852,9 +874,9 @@ native provider，扩展 Registry 不能占用。
 | `sources[].source.params.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
 | `sources[].source.params.root` | `image_folder` 时必填的本地/NFS 根目录。 |
 | `sources[].source.params.layout` | folder source 布局；`flat` 或 `split`。 |
-| `sources[].source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。 |
-| `sources[].source.materialization.cache_root` | artifact/index 缓存根目录；默认 `./data`。 |
-| `sources[].source.materialization.policy` | `ensure` 或 `require`；默认 `ensure`。 |
+| `sources[].source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。 |
+| `sources[].source.materialization.cache_root` | schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。 |
+| `sources[].source.materialization.policy` | `ensure` 可创建或修复，`require` 完全只读；默认 `ensure`。 |
 | `sources[].source.materialization.verification` | `manifest` 或 `full`；默认 `full`，strict resume 强制完整验证。 |
 | `image` | 必填 mapping；内部字段均使用下列默认值。 |
 | `image.channels` | 输出通道数；默认 `3`，仅支持 `1` 或 `3`。 |
@@ -897,9 +919,9 @@ native provider，扩展 Registry 不能占用。
 | `source.params.high_resolution_root` | `paired_image_folders` 时必填的 HR 根目录。 |
 | `source.params.low_resolution_root` | `paired_image_folders` 时必填的 LR 根目录；与 HR 按相对路径 stem 配对。 |
 | `source.params.layout` | folder source 布局；`flat` 或 `split`。 |
-| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。 |
-| `source.materialization.cache_root` | artifact/index 缓存根目录；默认 `./data`。 |
-| `source.materialization.policy` | `ensure` 或 `require`；默认 `ensure`。 |
+| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。 |
+| `source.materialization.cache_root` | schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。 |
+| `source.materialization.policy` | `ensure` 可创建或修复，`require` 完全只读；默认 `ensure`。 |
 | `source.materialization.verification` | `manifest` 或 `full`；默认 `full`，strict resume 强制完整验证。 |
 | `image` | 必填 mapping；HR/LR size 必填，其余字段使用下列默认值。 |
 | `image.high_resolution` | 必填 HR `[height, width]`；两个维度均为正整数。 |
@@ -1002,7 +1024,7 @@ native provider，扩展 Registry 不能占用。
 在与算法 family 兼容的 Dynamics 和 initial state 上执行完整 solver 生命周期。
 
 - 基类/契约：`stochaflow.sampling.Sampler`
-- 配置位置：`sampling.builder.params.sampler 或自定义 SamplingBuilder 参数`
+- 配置位置：`sampling.sampler；也可由 checkpoint inference recipe 的 fixed contract 私有决定`
 
 (config-component-samplers-ddim)=
 #### `ddim`
@@ -1028,10 +1050,10 @@ native provider，扩展 Registry 不能占用。
 (config-registry-name-sampling-builders)=
 ### `sampling_builders`
 
-装配 initial state、模型、Dynamics、Sampler、observer 和 writer-ready batch。
+checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingPlan 固化 recipe name 与 contract，sample request 不直接选择 Builder。
 
 - 基类/契约：`stochaflow.sampling.SamplingBuilder`
-- 配置位置：`sampling.builder.name / sampling.builder.params`
+- 配置位置：`checkpoint.inference_recipe.name；运行参数来自 fixed contract、sampling.options 与 sampling.sampler`
 
 (config-component-sampling_builders-class-conditional-denoising)=
 #### `class_conditional_denoising`
@@ -1042,15 +1064,15 @@ native provider，扩展 Registry 不能占用。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `weights` | 模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`。 |
-| `prediction_type` | 模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。 |
-| `clip_denoised` | 是否把预测 clean state 裁剪到 `[-1, 1]`；默认 `true`。 |
-| `guidance_scale` | 有限非负 CFG scale；0 只执行 null branch，1 只执行 conditional branch，其他值使用 fused double batch。 |
-| `conditions` | 必填有序列表；每项为 `{class_label, count}`，count 总和必须等于 sampling.num_samples。 |
-| `sampler.name` | 必填的 Gaussian-family samplers Registry 名称。 |
-| `sampler.params` | 传给所选 Sampler 构造器的 mapping。 |
-| `trajectory.enabled` | 是否保留 solver trajectory observations；默认 `false`。 |
-| `trajectory.every_steps` | trajectory 的 accepted-step 保留间隔；默认 `1`。 |
+| `weights` | 来自 `sampling.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`。 |
+| `prediction_type` | 训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample request 不可覆盖。 |
+| `clip_denoised` | 来自 `sampling.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。 |
+| `guidance_scale` | 来自 `sampling.options.guidance_scale`；有限非负 CFG scale。 |
+| `conditions` | 来自 `sampling.options.conditions` 的必填有序列表；count 总和必须等于 sampling.num_samples。 |
+| `sampler.name` | 来自顶层 `sampling.sampler.name` 的 Gaussian-family Sampler；若 recipe contract 固定 sampler，则请求不得替换。 |
+| `sampler.params` | 来自顶层 `sampling.sampler.params` 的构造 mapping。 |
+| `trajectory.enabled` | 来自 `sampling.options.trajectory.enabled`；是否保留 solver observations，默认 `false`。 |
+| `trajectory.every_steps` | 来自 `sampling.options.trajectory.every_steps`；accepted-step 保留间隔，默认 `1`。 |
 
 (config-component-sampling_builders-standard-denoising)=
 #### `standard_denoising`
@@ -1061,13 +1083,13 @@ native provider，扩展 Registry 不能占用。
 
 | 参数 | 含义与约束 |
 | --- | --- |
-| `weights` | 模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`；选择 `ema` 时 checkpoint 必须含 EMA state。 |
-| `prediction_type` | 模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。 |
-| `clip_denoised` | 是否把预测 clean state 裁剪到 `[-1, 1]`；默认 `true`，必须为布尔值。 |
-| `sampler.name` | 必填的 samplers Registry 名称；Sampler 必须兼容离散 Gaussian Dynamics，并在此 Builder 中发出 terminal-to-clean 的完整 observation lifecycle；partial 路径需自定义 Builder。 |
-| `sampler.params` | 传给所选 Sampler 构造器的 mapping；默认 `{}`。 |
-| `trajectory.enabled` | 是否保留 trajectory observations；默认 `false`，必须为布尔值。 |
-| `trajectory.every_steps` | trajectory 的 accepted-step 保留间隔；默认 `1`，必须为正整数；initial/final 始终保留。 |
+| `weights` | 来自 `sampling.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`；选择 `ema` 时 checkpoint 必须含 EMA state。 |
+| `prediction_type` | 训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample request 不可覆盖。 |
+| `clip_denoised` | 来自 `sampling.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。 |
+| `sampler.name` | 来自顶层 `sampling.sampler.name` 的 Sampler；必须兼容离散 Gaussian Dynamics。 |
+| `sampler.params` | 来自顶层 `sampling.sampler.params` 的构造 mapping。 |
+| `trajectory.enabled` | 来自 `sampling.options.trajectory.enabled`；是否保留 trajectory observations，默认 `false`。 |
+| `trajectory.every_steps` | 来自 `sampling.options.trajectory.every_steps`；accepted-step 保留间隔，默认 `1`；initial/final 始终保留。 |
 
 (config-registry-name-training-builders)=
 ### `training_builders`
@@ -1268,15 +1290,15 @@ native provider，扩展 Registry 不能占用。
 | `--deterministic` | 否 | `false` | 启用 PyTorch 严格确定性算法；没有确定性实现的算子会报错。 |
 | `--no-progress` | 否 | `false` | 禁用 Rich 进度条。 |
 | `--force-extension-version-mismatch` | 否 | `false` | 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。 |
-| `--skip-final-sample` | 否 | `false` | 跳过训练完成后的最佳 checkpoint 验收采样。 |
+| `--skip-final-sample` | 否 | `false` | 即使 sampling.run_after_training 为 true，也跳过本次训练完成后的 selected-best checkpoint inference。 |
 
 (config-cli-sample)=
 ### `stochaflow sample`
 
 | 参数 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- |
-| `--config` | 否 | `—` | 可选完整外部配置（整体权威），或在显式 checkpoint 上应用的 sampling/extensions 轻量 overlay。 |
-| `--checkpoint` | 否 | `—` | checkpoint 文件或运行目录；仅给 config 时自动查找最新 best.pt。 |
+| `--config` | 否 | `—` | 可选 partial sample request；顶层只允许 sampling 与 optional extensions，且不能声明 sampling.run_after_training 或 Builder。 |
+| `--checkpoint` | 是 | `—` | 必填 checkpoint 文件或运行目录；目录递归选择最近修改的 best.pt。 |
 | `--device` | 否 | `—` | 覆盖采样设备。 |
 | `--output-dir` | 否 | `—` | 覆盖生成 artifact 的目录。 |
 | `--force-extension-version-mismatch` | 否 | `false` | 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。 |

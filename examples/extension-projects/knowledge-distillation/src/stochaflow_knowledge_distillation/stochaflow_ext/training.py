@@ -13,12 +13,15 @@ from stochaflow.extensions import (
     REGISTRIES,
     ComponentConfig,
     ManagedTrainingModule,
+    SamplingRecipe,
     TrainingBuilder,
     TrainingPlan,
     TrainingStrategy,
     TrainStepOutput,
     compute_objective,
 )
+
+from .models import StudentClassifier
 
 _PREFIX = "stochaflow-knowledge-distillation"
 
@@ -132,6 +135,11 @@ class DistillationTrainingBuilder(TrainingBuilder):
 
         if self.context.process is not None:
             raise ValueError("classification distillation does not use a Process")
+        student = self.context.primary_model
+        if not isinstance(student, StudentClassifier):
+            raise TypeError(
+                "classification distillation requires StudentClassifier"
+            )
         task_objective = self.context.objective
         if task_objective is None:
             raise ValueError("classification distillation requires a task Objective")
@@ -163,7 +171,7 @@ class DistillationTrainingBuilder(TrainingBuilder):
             distillation_declaration
         )
         strategy = KnowledgeDistillationStrategy(
-            student=self.context.primary_model,
+            student=student,
             teacher=teacher,
             task_objective=task_objective,
             distillation_objective=distillation_objective,
@@ -171,9 +179,13 @@ class DistillationTrainingBuilder(TrainingBuilder):
         )
         return TrainingPlan(
             strategy=strategy,
-            primary_model=self.context.primary_model,
+            primary_model=student,
             process=self.context.process,
             objective=task_objective,
+            inference_recipe=SamplingRecipe(
+                name=f"{_PREFIX}.predictions",
+                contract={"input_features": student.input_features},
+            ),
             auxiliary_modules={
                 "teacher": ManagedTrainingModule(teacher, mode="eval"),
                 "distillation_objective": ManagedTrainingModule(

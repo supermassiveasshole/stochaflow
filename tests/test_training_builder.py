@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
@@ -10,6 +11,7 @@ import pytest
 import torch
 from torch import nn
 
+from stochaflow.sampling import SamplingRecipe
 from stochaflow.training import (
     ManagedTrainingModule,
     TrainingBuilder,
@@ -29,6 +31,7 @@ from stochaflow.utils.factory import (
     build_training_components,
 )
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog, RegistryError
+from stochaflow.utils.sampling_recipe import sampling_recipe_to_dict
 
 
 class ScalarStrategy(TrainingStrategy):
@@ -312,6 +315,53 @@ def test_plan_rejects_module_strategy_and_snapshots_auxiliaries() -> None:
         )
 
 
+def test_plan_validates_and_snapshots_inference_recipe() -> None:
+    contract = {
+        "prediction_type": "v",
+        "schedule": {"steps": [4, 2, 0]},
+    }
+    validated = validate_training_plan(
+        _linear_plan(
+            inference_recipe=SamplingRecipe(
+                name="project.generate",
+                contract=contract,
+            )
+        )
+    )
+    contract["prediction_type"] = "epsilon"
+    cast(dict[str, list[int]], contract["schedule"])["steps"].append(-1)
+
+    recipe = validated.inference_recipe
+    assert recipe is not None
+    assert sampling_recipe_to_dict(recipe) == {
+        "schema_version": 1,
+        "name": "project.generate",
+        "contract": {
+            "prediction_type": "v",
+            "schedule": {"steps": [4, 2, 0]},
+        },
+    }
+    schedule = cast(Mapping[str, Any], recipe.contract["schedule"])
+    steps = cast(tuple[int, ...], schedule["steps"])
+    with pytest.raises(TypeError):
+        cast(Any, schedule)["late"] = True
+    with pytest.raises(AttributeError):
+        cast(Any, steps).append(-1)
+    with pytest.raises(TypeError, match="must be SamplingRecipe"):
+        validate_training_plan(
+            _linear_plan(inference_recipe=cast(Any, {"name": "invalid"}))
+        )
+    with pytest.raises(TypeError, match=r"unsupported value type.*tuple"):
+        validate_training_plan(
+            _linear_plan(
+                inference_recipe=SamplingRecipe(
+                    name="project.generate",
+                    contract={"steps": (4, 2, 0)},
+                )
+            )
+        )
+
+
 def test_plan_rejects_invalid_mode_duplicate_and_shared_state() -> None:
     model = nn.Linear(1, 1)
     bad_mode = _linear_plan(
@@ -450,7 +500,9 @@ def test_checkpoint_preserves_pytorch_state_dict_metadata(tmp_path: Path) -> Non
 
 
 def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> None:
-    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
+    ).to_dict()
     raw["experiment"]["output_dir"] = str(tmp_path)
     raw["model"] = {"name": "stage4_student", "params": {}}
     raw["process"] = None
@@ -462,6 +514,7 @@ def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> N
     raw["diagnostics"] = []
     raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False
+    raw["sampling"]["run_after_training"] = False
     components = build_training_components(load_config_dict(raw))
 
     strategy = components.plan.strategy
@@ -528,7 +581,9 @@ def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> N
 
 
 def test_custom_builder_trains_without_process_or_objective(tmp_path: Path) -> None:
-    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
+    ).to_dict()
     raw["experiment"]["output_dir"] = str(tmp_path)
     raw["model"] = {"name": "stage4_student", "params": {}}
     raw["process"] = None
@@ -537,6 +592,7 @@ def test_custom_builder_trains_without_process_or_objective(tmp_path: Path) -> N
     raw["diagnostics"] = []
     raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False
+    raw["sampling"]["run_after_training"] = False
 
     components = build_training_components(load_config_dict(raw))
     loss = components.trainer.train_batch(torch.tensor([[1.0], [2.0]]))

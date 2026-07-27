@@ -4,26 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import io
-from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-import yaml
 from PIL import Image, PngImagePlugin, UnidentifiedImageError
 
-from stochaflow.data.artifact_io import write_cache_file
-
-from .contracts import PreparationError, SourceImage
+from .contracts import PreparationError
 
 _EXIF_ORIENTATION_TAG = 274
 _PNG_COMPRESS_LEVEL = 6
 
-def _decode_and_resize(
+def decode_and_resize(
     payload: bytes,
     *,
     member_name: str,
     input_resolution: int,
     output_resolution: int,
-) -> tuple[Image.Image, str]:
+) -> Image.Image:
     try:
         with Image.open(io.BytesIO(payload)) as probe:
             if probe.format != "PNG":
@@ -54,25 +50,22 @@ def _decode_and_resize(
                 )
             rgb = source.convert("RGB")
             rgb.load()
-            pixel_digest = hashlib.sha256(rgb.tobytes()).hexdigest()
             resized = rgb.resize(
                 (output_resolution, output_resolution),
                 resample=Image.Resampling.LANCZOS,
                 reducing_gap=None,
             )
             resized.info.clear()
-            return resized, pixel_digest
+            return resized
     except (OSError, SyntaxError, UnidentifiedImageError) as error:
         raise PreparationError(
             f"failed to decode source image: {member_name!r}"
         ) from error
 
 
-def _save_prepared_png(
+def save_prepared_png(
     image: Image.Image,
     destination: Path,
-    *,
-    cache_root: Path,
 ) -> tuple[str, int]:
     encoded_stream = io.BytesIO()
     image.save(
@@ -83,48 +76,9 @@ def _save_prepared_png(
         pnginfo=PngImagePlugin.PngInfo(),
     )
     encoded = encoded_stream.getvalue()
-    write_cache_file(
-        cache_root,
-        destination,
-        encoded,
-        label="prepared AFHQ-v2 image",
-    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(encoded)
     return hashlib.sha256(encoded).hexdigest(), len(encoded)
 
 
-def _write_text_atomic(
-    path: Path,
-    content: str,
-    *,
-    cache_root: Path,
-    label: str,
-) -> None:
-    write_cache_file(
-        cache_root,
-        path,
-        content.encode("utf-8"),
-        label=label,
-    )
-
-
-def _manifest_text(manifest: Mapping[str, object]) -> str:
-    return yaml.safe_dump(
-        dict(manifest),
-        allow_unicode=True,
-        default_flow_style=False,
-        sort_keys=True,
-    )
-
-
-def _prepared_counts(
-    images: Sequence[SourceImage],
-    *,
-    classes: Sequence[str],
-) -> dict[str, dict[str, int]]:
-    counts = {
-        split: dict.fromkeys(classes, 0)
-        for split in ("train", "test")
-    }
-    for image in images:
-        counts[image.source_split][image.class_name] += 1
-    return counts
+__all__ = ["decode_and_resize", "save_prepared_png"]

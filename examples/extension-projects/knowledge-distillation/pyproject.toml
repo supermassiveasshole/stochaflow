@@ -15,7 +15,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.3"]
-vision = ["torchvision>=0.17,<1"]
 
 [project.entry-points."stochaflow.extensions"]
 stochaflow-knowledge-distillation = "stochaflow_knowledge_distillation.stochaflow_ext"

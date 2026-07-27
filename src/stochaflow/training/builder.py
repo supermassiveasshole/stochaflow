@@ -15,6 +15,10 @@ from stochaflow.processes import Process
 from stochaflow.training.strategy import TrainingStrategy
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog
+from stochaflow.utils.sampling_recipe import (
+    SamplingRecipe,
+    validate_sampling_recipe,
+)
 
 ModelFactory = Callable[[ComponentConfig], nn.Module]
 ObjectiveFactory = Callable[[ComponentConfig], nn.Module]
@@ -43,6 +47,7 @@ class TrainingPlan:
     auxiliary_modules: Mapping[str, ManagedTrainingModule] = field(
         default_factory=dict
     )
+    inference_recipe: SamplingRecipe | None = None
 
 
 class TrainingBuilderContext:
@@ -133,6 +138,14 @@ def validate_training_plan(value: object) -> TrainingPlan:
     objective_value = cast(object, value.objective)
     if objective_value is not None and not isinstance(objective_value, nn.Module):
         raise TypeError("TrainingPlan.objective must be an nn.Module or None")
+    recipe = (
+        validate_sampling_recipe(
+            value.inference_recipe,
+            path="TrainingPlan.inference_recipe",
+        )
+        if value.inference_recipe is not None
+        else None
+    )
     declared_auxiliaries = cast(object, value.auxiliary_modules)
     if not isinstance(declared_auxiliaries, Mapping):
         raise TypeError("TrainingPlan.auxiliary_modules must be a mapping")
@@ -171,6 +184,7 @@ def validate_training_plan(value: object) -> TrainingPlan:
         primary_model=value.primary_model,
         process=value.process,
         objective=value.objective,
+        inference_recipe=recipe,
         auxiliary_modules=MappingProxyType(dict(value.auxiliary_modules)),
     )
 

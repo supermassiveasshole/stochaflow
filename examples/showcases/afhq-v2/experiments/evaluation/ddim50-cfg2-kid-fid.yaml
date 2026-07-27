@@ -2,29 +2,26 @@ extensions:
   plugins: [stochaflow-afhq-v2]
 
 sampling:
+  sampler:
+    name: ddim
+    params:
+      num_inference_steps: 50
+      eta: 0.0
+  options:
+    weights: ema
+    clip_denoised: true
+    guidance_scale: 2.0
+    conditions:
+      - {class_label: 0, count: 300}
+      - {class_label: 1, count: 300}
+      - {class_label: 2, count: 300}
+    trajectory:
+      enabled: false
+      every_steps: 5
   shape: [3, 128, 128]
   num_samples: 900
   batch_size: 30
   seed: 20260726
-  builder:
-    name: class_conditional_denoising
-    params:
-      weights: ema
-      prediction_type: v
-      clip_denoised: true
-      guidance_scale: 2.0
-      conditions:
-        - {class_label: 0, count: 300}
-        - {class_label: 1, count: 300}
-        - {class_label: 2, count: 300}
-      sampler:
-        name: ddim
-        params:
-          num_inference_steps: 50
-          eta: 0.0
-      trajectory:
-        enabled: false
-        every_steps: 5
   writers:
     - name: tensor
       params: {}

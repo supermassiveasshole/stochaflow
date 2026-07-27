@@ -388,8 +388,14 @@ process:
     rate: 0.25
 ```
 
-训练完成后，可用下面的 lightweight sampling overlay 更换 solver 参数。Process 和插件
-selection 仍来自 checkpoint 保存的完整配置：
+该 family 的 TrainingBuilder 还必须把内部 recipe 固化进 checkpoint：
+
+```python
+inference_recipe=SamplingRecipe(name="generation-demo.vector-flow")
+```
+
+训练完成后，可用下面的 partial sample request 更换 solver 参数。Process、recipe 和
+插件 selection 仍来自 checkpoint：
 
 ```yaml
 sampling:
@@ -397,15 +403,13 @@ sampling:
   num_samples: 16
   batch_size: 8
   seed: 11
-  builder:
-    name: generation-demo.vector-flow
+  sampler:
+    name: generation-demo.euler
     params:
-      weights: raw
-      initial_value: 0.0
-      sampler:
-        name: generation-demo.euler
-        params:
-          num_steps: 32
+      num_steps: 32
+  options:
+    weights: raw
+    initial_value: 0.0
   writers:
     - name: tensor
       params: {}
@@ -432,8 +436,13 @@ extensions:
 process: null
 ```
 
-所选 TrainingBuilder 也必须支持无 Process 训练。Sampling overlay 继续复用 checkpoint
-中的插件 selection：
+所选 TrainingBuilder 也必须支持无 Process 训练，并返回：
+
+```python
+inference_recipe=SamplingRecipe(name="generation-demo.direct")
+```
+
+partial sample request 继续复用 checkpoint 中的 recipe 和插件 selection：
 
 ```yaml
 sampling:
@@ -441,12 +450,10 @@ sampling:
   num_samples: 12
   batch_size: 4
   seed: 19
-  builder:
-    name: generation-demo.direct
-    params:
-      weights: raw
-      input_dim: 8
-      offset: 0.5
+  options:
+    weights: raw
+    input_dim: 8
+    offset: 0.5
   writers:
     - name: tensor
       params: {}

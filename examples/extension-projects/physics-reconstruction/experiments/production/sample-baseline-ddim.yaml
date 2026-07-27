@@ -1,28 +1,6 @@
-extensions:
-  plugins: [physics-reconstruction]
 sampling:
-  shape: [3, 256, 256]
-  num_samples: 1272
-  batch_size: 4
-  seed: 42
-  builder:
-    name: physics-reconstruction.reconstruction
+  sampler:
+    name: ddim
     params:
-      weights: auto
-      prediction_type: epsilon
-      clip_denoised: false
-      partial_noise_time: 240
-      conditioning_strength: 1.0
-      correction_strength: 0.0
-      source: {path: data/kolmogorov_observations.npy, trajectories: [0, 4]}
-      reference: {path: data/kolmogorov.npy, trajectories: [36, 40]}
-      alignment: data/kolmogorov-alignment.json
-      sampler:
-        name: ddim
-        params:
-          schedule: [240, 232, 224, 216, 208, 200, 192, 184, 176, 168, 160, 152, 144, 136, 128, 120, 112, 104, 96, 88, 80, 72, 64, 56, 48, 40, 32, 24, 16, 8, 0]
-          eta: 0.0
-      trajectory: {enabled: false, every_steps: 1}
-  writers:
-    - name: physics-reconstruction.reconstruction-artifacts
-      params: {}
+      schedule: [240, 232, 224, 216, 208, 200, 192, 184, 176, 168, 160, 152, 144, 136, 128, 120, 112, 104, 96, 88, 80, 72, 64, 56, 48, 40, 32, 24, 16, 8, 0]
+      eta: 0.0

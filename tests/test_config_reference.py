@@ -28,9 +28,35 @@ def test_generated_config_reference_is_current() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_sampling_reference_exposes_request_defaults_not_builder_selection() -> None:
+    reference = Path("docs/configuration/reference.md").read_text(encoding="utf-8")
+
+    for field_path in (
+        "sampling-run-after-training",
+        "sampling-sampler",
+        "sampling-options",
+        "sampling-shape",
+        "sampling-num-samples",
+        "sampling-batch-size",
+        "sampling-seed",
+        "sampling-writers",
+    ):
+        assert f"(config-field-path-{field_path})=" in reference
+    assert "(config-field-path-sampling-builder)=" not in reference
+    assert "checkpoint.inference_recipe.name" in reference
+    assert "partial sample request" in reference
+
+
 def test_context_built_component_private_parameters_are_documented() -> None:
     reference = Path("docs/configuration/reference.md").read_text(encoding="utf-8")
     expected_paths = {
+        "data_builders-class-labeled-image": (
+            "source.name",
+            "source.materialization.verification",
+            "partition.validation_per_class",
+            "image.size",
+            "loader.steps_per_epoch",
+        ),
         "data_builders-image": (
             "source.name",
             "source.materialization.policy",
@@ -66,13 +92,22 @@ def test_context_built_component_private_parameters_are_documented() -> None:
         for path in paths:
             assert f"| `{path}` |" in section
 
+    class_labeled = _component_section(
+        reference,
+        "data_builders-class-labeled-image",
+    )
+    assert "validation 必须为 null" in class_labeled
+    assert "相同 payload type 不自动代表 runtime recipe 兼容" in class_labeled
+
     supervised = _component_section(reference, "training_builders-supervised")
     assert "无组件级配置参数。" not in supervised
     assert "`params` 必须是空 mapping（默认 `{}`）" in supervised
 
 
 def test_all_builtin_yaml_configs_load() -> None:
-    paths = sorted(Path("configs").glob("*.yaml"))
+    paths = sorted(
+        Path("examples/built-in/image-generation/experiments").glob("*.yaml")
+    )
 
     assert [path.name for path in paths] == [
         "ddim_cifar10.yaml",

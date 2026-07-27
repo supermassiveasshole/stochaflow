@@ -1,12 +1,14 @@
 # Stochaflow Data Layer Composition Boundary Review
 
 - 文档性质：开发草案；不属于当前公开 API 或正式用户文档
-- 状态：架构审查；AFHQ-v2 source-only 迁移已在当前工作区完成，其余建议待决
+- 状态：Implemented；数据组合边界与统一 schema-v2 artifact producer lifecycle 已闭环
 - 制定日期：2026-07-27
 - 审查基线：当前共享工作区中的 data core、AFHQ-v2 showcase、Physics 与
   Knowledge Distillation extension
 - 关联提案：
+  [Data Artifact Producer Lifecycle Refactor](data-artifact-producer-lifecycle-refactor.md)；
   [Artifact Metadata, Provenance and Capacity Model](artifact-metadata-provenance-capacity-model-proposal.md)
+  保持 Deferred
 
 ## 0. Executive Summary
 
@@ -75,8 +77,10 @@ repeat 和 prefetch 都建模为返回新 `Dataset` 的惰性算子。PyTorch `D
 - 某个 archive layout；
 - 某个具体 `torch.utils.data.Dataset` 类。
 
-AFHQ-v2 和 ImageNet 若都能发布为同一个 class-labeled image artifact contract，并使用
-相同的 class-conditioned batch recipe，就应复用同一个 Builder。
+AFHQ-v2 和某个 ImageNet-like source 若都能发布为同一个 class-labeled image artifact
+contract，并使用相同的 partition、Dataset、augmentation、sampler、loader、resume 和
+class-conditioned batch recipe，就应复用同一个 Builder。真实 ImageNet 是否满足这些
+条件仍需单独评估，尤其是其 native validation 与常见 shard storage 语义。
 
 ### 0.3 自定义 `Dataset` 不总是需要自定义 Builder
 
@@ -84,7 +88,7 @@ AFHQ-v2 和 ImageNet 若都能发布为同一个 class-labeled image artifact co
 
 | 场景 | 扩展方式 | 是否新增 Builder |
 | --- | --- | --- |
-| 新来源，但能发布为现有 artifact payload contract | 自定义 `DataSource` | 否 |
+| 新来源，且 artifact contract 与所需 runtime recipe 都匹配现有 Builder | 自定义 `DataSource` | 否 |
 | 一次性 Python 实验，用户已直接组合 Dataset/DataLoader | 直接调用 programmatic Trainer API | 否 |
 | 新的 sample/batch/partition/streaming/resume 语义 | 自定义 runtime recipe，即 `DataBuilder` | 是，一个 recipe 一个，而非一个 Dataset 类一个 |
 
@@ -127,12 +131,14 @@ PyTorch 已经提供 Python 级组合机制。Stochaflow 应保留 Python 作为
    只有在满足 contract 时才可复用相应 Builder。
 4. 不承诺“任意自定义 Dataset 自动接入任意 Builder”。可组合性必须建立在明确的
    semantic contract 上。
-5. 暂不新增新的公共 Dataset adapter registry。先用 AFHQ、ImageNet、Physics、LLM
-   四类案例验证 artifact contract 与 recipe 的实际重复边界。
+5. 暂不新增新的公共 Dataset adapter registry。AFHQ 是当前已完成的 core-recipe
+   验证案例；Physics/KD 只需在各自 extension 内遵守相同 role boundary，不迁入 core。
+   ImageNet、第二个 Physics source 与 LLM 属于 future decision gates。
 6. AFHQ-v2 只保留 source/materialization 特有代码，并复用通用
    `class_labeled_image` recipe；当前工作区已完成这一验证。
-7. Physics 的 trajectory window 和未来 LLM streaming/packing 可以先保持 extension
-   Builder；只有第二、第三个真实使用方出现后再提炼公共 recipe。
+7. Physics 的 trajectory window 和未来 LLM streaming/packing 保持 extension
+   Builder。Physics 的外部 `.npy` 输入仍应由 extension-local DataSource 物化为
+   DataArtifact；只有第二、第三个真实使用方出现后，才另行提案是否提炼公共 recipe。
 
 ## 1. Problem Statement
 
@@ -221,16 +227,18 @@ loaders”。这是正确方向。
 
 ### `DataArtifact`
 
-`ManagedDataArtifact` 与 `ReferencedDataArtifact` 将以下事实组合为 runtime handle：
+统一的 `DataArtifact` 将以下事实组合为 runtime handle：
 
 - location-independent identity；
 - verified manifest；
-- managed 或 referenced ownership；
+- `identity.kind` 表达的 managed 或 referenced ownership strategy；
 - typed payload。
 
-`DataArtifactIdentity` 已经覆盖 source、materializer、artifact content 和 manifest
-digest。`DataArtifactBindings` 把 artifact identity 绑定到本次运行的语义 role，并用于
-strict resume。
+concrete schema-v2 `DataArtifactIdentity` 覆盖 source、materializer、artifact content
+和 manifest digest。managed/referenced producer 共用 `DataArtifactStore` 的 manifest、
+inventory、locator、locking、publication、quarantine 与 verification lifecycle。
+`DataArtifactBindings` 把 artifact identity 绑定到本次运行的语义 role，并用于 strict
+resume。旧 identity、manifest、cache 或 binding 没有 adapter/migration。
 
 ### `DataBuilder`
 
@@ -324,7 +332,8 @@ configuration 和 framework 文档中明确这一点。
 
 因此，当前能够实现的是：
 
-> 任意新 Source，只要输出现有标准 payload，就能复用现有 Builder。
+> 任意新 Source，只要输出某个 Builder 接受的现有标准 payload，并满足该 Builder 的
+> 完整 artifact contract，且所需 runtime recipe 语义一致，就能复用该 Builder。
 
 当前不能实现的是：
 
@@ -366,7 +375,8 @@ AFHQ-v2 原实现自行维护了：
 
 - AFHQ 不再拥有 Dataset/Sampler/Collate；
 - Builder 不再按 AFHQ 名称分支；
-- 未来兼容的 ImageNet source 可复用同一 recipe；
+- 未来满足相同 artifact contract、且同样需要 derived per-class holdout 的
+  ImageNet-like source 可复用同一 recipe；
 - validation split 从 source materialization 移到 runtime recipe，不再改变 prepared
   source artifact identity。
 
@@ -382,6 +392,8 @@ AFHQ-v2 原实现自行维护了：
 
 Physics extension 当前自行定义：
 
+- extension-local trajectory DataSource、payload 与 source registry；
+- referenced DataArtifact manifest 和 identity projection；
 - memory-mapped `TrajectoryTripletDataset`；
 - trajectory range validation；
 - epoch shuffle sampler；
@@ -393,10 +405,14 @@ Physics extension 当前自行定义：
 Knowledge Distillation extension 也自行定义：
 
 - epoch shuffle sampler；
-- synthetic/torchvision source switching；
-- random split；
+- deterministic in-memory synthetic split generation；
 - loader construction；
 - config validation。
+
+KD 当前 recipe 没有外部 input artifact，因此不虚构 DataSource 或 artifact binding；
+此前 Builder 内部的 optional torchvision acquisition 已删除。未来真实 classification
+data 必须使用 extension-owned DataSource/DataArtifact，或复用一个完整兼容的 framework
+recipe。
 
 两者证明了一些 framework concern 确实在重复：
 
@@ -406,9 +422,10 @@ Knowledge Distillation extension 也自行定义：
 - steps-per-epoch validation；
 - basic map-style loader construction。
 
-但它们尚未证明 Physics trajectory windows、classification sources 和 LLM corpus 能共享
-一个公共 Dataset abstraction。应先抽取重复 mechanism helper，不能立刻发明 universal
-dataset graph。
+但它们尚未证明 Physics trajectory windows、synthetic classification 和 LLM corpus
+能共享同一个 public sampler/loader contract，更没有证明它们需要公共 Dataset
+abstraction。当前只要求各 extension 遵守 Source/Artifact/Builder boundary；局部重复
+保持私有，直到第二、第三个语义相同的真实使用方出现。
 
 ## 2.6 当前实现的优点
 
@@ -437,7 +454,7 @@ dataset graph。
 
 > 创建某个 Dataset 的 builder。
 
-### 问题 B：Source-only extension 的兼容范围没有被显式定义（已修正）
+### 问题 B：Source-only extension 的兼容范围没有被显式定义（实现已收紧，文档待统一）
 
 此前“新的兼容数据集只需实现 ImageDataSource”这句话缺少关键限定：
 
@@ -446,9 +463,14 @@ dataset graph。
 如果新数据在 LMDB、WebDataset shards、Arrow、Zarr 或远程 stream 中，并且不适合
 materialize 为现有 payload，那么 Source-only 路径不成立。
 
-当前 configuration 与 extension 文档已把它写成明确的 compatibility boundary，并记录
-`class_labeled_image` 接受的 payload 和 native-validation 限制；实现仍以公开 payload
-type 做 fail-closed 校验。
+当前 `configuration/data-pipeline.md` 已记录 `class_labeled_image` 接受的 payload 和
+native-validation 限制；实现也以公开 payload type 和显式 runtime constraints 做
+fail-closed 校验。但其他 framework/extension 文档仍可能把条件简写为“兼容 payload”或
+“只有不同 batch lifecycle 才需要 Builder”，这会遗漏 partition、transform、sampler 和
+resume 语义。正式文档需要统一为两层兼容条件：
+
+1. artifact 满足 Builder 声明的完整 accepted contract；
+2. 用户需要的 runtime recipe 语义与该 Builder 一致。
 
 ### 问题 C：artifact payload 有时混入 runtime view 决策
 
@@ -819,17 +841,18 @@ Builder 的 primary reason to change 应是：
 
 例子：
 
-- AFHQ-v2 与 ImageNet 都发布 class-labeled image folder artifact；
+- AFHQ-v2 与另一个没有 native validation、需要 derived per-class holdout 的
+  class-labeled image corpus；
 - 另一个镜像 URL 或对象存储下载器发布同样的 artifact；
 - 自定义 archive layout 在 materialization 后归一化为相同 contract。
 
 ```python
-@IMAGE_DATA_SOURCES.register("my-project.imagenet")
-class ImageNetSource(ImageDataSource):
+@IMAGE_DATA_SOURCES.register("my-project.animals")
+class AnimalsSource(ImageDataSource):
     def materialize(
         self,
         context: DataSourceContext,
-    ) -> ManagedDataArtifact[ClassLabeledImageFolderArtifactPayload]:
+    ) -> DataArtifact[ClassLabeledImageFolderArtifactPayload]:
         ...
 ```
 
@@ -840,7 +863,7 @@ data:
   name: class_labeled_image
   params:
     source:
-      name: my-project.imagenet
+      name: my-project.animals
       params: {...}
       materialization: {...}
     partition: {...}
@@ -848,7 +871,10 @@ data:
     loader: {...}
 ```
 
-这里没有 ImageNet Builder。
+这里没有 dataset-name-specific Builder。真实 ImageNet 通常带 native validation，当前
+`class_labeled_image` recipe 会拒绝它；除非明确选择一个满足现有 contract 的数据
+profile，否则应使用或新增支持 official validation 的 recipe，不能仅因 payload class
+相同就声称兼容。
 
 ## 5.2 直接声明 Python 组合，不需要 Builder
 
@@ -1366,7 +1392,8 @@ artifact.dataloader
 
 ## 9.1 自定义图像来源，sample contract 不变
 
-例如用户有一个私有 tar archive，但准备后可以发布为标准 class-labeled inventory。
+例如用户有一个私有 tar archive，但准备后可以发布为不含 native validation 的标准
+class-labeled inventory，并且实验也需要当前 recipe 的 derived per-class holdout。
 
 边界：
 
@@ -1385,7 +1412,7 @@ Dataset/Sampler/Collate -> existing class_labeled_image recipe
 ### 情况 A：可以在 materialization 时归一化
 
 如果可以合理地将 LMDB 索引/内容转换为 framework 已支持的 managed artifact contract，
-则：
+并且所需 runtime recipe 语义也与现有 Builder 一致，则：
 
 - Source 读取/验证 LMDB；
 - materialize 标准 artifact；
@@ -1450,7 +1477,7 @@ class TinyDataset(Dataset[Any]): ...
 
 ## 10.1 Artifact metadata/provenance
 
-以下信息属于 DataArtifact descriptor：
+以下信息可能属于未来的 DataArtifact 相邻描述证据：
 
 - dataset identity；
 - source provenance；
@@ -1460,9 +1487,11 @@ class TinyDataset(Dataset[Any]): ...
 - materialization transformations；
 - storage footprint。
 
-它们应由关联的
+当前不引入 descriptor。已实施的 schema-v2 manifest `domain` 只保存 producer 加载和
+验证 typed payload 所需的事实，不是通用 metadata/provenance bag。关联的
 [Artifact Metadata, Provenance and Capacity Model](artifact-metadata-provenance-capacity-model-proposal.md)
-统一，而不是由 Dataset class 自行定义属性。
+保持 Deferred，等待多个真实 consumer 证明最小公共契约；这些信息也不应由 Dataset
+class 自行定义属性。
 
 ## 10.2 Runtime recipe/config
 
@@ -1496,16 +1525,20 @@ batch size、workers 或 model 时，资源需求完全不同。
 
 ## 11.1 Core module
 
-Phase 1 主要是边界澄清与小型复用，不引入新 graph。
+当前工作已经完成边界澄清与一致性闭环，且没有引入新 graph。
 
-建议：
+已实施：
 
-- 保持 `artifacts.py` 的 Source/Artifact contracts；
+- 保持 `artifacts.py` 的 Source/Artifact contracts，并将 identity/runtime handle 统一为
+  schema-v2 `DataArtifactIdentity` / `DataArtifact`；
+- 以 `DataArtifactStore` 统一 managed/referenced producer lifecycle；
 - 保持 `builder.py` 的 composition root；
 - 保持 `dataloaders.py` 的 narrow output；
-- 把 common deterministic loader mechanism 作为 helper 复用；
+- 保持现有 recipe-private loader/sampler mechanism；除非未来出现语义相同的独立
+  使用方，否则不提升为公共 helper；
 - 为每个 built-in Builder 文档化 accepted artifact contract 和 batch contract；
-- 检查 artifact payload 是否混入 run-specific policy。
+- 检查 artifact payload 是否混入 run-specific policy；
+- 不读取或迁移旧 artifact cache、manifest、identity 与 checkpoint binding。
 
 ## 11.2 Public API
 
@@ -1546,10 +1579,10 @@ Builder registry name 表示完整 recipe compatibility boundary。
 
 - resolved Builder config；
 - source/materialization config；
-- artifact bindings；
-- future artifact descriptors；
-- future execution record；
+- schema-v2 artifact bindings；
 - explicit state for recipes that support iterator-state resume。
+
+future artifact descriptor 与 execution record 当前不序列化；相关提案保持 Deferred。
 
 不序列化：
 
@@ -1600,12 +1633,16 @@ config。
 
 ## 11.7 Physics
 
-短期允许 Physics 保持自己的 `KolmogorovDataBuilder`，但建议下一步：
+Physics 继续作为 extension capability 展示，并在 extension 内遵守同一数据边界：
 
-- 将 source artifact/materialization 与 runtime window Dataset 分离；
-- 复用 core deterministic loader helpers；
-- 将 Builder 命名和 config 描述为 `trajectory_windows` recipe；
-- 等第二个 physics source 出现后判断是否提升公共 payload/recipe。
+- extension-local DataSource 验证外部 `.npy` 并返回带 identity 的 referenced
+  DataArtifact；
+- `KolmogorovDataBuilder` 绑定 artifact identity，再拥有 trajectory ranges、Dataset、
+  sampler 与 loader 组合；
+- 不因为它与 image recipe 都出现 epoch shuffle 或 worker seeding，就假定两者拥有同一
+  公共契约；
+- 第二个 physics source 或第二个相同 trajectory-window recipe 出现后，再判断是否值得
+  提升公共 payload、recipe 或窄 helper。
 
 ## 11.8 LLM
 
@@ -1638,7 +1675,7 @@ config。
 - 测试独立 extension Source 能在不修改 core dispatch 的情况下接入兼容 recipe；
 - 测试独立 custom Builder 能返回 arbitrary reiterable batches；
 - 测试 strict resume 在 Dataset construction 前校验 artifact bindings；
-- 保持 backward compatibility。
+- 保持四层职责边界；artifact schema、cache 与公共 API 不保留 backward compatibility。
 
 ## Phase 2：AFHQ-v2 迁移验证（当前工作区已完成）
 
@@ -1649,42 +1686,43 @@ config。
 - validation split 已成为 runtime recipe config；
 - artifact identity 不再因 experiment-only split 改变。
 
-## Phase 3：审计跨 example 重复
+## Phase 3：参考 extension 边界一致性
 
-审查：
+- Physics 使用 extension-local DataSource/registry，把外部 trajectory array 物化为
+  verified referenced DataArtifact；
+- Physics DataBuilder 在构建任何 partition/Dataset 前校验 artifact binding，但继续拥有
+  自己的 Dataset、sampler、loader 和 batch contract；
+- Knowledge Distillation 的数据收窄为无外部 artifact 的 deterministic synthetic
+  recipe，不再在 Builder 中隐藏 torchvision download/acquisition；
+- 两个项目都不向 core 提升 Dataset、sampler、loader、payload 或 registry。
 
-- Physics；
-- Knowledge Distillation；
-- built-in image recipes；
-- future ImageNet；
-- future LLM。
+## Future gate A：跨 example 重复证据（不属于本轮计划）
 
-只提取已有重复：
+Physics、Knowledge Distillation、future ImageNet、future LLM 和 built-in image recipes
+可以作为重复模式的观察样本，但观察到相似字段或局部算法不等于授权迁移。只有确认
+accepted inputs、state、error、ordering 和 resume guarantees 相同，才另行提案提取：
 
 - loader helpers；
 - deterministic sampler mechanism；
 - artifact binding helpers；
 - config validation helpers。
 
-不因为字段名称相同就抽象 sample/schema。
+在此之前，不把 Physics/KD 的数据能力迁入 core，也不抽象通用 sample/schema。
 
-## Phase 4：验证第二 source / 第二 recipe
+## Future gate B：第二 source / 第二 recipe 验证（不属于本轮计划）
 
-至少增加两个边界验证案例：
+后续真实需求可以提供以下任一证据：
 
 1. 一个非 AFHQ 的 class-labeled image Source，证明 Source-only extension；
-2. 一个使用同一 Physics window recipe 的不同 trajectory Source，或一个明确不兼容的
-   LLM streaming recipe，证明何时需要 Builder。
+2. 一个使用相同 Physics window recipe 的不同 trajectory Source；
+3. 一个明确不兼容的 LLM streaming recipe，证明何时必须新增 Builder。
 
-根据结果决定：
+这些案例出现后，再判断 class-labeled payload 是否足够通用、folder storage 是否过度
+具体，以及是否真的需要 family-local Dataset adapter。
 
-- class-labeled payload 是否足够通用；
-- folder storage 是否过度具体；
-- 是否真的需要 family-local Dataset adapter。
+## Future gate C：可选公共能力提炼（不属于本轮计划）
 
-## Phase 5：可选公共能力提炼
-
-只有满足 decision gate 时才考虑：
+只有前述真实案例满足 decision gate 时才考虑：
 
 - generic artifact descriptor integration；
 - family-local adapter protocol；
@@ -1735,10 +1773,16 @@ config。
 
 ## 13.2 Cross-example tests
 
-- AFHQ 与一个 fixture ImageNet-like source 使用同一 recipe；
-- Physics 两个 source 使用同一 window recipe；
-- custom LLM iterable 不被 image recipe 错误接受；
+当前 contract tests：
+
+- AFHQ 与 independent fixture Source 使用同一 class-labeled recipe；
+- Physics external array 通过 extension-local DataSource/DataArtifact 绑定后才构造
+  window Dataset；
+- KD synthetic recipe 明确没有 external artifact binding；
 - direct Trainer path 接受自定义 DataLoader，不依赖 registry。
+
+fixture ImageNet-like source、第二个 Physics source 与 custom LLM iterable 属于 future
+decision-gate tests，不在没有真实需求时伪造为当前公共能力。
 
 ## 14. Risks
 
@@ -1820,7 +1864,8 @@ extension 与文档迁移。
 
 1. `ClassLabeledImageFolderArtifactPayload` 应保持 storage-specific，还是未来拆成
    semantic inventory + storage locator 两个 capability？
-2. ImageNet 能否在可接受的成本下发布为当前 payload，还是需要 shard-aware recipe？
+2. ImageNet 能否在可接受的成本下发布为当前 payload，并采用当前 derived holdout
+   语义；还是其 native validation、shard storage 需要另一个 recipe？
 3. 当前 `ImageDatasetFactory` 的 concrete payload dispatch 是否已构成足够证据，需要
    family-local adapter；还是应先用 canonical payload 减少分支？
 4. Derived split 的 identity 是否只保存在 resolved config，还是需要一个轻量
@@ -1828,7 +1873,7 @@ extension 与文档迁移。
 5. `DataLoaders` 名称是否会因支持 arbitrary iterable 而误导？当前 rename 收益不足，
    但可在 major version 重新评估。
 6. Programmatic Trainer path 是否需要 artifact bindings 参数，以便不用 registry 也能
-   记录 provenance？这应与 execution record 提案一起设计。
+   记录 input evidence？这应在出现真实 consumer 后单独设计；当前 provenance 提案延期。
 7. Distributed sampler/sharding 应由 Builder 完成，还是由 runner 注入 narrow
    distributed context？需要等 distributed support proposal 定义 world/rank lifecycle。
 8. Iterable resume 是 `DataLoaders` state、Builder state，还是 loader capability？
@@ -1847,18 +1892,23 @@ extension 与文档迁移。
 5. 接受 payload contract 是 Source 与 Builder 的兼容边界；
 6. 接受 AFHQ 只验证 class-labeled image 这一条真实重复模式；
 7. 接受 Physics/LLM 先在 extension 中验证，再提炼 core recipe；
-8. 接受 metadata/provenance/capacity 不进入 Dataset object。
+8. 接受 metadata/provenance/capacity 不进入 Dataset object，相关提案保持 Deferred；
+9. 接受 managed/referenced 共用 schema-v2 producer lifecycle，旧格式不兼容。
 
-若以上成立，建议实施顺序为：
+以上决策已经实施，当前在文档与 contract-test 一致性闭环后停止。后续能力按独立
+decision gate 推进：
 
 ```text
-document roles and compatibility
-    -> complete AFHQ source-only migration
-    -> extract only repeated loader mechanisms
-    -> validate ImageNet-like compatible source
-    -> validate Physics/LLM incompatible recipes
-    -> reconsider family-local adapters
-    -> add state/distributed capabilities only with real cases
+schema-v2 artifact lifecycle
+    -> migrate AFHQ managed producer
+    -> align Physics referenced producer and KD no-artifact recipe
+    -> close public docs, config reference, and contract tests
+    -> implemented
+
+future real case
+    -> validate a second compatible source or incompatible recipe
+    -> propose only the repeated narrow capability
+    -> add state/distributed support only with concrete lifecycle evidence
 ```
 
 ## 17. Final Position

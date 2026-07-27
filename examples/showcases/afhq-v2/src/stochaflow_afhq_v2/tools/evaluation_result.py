@@ -31,7 +31,7 @@ from stochaflow_afhq_v2.tools.evaluation_config import (
 RESULT_NAME = "evaluation-result.json"
 RESULT_DIGEST_NAME = "evaluation-result.sha256"
 MANIFEST_NAME = "evaluation-manifest.json"
-SAMPLING_OVERLAY_NAME = "sampling-overlay.yaml"
+SAMPLE_REQUEST_NAME = "sample-request.yaml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +146,7 @@ def materialize_result(
     provider_identities: Mapping[str, str],
     checkpoint_sha256: str,
     checkpoint_progress: Mapping[str, int],
-    overlay_path: Path,
+    request_path: Path,
 ) -> tuple[Path, str, Path, Path]:
     """Commit result JSON, digest sidecar, and immutable result manifest."""
 
@@ -171,7 +171,7 @@ def materialize_result(
         "config": {
             "source_path": str(document.source_path),
             "source_sha256": document.source_sha256,
-            "sampling_overlay": file_record(overlay_path, root=root),
+            "sample_request": file_record(request_path, root=root),
         },
         "extensions": extension_runtime_metadata(extensions),
         "protocol": {
@@ -202,7 +202,7 @@ def materialize_result(
             "artifact_bindings": expected_bindings.to_dict(),
         },
         "sampling": {
-            "builder": sampling.builder_name,
+            "recipe": sampling.recipe_name,
             "device": str(sampling.device),
             "metadata": dict(sampling.metadata),
             "output_dir": result_path_text(sampling.output_dir, root=root),
@@ -244,7 +244,7 @@ __all__ = [
     "MANIFEST_NAME",
     "RESULT_DIGEST_NAME",
     "RESULT_NAME",
-    "SAMPLING_OVERLAY_NAME",
+    "SAMPLE_REQUEST_NAME",
     "AFHQV2EvaluationResult",
     "default_output_dir",
     "file_record",

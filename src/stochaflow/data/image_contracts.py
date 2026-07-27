@@ -503,7 +503,12 @@ class ImageFolderArtifactPayload:
 
 @dataclass(frozen=True, slots=True)
 class ClassLabeledImageFolderArtifactPayload:
-    """Class-labeled native image partitions and canonical inventories."""
+    """Class-labeled native partitions and canonical image inventories.
+
+    The payload may carry native validation records. Individual DataBuilders
+    define a narrower accepted contract when their partition recipe requires
+    different native partitions.
+    """
 
     roots: Mapping[str, Path]
     class_mapping: Mapping[str, int]

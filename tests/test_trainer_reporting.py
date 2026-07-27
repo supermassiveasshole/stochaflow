@@ -805,7 +805,7 @@ def test_checkpoint_saves_and_restores_lr_scheduler_state(tmp_path) -> None:
     assert scheduler.count == 1
 
 
-def test_checkpoint_manager_rejects_v7(tmp_path) -> None:
+def test_checkpoint_manager_rejects_unsupported_format(tmp_path) -> None:
     trainer = _make_trainer(tmp_path)
     checkpoint_manager = trainer.checkpoint_manager
     assert checkpoint_manager is not None
@@ -814,5 +814,8 @@ def test_checkpoint_manager_rejects_v7(tmp_path) -> None:
     payload["format_version"] = 7
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match=r"supported versions are 8 and 9"):
+    with pytest.raises(
+        ValueError,
+        match=r"checkpoint format version 7 is unsupported; expected version 10",
+    ):
         checkpoint_manager.load(checkpoint)

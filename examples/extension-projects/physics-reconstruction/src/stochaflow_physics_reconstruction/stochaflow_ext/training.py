@@ -11,6 +11,7 @@ from stochaflow.extensions import (
     REGISTRIES,
     DiscreteGaussianDenoisingProcess,
     PredictionType,
+    SamplingRecipe,
     TrainingBuilder,
     TrainingPlan,
     TrainingStrategy,
@@ -142,6 +143,10 @@ class PhysicsTrainingBuilder(TrainingBuilder):
             primary_model=model,
             process=process,
             objective=objective,
+            inference_recipe=SamplingRecipe(
+                name="physics-reconstruction.reconstruction",
+                contract={"prediction_type": prediction_type_value},
+            ),
         )
 
 

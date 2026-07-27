@@ -10,7 +10,7 @@ import sys
 import tarfile
 import tomllib
 import zipfile
-from importlib import metadata, resources
+from importlib import import_module, metadata, resources
 from pathlib import Path
 from runpy import run_path
 from typing import Any, Self, TextIO, cast
@@ -18,8 +18,9 @@ from typing import Any, Self, TextIO, cast
 import pytest
 import yaml
 from packaging.version import Version
+from torch import nn
 
-from stochaflow.extensions import DataBuilderContext
+from stochaflow.extensions import DataBuilderContext, TrainingBuilderContext
 from stochaflow.projects import (
     ProjectScaffoldError,
     create_project,
@@ -27,6 +28,7 @@ from stochaflow.projects import (
     validate_project_name,
 )
 from stochaflow.scripts.cli import build_argument_parser, main
+from stochaflow.utils.sampling_recipe import resolve_sampling_recipe_params
 
 EXPECTED_FILES = {
     ".gitignore",
@@ -172,7 +174,17 @@ def test_create_project_writes_deterministic_installable_distribution(
         "local",
         "tensorboard",
     ]
-    assert config["sampling"]["writers"] == [{"name": "tensor", "params": {}}]
+    assert config["sampling"] == {
+        "run_after_training": True,
+        "shape": None,
+        "num_samples": 8,
+        "batch_size": 4,
+        "options": {
+            "input_min": -1.0,
+            "input_max": 1.0,
+        },
+        "writers": [{"name": "tensor", "params": {}}],
+    }
     for relative_path in sorted(EXPECTED_FILES):
         if relative_path.endswith(".py"):
             source = (first / relative_path).read_text(encoding="utf-8")
@@ -210,6 +222,59 @@ def test_generated_readme_documents_the_complete_user_path(tmp_path: Path) -> No
     assert "outputs/example/<run-id>/" in readme
     assert "samples.pt" in readme
     assert "resolved_sampling.yaml" in readme
+
+
+def test_generated_training_recipe_owns_the_model_input_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = create_project("recipe-contract-lab", cwd=tmp_path)
+    monkeypatch.syspath_prepend(str(project / "src"))
+    model_module = import_module(
+        "recipe_contract_lab.stochaflow_ext.model"
+    )
+    training_module = import_module(
+        "recipe_contract_lab.stochaflow_ext.training"
+    )
+    model_type = cast(Any, model_module.LinearRegressionModel)
+    builder_type = cast(Any, training_module.RegressionTrainingBuilder)
+
+    with pytest.raises(ValueError, match="positive integer"):
+        model_type(input_features=True)
+    model = model_type(input_features=5)
+    objective = nn.MSELoss()
+    plan = builder_type(
+        TrainingBuilderContext(
+            params={},
+            primary_model=model,
+            process=None,
+            objective=objective,
+            model_factory=lambda _declaration: model,
+            objective_factory=lambda _declaration: objective,
+        )
+    ).build()
+
+    assert plan.inference_recipe is not None
+    assert dict(plan.inference_recipe.contract) == {"input_features": 5}
+    with pytest.raises(ValueError, match="cannot override"):
+        resolve_sampling_recipe_params(
+            plan.inference_recipe,
+            options={"input_features": 4},
+            sampler=None,
+        )
+
+    wrong_model = nn.Linear(5, 1)
+    with pytest.raises(TypeError, match="requires LinearRegressionModel"):
+        builder_type(
+            TrainingBuilderContext(
+                params={},
+                primary_model=wrong_model,
+                process=None,
+                objective=objective,
+                model_factory=lambda _declaration: wrong_model,
+                objective_factory=lambda _declaration: objective,
+            )
+        ).build()
 
 
 def test_generated_training_shuffle_is_rebuilt_from_seed_and_epoch(

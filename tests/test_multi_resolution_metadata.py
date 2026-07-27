@@ -21,7 +21,7 @@ from stochaflow.data import (
     ImageFolderArtifactPayload,
     torchvision_source,
 )
-from stochaflow.data.artifact_store import canonical_json_bytes
+from stochaflow.data.artifact_store import canonical_artifact_json_bytes
 from stochaflow.data.datasets import (
     CodedLabelSequence,
     CompactIndexSequence,
@@ -220,15 +220,17 @@ def test_reference_dimensions_are_canonical_and_integrity_bound(
     manifest = json.loads(
         artifact.manifest_path.read_text(encoding="utf-8")
     )
-    shard_path = artifact.index_root / manifest["inventory"]["shards"][0][
-        "path"
-    ]
+    shard_path = (
+        artifact.root
+        / "data"
+        / manifest["domain"]["inventory"]["shards"][0]["path"]
+    )
     serialized = json.loads(shard_path.read_text(encoding="utf-8"))
     assert serialized["width"] == 31
     assert serialized["height"] == 17
 
     serialized["width"] = 32
-    tampered = canonical_json_bytes(serialized)
+    tampered = canonical_artifact_json_bytes(serialized)
     assert len(tampered) == shard_path.stat().st_size
     shard_path.write_bytes(tampered)
 
@@ -241,11 +243,13 @@ def test_reference_dimensions_are_canonical_and_integrity_bound(
             )
         )
 
-    manifest["inventory"]["shards"][0]["sha256"] = hashlib.sha256(
+    manifest["domain"]["inventory"]["shards"][0]["sha256"] = hashlib.sha256(
         tampered
     ).hexdigest()
-    artifact.manifest_path.write_bytes(canonical_json_bytes(manifest))
-    with pytest.raises(ValueError, match="source digest is invalid"):
+    artifact.manifest_path.write_bytes(
+        canonical_artifact_json_bytes(manifest)
+    )
+    with pytest.raises(ValueError, match=r"manifest SHA-256|domain digest"):
         source.materialize(
             source_context(
                 tmp_path / "cache",
@@ -269,7 +273,7 @@ def test_managed_dimension_sidecar_is_hashed_in_manifest_mode(
         config_path="data.params.source",
     )
     artifact = source.materialize(source_context(tmp_path / "cache"))
-    sidecar = artifact.artifact_root / "image_dimensions.json"
+    sidecar = artifact.root / "data" / "image_dimensions.json"
     encoded = sidecar.read_bytes()
     tampered = encoded.replace(b"[28,28]", b"[29,28]", 1)
     assert len(tampered) == len(encoded)
@@ -278,7 +282,7 @@ def test_managed_dimension_sidecar_is_hashed_in_manifest_mode(
 
     with pytest.raises(
         ValueError,
-        match="dimensions do not match the managed manifest",
+        match=r"dimensions|inventory",
     ):
         source.materialize(
             source_context(
@@ -292,7 +296,7 @@ def test_managed_dimension_sidecar_is_hashed_in_manifest_mode(
 def test_managed_dimension_sidecar_rejects_boolean_schema_version(
     tmp_path: Path,
 ) -> None:
-    encoded = canonical_json_bytes(
+    encoded = canonical_artifact_json_bytes(
         {
             "schema_version": True,
             "dataset": "mnist",
@@ -310,6 +314,7 @@ def test_managed_dimension_sidecar_rejects_boolean_schema_version(
             tmp_path,
             dataset_name="mnist",
             expected_record={
+                "path": "image_dimensions.json",
                 "size_bytes": len(encoded),
                 "sha256": hashlib.sha256(encoded).hexdigest(),
             },

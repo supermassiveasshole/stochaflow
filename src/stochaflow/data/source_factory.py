@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from stochaflow.data.artifacts import (
     DataArtifact,
     DataArtifactBinding,
     DataArtifactBindings,
     DataArtifactIdentity,
-    DataSourceContext,
-    ManagedDataArtifact,
-    ReferencedDataArtifact,
 )
 from stochaflow.data.folder_sources import (
     ImageFolderDataSource,
@@ -43,7 +39,11 @@ _BUILTIN_IMAGE_DATA_SOURCE_TYPES = (
 
 
 class ImageSourceFactory:
-    """Create and materialize registered image sources from canonical config."""
+    """Materialize sources and validate the image-family artifact envelope.
+
+    Recipe-specific payload and lifecycle compatibility remains the consuming
+    DataBuilder's responsibility.
+    """
 
     def __init__(
         self,
@@ -78,17 +78,12 @@ class ImageSourceFactory:
             config.params,
             config_path=path,
         )
-        context = DataSourceContext(
-            cache_root=Path(config.materialization.cache_root),
-            policy=cast(Any, config.materialization.policy),
-            verification=cast(Any, config.materialization.verification),
+        context = config.materialization.context(
             expected_identity=expected,
+            path=f"{path}.materialization",
         )
         artifact = source.materialize(context)
-        if not isinstance(
-            artifact,
-            (ManagedDataArtifact, ReferencedDataArtifact),
-        ):
+        if not isinstance(artifact, DataArtifact):
             raise TypeError(
                 f"image data source '{config.name}' must return DataArtifact"
             )

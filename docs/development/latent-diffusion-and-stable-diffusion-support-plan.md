@@ -334,13 +334,14 @@ device、offload 和 inference loop 会出现两个 owner。
 
 ### 5.2 当前最大阻塞点：sampling 丢失 auxiliary assets
 
-checkpoint v8 已把具名 auxiliary modules 写入
-`training_assets_state_dict`，但 `SamplingCheckpointView` 只保留：
+checkpoint v10 已把具名 auxiliary modules 写入
+`training_assets_state_dict`，并保存 fixed `inference_recipe`，但
+`SamplingCheckpointView` 只保留：
 
 - primary raw state；
 - primary EMA state；
 - Process state；
-- config 与 metadata。
+- config、recipe 与 metadata。
 
 `InferenceModelProvider` 也只能构造 primary model。
 
@@ -349,7 +350,7 @@ checkpoint v8 已把具名 auxiliary modules 写入
 
 ### 5.3 当前 Flowers config 的准确定位
 
-当前 `configs/ddpm_flowers102.yaml` 是：
+当前 `examples/built-in/image-generation/experiments/ddpm_flowers102.yaml` 是：
 
 - 64×64 pixel space；
 - ordinary unconditional UNet；
@@ -561,10 +562,10 @@ checkpoint metadata。SamplingBuilder 只请求 slot，provider 从 checkpoint d
 取得 declaration 并构造 module，避免训练/采样配置漂移。没有被 projection 的
 distillation teacher 等 training-only asset 不可被 inference 自动发现。
 
-AFHQ 计划已经提出尚未发布的 checkpoint v9。该 schema 应在首次实现前就加入始终存在的
-`inference_asset_descriptors` 字段，legacy/无推理 auxiliary 的 run 写空 mapping；
-不能在 v9 发布后原地改变 schema。若 v9 已经发布，则该变化必须升到 v10 并提供显式
-migration。
+当前 checkpoint v10 已经固定 strict envelope，且只有 `inference_recipe`，没有
+`inference_asset_descriptors`。本计划若引入该字段，必须发布新的 checkpoint schema
+version；无推理 auxiliary 的 run 写空 mapping。不得原地改变 v10，也不为 v10
+checkpoint 猜测或迁移 inference auxiliary identity。
 
 ### 7.3 首版采用 embedded state，随后增加 immutable reference
 
@@ -822,7 +823,7 @@ training target
 -> Evaluation protocol
 ```
 
-sampling overlay 不能无校验覆盖训练时语义。
+strict partial sample request 不能覆盖 checkpoint recipe 固化的训练语义。
 
 ### 10.3 Flowers 首版先做 Gaussian，不偷渡 flow
 
@@ -976,8 +977,9 @@ resolved sampling manifest。
 
 ### 13.1 路径 A：完整 Diffusers pipeline backend
 
-当前 `run_sampling()` 是 checkpoint-bound：sampling-only overlay 必须同时提供
-checkpoint，且 runtime 会在构造 Builder 前恢复 Process 与 primary model provider。
+当前 `run_sampling()` 是 checkpoint-bound：strict partial sample request 必须配合
+显式 checkpoint，且 runtime 会在构造内部 recipe Builder 前恢复 Process 与 primary
+model provider。
 因此完整 Diffusers pipeline 不能通过一个 dummy checkpoint 或仅含 `sampling:` 的
 现有 config 接入。
 
@@ -1395,26 +1397,26 @@ training:
         encoding_policy: posterior_sample
 
 sampling:
-  builder:
-    name: class_conditional_latent_denoising
+  run_after_training: true
+  sampler:
+    name: ddim
     params:
-      output_image_size: [256, 256]
-      prediction_type: v
-      clip_denoised: false
-      labels:
-        policy: balanced
-      guidance:
-        scale: 4.0
-      codec_asset: codec
-      sampler:
-        name: ddim
-        params:
-          num_inference_steps: 50
-          eta: 0.0
+      num_inference_steps: 50
+      eta: 0.0
+  options:
+    output_image_size: [256, 256]
+    clip_denoised: false
+    labels:
+      policy: balanced
+    guidance:
+      scale: 4.0
 ```
 
-codec config 留在具体 Builder 私有 params；不新增顶层通用 `codec:` 或
-`conditioning:`，除非第二个稳定 task family 证明存在真正跨任务公共语义。
+TrainingBuilder 将 `class_conditional_latent_denoising` 写入
+`TrainingPlan.inference_recipe.name`，并把 `prediction_type: v` 与
+`codec_asset: codec` 放入 fixed contract。codec config 留在具体 TrainingBuilder 私有
+params；不新增顶层通用 `codec:` 或 `conditioning:`，除非第二个稳定 task family
+证明存在真正跨任务公共语义。
 
 ### 17.2 prepared latent training
 
@@ -1444,7 +1446,7 @@ Builder 必须验证 latent artifact 的 codec/transform identity 与 decoder as
 ### 17.3 Diffusers black-box inference
 
 这是未来 `ExternalPipelineSamplingSubject` request 草案，不是当前
-`StochaflowConfig` 的 sampling-only overlay：
+checkpoint-backed strict partial sample request：
 
 ```yaml
 subject:
@@ -1534,7 +1536,7 @@ pipeline 都可用。request resolver 不创建 Stochaflow Process/primary provi
 
 - sampling checkpoint view 保留 verified inference assets；
 - `TrainingPlan.inference_assets` typed projection；
-- checkpoint v9 `inference_asset_descriptors` 与 legacy migration；
+- 新 checkpoint schema 的 `inference_asset_descriptors`，不迁移 v10；
 - `InferenceAssetProvider`；
 - embedded auxiliary state resolve；
 - concrete Builder capability validation；

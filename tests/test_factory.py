@@ -23,6 +23,7 @@ from stochaflow.training import (
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
     ComponentConfig,
+    ConfigError,
     LRSchedulerConfig,
     load_config,
     load_config_dict,
@@ -187,7 +188,9 @@ def test_resolve_device_auto_falls_back_to_cpu(
 
 
 def test_build_training_components_from_ddpm_mnist_config() -> None:
-    config = load_config(Path("configs/ddpm_mnist.yaml"))
+    config = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
+    )
     components = build_training_components(config)
 
     assert isinstance(components.model, UNet)
@@ -219,7 +222,9 @@ def test_build_training_components_from_ddpm_mnist_config() -> None:
 
 
 def test_build_training_components_from_ddpm_flowers102_config() -> None:
-    config = load_config(Path("configs/ddpm_flowers102.yaml"))
+    config = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_flowers102.yaml")
+    )
     components = build_training_components(config)
 
     assert isinstance(components.model, UNet)
@@ -240,7 +245,9 @@ def test_build_training_components_from_ddpm_flowers102_config() -> None:
 
 
 def test_factory_injects_bf16_runtime_into_trainer_and_checkpoint_manager() -> None:
-    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
+    ).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["trainer"].update({"device": "cpu", "precision": "bf16-mixed"})
     components = build_training_components(load_config_dict(raw))
@@ -252,7 +259,9 @@ def test_factory_injects_bf16_runtime_into_trainer_and_checkpoint_manager() -> N
 
 
 def test_gaussian_training_requires_a_configured_process() -> None:
-    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
+    ).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["process"] = None
     config = load_config_dict(raw)
@@ -285,7 +294,9 @@ def test_mse_objective_owns_scalar_and_per_sample_loss_semantics() -> None:
 
 
 def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> None:
-    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
+    ).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["process"]["name"] = "test_learnable_gaussian"
     raw["experiment"]["output_dir"] = str(tmp_path)
@@ -304,7 +315,7 @@ def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> 
     assert "process_gain" not in components.ema.shadow_params
 
     state = components.checkpoint_manager.build_state()
-    assert state.get("format_version") == 9
+    assert state.get("format_version") == 10
     process_state = state.get("process_state_dict")
     assert process_state is not None
     assert "process_gain" in process_state
@@ -322,6 +333,23 @@ def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> 
     components.checkpoint_manager.load(checkpoint)
     assert process.process_gain.item() == pytest.approx(1.0)
     assert torch.equal(process.marginal_signal_t, expected_signal)
+
+
+def test_sampling_defaults_cannot_override_inference_recipe_contract(
+    tmp_path: Path,
+) -> None:
+    raw = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
+    ).to_dict()
+    raw["model"]["params"] = dict(TINY_UNET_PARAMS)
+    raw["experiment"]["output_dir"] = str(tmp_path)
+    raw["sampling"]["options"]["prediction_type"] = "epsilon"
+
+    with pytest.raises(
+        ConfigError,
+        match=r"cannot override fixed inference contract.*prediction_type",
+    ):
+        build_training_components(load_config_dict(raw))
 
 
 def test_checkpoint_manager_omits_absent_process_state(tmp_path: Path) -> None:
@@ -864,7 +892,9 @@ def test_removed_native_aliases_are_not_compatibility_names() -> None:
 
 
 def test_disabled_lr_scheduler_uses_safe_trainer_interval() -> None:
-    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
+    ).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["lr_scheduler"] = None
     config = load_config_dict(raw)
@@ -876,7 +906,9 @@ def test_disabled_lr_scheduler_uses_safe_trainer_interval() -> None:
 
 
 def test_unknown_diagnostic_raises_registry_error() -> None:
-    raw = load_config(Path("configs/ddpm_mnist.yaml")).to_dict()
+    raw = load_config(
+        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
+    ).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["diagnostics"] = [{"name": "missing", "params": {}}]
     config = load_config_dict(raw)

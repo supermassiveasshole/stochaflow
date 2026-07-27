@@ -11,7 +11,7 @@ stochaflow train --config path/to/train.yaml
 runner 加载配置、应用 CLI 覆盖、创建一个时间戳 run 目录，调用一次 DataBuilder，
 然后构建一套训练组件。所有训练参数见[CLI 参数索引](reference.md#cli-参数索引)。
 源码 checkout 中可以把命令写成 `uv run stochaflow ...`，并直接使用仓库内
-`configs/` 示例；发布 wheel 不包含这些 repo-local 配置。
+`examples/` 示例；发布 wheel 不包含这些 repo-local 配置。
 
 配置解析本身不会导入 extension。runner 先根据 `extensions.plugins` 发现并预检已安装的
 `stochaflow.extensions` entry points，再激活聚合注册模块、执行跨组件校验并开始构建。
@@ -44,16 +44,17 @@ Writer，以及 frozen-teacher 资产如何严格 resume。它们是普通示例
 
 ```bash
 uv run stochaflow train \
-  --config configs/ddpm_flowers102.yaml \
+  --config examples/built-in/image-generation/experiments/ddpm_flowers102.yaml \
   --epochs 1 \
   --limit-batches 2 \
   --limit-validation-batches 1 \
   --skip-final-sample
 ```
 
-`--limit-*` 只截断本次运行，不修改 YAML。若想测试最终采样，移除
-`--skip-final-sample`；若 `sampling.builder` 为 null，训练后不执行默认采样。
-`shape` 是否必需由具体 Builder 决定。
+`--limit-*` 只截断本次运行，不修改 YAML。若配置把
+`sampling.run_after_training` 设为 `true`，移除 `--skip-final-sample` 才会在恢复
+selected best checkpoint 后执行其固化 inference recipe。配置保持默认 `false` 时，
+移除该 flag 也不会隐式启动 inference。`shape` 是否必需由 checkpoint recipe 决定。
 
 这些 smoke 覆盖也不会重写 LR scheduler 的 `T_max`、`total_steps` 或其他构造参数。
 它们是具体 PyTorch scheduler 的显式配置，而不是框架可推断的通用 run length。若要运行
@@ -89,9 +90,7 @@ config、checkpoint 和 CLI 当作三份对等配置做通用 merge。
 | --- | --- | --- | --- |
 | `train --config ...` | 外部完整 config | 无 | train CLI flags |
 | `train --resume ...` | checkpoint config | 完整训练 state | 安全 train runtime flags；可选 observability config |
-| `sample --checkpoint ...` | checkpoint config | 推理 state | sample CLI flags |
-| 完整 config sampling | 外部完整 config | 推理 state | sample CLI flags |
-| sampling-only overlay | checkpoint config | 推理 state | 完整 `sampling`/显式 `extensions.plugins`，再加 sample CLI flags |
+| `sample --checkpoint ...` | checkpoint config + v10 `inference_recipe` | 推理 state | 可选 partial sample request；sample CLI runtime flags |
 
 config 字段覆盖进入 resolved config；`limit-batches`、deterministic、启动 cwd、lineage、
 skip-final-sample 和插件 version acceptance 等 invocation 事实进入独立 manifest，而不是
@@ -103,9 +102,11 @@ skip-final-sample 和插件 version acceptance 等 invocation 事实进入独立
 | --- | --- | --- |
 | `train --resume <run-or-root>` | 递归查找最近修改的 `checkpoints/latest.pt` | 在原 run 的 output root 下创建新的兄弟 run |
 | `sample --checkpoint <run-or-root>` | 递归查找最近修改的 `checkpoints/best.pt` | `<checkpoint-run>/samples/<timestamp>/` |
-| `sample --config <complete-config>` | 在 `experiment.output_dir` 下查找最近修改的 `best.pt` | `<checkpoint-run>/samples/<timestamp>/` |
 
-`--output-dir` 会覆盖对应命令的输出位置。sampling 目录总会写
+`sample` 始终要求显式 `--checkpoint`；目录只是一种便利输入，会递归选择最近修改的
+`best.pt`。需要冻结精确 lineage 时应传 checkpoint 文件。`train --output-dir` 是新建
+timestamped run 的父目录，而 `sample --output-dir` 是本次 artifact 的最终目录。
+sampling 目录总会写
 `resolved_sampling.yaml`；训练 run 总会写 `resolved_config.yaml` 和
 `run_manifest.yaml`。
 
@@ -163,7 +164,8 @@ stochaflow train \
 ```bash
 stochaflow train \
   --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt \
-  --observability-config configs/overlays/mnist_observability.yaml
+  --observability-config \
+    examples/built-in/image-generation/experiments/overlays/mnist_observability.yaml
 ```
 
 `--observability-config` 只限 strict resume，与 fresh `--config` training 同用会失败。
@@ -202,9 +204,9 @@ resume 仍创建新的兄弟 run，因此 local 日志和 TensorBoard event 文�
 checkpoint 再次 resume 且不传该选项时，使用的就是先前已固化的 effective config 和
 审计链。
 
-`--resume` 与 `--config` 互斥。当前 checkpoint v9 保存 resolved config、primary
+`--resume` 与 `--config` 互斥。当前 checkpoint v10 保存 resolved config、primary
 inference model、可选 Process/Objective、可选 EMA model、optimizer、scheduler、EMA、具名
-training assets 和训练进度。它只保存
+training assets、训练进度，以及始终存在的 fixed `inference_recipe` 字段。它只保存
 `data: {name, params}`，不保存 Dataset、PyTorch Sampler、DataLoader、partition 或数值
 solver 的运行时状态。
 恢复时 checkpoint config 用于重建完全相同的训练资产，随后加载完整
@@ -225,13 +227,12 @@ monitor、mode、resolved config 和 extension provenance 必须与所选 checkp
 校验且能载入当前资产拓扑的 inherited best 会在训练开始前原子物化到新 run 的
 `checkpoints/best.pt`，并记录当前 resolved config/provenance；后续恢复和 sampling 不依赖
 父 run。
-Strict resume 还要求合法的 `epoch`、`global_step` 和 v9 RNG snapshot，并在 selected state
+Strict resume 还要求合法的 `epoch`、`global_step` 和 v10 RNG snapshot，并在 selected state
 与 inherited-best 全部验证后恢复 Python、NumPy、Torch CPU 及适用的 CUDA/MPS RNG。
-早期 v8 checkpoint 若缺少 MPS RNG 字段，在 MPS resume 时会警告并继续，但不能保证该
-随机流精确延续。普通 checkpoint load 不修改全局 RNG。sampling 不恢复 checkpoint RNG snapshot，而是按
-`sampling.seed`（为 `null` 时使用 `experiment.seed`）重新初始化 Python、NumPy 与 Torch
-全局 RNG。device override 仍受支持，但跨设备、CUDA topology 或 backend 版本不保证逐位
-一致。
+普通 checkpoint load 不修改全局 RNG。checkpoint-backed inference 不恢复 checkpoint
+RNG snapshot，而是按 resolved `sampling.seed`（为 `null` 时使用 checkpoint config 的
+`experiment.seed`）重新初始化 Python、NumPy 与 Torch 全局 RNG。device override 仍受
+支持，但跨设备、CUDA topology 或 backend 版本不保证逐位一致。
 
 checkpoint 不保存 DataBuilder、Dataset、DataLoader iterator/worker、Sampler 或用户私有
 generator 的 runtime state。内置图像 recipe 会由 experiment seed 与 epoch 重建索引顺序，
@@ -242,11 +243,11 @@ generator 的 runtime state。内置图像 recipe 会由 experiment seed 与 epo
 恢复时应显式传 `--output-dir`。DataBuilder 私有 params 中的相对路径遵循同一 cwd 规则，
 核心不会猜测并重写不透明字段。
 
-当前 v9 payload 只允许 Tensor、primitive 与普通 container，并始终由
-`torch.load(..., weights_only=True)` 读取；legacy v8 只按
-[受限规则](compatibility-and-migration.md#v8-到-v9-的受限迁移)迁移。扩展代码/class
-不会 freeze 在 checkpoint 中；恢复环境需要安装记录的 entry-point distribution。
-实现变化造成的不兼容由 state/资产契约报错，Stochaflow 不保存或迁移第三方源码。
+当前 v10 payload 只允许 Tensor、primitive 与普通 container，并始终由
+`torch.load(..., weights_only=True)` 读取；旧 checkpoint 格式不迁移。扩展代码/class
+不会 freeze 在 checkpoint 中；恢复与 inference 环境需要安装记录的 entry-point
+distribution。实现变化造成的不兼容由 state/资产/recipe 契约报错，Stochaflow 不保存或
+迁移第三方源码。
 
 ## K-fold
 
@@ -263,7 +264,7 @@ data:
         root: ./data/images
         layout: flat
       materialization:
-        cache_root: ./data
+        cache_root: ./.stochaflow-cache
         policy: ensure
         verification: full
     partition:
@@ -273,6 +274,12 @@ data:
     image:
       size: [64, 64]
 ```
+
+`cache_root` 中的数据 artifact 使用统一 schema-v2 lifecycle。managed source 在 cache
+中拥有实际内容；referenced source 只缓存索引且要求 external root 与 cache 分离。
+`policy: require` 完全只读，适合已预热的生产 cache；`ensure` 才允许构建或修复。
+strict resume 使用 checkpoint 保存的 exact identity、绕过当前 locator 并强制 full
+验证。旧 artifact cache/binding 不会迁移，升级后应重新 materialize 并创建新 run。
 
 `fold_index` 不可省略。运行全部五折需要五次独立运行，通常由项目脚本或外部 sweep
 分别覆盖这个字段。每次运行独立构建 DataBuilder、模型、optimizer、日志和 checkpoint；
@@ -365,32 +372,36 @@ KID 仍使用配置的 runtime device。
 和 epoch manifest。未知 sampler/provider、重复名称、缺少 trajectory 接口等配置错误
 始终在训练开始前失败。
 
-## checkpoint 采样
+## Checkpoint-backed inference
 
-checkpoint 内含模型和训练配置，所以可以只给 checkpoint：
+`sample` 是统一的 checkpoint-backed inference 命令：AFHQ 等生成任务产生图像，
+Physics 任务执行重建，direct-transform 任务也可以产生 prediction。数值 `Sampler`
+只是某些 recipe 的内部协作，不是运行该命令的前提。
+
+v10 checkpoint 除模型、可选 EMA/Process state 和训练配置外，还保存
+`inference_recipe`。它固定内部 `SamplingBuilder` identity 与不可覆盖的 contract；
+`null` 表示该 checkpoint 不支持 `sample`。因此最小调用只需要显式 checkpoint：
 
 ```bash
 stochaflow sample \
   --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt
 ```
 
-切换 Sampler 或修改 solver 参数时，提供一份外部 YAML，修改其中完整的 sampling 段：
+要修改允许变化的 request 字段，可提供 partial sample request：
 
 ```yaml
 sampling:
   shape: [1, 32, 32]
   num_samples: 64
   batch_size: 16
-  builder:
-    name: standard_denoising
-    params:
-      weights: auto
-      prediction_type: epsilon
-      clip_denoised: true
-      sampler:
-        name: ddim
-        params: {num_inference_steps: 100, eta: 0.0}
-      trajectory: {enabled: true, every_steps: 5}
+  seed: 123
+  sampler:
+    name: ddim
+    params: {num_inference_steps: 100, eta: 0.0}
+  options:
+    weights: auto
+    clip_denoised: true
+    trajectory: {enabled: true, every_steps: 5}
   writers:
     - {name: tensor, params: {}}
     - {name: image, params: {grid_nrow: 8, gif_fps: 8}}
@@ -399,58 +410,86 @@ sampling:
 ```bash
 stochaflow sample \
   --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt \
-  --config path/to/sampling.yaml
+  --config path/to/sample-request.yaml
 ```
 
-CLI 不提供 sampler-specific flags；Sampler 参数完全属于 Builder。这样自定义 Builder
-可以组合 condition、多个 Sampler 或非固定 shape initial state，而无需扩充核心 CLI。
+request 顶层只允许 `sampling` 与可选 `extensions`。其中不允许
+`sampling.run_after_training` 或 `sampling.builder`：是否训练后自动运行属于训练
+workflow，内部 Builder 则由 checkpoint recipe 决定。字段应用规则固定为：
 
-也可以只给外部配置，让 runner 在 `experiment.output_dir` 下寻找最新 `best.pt`：
+- 未出现的字段继承 checkpoint config；
+- `shape`、`num_samples`、`batch_size` 和 `seed` 按字段替换；
+- `options` 只在第一层按 key merge，嵌套 value 原子替换；
+- 显式 `sampler` 和 `writers` 分别原子替换 checkpoint 默认声明；
+- `options` 不能含 `sampler`，也不能覆盖 recipe fixed contract 中的字段；
+- `extensions.plugins` 只能追加插件，不能删除 checkpoint-required plugins，也不能写
+  `null` 来选择整个环境。
 
-```bash
-stochaflow sample --config path/to/complete-config.yaml
+例如只改变输出数量时，不需要复制 sampler、options 或 writers：
+
+```yaml
+sampling:
+  num_samples: 8
+  batch_size: 4
 ```
 
-同时给出两者时，有两种明确输入形态：
+如果要修改 trajectory 的一个嵌套成员，需要提供完整的新 trajectory value，因为浅合并
+只发生在 `options` 的第一层：
 
-- 只含 `sampling` 与可选 `extensions` 的 lightweight overlay：checkpoint config 是 base，
-  overlay 的整个 `sampling` 段替换它；
-- 完整 Stochaflow config：外部 config 整体权威，checkpoint 只提供 state。
+```yaml
+sampling:
+  options:
+    trajectory:
+      enabled: false
+      every_steps: 1
+```
 
-sampling 不恢复 optimizer/scheduler state，因此外部配置可以改变 `num_samples`、
-`batch_size`、`shape`、SamplingBuilder、Sampler/solver 参数、trajectory、writers 以及
-raw/EMA 选择。核心不比较两份完整 config 或根据字段名推断兼容性；最终配置构建的
-primary model 必须能严格加载 checkpoint state。若最终配置仍选择 Process，该 Process
-也必须严格加载对应 state；但完整外部 config 可以明确写 `process: null`，让兼容的
-direct-transform Builder 不构建 Process，并丢弃 checkpoint 中未使用的 Process state。
-lightweight overlay 与 checkpoint-only sampling 不具备这个“删除算法资产”的权限。
+CLI 不提供 sampler-specific flags；solver 参数属于 `sampling.sampler.params`。这样
+checkpoint recipe 可以组合 condition、guidance、多个内部组件或非固定 shape initial
+state，而无需扩充核心 CLI。
 
-lightweight overlay 中 `extensions: {}` 保留 checkpoint 的插件 selection；只有 raw YAML
-明确含 `extensions.plugins` 时才完整替换，不执行追加/去重 merge。完整外部 config 也按
-自己的 selection 激活插件。若复用 checkpoint provenance 中同名插件，name/distribution/
-target 必须保持 identity；仅 version mismatch 可以在导入前由交互式确认或
-`--force-extension-version-mismatch` 接受。
+### 固定 contract 与可调 request
 
-## 采样形状与 EMA
+训练侧 `TrainingBuilder` 根据实际训练语义返回 `TrainingPlan.inference_recipe`。例如
+Gaussian denoising 把 `prediction_type` 固化进 contract，避免 request 把 epsilon 模型
+当作 v-prediction 使用。运行时按以下顺序构造内部 Builder 参数：
 
-`standard_denoising` 与 image diagnostic 使用 `sampling.shape`，它不含 batch 维且与
-DataBuilder 独立；自定义 Builder 可以在 shape 为 null 时运行。`ema.enabled` 与
-`ema.use_for_sampling` 同时为 true 且 checkpoint 含 EMA 时，
-采样优先使用 EMA 权重。
+```text
+checkpoint sampling.options
+        ← shallow merge request options
+        + resolved sampling.sampler
+        + immutable inference_recipe.contract
+```
 
-每次采样都写 `resolved_sampling.yaml`，其中记录完整最终 config、config source、实际插件
-provenance/version acceptance、checkpoint lineage、启动 cwd、runtime options，以及
-Builder metadata/artifacts。实际 Process 声明或 `process: null` 也保留在最终 config 中。
-`sampling.writers` 决定其他输出：`tensor`
-写 PT，`image` 写 PNG/GIF；开启 trajectory 后，两者会写各自支持的 trajectory
-artifact。
+request 与 fixed contract 发生 key 冲突时直接失败，而不是让请求覆盖训练语义。内部 recipe
+name、contract 和最终 resolved sampling settings 都写入 `resolved_sampling.yaml`。
+
+### 权重、shape 与输出
+
+`standard_denoising` 使用 `sampling.shape`，它不含 batch 维且与 DataBuilder 独立；
+自定义 recipe 可以在 shape 为 null 时运行。`weights: auto` 通常位于
+`sampling.options`：当 checkpoint config 的 `ema.enabled` 与
+`ema.use_for_sampling` 都为 true 且 checkpoint 含 EMA state 时选择 EMA，否则选择 raw。
+正式评估应显式请求 `raw` 或 `ema`。
+
+每次 inference 都写 `resolved_sampling.yaml`，其中记录 checkpoint lineage、v10 recipe、
+完整最终 config、request source、实际插件 provenance/version acceptance、启动 cwd、
+runtime options，以及 recipe metadata/artifacts。`sampling.writers` 决定其他输出：
+`tensor` 写 PT，`image` 写 PNG/GIF；开启 trajectory 后，两者会写各自支持的
+trajectory artifact。
+
+默认输出是 checkpoint run 下唯一的 `samples/<timestamp>/`。显式 `--output-dir` 指向
+最终目录，而不是自动创建 timestamp 子目录；普通 sampling writer 不是事务式发布器，
+因此正式或并发运行应使用新的空目录，不能把它等同于 AFHQ formal evaluator 的 immutable
+publication。
 
 所有注册 Sampler 通过相同的完整 `sample(dynamics, initial_state, ...)` 生命周期执行，但
 不共享万能数学接口。内置 DDPM/DDIM 要求 Gaussian Dynamics；其他算法 family 可定义
-自己的 Dynamics capability，并由所属 Builder 与 Sampler 在调用边界验证。
+自己的 Dynamics capability，并由所属 recipe 与 Sampler 在调用边界验证。
 离散 Gaussian family 同时公开 DDPM/DDIM transition 与 DDIM schedule primitive，供项目
 Sampler 组合 post-transition correction 或其他 family 内算法；这些 primitive 不进入
 通用 `Sampler`/`GenerativeDynamics` 根接口。
+
 trajectory 是 observer 对 initial、accepted step 和唯一 final observation 的抽样，不会
 改变 solver 循环。保留的 state 在 observation 到达时复制，内置 Tensor 路径会立即转存到
 CPU，避免后续原地更新污染历史或让显存随 trajectory 长度增长。`trajectory.pt` 按声明

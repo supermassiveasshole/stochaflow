@@ -7,11 +7,14 @@ import torch.nn as nn
 
 from stochaflow.extensions import (
     REGISTRIES,
+    SamplingRecipe,
     TrainStepOutput,
     TrainingBuilder,
     TrainingPlan,
     TrainingStrategy,
 )
+
+from .model import LinearRegressionModel
 
 
 class RegressionTrainingStrategy(TrainingStrategy):
@@ -47,18 +50,27 @@ class RegressionTrainingBuilder(TrainingBuilder):
             raise ValueError(f"unknown training params: {unknown}")
         if self.context.process is not None:
             raise ValueError("the regression example does not use a Process")
+        model = self.context.primary_model
+        if not isinstance(model, LinearRegressionModel):
+            raise TypeError(
+                "the regression example requires LinearRegressionModel"
+            )
         objective = self.context.objective
         if objective is None:
             raise ValueError("the regression example requires an Objective")
         strategy = RegressionTrainingStrategy(
-            self.context.primary_model,
+            model,
             objective,
         )
         return TrainingPlan(
             strategy=strategy,
-            primary_model=self.context.primary_model,
+            primary_model=model,
             process=self.context.process,
             objective=objective,
+            inference_recipe=SamplingRecipe(
+                name="__STOCHAFLOW_PROJECT_SLUG__.regression-predictions",
+                contract={"input_features": model.input_features},
+            ),
         )
 
 

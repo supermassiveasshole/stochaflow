@@ -161,7 +161,6 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
         return SamplingOutput(
             batches=tuple(batches),
             metadata={
-                "builder": "class_conditional_denoising",
                 "weights": resolved_weights,
                 "prediction_type": config.prediction_type,
                 "clip_denoised": config.clip_denoised,

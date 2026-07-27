@@ -1,7 +1,8 @@
+# Built-in Flowers102 DDPM training example.
 experiment:
-  name: ddim_flowers102
+  name: ddpm_flowers102
   seed: 42
-  output_dir: outputs/ddim_flowers102
+  output_dir: outputs/ddpm_flowers102
 
 extensions:
   plugins: []
@@ -24,11 +25,11 @@ data:
       random_horizontal_flip: true
     loader:
       batch_size: 64
-      num_workers: 2
+      num_workers: 4
       shuffle: true
       drop_last: true
       pin_memory: false
-      persistent_workers: false
+      persistent_workers: true
       steps_per_epoch: auto
     partition:
       mode: official
@@ -90,20 +91,16 @@ ema:
   use_for_sampling: true
 
 sampling:
+  run_after_training: true
+  sampler: {name: ddpm, params: {}}
+  options:
+    weights: auto
+    clip_denoised: true
+    trajectory: {enabled: false, every_steps: 1}
   shape: [3, 64, 64]
   num_samples: 64
   batch_size: 16
   seed: null
-  builder:
-    name: standard_denoising
-    params:
-      weights: auto
-      prediction_type: epsilon
-      clip_denoised: true
-      sampler:
-        name: ddim
-        params: {num_inference_steps: 100, eta: 0.0}
-      trajectory: {enabled: false, every_steps: 1}
   writers:
     - name: tensor
       params: {}

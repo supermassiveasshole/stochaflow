@@ -1207,11 +1207,9 @@ def _run_single_run(
         )
     }
     extension_metadata = extension_runtime_metadata(extensions)
-    selected_components = selected_component_identities(config)
     overlay_history = deepcopy(config_overlays or [])
     checkpoint_metadata = {
         **extension_metadata,
-        "selected_components": selected_components,
         "config_source": config_source,
         "config_overlays": deepcopy(overlay_history),
         "lineage": lineage,
@@ -1221,6 +1219,20 @@ def _run_single_run(
             data_artifacts.to_dict() if data_artifacts is not None else None
         ),
     }
+    training = build_training_components(
+        config,
+        checkpoint_metadata=checkpoint_metadata,
+    )
+    selected_components = selected_component_identities(
+        config,
+        sampling_recipe=(
+            training.plan.inference_recipe.name
+            if training.plan.inference_recipe is not None
+            else None
+        ),
+    )
+    checkpoint_metadata["selected_components"] = selected_components
+    training.trainer.checkpoint_metadata = checkpoint_metadata
     write_yaml_manifest(
         Path(config.experiment.output_dir) / "run_manifest.yaml",
         {
@@ -1237,10 +1249,6 @@ def _run_single_run(
                 data_artifacts.to_dict() if data_artifacts is not None else None
             ),
         },
-    )
-    training = build_training_components(
-        config,
-        checkpoint_metadata=checkpoint_metadata,
     )
     reporter = RichTrainingReporter()
     logger = training.logger
@@ -1281,10 +1289,12 @@ def _run_single_run(
         stopped_early = training.trainer.stopped_early
 
         artifact_paths: dict[str, Path] | None = None
-        if (
-            options.sample_after_training
-            and config.sampling.builder is not None
-        ):
+        if options.sample_after_training and config.sampling.run_after_training:
+            if training.plan.inference_recipe is None:
+                raise RuntimeError(
+                    "sampling.run_after_training requires the TrainingPlan to "
+                    "provide an inference recipe"
+                )
             if result.best_checkpoint is None:
                 raise RuntimeError(
                     "post-training sampling requires a selected best checkpoint"

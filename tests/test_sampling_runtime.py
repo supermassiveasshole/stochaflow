@@ -1,5 +1,6 @@
 """Tests for SamplingBuilder orchestration and checkpoint-only sampling."""
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,6 +23,7 @@ from stochaflow.sampling import (
     SamplingObserver,
     SamplingOutput,
 )
+from stochaflow.sampling import runtime as sampling_runtime
 from stochaflow.sampling.runtime import (
     resolve_sampling_inputs,
     run_sampling,
@@ -33,7 +35,12 @@ from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     capture_rng_state,
 )
-from stochaflow.utils.config import ConfigError, load_config_dict
+from stochaflow.utils.config import (
+    ConfigError,
+    load_config_dict,
+    parse_sample_request,
+)
+from stochaflow.utils.plugins import ExtensionIdentityError
 from stochaflow.utils.registry import REGISTRIES
 
 
@@ -339,8 +346,24 @@ class MalformedLifecycleSampler(Sampler):
 REGISTRIES.samplers.add("stage3_malformed_lifecycle", MalformedLifecycleSampler)
 
 
-def _raw_config(*, builder: dict[str, Any] | None) -> dict[str, Any]:
+def _raw_config(
+    *,
+    recipe_name: str | None,
+    recipe_contract: dict[str, Any] | None = None,
+    sampler: dict[str, Any] | None = None,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    recipe = (
+        {
+            "schema_version": 1,
+            "name": recipe_name,
+            "contract": deepcopy(recipe_contract or {}),
+        }
+        if recipe_name is not None
+        else None
+    )
     return {
+        "_recipe": recipe,
         "experiment": {"name": "test", "output_dir": "unused", "seed": 7},
         "extensions": {"plugins": []},
         "data": {"name": "image", "params": {}},
@@ -361,7 +384,9 @@ def _raw_config(*, builder: dict[str, Any] | None) -> dict[str, Any]:
         "training": {"name": "gaussian_denoising", "params": {}},
         "objective": {"name": "mse", "params": {}},
         "sampling": {
-            "builder": builder,
+            "run_after_training": False,
+            "sampler": deepcopy(sampler),
+            "options": deepcopy(options or {}),
             "shape": None,
             "num_samples": 3,
             "batch_size": 2,
@@ -378,11 +403,13 @@ def _checkpoint(
     version: int = CHECKPOINT_FORMAT_VERSION,
 ) -> Path:
     model = TinyDenoiser()
+    config = deepcopy(raw)
+    recipe = config.pop("_recipe")
     payload: dict[str, Any] = {
         "format_version": version,
         "model_state_dict": model.state_dict(),
         "rng_state": capture_rng_state(),
-        "config": raw,
+        "config": config,
         "metadata": {"extension_plugins": []},
     }
     if version == CHECKPOINT_FORMAT_VERSION:
@@ -390,6 +417,7 @@ def _checkpoint(
             {
                 "precision_kind": "fp32",
                 "inference_asset_descriptors": {},
+                "inference_recipe": recipe,
             }
         )
     process_config = raw.get("process")
@@ -407,7 +435,7 @@ def _checkpoint(
 
 
 def test_custom_builder_runs_once_without_shape(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    raw = _raw_config(recipe_name="stage3_no_shape")
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
     NoShapeBuilder.calls = 0
 
@@ -418,14 +446,15 @@ def test_custom_builder_runs_once_without_shape(tmp_path: Path) -> None:
     )
 
     assert NoShapeBuilder.calls == 1
-    assert result.builder_name == "stage3_no_shape"
+    assert result.recipe_name == "stage3_no_shape"
     assert result.metadata == {"kind": "custom"}
     assert torch.equal(torch.load(result.artifacts["samples"]), torch.tensor([[11.0]]))
 
 
 def test_direct_transform_runs_without_process_or_sampler(tmp_path: Path) -> None:
     raw = _raw_config(
-        builder={"name": "stage3_direct_transform", "params": {"offset": 3.0}}
+        recipe_name="stage3_direct_transform",
+        options={"offset": 3.0},
     )
     raw.pop("process")
     checkpoint = _checkpoint(tmp_path / "direct.pt", raw)
@@ -443,9 +472,10 @@ def test_direct_transform_runs_without_process_or_sampler(tmp_path: Path) -> Non
     assert manifest["process"] is None
     assert manifest["selected_components"]["process"] is None
     assert (
-        manifest["selected_components"]["sampling_builder"]
+        manifest["selected_components"]["sampling_recipe"]
         == "stage3_direct_transform"
     )
+    assert manifest["selected_components"]["sampling_sampler"] is None
     assert manifest["selected_components"]["sampling_artifact_writers"] == [
         "tensor"
     ]
@@ -455,14 +485,18 @@ def test_direct_transform_runs_without_process_or_sampler(tmp_path: Path) -> Non
     )
 
 
-def test_complete_external_sampling_config_can_omit_process(tmp_path: Path) -> None:
+def test_sample_request_can_override_direct_recipe_options(tmp_path: Path) -> None:
     raw = _raw_config(
-        builder={"name": "stage3_direct_transform", "params": {"offset": 2.0}}
+        recipe_name="stage3_direct_transform",
+        options={"offset": 1.0},
     )
     raw.pop("process")
     checkpoint = _checkpoint(tmp_path / "direct.pt", raw)
     config_path = tmp_path / "direct.yaml"
-    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    config_path.write_text(
+        yaml.safe_dump({"sampling": {"options": {"offset": 2.0}}}),
+        encoding="utf-8",
+    )
 
     result = run_sampling(
         checkpoint=checkpoint,
@@ -470,19 +504,18 @@ def test_complete_external_sampling_config_can_omit_process(tmp_path: Path) -> N
         output_dir=tmp_path / "direct-samples",
     )
 
-    assert result.metadata == {"kind": "direct_transform"}
+    assert torch.equal(
+        torch.load(result.artifacts["samples"], weights_only=True),
+        torch.full((3, 1), 2.0),
+    )
 
 
 def test_standard_builder_rejects_missing_process_at_its_boundary(
     tmp_path: Path,
 ) -> None:
     raw = _raw_config(
-        builder={
-            "name": "standard_denoising",
-            "params": {
-                "sampler": {"name": "ddim", "params": {"num_inference_steps": 2}}
-            },
-        }
+        recipe_name="standard_denoising",
+        sampler={"name": "ddim", "params": {"num_inference_steps": 2}},
     )
     raw["process"] = None
     raw["sampling"]["shape"] = [2]
@@ -496,15 +529,11 @@ def test_second_algorithm_family_runs_without_core_dispatch_changes(
     tmp_path: Path,
 ) -> None:
     raw = _raw_config(
-        builder={
-            "name": "stage3_toy_flow",
-            "params": {
-                "sampler": {
-                    "name": "stage3_toy_euler",
-                    "params": {"num_steps": 2},
-                }
-            },
-        }
+        recipe_name="stage3_toy_flow",
+        sampler={
+            "name": "stage3_toy_euler",
+            "params": {"num_steps": 2},
+        },
     )
     raw["process"] = {"name": "stage3_toy_flow", "params": {"rate": 2.0}}
     checkpoint = _checkpoint(tmp_path / "flow.pt", raw)
@@ -548,20 +577,19 @@ def test_family_samplers_reject_cross_family_dynamics() -> None:
 
 
 def test_standard_builder_batches_and_records_resolved_metadata(tmp_path: Path) -> None:
-    builder = {
-        "name": "standard_denoising",
-        "params": {
+    raw = _raw_config(
+        recipe_name="standard_denoising",
+        recipe_contract={"prediction_type": "epsilon"},
+        sampler={
+            "name": "ddim",
+            "params": {"num_inference_steps": 2, "eta": 0.0},
+        },
+        options={
             "weights": "raw",
-            "prediction_type": "epsilon",
             "clip_denoised": False,
-            "sampler": {
-                "name": "ddim",
-                "params": {"num_inference_steps": 2, "eta": 0.0},
-            },
             "trajectory": {"enabled": True, "every_steps": 1},
         },
-    }
-    raw = _raw_config(builder=builder)
+    )
     raw["sampling"]["shape"] = [2]
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
 
@@ -584,13 +612,9 @@ def test_standard_builder_batches_and_records_resolved_metadata(tmp_path: Path) 
 
 def test_standard_builder_owns_each_writer_ready_batch(tmp_path: Path) -> None:
     raw = _raw_config(
-        builder={
-            "name": "standard_denoising",
-            "params": {
-                "sampler": {"name": "stage6_reusing_final_buffer", "params": {}},
-                "trajectory": {"enabled": True, "every_steps": 1},
-            },
-        }
+        recipe_name="standard_denoising",
+        sampler={"name": "stage6_reusing_final_buffer", "params": {}},
+        options={"trajectory": {"enabled": True, "every_steps": 1}},
     )
     raw["sampling"].update({"shape": [2], "num_samples": 4, "batch_size": 2})
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
@@ -611,12 +635,8 @@ def test_standard_builder_owns_each_writer_ready_batch(tmp_path: Path) -> None:
 
 def test_standard_builder_rejects_invalid_sampler_result(tmp_path: Path) -> None:
     raw = _raw_config(
-        builder={
-            "name": "standard_denoising",
-            "params": {
-                "sampler": {"name": "stage3_bad_result", "params": {}},
-            },
-        }
+        recipe_name="standard_denoising",
+        sampler={"name": "stage3_bad_result", "params": {}},
     )
     raw["sampling"]["shape"] = [2]
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
@@ -627,12 +647,8 @@ def test_standard_builder_rejects_invalid_sampler_result(tmp_path: Path) -> None
 
 def test_standard_builder_rejects_wrong_sampler_shape(tmp_path: Path) -> None:
     raw = _raw_config(
-        builder={
-            "name": "standard_denoising",
-            "params": {
-                "sampler": {"name": "stage3_wrong_shape", "params": {}},
-            },
-        }
+        recipe_name="standard_denoising",
+        sampler={"name": "stage3_wrong_shape", "params": {}},
     )
     raw["sampling"]["shape"] = [2]
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
@@ -643,16 +659,12 @@ def test_standard_builder_rejects_wrong_sampler_shape(tmp_path: Path) -> None:
 
 def test_standard_builder_rejects_wrong_trajectory_shape(tmp_path: Path) -> None:
     raw = _raw_config(
-        builder={
-            "name": "standard_denoising",
-            "params": {
-                "sampler": {
-                    "name": "stage3_wrong_trajectory_shape",
-                    "params": {},
-                },
-                "trajectory": {"enabled": True},
-            },
-        }
+        recipe_name="standard_denoising",
+        sampler={
+            "name": "stage3_wrong_trajectory_shape",
+            "params": {},
+        },
+        options={"trajectory": {"enabled": True}},
     )
     raw["sampling"]["shape"] = [2]
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
@@ -675,15 +687,11 @@ def test_standard_builder_validates_actual_sampler_lifecycle(
     message: str,
 ) -> None:
     raw = _raw_config(
-        builder={
-            "name": "standard_denoising",
-            "params": {
-                "sampler": {
-                    "name": "stage3_malformed_lifecycle",
-                    "params": {"mode": mode},
-                }
-            },
-        }
+        recipe_name="standard_denoising",
+        sampler={
+            "name": "stage3_malformed_lifecycle",
+            "params": {"mode": mode},
+        },
     )
     raw["sampling"]["shape"] = [2]
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
@@ -705,12 +713,13 @@ def test_standard_builder_validates_external_dynamics_configuration_once(
     value: object,
     message: str,
 ) -> None:
-    params = {
-        "sampler": {"name": "ddim", "params": {"num_inference_steps": 2}},
-        parameter: value,
-    }
     raw = _raw_config(
-        builder={"name": "standard_denoising", "params": params}
+        recipe_name="standard_denoising",
+        recipe_contract=(
+            {parameter: value} if parameter == "prediction_type" else None
+        ),
+        sampler={"name": "ddim", "params": {"num_inference_steps": 2}},
+        options={parameter: value} if parameter != "prediction_type" else None,
     )
     raw["sampling"]["shape"] = [2]
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
@@ -731,10 +740,8 @@ def test_standard_builder_rejects_nonterminal_sampler_start(
     sampler: dict[str, Any],
 ) -> None:
     raw = _raw_config(
-        builder={
-            "name": "standard_denoising",
-            "params": {"sampler": sampler},
-        }
+        recipe_name="standard_denoising",
+        sampler=sampler,
     )
     raw["sampling"]["shape"] = [2]
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
@@ -755,10 +762,8 @@ def test_standard_builder_rejects_nonclean_sampler_end(
     sampler: dict[str, Any],
 ) -> None:
     raw = _raw_config(
-        builder={
-            "name": "standard_denoising",
-            "params": {"sampler": sampler},
-        }
+        recipe_name="standard_denoising",
+        sampler=sampler,
     )
     raw["sampling"]["shape"] = [2]
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
@@ -767,96 +772,22 @@ def test_standard_builder_rejects_nonclean_sampler_end(
         run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
 
 
-def test_full_external_config_can_override_sampling(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+def test_full_external_config_is_rejected(tmp_path: Path) -> None:
+    raw = _raw_config(recipe_name="stage3_no_shape")
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
-    external = _raw_config(
-        builder={"name": "stage3_no_shape", "params": {"external": True}}
-    )
-    config_path = tmp_path / "sampling.yaml"
-    config_path.write_text(yaml.safe_dump(external), encoding="utf-8")
-
-    result = run_sampling(
-        checkpoint=checkpoint,
-        config_path=config_path,
-        output_dir=tmp_path / "samples",
-    )
-
-    assert result.builder_name == "stage3_no_shape"
-
-
-def test_full_external_config_does_not_require_checkpoint_config(
-    tmp_path: Path,
-) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
-    payload = torch.load(checkpoint, weights_only=True)
-    payload.pop("config")
-    torch.save(payload, checkpoint)
     config_path = tmp_path / "sampling.yaml"
     config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
-    result = run_sampling(
-        checkpoint=checkpoint,
-        config_path=config_path,
-        output_dir=tmp_path / "samples",
-    )
-
-    assert result.builder_name == "stage3_no_shape"
-
-
-def test_full_external_config_is_not_compared_with_checkpoint_model(
-    tmp_path: Path,
-) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
-    external = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    external["experiment"]["name"] = "sampling-only-name"
-    external["data"] = {"name": "not_used_for_sampling", "params": {}}
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(external), encoding="utf-8")
-
-    result = run_sampling(
-        checkpoint=checkpoint,
-        config_path=config_path,
-        output_dir=tmp_path / "samples",
-    )
-
-    manifest = yaml.safe_load(result.artifacts["config"].read_text())
-    assert manifest["config_source"] == "external"
-    assert manifest["config"]["experiment"]["name"] == "sampling-only-name"
-
-
-def test_full_external_config_can_ignore_checkpoint_process_state(
-    tmp_path: Path,
-) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
-    external = _raw_config(
-        builder={"name": "stage3_direct_transform", "params": {"offset": 1.0}}
-    )
-    external["process"] = None
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(external), encoding="utf-8")
-
-    result = run_sampling(
-        checkpoint=checkpoint,
-        config_path=config_path,
-        output_dir=tmp_path / "samples",
-    )
-
-    assert result.builder_name == "stage3_direct_transform"
+    with pytest.raises(ConfigError, match="may contain only"):
+        run_sampling(checkpoint=checkpoint, config_path=config_path)
 
 
 def test_sampling_only_config_can_override_checkpoint(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    raw = _raw_config(recipe_name="stage3_no_shape")
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
-    sampling = _raw_config(
-        builder={"name": "stage3_no_shape", "params": {"external": True}}
-    )["sampling"]
     config_path = tmp_path / "sampling.yaml"
     config_path.write_text(
-        yaml.safe_dump({"sampling": sampling}),
+        yaml.safe_dump({"sampling": {"options": {"external": True}}}),
         encoding="utf-8",
     )
 
@@ -867,19 +798,102 @@ def test_sampling_only_config_can_override_checkpoint(tmp_path: Path) -> None:
     )
 
     manifest = yaml.safe_load(result.artifacts["config"].read_text())
-    assert result.builder_name == "stage3_no_shape"
-    assert manifest["builder"]["params"] == {"external": True}
-    assert manifest["selected_components"]["sampling_builder"] == "stage3_no_shape"
+    assert result.recipe_name == "stage3_no_shape"
+    assert manifest["sampling"]["options"] == {"external": True}
+    assert manifest["selected_components"]["sampling_recipe"] == "stage3_no_shape"
+    assert manifest["selected_components"]["sampling_sampler"] is None
 
 
-def test_sampling_overlay_rejects_unknown_extension_fields(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+def test_sample_request_cannot_select_a_recipe(tmp_path: Path) -> None:
+    raw = _raw_config(recipe_name="stage3_no_shape")
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {"sampling": {"builder": {"name": "stage3_direct_transform"}}}
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"config\.sampling\.builder"):
+        run_sampling(checkpoint=checkpoint, config_path=config_path)
+
+
+def test_sample_request_contract_collision_fails_before_plugin_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _raw_config(
+        recipe_name="standard_denoising",
+        recipe_contract={"prediction_type": "v"},
+        sampler={
+            "name": "ddim",
+            "params": {"num_inference_steps": 2},
+        },
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {"sampling": {"options": {"prediction_type": "epsilon"}}}
+        ),
+        encoding="utf-8",
+    )
+
+    def unexpected_plugin_preflight(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("plugin preflight must not run for an invalid request")
+
+    monkeypatch.setattr(
+        sampling_runtime,
+        "prepare_extension_plugins",
+        unexpected_plugin_preflight,
+    )
+    with pytest.raises(ConfigError, match="fixed inference contract"):
+        run_sampling(checkpoint=checkpoint, config_path=config_path)
+
+
+def test_partial_sample_request_inherits_unspecified_checkpoint_fields(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(
+        recipe_name="standard_denoising",
+        sampler={
+            "name": "ddim",
+            "params": {"num_inference_steps": 2},
+        },
+        options={"weights": "raw"},
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"sampling": {"num_samples": 1}}),
+        encoding="utf-8",
+    )
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        config_path=config_path,
+        output_dir=tmp_path / "samples",
+    )
+
+    manifest = yaml.safe_load(result.artifacts["config"].read_text())
+    assert manifest["sampling"]["num_samples"] == 1
+    assert manifest["sampling"]["batch_size"] == 2
+    assert manifest["sampling"]["options"]["weights"] == "raw"
+    assert manifest["sampling"]["sampler"]["name"] == "ddim"
+
+
+def test_sample_request_rejects_unknown_extension_fields(tmp_path: Path) -> None:
+    raw = _raw_config(recipe_name="stage3_no_shape")
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
     config_path = tmp_path / "sampling.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
-                "sampling": raw["sampling"],
+                "sampling": {},
                 "extensions": {"plguins": []},
             }
         ),
@@ -890,28 +904,72 @@ def test_sampling_overlay_rejects_unknown_extension_fields(tmp_path: Path) -> No
         run_sampling(checkpoint=checkpoint, config_path=config_path)
 
 
-def test_complete_config_can_locate_checkpoint(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    output_root = tmp_path / "outputs"
-    raw["experiment"]["output_dir"] = str(output_root)
-    checkpoint = output_root / "run" / "checkpoints" / "best.pt"
-    checkpoint.parent.mkdir(parents=True)
-    _checkpoint(checkpoint, raw)
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
-
-    result = run_sampling(
-        config_path=config_path,
-        output_dir=tmp_path / "samples",
+def test_sample_request_rejects_null_extensions_section(tmp_path: Path) -> None:
+    raw = _raw_config(recipe_name="stage3_no_shape")
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"sampling": {}, "extensions": None}),
+        encoding="utf-8",
     )
 
-    assert result.checkpoint_path == checkpoint
+    with pytest.raises(ConfigError, match=r"config\.extensions must be a mapping"):
+        run_sampling(checkpoint=checkpoint, config_path=config_path)
+
+
+def test_sample_request_plugins_are_additive_to_checkpoint_requirements() -> None:
+    raw = _raw_config(recipe_name="stage3_no_shape")
+    raw.pop("_recipe")
+    raw["extensions"] = {"plugins": None}
+    checkpoint_config = load_config_dict(raw)
+
+    resolved, added = sampling_runtime._apply_sample_request(
+        checkpoint_config,
+        parse_sample_request({}),
+        raw_extensions={"plugins": ["extra", "required", "extra"]},
+        expected_plugin_names=("required",),
+    )
+
+    assert added is True
+    assert resolved.extensions.plugins == ["required", "extra"]
+
+
+def test_sample_request_rejects_unproven_checkpoint_config_plugins() -> None:
+    raw = _raw_config(recipe_name="stage3_no_shape")
+    raw.pop("_recipe")
+    raw["extensions"] = {"plugins": ["config-only"]}
+    checkpoint_config = load_config_dict(raw)
+
+    with pytest.raises(
+        ExtensionIdentityError,
+        match=r"unproven config-only plugin.*config-only",
+    ):
+        sampling_runtime._apply_sample_request(
+            checkpoint_config,
+            parse_sample_request({}),
+            raw_extensions={"plugins": ["request-added"]},
+            expected_plugin_names=("provenance-required",),
+        )
+
+
+def test_sample_request_rejects_unbounded_extension_selection() -> None:
+    raw = _raw_config(recipe_name="stage3_no_shape")
+    raw.pop("_recipe")
+    checkpoint_config = load_config_dict(raw)
+
+    with pytest.raises(ConfigError, match="must be an explicit list"):
+        sampling_runtime._apply_sample_request(
+            checkpoint_config,
+            parse_sample_request({}),
+            raw_extensions={"plugins": None},
+            expected_plugin_names=(),
+        )
 
 
 def test_checkpoint_only_sampling_does_not_build_training_assets(
     tmp_path: Path,
 ) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    raw = _raw_config(recipe_name="stage3_no_shape")
     raw["training"] = {"name": "not_registered", "params": {}}
     raw["objective"] = {"name": "also_not_registered", "params": {}}
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
@@ -921,11 +979,11 @@ def test_checkpoint_only_sampling_does_not_build_training_assets(
         output_dir=tmp_path / "samples",
     )
 
-    assert result.builder_name == "stage3_no_shape"
+    assert result.recipe_name == "stage3_no_shape"
 
 
 def test_sampling_inputs_drop_training_only_checkpoint_state(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    raw = _raw_config(recipe_name="stage3_no_shape")
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
     payload = torch.load(checkpoint, weights_only=True)
     ema_model = TinyDenoiser()
@@ -951,6 +1009,7 @@ def test_sampling_inputs_drop_training_only_checkpoint_state(tmp_path: Path) -> 
     assert set(inputs.checkpoint) == {
         "format_version",
         "config",
+        "inference_recipe",
         "metadata",
         "model_state_dict",
         "ema_model_state_dict",
@@ -962,7 +1021,7 @@ def test_sampling_inputs_drop_training_only_checkpoint_state(tmp_path: Path) -> 
 
 
 def test_checkpoint_sampling_view_retains_and_uses_ema_weights(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage6_auto_weights", "params": {}})
+    raw = _raw_config(recipe_name="stage6_auto_weights")
     raw["ema"] = {"enabled": True, "use_for_sampling": True}
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
     payload = torch.load(checkpoint, weights_only=True)
@@ -991,7 +1050,7 @@ def test_checkpoint_sampling_view_retains_and_uses_ema_weights(tmp_path: Path) -
 def test_sampling_only_config_requires_explicit_checkpoint(tmp_path: Path) -> None:
     config_path = tmp_path / "sampling.yaml"
     config_path.write_text(
-        yaml.safe_dump({"sampling": _raw_config(builder=None)["sampling"]}),
+        yaml.safe_dump({"sampling": _raw_config(recipe_name=None)["sampling"]}),
         encoding="utf-8",
     )
 
@@ -999,27 +1058,43 @@ def test_sampling_only_config_requires_explicit_checkpoint(tmp_path: Path) -> No
         run_sampling(config_path=config_path)
 
 
-def test_sampling_runtime_migrates_legacy_v8_header(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=8)
+def test_checkpoint_without_inference_recipe_field_is_rejected(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(recipe_name="stage3_no_shape")
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=True)
+    payload.pop("inference_recipe")
+    torch.save(payload, checkpoint)
 
-    inputs = resolve_sampling_inputs(config_path=None, checkpoint=checkpoint)
-
-    assert inputs.checkpoint.get("format_version") == 9
-    assert inputs.config.trainer.precision == "fp32"
-    assert inputs.config.trainer.accumulate_grad_batches == 1
+    with pytest.raises(TypeError, match="missing inference_recipe"):
+        run_sampling(checkpoint=checkpoint)
 
 
-def test_checkpoint_v7_is_rejected(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=7)
+def test_null_inference_recipe_disables_checkpoint_sampling(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(recipe_name=None)
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
 
-    with pytest.raises(ValueError, match=r"supported versions are 8 and 9"):
+    with pytest.raises(ValueError, match="does not support sampling"):
+        run_sampling(checkpoint=checkpoint)
+
+
+@pytest.mark.parametrize("version", [8, 9])
+def test_sampling_runtime_rejects_legacy_checkpoint_headers(
+    tmp_path: Path,
+    version: int,
+) -> None:
+    raw = _raw_config(recipe_name="stage3_no_shape")
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=version)
+
+    with pytest.raises(ValueError, match=r"expected version 10"):
         run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
 
 
 def test_sampling_rejects_missing_configured_process_state(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    raw = _raw_config(recipe_name="stage3_no_shape")
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
     payload = torch.load(checkpoint, weights_only=True)
     payload.pop("process_state_dict")
@@ -1030,7 +1105,7 @@ def test_sampling_rejects_missing_configured_process_state(tmp_path: Path) -> No
 
 
 def test_sampling_rejects_process_state_when_config_is_null(tmp_path: Path) -> None:
-    raw = _raw_config(builder={"name": "stage3_no_shape", "params": {}})
+    raw = _raw_config(recipe_name="stage3_no_shape")
     raw["process"] = None
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
     payload = torch.load(checkpoint, weights_only=True)
@@ -1085,9 +1160,9 @@ def test_cli_has_no_sampler_specific_flags() -> None:
 
 def test_sampling_builder_context_copies_params() -> None:
     raw = {"nested": {"value": 1}}
-    config = load_config_dict(
-        _raw_config(builder={"name": "stage3_no_shape", "params": {}})
-    )
+    raw_config = _raw_config(recipe_name="stage3_no_shape")
+    raw_config.pop("_recipe")
+    config = load_config_dict(raw_config)
     assert config.process is not None
     context = SamplingBuilderContext(
         raw,
@@ -1101,4 +1176,4 @@ def test_sampling_builder_context_copies_params() -> None:
     )
     context.params["nested"]["value"] = 2
     assert raw == {"nested": {"value": 1}}
-    assert CHECKPOINT_FORMAT_VERSION == 9
+    assert CHECKPOINT_FORMAT_VERSION == 10

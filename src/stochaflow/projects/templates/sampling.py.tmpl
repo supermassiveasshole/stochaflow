@@ -29,7 +29,11 @@ class RegressionPredictionBuilder(SamplingBuilder):
         if self.context.process is not None:
             raise ValueError("direct regression sampling does not use a Process")
         params = dict(self.context.params)
-        input_features = params.pop("input_features", 3)
+        if "input_features" not in params:
+            raise ValueError(
+                "regression inference recipe requires input_features"
+            )
+        input_features = params.pop("input_features")
         if (
             isinstance(input_features, bool)
             or not isinstance(input_features, int)

@@ -436,20 +436,22 @@ ema:
   use_for_sampling: true
 
 sampling:
+  run_after_training: true
   shape: [1, 28, 28]
-  builder:
-    name: stochaflow-consistency-distillation.sampling
+  sampler:
+    name: stochaflow-consistency-distillation.consistency
     params:
-      weights: auto
-      prediction_type: epsilon
-      clip_output: true
-      sampler:
-        name: stochaflow-consistency-distillation.consistency
-        params:
-          schedule: [1000, 0]
+      schedule: [1000, 0]
+  options:
+    weights: auto
+    clip_output: true
 ```
 
-最终配置字段以实现阶段的严格 parser 和测试为准；未知字段必须报错。
+对应 TrainingBuilder 必须把内部
+`stochaflow-consistency-distillation.sampling` recipe 和
+`prediction_type: epsilon` fixed contract 写入 `TrainingPlan.inference_recipe`；
+sample request 不能选择 Builder 或覆盖 prediction type。最终 recipe option 字段以
+实现阶段的严格 parser 和测试为准；未知字段必须报错。
 
 ## 9. 分阶段实施
 

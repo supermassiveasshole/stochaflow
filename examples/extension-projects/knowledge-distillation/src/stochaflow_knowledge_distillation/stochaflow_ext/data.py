@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator, Mapping, Sized
-from importlib import import_module
-from pathlib import Path
 from typing import Any, cast
 
 import torch
-from torch.utils.data import DataLoader, Dataset, Sampler, TensorDataset, random_split
+from torch.utils.data import DataLoader, Dataset, Sampler, TensorDataset
 
 from stochaflow.extensions import REGISTRIES, DataBuilder, DataLoaders
 
@@ -96,7 +94,7 @@ def _synthetic_splits(
         or noise_std < 0
     ):
         raise ValueError("noise_std must be a finite non-negative number")
-    _unknown(params, "synthetic source")
+    _unknown(params, "synthetic data recipe")
 
     prototype_generator = torch.Generator().manual_seed(seed)
     prototypes = torch.randn(
@@ -125,75 +123,6 @@ def _synthetic_splits(
         make_split(validation_samples, seed + 2),
         make_split(test_samples, seed + 3),
     )
-
-
-def _validation_count(value: object, *, total: int) -> int:
-    if isinstance(value, bool):
-        raise TypeError("validation_size must be an integer or fraction")
-    if isinstance(value, int):
-        count = value
-    elif isinstance(value, float):
-        if not 0.0 < value < 1.0:
-            raise ValueError("fractional validation_size must satisfy 0 < value < 1")
-        count = round(total * value)
-    else:
-        raise TypeError("validation_size must be an integer or fraction")
-    if count <= 0 or count >= total:
-        raise ValueError(
-            "validation_size must leave non-empty train and validation sets"
-        )
-    return count
-
-
-def _torchvision_splits(
-    params: dict[str, Any],
-    *,
-    seed: int,
-) -> tuple[Dataset[Any], Dataset[Any], Dataset[Any]]:
-    dataset_name = params.pop("dataset", "MNIST")
-    if dataset_name not in {"MNIST", "FashionMNIST", "CIFAR10"}:
-        raise ValueError(
-            "torchvision dataset must be MNIST, FashionMNIST, or CIFAR10"
-        )
-    root = params.pop("root", "data/torchvision")
-    if not isinstance(root, str) or not root.strip():
-        raise ValueError("torchvision root must be a non-empty path string")
-    download = params.pop("download", False)
-    if not isinstance(download, bool):
-        raise TypeError("torchvision download must be boolean")
-    validation_size = params.pop("validation_size", 0.1)
-    _unknown(params, "torchvision source")
-
-    try:
-        datasets = import_module("torchvision.datasets")
-        transforms = import_module("torchvision.transforms")
-    except ImportError as exc:  # pragma: no cover - depends on optional extra
-        raise RuntimeError(
-            "torchvision source requires the project's 'vision' extra"
-        ) from exc
-
-    dataset_type = getattr(datasets, dataset_name)
-    transform = transforms.ToTensor()
-    full_train = dataset_type(
-        root=str(Path(root)),
-        train=True,
-        download=download,
-        transform=transform,
-    )
-    test = dataset_type(
-        root=str(Path(root)),
-        train=False,
-        download=download,
-        transform=transform,
-    )
-    validation_count = _validation_count(validation_size, total=len(full_train))
-    train_count = len(full_train) - validation_count
-    train, validation = random_split(
-        full_train,
-        (train_count, validation_count),
-        generator=torch.Generator().manual_seed(seed),
-    )
-    return train, validation, test
 
 
 def _loaders(
@@ -241,27 +170,27 @@ def _loaders(
         ),
         validation=DataLoader(validation, shuffle=False, drop_last=False, **common),
         test=DataLoader(test, shuffle=False, drop_last=False, **common),
+        artifact_bindings=None,
     )
 
 
 @REGISTRIES.data_builders.register(f"{_PREFIX}.classification")
 class ClassificationDataBuilder(DataBuilder):
-    """Build deterministic synthetic or optional torchvision classification data."""
+    """Build a deterministic in-memory classification fixture.
+
+    This recipe has no external input artifact. Real dataset acquisition belongs
+    in an extension-owned DataSource/DataArtifact pair or a compatible framework
+    data recipe.
+    """
 
     def build(self) -> DataLoaders:
         """Assemble one independent train/validation/test loader set."""
 
         params = dict(self.context.params)
-        source = _mapping(params.pop("source", {"name": "synthetic"}), "source")
+        synthetic = _mapping(params.pop("synthetic", {}), "synthetic")
         loader = _mapping(params.pop("loader", {}), "loader")
         _unknown(params, "data builder")
-        name = source.pop("name", "synthetic")
-        if name == "synthetic":
-            datasets = _synthetic_splits(source, seed=self.context.seed)
-        elif name == "torchvision":
-            datasets = _torchvision_splits(source, seed=self.context.seed)
-        else:
-            raise ValueError("source.name must be synthetic or torchvision")
+        datasets = _synthetic_splits(synthetic, seed=self.context.seed)
         return _loaders(loader, datasets=datasets, seed=self.context.seed)
 
 

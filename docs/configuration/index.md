@@ -71,12 +71,12 @@ python -m pip install ./dist/stochaflow-0.1.0-py3-none-any.whl
 
 ### 从源码贡献
 
-源码 checkout 才包含仓库内的 `configs/`、tests 和文档：
+源码 checkout 才包含仓库内的 `examples/`、tests 和文档：
 
 ```bash
 uv sync --extra dev
 uv run stochaflow train \
-  --config configs/ddpm_mnist.yaml \
+  --config examples/built-in/image-generation/experiments/ddpm_mnist.yaml \
   --epochs 1 \
   --limit-batches 2 \
   --skip-final-sample
@@ -85,13 +85,15 @@ uv run stochaflow train \
 确认 smoke run 后，移除 CLI limit 运行 YAML 声明的完整实验：
 
 ```bash
-uv run stochaflow train --config configs/ddpm_mnist.yaml
+uv run stochaflow train \
+  --config examples/built-in/image-generation/experiments/ddpm_mnist.yaml
 ```
 
 也可以直接选择完整的 DDIM 版本：
 
 ```bash
-uv run stochaflow train --config configs/ddim_mnist.yaml
+uv run stochaflow train \
+  --config examples/built-in/image-generation/experiments/ddim_mnist.yaml
 ```
 
 两份配置共享数据、模型、训练目标和高级特性；`ddpm_mnist.yaml` 的主采样器是
@@ -121,13 +123,14 @@ tensorboard --logdir outputs/ddpm_mnist/<run>/tensorboard
 ```bash
 uv run stochaflow train \
   --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt \
-  --observability-config configs/overlays/mnist_observability.yaml
+  --observability-config \
+    examples/built-in/image-generation/experiments/overlays/mnist_observability.yaml
 ```
 
 该文件只允许 `diagnostics` 与 `logging`，不会放宽模型、数据、optimizer、scheduler、
 EMA 或训练进度的严格恢复。详细替换、继承和审计语义见[恢复训练](workflows.md#恢复训练)。
 
-从最佳 checkpoint 采样：
+从最佳 checkpoint 运行其固化 inference recipe：
 
 ```bash
 uv run stochaflow sample \
@@ -182,15 +185,13 @@ objective:
   params: {reduction: mean}
 
 sampling:
+  run_after_training: true
   shape: [1, 32, 32]
-  builder:
-    name: standard_denoising
-    params:
-      weights: auto
-      prediction_type: epsilon
-      clip_denoised: true
-      sampler: {name: ddim, params: {num_inference_steps: 100, eta: 0.0}}
-      trajectory: {enabled: false, every_steps: 1}
+  sampler: {name: ddim, params: {num_inference_steps: 100, eta: 0.0}}
+  options:
+    weights: auto
+    clip_denoised: true
+    trajectory: {enabled: false, every_steps: 1}
   writers:
     - {name: tensor, params: {}}
     - {name: image, params: {grid_nrow: 4}}
@@ -199,8 +200,10 @@ sampling:
 `load_config()` 和 `load_config_dict()` 只把 YAML/mapping 结构化为 dataclass 并校验
 schema，不导入第三方代码。runner 随后发现并预检所选
 `stochaflow.extensions` entry points，在任何插件导入前处理 checkpoint provenance 和
-version policy，再激活插件、执行跨组件校验并构建组件。训练、resume 和 sampling 因而
-使用同一套显式插件选择与审计结果。
+version policy，再激活插件、执行跨组件校验并构建组件。训练、resume 和
+checkpoint-backed inference 因而使用同一套显式插件选择与审计结果。这里的
+`prediction_type` 来自 TrainingBuilder 固化到 v10 checkpoint 的 recipe contract，
+不会在 sampling request 中重复声明。
 
 ## 配置层次
 
@@ -215,7 +218,7 @@ version policy，再激活插件、执行跨组件校验并构建组件。训练
 | `objective` | 可选、可复用的标量训练目标；由 TrainingBuilder 决定是否需要 |
 | `optimizer` / `lr_scheduler` | 原生 PyTorch target、构造参数与调度器推进周期 |
 | `ema` | 模型参数指数移动平均 |
-| `sampling` | 独立采样和训练后验收采样 |
+| `sampling` | 训练后 inference 开关，以及 checkpoint recipe 的可调 request defaults |
 | `diagnostics` | 扩散特有的训练期诊断 |
 | `trainer` | epoch、设备、梯度和提前停止 |
 | `logging` | 日志频率与后端 |
@@ -279,6 +282,6 @@ plugin selection
 
 ## 内置示例
 
-仓库提供六份可直接加载的配置：MNIST DDPM、CIFAR-10 DDPM/DDIM、Flowers102
-DDPM/DDIM，以及 MNIST + Flowers102 多源 DDPM。它们位于 `configs/`，并在 CI 中
-逐一执行 schema 加载。
+仓库提供七份可直接加载的配置：MNIST DDPM/DDIM、CIFAR-10 DDPM/DDIM、
+Flowers102 DDPM/DDIM，以及 MNIST + Flowers102 多源 DDPM。它们位于
+`examples/built-in/image-generation/experiments/`，并在 CI 中逐一执行 schema 加载。

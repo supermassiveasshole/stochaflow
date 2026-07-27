@@ -15,11 +15,11 @@ from stochaflow import data
 from stochaflow.data import (
     DataArtifactBinding,
     DataArtifactBindings,
+    DataArtifactIdentity,
     DataBuilder,
     DataBuilderContext,
     DataLoaders,
     ImageDataBuilder,
-    ManagedDataArtifactIdentity,
     MultiResolutionImageDataBuilder,
     SuperResolutionDataBuilder,
     build_data_loaders,
@@ -197,12 +197,14 @@ def test_builtin_builder_constructor_calls_only_top_level_validate_once(
 
 
 def test_data_loaders_preserve_optional_artifact_bindings() -> None:
-    identity = ManagedDataArtifactIdentity(
+    identity = DataArtifactIdentity(
+        kind="managed",
         artifact_type="image-folder",
         source_name="test-source",
         source_digest="a" * 64,
         materializer_name="test-materializer",
         materialization_digest="b" * 64,
+        content_digest="e" * 64,
         artifact_digest="c" * 64,
         manifest_sha256="d" * 64,
     )
@@ -258,11 +260,15 @@ def test_only_new_data_contract_is_public() -> None:
         "DataArtifactBinding",
         "DataArtifactBindings",
         "DataArtifactIdentity",
+        "DataArtifactLoadContext",
+        "DataArtifactStore",
+        "DataArtifactValidationError",
         "DataBuilder",
         "DataBuilderContext",
         "DataLoaders",
         "DataSource",
         "DataSourceContext",
+        "DataSourceMaterializationConfig",
         "IMAGE_DATA_SOURCES",
         "ImageArtifactPayload",
         "ImageDataBuilder",
@@ -272,15 +278,15 @@ def test_only_new_data_contract_is_public() -> None:
         "ImageFilePair",
         "ImageFileRecord",
         "ImageFolderArtifactPayload",
-        "ManagedDataArtifact",
-        "ManagedDataArtifactIdentity",
+        "ManagedDataArtifactBuild",
         "MultiResolutionImageDataBuilder",
         "PairedImageFolderArtifactPayload",
-        "ReferencedDataArtifact",
-        "ReferencedDataArtifactIdentity",
+        "ReferencedDataArtifactBuild",
         "SuperResolutionDataBuilder",
         "TorchvisionImageArtifactPayload",
         "build_data_loaders",
+        "canonical_artifact_digest",
+        "canonical_artifact_json_bytes",
     }
     for removed in (
         "DataPipeline",

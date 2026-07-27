@@ -6,8 +6,9 @@ Stochaflow is a Python 3.12+ package using a `src` layout. Core code lives in
 `src/stochaflow/`: probability processes in `processes/`, neural networks in
 `models/`, training orchestration in `training/`, sampling helpers in
 `sampling/`, shared infrastructure in `utils/`, and console entry points in
-`scripts/`. Dataset builders are in `data/`. Experiment YAML files belong in
-`configs/`; tests in `tests/` should mirror the feature they cover. Keep
+`scripts/`. Dataset builders are in `data/`. Repository-owned example experiment
+YAML files belong under the corresponding project in `examples/`; tests in
+`tests/` should mirror the feature they cover. Keep
 documentation and research notes in `docs/` or `notebooks/`, and reserve
 `assets/readme/` for curated documentation images. Generated runs belong under
 `outputs/` and must not be committed.
@@ -26,7 +27,7 @@ intermediate plan without linking it from the public docs index.
 - `uv run ruff check .` checks formatting-independent style and common errors.
 - `uv run pyright` performs basic static type checking across `src/` and `tests/`.
 - `uv build` creates wheel and source distributions in `dist/`.
-- `uv run stochaflow-train-mnist-ddpm --config configs/ddpm_mnist.yaml --epochs 1 --limit-batches 10` performs a short end-to-end smoke run.
+- `uv run stochaflow train --config examples/built-in/image-generation/experiments/ddpm_mnist.yaml --epochs 1 --limit-batches 10` performs a short end-to-end smoke run.
 
 ## Coding Style & Naming Conventions
 

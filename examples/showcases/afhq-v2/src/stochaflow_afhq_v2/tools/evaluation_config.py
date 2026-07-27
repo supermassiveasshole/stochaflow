@@ -11,7 +11,7 @@ from typing import Any, cast
 import yaml
 
 SCHEMA_VERSION = 1
-SAMPLING_BUILDER_NAME = "class_conditional_denoising"
+SAMPLING_RECIPE_NAME = "class_conditional_denoising"
 AFHQ_V2_CLASS_MAPPING = {"cat": 0, "dog": 1, "wild": 2}
 
 
@@ -38,10 +38,10 @@ class AFHQV2EvaluationProtocol:
 
 @dataclass(frozen=True, slots=True)
 class AFHQV2EvaluationDocument:
-    """Validated evaluation protocol plus a core-compatible sampling overlay."""
+    """Validated evaluation protocol plus a core-compatible sample request."""
 
     protocol: AFHQV2EvaluationProtocol
-    sampling_overlay: dict[str, Any]
+    sample_request: dict[str, Any]
     source_path: Path
     source_sha256: str
 
@@ -198,26 +198,34 @@ def _evaluation_protocol(value: object) -> AFHQV2EvaluationProtocol:
 
 
 def _sampling_protocol(
-    overlay: dict[str, Any],
+    request: dict[str, Any],
     protocol: AFHQV2EvaluationProtocol,
 ) -> None:
+    sampling_value = request.get("sampling")
+    if isinstance(sampling_value, dict) and "builder" in sampling_value:
+        raise ValueError(
+            "legacy sampling.builder is unsupported; use sampling.sampler "
+            "and sampling.options"
+        )
     sampling = _strict_mapping(
-        overlay.get("sampling"),
+        sampling_value,
         path="sampling",
         allowed={
+            "sampler",
+            "options",
             "shape",
             "num_samples",
             "batch_size",
             "seed",
-            "builder",
             "writers",
         },
         required={
+            "sampler",
+            "options",
             "shape",
             "num_samples",
             "batch_size",
             "seed",
-            "builder",
             "writers",
         },
     )
@@ -233,43 +241,29 @@ def _sampling_protocol(
             "sampling.num_samples must equal fake_per_class times class count"
         )
     _positive_integer(sampling["batch_size"], path="sampling.batch_size")
-    builder = _strict_mapping(
-        sampling["builder"],
-        path="sampling.builder",
-        allowed={"name", "params"},
-        required={"name", "params"},
-    )
-    if builder["name"] != SAMPLING_BUILDER_NAME:
-        raise ValueError(
-            "AFHQ-v2 evaluation requires class_conditional_denoising sampling"
-        )
-    params = _strict_mapping(
-        builder["params"],
-        path="sampling.builder.params",
+    options = _strict_mapping(
+        sampling["options"],
+        path="sampling.options",
         allowed={
             "weights",
-            "prediction_type",
             "clip_denoised",
             "guidance_scale",
             "conditions",
-            "sampler",
             "trajectory",
         },
         required={
             "weights",
-            "prediction_type",
             "clip_denoised",
             "guidance_scale",
             "conditions",
-            "sampler",
             "trajectory",
         },
     )
-    if params["weights"] not in {"raw", "ema"}:
+    if options["weights"] not in {"raw", "ema"}:
         raise ValueError(
             "evaluation sampling weights must explicitly select raw or ema"
         )
-    guidance = params["guidance_scale"]
+    guidance = options["guidance_scale"]
     if (
         isinstance(guidance, bool)
         or not isinstance(guidance, (int, float))
@@ -279,7 +273,7 @@ def _sampling_protocol(
         raise ValueError(
             "evaluation guidance_scale must be finite and non-negative"
         )
-    conditions = params["conditions"]
+    conditions = options["conditions"]
     expected_conditions = [
         {"class_label": label, "count": protocol.fake_per_class}
         for label in protocol.class_mapping.values()
@@ -290,17 +284,17 @@ def _sampling_protocol(
             "class label"
         )
     sampler = _strict_mapping(
-        params["sampler"],
-        path="sampling.builder.params.sampler",
+        sampling["sampler"],
+        path="sampling.sampler",
         allowed={"name", "params"},
         required={"name", "params"},
     )
-    _non_empty_string(sampler["name"], path="sampling.builder.params.sampler.name")
+    _non_empty_string(sampler["name"], path="sampling.sampler.name")
     if not isinstance(sampler["params"], dict):
-        raise TypeError("sampling.builder.params.sampler.params must be a mapping")
+        raise TypeError("sampling.sampler.params must be a mapping")
     trajectory = _strict_mapping(
-        params["trajectory"],
-        path="sampling.builder.params.trajectory",
+        options["trajectory"],
+        path="sampling.options.trajectory",
         allowed={"enabled", "every_steps"},
         required={"enabled", "every_steps"},
     )
@@ -310,7 +304,7 @@ def _sampling_protocol(
         )
     _positive_integer(
         trajectory["every_steps"],
-        path="sampling.builder.params.trajectory.every_steps",
+        path="sampling.options.trajectory.every_steps",
     )
     writers = sampling["writers"]
     if writers != [{"name": "tensor", "params": {}}]:
@@ -346,46 +340,48 @@ def load_evaluation_document(path: str | Path) -> AFHQV2EvaluationDocument:
             "AFHQ-v2 evaluation class_mapping must be "
             "{cat: 0, dog: 1, wild: 2}"
         )
-    overlay = {
+    request = {
         "extensions": cast(dict[str, Any], raw["extensions"]),
         "sampling": cast(dict[str, Any], raw["sampling"]),
     }
-    _sampling_protocol(overlay, protocol)
+    _sampling_protocol(request, protocol)
     return AFHQV2EvaluationDocument(
         protocol=protocol,
-        sampling_overlay=overlay,
+        sample_request=request,
         source_path=source.resolve(),
         source_sha256=hashlib.sha256(encoded).hexdigest(),
     )
 
 
-def sampling_overlay_bytes(document: AFHQV2EvaluationDocument) -> bytes:
-    """Encode the exact core-compatible sampling projection."""
+def sample_request_bytes(document: AFHQV2EvaluationDocument) -> bytes:
+    """Encode the exact core-compatible sample request."""
 
     return yaml.safe_dump(
-        document.sampling_overlay,
+        document.sample_request,
         sort_keys=False,
         allow_unicode=True,
     ).encode("utf-8")
 
 
 def sampling_parameters(document: AFHQV2EvaluationDocument) -> dict[str, Any]:
-    """Return the validated private class-conditional builder parameters."""
+    """Return the validated class-conditional options and sampler declaration."""
 
-    return cast(
+    sampling = document.sample_request["sampling"]
+    options = cast(
         dict[str, Any],
-        document.sampling_overlay["sampling"]["builder"]["params"],
+        sampling["options"],
     )
+    return {**options, "sampler": cast(dict[str, Any], sampling["sampler"])}
 
 
 __all__ = [
     "AFHQ_V2_CLASS_MAPPING",
-    "SAMPLING_BUILDER_NAME",
+    "SAMPLING_RECIPE_NAME",
     "SCHEMA_VERSION",
     "AFHQV2EvaluationDocument",
     "AFHQV2EvaluationProtocol",
     "AFHQV2MetricSpec",
     "load_evaluation_document",
-    "sampling_overlay_bytes",
+    "sample_request_bytes",
     "sampling_parameters",
 ]

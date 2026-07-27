@@ -31,14 +31,17 @@ from stochaflow.extensions import ...
 | `IMAGE_DATA_SOURCES` | 复用内置 image recipe 时注册 `ImageDataSource` 的受限 Registry |
 | `DataSource` | 只负责物化一个带 identity 的 `DataArtifact`，不构造训练数据栈 |
 | `DataSourceContext` | cache root、ensure/require、verification 与 strict-resume expected identity |
-| `ArtifactMaterializationLock` | 在 framework cache root 内串行化同一 artifact 的 materialization |
+| `DataSourceMaterializationConfig` | `source.materialization` 的通用 typed config，可构造 `DataSourceContext` |
 | `ImageDataSource` | 内置 image recipe 可消费的 source-adapter 基类 |
-| `DataArtifact` | 已验证 artifact 的 identity 与公开 payload 契约 |
-| `ManagedDataArtifact` | Stochaflow 管理、可重建内容的 artifact handle |
-| `ReferencedDataArtifact` | 只缓存 inventory、不复制外部数据的 reference artifact handle |
-| `DataArtifactIdentity` | location-independent artifact identity 根契约 |
-| `ManagedDataArtifactIdentity` | managed ownership discriminator 与完整 identity |
-| `ReferencedDataArtifactIdentity` | referenced ownership discriminator 与完整 identity |
+| `DataArtifact` | managed/referenced 内容共用的已验证 runtime handle |
+| `DataArtifactIdentity` | 严格、location-independent 的 schema-v2 identity |
+| `DataArtifactStore` | managed/referenced producer 共用的 framework lifecycle |
+| `ManagedDataArtifactBuild` | managed producer 在 staging 写入完成后返回的 source/materialization/domain facts |
+| `ReferencedDataArtifactBuild` | referenced producer 建立索引后返回的 source/materialization/content/domain facts |
+| `DataArtifactLoadContext` | framework 传给无副作用 payload loader 的 verified staging/final 路径、identity、domain 与验证强度 |
+| `DataArtifactValidationError` | 已持久化候选或 represented content 违反契约 |
+| `canonical_artifact_json_bytes` | 严格 JSON-safe、排序、紧凑、带末尾换行的 canonical encoding |
+| `canonical_artifact_digest` | canonical artifact JSON 的 SHA-256 |
 | `DataArtifactBinding` | 一个稳定 role/id 到完整 artifact identity 的绑定 |
 | `DataArtifactBindings` | 严格排序、唯一且可序列化的 binding 集合 |
 | `ImageDimensions` | 一条由 artifact 认证的图像宽高记录 |
@@ -55,11 +58,63 @@ from stochaflow.extensions import ...
 | `DataLoaders` | 可重复迭代 loader、可选 `steps_per_epoch` 与本次运行的 `artifact_bindings` |
 
 `DataBuilder` 是运行时数据组合入口；`ImageDataSource` 是复用内置 image recipe 的来源
-扩展入口。DataSource 通过 `IMAGE_DATA_SOURCES` 注册，只负责读取、处理、materialize
-artifact，并返回上述公开 payload 之一；它不构造 Dataset、split、transform、collate、
-PyTorch sampler 或 DataLoader。标准 class-labeled payload 可直接交给内置
-`class_labeled_image` Builder；只有 payload 或 batch 生命周期不兼容现有 recipe 时，
-才实现独立 `DataBuilder`。
+扩展入口。`ImageDataSource` 通过 `IMAGE_DATA_SOURCES` 注册，只负责读取、处理、
+materialize artifact，并返回上述公开 payload 之一；它不构造 Dataset、split、
+transform、collate、PyTorch sampler 或 DataLoader。一个新来源只有同时满足目标
+Builder 的完整 accepted artifact contract，并需要相同的 partition、Dataset、
+transform、sampler、collate、loader、resume 与 batch 语义时，才可以只实现
+DataSource；否则应实现独立的 recipe-level `DataBuilder`。
+
+非图像 extension 可以定义自己的窄 DataSource base 与 family-local registry，由自己的
+DataBuilder 选择 source、验证 `DataArtifact` binding 并组装 runtime recipe；这不要求
+也不应创建 framework-global Dataset/Sampler/DataLoader registry。若 recipe 没有任何
+外部输入，例如完全由 resolved config 与 experiment seed 生成的 synthetic fixture，
+Builder 可以直接构造 runtime views，并明确返回没有 artifact bindings 的
+`DataLoaders`。
+
+所有 producer 都必须通过 `DataArtifactStore` 使用同一个 schema-v2 manifest、inventory、
+locator、locking、publication、quarantine 与 strict-resume lifecycle。不要在 extension
+中自行实现 manifest、identity 或 current-pointer 状态机。`managed` 表示 artifact 的
+实际内容由 cache 拥有；`referenced` 表示 cache 只拥有索引/sidecar，represented content
+仍由外部目录拥有。ownership strategy 记录在 `artifact.identity.kind`，不会改变统一
+runtime handle。
+
+最小 producer 形状：
+
+```python
+class ProjectSource(DataSource[ProjectPayload]):
+    def materialize(
+        self,
+        context: DataSourceContext,
+    ) -> DataArtifact[ProjectPayload]:
+        store = DataArtifactStore(context)
+        return store.materialize_referenced(
+            artifact_type="project.records.v1",
+            source_name="my-project.records",
+            materializer_name="my-project.indexer",
+            locator_key={"root": str(self.root)},
+            referenced_roots={"records": self.root},
+            build=self._build_index,
+            load=self._load_payload,
+        )
+```
+
+managed `build(data_root)` 把内容写入 framework staging `data/`，返回
+`ManagedDataArtifactBuild`；framework 扫描、哈希并认证所有普通文件。referenced
+`build(data_root)` 只写索引/sidecar，返回 `ReferencedDataArtifactBuild`，其中
+`content_digest` 由 producer 对外部内容 inventory 计算。`load(context)` 会在发布前对
+verified staging root 以 `full` 调用，并在发布后对 final object root 再次调用；cache hit
+则直接使用 final root。因此 callback 必须幂等、无副作用；framework-owned
+文件必须从 `context.data_root` 读取，referenced producer 还可以使用
+`materialize_referenced(...)` 中已声明并由 callback closure 捕获的 external roots，
+但不能在 `load` 中执行 acquisition、写入或重新物化。staging 调用的 payload 会被丢弃，
+最终返回的 `DataArtifact` 只保留 final-root payload。持久化内容错误应抛
+`DataArtifactValidationError`，普通 `TypeError`/`ValueError` 会被视为 producer bug。
+
+`DataArtifactIdentity` 固定包含 `schema_version=2`、`kind`、artifact/source/materializer
+名称与 digest、content/artifact digest 及 `manifest_sha256`。`DataArtifactBindings`
+同样只接受 schema v2。旧 manifest、locator、cache layout、identity 或 checkpoint
+binding 不会被读取或迁移；需要重新 materialize 并启动新 run。
 
 最小实现签名：
 
@@ -98,7 +153,8 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 | --- | --- |
 | `TrainingBuilder` | 组合注入资产和项目私有资产，返回一个 `TrainingPlan` |
 | `TrainingBuilderContext` | primary model、可选 Process/Objective、私有 `params` 与受控 model/objective factory |
-| `TrainingPlan` | Strategy、primary model、可选 Process/Objective 和具名 auxiliary modules |
+| `TrainingPlan` | Strategy、primary model、可选 Process/Objective、具名 auxiliary modules 和可选 fixed inference recipe |
+| `SamplingRecipe` | checkpoint 内部 SamplingBuilder identity 与不可由 sample request 覆盖的 JSON-safe contract |
 | `ManagedTrainingModule` | 辅助 `nn.Module` 及其 core-managed mode policy |
 | `TrainingStrategy` | 只定义 batch interpretation、forward、loss 与 metric 计算 |
 | `DeviceTransferableBatch` | 自定义领域 batch 可选择实现的显式设备迁移 capability |
@@ -161,6 +217,13 @@ class TrainingPlan:
     process: Process | None = None
     objective: nn.Module | None = None
     auxiliary_modules: Mapping[str, ManagedTrainingModule] = ...
+    inference_recipe: SamplingRecipe | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SamplingRecipe:
+    name: str
+    contract: Mapping[str, Any] = ...
 
 
 class TrainingBuilder(ABC):
@@ -173,7 +236,10 @@ class TrainingBuilder(ABC):
 `TrainingBuilderContext.params` 是深复制 mapping；`primary_model`、`process` 与
 `objective` 是 core 已构建的身份对象，返回的 Plan 必须原样保留它们。Builder 可以通过
 受控 `model_factory(ComponentConfig)`/`objective_factory(ComponentConfig)` 构建额外资产。
-Plan 中所有 state root 必须互不重叠且至少包含一个可训练参数。step loss 必须是浮点 scalar
+Plan 中所有 state root 必须互不重叠且至少包含一个可训练参数。`inference_recipe`
+为 null 时 checkpoint 不支持 `stochaflow sample`；非 null 时 `name` 必须选择已注册
+SamplingBuilder，`contract` 只允许有限数字、字符串、布尔、null 和普通 list/dict，
+并应只保存由训练组合确定、不能安全覆盖的 inference 事实。step loss 必须是浮点 scalar
 Tensor，metric 必须是 scalar numeric value。所有 managed module 都参与声明的
 device/mode、优化和 checkpoint 生命周期；EMA 只跟踪 primary model。
 
@@ -221,8 +287,8 @@ sigma-space solver 的 universal 接口。
 | `SamplingObservation` | initial/accepted/final sampling lifecycle observation |
 | `SamplingObserver` | observation consumer protocol |
 | `TrajectoryObserver` | 按间隔保留 initial、accepted 与 final observations |
-| `SamplingBuilder` | 任务级采样组合与执行入口 |
-| `SamplingBuilderContext` | 私有 params、可选 Process、model provider、device、seed、shape/count/batch size |
+| `SamplingBuilder` | checkpoint recipe 内部的任务级 inference 组合与执行入口；sample request 不直接选择 |
+| `SamplingBuilderContext` | resolved recipe params、可选 Process、model provider、device、seed、shape/count/batch size |
 | `InferenceModelProvider` | 在 Builder 中选择 raw/EMA inference model 的受控入口 |
 | `SamplingOutput` | Builder 返回的 ordered `SamplingBatch` 与 metadata |
 | `SamplingBatch` | writer-ready samples 与可选 observation trajectory |
@@ -273,11 +339,18 @@ class SamplingArtifactWriter(ABC):
     ) -> Mapping[str, Path]: ...
 ```
 
-`SamplingBuilderContext` 提供深复制的 `params`、可选 Process、InferenceModelProvider、
-device、seed、可选单样本 shape、num_samples 和 batch_size。Builder 的 batches 不能为空，
-metadata key 必须是字符串且整个 mapping 可 JSON 序列化。trajectory 的 step index 必须
-严格递增。Writer 返回值必须非空，跨 writer artifact key 必须唯一，所有路径在返回时必须
-存在。
+`SamplingBuilderContext.params` 由 runtime 组合：checkpoint `sampling.options` 的
+resolved shallow merge、可选顶层 `sampling.sampler`，以及最后加入且不可覆盖的
+`SamplingRecipe.contract`。`options` 不得包含保留 key `sampler`；与 contract 冲突会在
+Builder 构造前失败。Context 还提供可选 Process、InferenceModelProvider、device、seed、
+可选单 item shape、num_samples 和 batch_size。Builder 的 batches 不能为空，metadata key
+必须是字符串且整个 mapping 可 JSON 序列化。trajectory 的 step index 必须严格递增。
+Writer 返回值必须非空，跨 writer artifact key 必须唯一，所有路径在返回时必须存在。
+
+`stochaflow sample` 始终要求显式 v10 checkpoint。可选 request YAML 顶层只允许
+`sampling` 与 optional `extensions`，不能声明 `run_after_training` 或 Builder。
+未提供的 request 字段继承 checkpoint；`options` 浅合并，`sampler`/`writers` 原子替换，
+插件 selection 只允许 additive 扩展。
 
 ## Plugin discovery、provenance 与 activation
 
@@ -306,5 +379,5 @@ partial decorator registration 后应重启进程。
 
 ## 完整性约束
 
-本页列出的 90 个名称与当前 `stochaflow.extensions.__all__` 一一对应。新增公共契约时应先
+本页列出的名称与当前 `stochaflow.extensions.__all__` 一一对应。新增公共契约时应先
 更新该 `__all__`，再同步本页；仅存在于内部 package 的名称不应被 extension 依赖。

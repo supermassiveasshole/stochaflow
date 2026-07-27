@@ -1,8 +1,9 @@
 # 在条件任务中复用离散 Gaussian 组件
 
-本教程实现一个最小的条件采样扩展。扩展保留内置
+本教程实现一个最小的条件 inference recipe。扩展保留内置
 `DiscreteGaussianDenoisingProcess`、`GaussianModelDynamics` 和 DDPM/DDIM，只在
-`SamplingBuilder` 中组装 condition、classifier-free guidance、初始噪声和模型调用。
+`SamplingBuilder` 中组装 condition、classifier-free guidance、初始噪声和模型调用；
+训练侧同时把 recipe identity 与固定 prediction semantics 写入 v10 checkpoint。
 
 适用前提是 checkpoint 中的模型已经按以下签名训练：
 
@@ -26,7 +27,8 @@ conditional-demo/
     └── conditional_demo/
         └── stochaflow_ext/
             ├── __init__.py
-            └── sampling.py
+            ├── sampling.py
+            └── training.py
 ```
 
 `pyproject.toml`：
@@ -55,9 +57,9 @@ where = ["src"]
 `src/conditional_demo/stochaflow_ext/__init__.py`：
 
 ```python
-from . import sampling
+from . import sampling, training
 
-__all__ = ["sampling"]
+__all__ = ["sampling", "training"]
 ```
 
 `src/conditional_demo/stochaflow_ext/sampling.py`：
@@ -243,7 +245,7 @@ class ConditionalGaussianBuilder(SamplingBuilder):
         return SamplingOutput(
             batches=tuple(batches),
             metadata={
-                "builder": "conditional-demo.gaussian",
+                "recipe": "conditional-demo.gaussian",
                 "weights": resolved_weights,
                 "prediction_type": prediction_type,
                 "guidance_scale": guidance_scale,
@@ -256,7 +258,7 @@ class ConditionalGaussianBuilder(SamplingBuilder):
         )
 ```
 
-这个 Builder 做了四件任务级工作：
+这个 checkpoint recipe 的内部 Builder 做了四件任务级工作：
 
 1. 从 checkpoint 选择 raw 或 EMA 模型；
 2. 创建 condition 和 terminal prior；
@@ -283,8 +285,29 @@ extensions:
   plugins: [conditional-demo]
 ```
 
-下面是一个 lightweight sampling overlay。它复用 checkpoint 中的 model、Process 和
-插件 selection，只替换整个 `sampling` 段：
+对应 TrainingBuilder 必须在验证模型、Process 和训练参数后返回 fixed recipe；下面只
+展示其 `TrainingPlan` 片段：
+
+```python
+from stochaflow.extensions import SamplingRecipe, TrainingPlan
+
+return TrainingPlan(
+    strategy=strategy,
+    primary_model=self.context.primary_model,
+    process=self.context.process,
+    objective=self.context.objective,
+    inference_recipe=SamplingRecipe(
+        name="conditional-demo.gaussian",
+        contract={"prediction_type": prediction_type},
+    ),
+)
+```
+
+这样 `prediction_type` 由实际训练组合确定。sample request 不能临时选择这个 Builder，
+也不能把 contract 改成另一种 prediction parameterization。
+
+下面是一个 partial sample request。它复用 checkpoint 中的 model、Process、recipe 和
+插件 selection，只声明希望改变的 request fields：
 
 ```yaml
 sampling:
@@ -292,28 +315,25 @@ sampling:
   num_samples: 8
   batch_size: 4
   seed: 17
-  builder:
-    name: conditional-demo.gaussian
+  sampler:
+    name: ddim
     params:
-      weights: auto
-      prediction_type: epsilon
-      clip_denoised: true
-      guidance_scale: 1.5
-      condition:
-        - [[0.0, 0.25], [0.5, 0.75]]
-      sampler:
-        name: ddim
-        params:
-          num_inference_steps: 50
-          eta: 0.0
+      num_inference_steps: 50
+      eta: 0.0
+  options:
+    weights: auto
+    clip_denoised: true
+    guidance_scale: 1.5
+    condition:
+      - [[0.0, 0.25], [0.5, 0.75]]
   writers:
     - name: tensor
       params: {}
 ```
 
-若改用完整外部 sampling config，或确实要在 overlay 中写
-`extensions.plugins`，该列表会完整替换 checkpoint selection；必须列出本次构建 model、
-Process 和 Builder 所需的全部插件，不能只追加新 Builder。
+request 不能是完整外部 experiment config。若确实需要另一个 writer/provider plugin，
+可写 `extensions.plugins`；该列表只追加到 checkpoint selection，不能删除产生 model、
+Process 或 recipe 的 required plugins，也不能用新插件替换 checkpoint recipe。
 
 运行：
 
@@ -324,7 +344,7 @@ stochaflow sample \
   --output-dir outputs/conditional-samples
 ```
 
-同一个 Builder 可以改用 DDPM；只替换 sampler declaration：
+同一个 recipe 可以改用 DDPM；只原子替换顶层 sampler declaration：
 
 ```yaml
 sampler:
