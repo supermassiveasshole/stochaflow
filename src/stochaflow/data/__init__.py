@@ -13,6 +13,7 @@ from .artifacts import (
     ReferencedDataArtifactIdentity,
 )
 from .builder import (
+    ClassLabeledImageDataBuilder,
     DataBuilder,
     DataBuilderContext,
     ImageDataBuilder,
@@ -23,6 +24,8 @@ from .builder import (
 from .dataloaders import DataLoaders
 from .image_contracts import (
     IMAGE_DATA_SOURCES,
+    ClassLabeledImageFileRecord,
+    ClassLabeledImageFolderArtifactPayload,
     ImageArtifactPayload,
     ImageDataSource,
     ImageDimensions,
@@ -36,6 +39,9 @@ from .image_contracts import (
 
 __all__ = [
     "IMAGE_DATA_SOURCES",
+    "ClassLabeledImageDataBuilder",
+    "ClassLabeledImageFileRecord",
+    "ClassLabeledImageFolderArtifactPayload",
     "DataArtifact",
     "DataArtifactBinding",
     "DataArtifactBindings",

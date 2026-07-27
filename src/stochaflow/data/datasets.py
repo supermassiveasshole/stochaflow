@@ -19,6 +19,7 @@ from torchvision import datasets
 from stochaflow.data.artifact_io import read_regular_file
 from stochaflow.data.artifacts import DataArtifact
 from stochaflow.data.image_contracts import (
+    ClassLabeledImageFileRecord,
     ImageDimensions,
     ImageDimensionTable,
     ImageFilePair,
@@ -107,7 +108,9 @@ def _verified_image(root: Path, record: ImageFileRecord) -> Image.Image:
             record.path,
             label="artifact image",
         )
-    except (OSError, ValueError) as exc:
+    except ValueError as exc:
+        raise ValueError(f"cannot read artifact image: {path}: {exc}") from exc
+    except OSError as exc:
         raise ValueError(f"cannot read artifact image: {path}") from exc
     if metadata.st_size != record.size_bytes or len(encoded) != record.size_bytes:
         raise ValueError(f"artifact image size changed: {path}")
@@ -146,6 +149,83 @@ class ImageFolderDataset(Dataset[Image.Image]):
         """Return dimensions authenticated by the reference inventory."""
 
         return self.records[index].dimensions
+
+
+class ClassLabeledImageDataset(Dataset[tuple[torch.Tensor, int]]):
+    """Transform authenticated images and emit their integer class labels."""
+
+    def __init__(
+        self,
+        *,
+        roots: Mapping[str, Path],
+        records: Sequence[ClassLabeledImageFileRecord],
+        transform: ImageTransform,
+        seed: int,
+    ) -> None:
+        seed_value = cast(object, seed)
+        if isinstance(seed_value, bool) or not isinstance(seed_value, int):
+            raise TypeError("class-labeled image dataset seed must be an integer")
+        self.records = tuple(records)
+        if any(
+            not isinstance(record, ClassLabeledImageFileRecord)
+            for record in cast(Sequence[object], self.records)
+        ):
+            raise TypeError(
+                "class-labeled image dataset records must contain "
+                "ClassLabeledImageFileRecord"
+            )
+        self.images = ImageFolderDataset(
+            roots,
+            tuple(record.image for record in self.records),
+        )
+        self.transform = transform
+        self.seed = seed
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(
+        self,
+        index: int | tuple[int, int],
+    ) -> tuple[torch.Tensor, int]:
+        epoch = 0
+        sample_index: object = index
+        if isinstance(index, tuple):
+            if len(index) != 2:
+                raise ValueError(
+                    "epoch-tagged image index must contain two values"
+                )
+            epoch, sample_index = index
+        epoch_value = cast(object, epoch)
+        if (
+            isinstance(epoch_value, bool)
+            or not isinstance(epoch_value, int)
+            or epoch_value < 0
+        ):
+            raise ValueError("sample epoch must be a non-negative integer")
+        if isinstance(sample_index, bool) or not isinstance(sample_index, int):
+            raise TypeError("sample index must be an integer")
+        if sample_index < 0 or sample_index >= len(self.records):
+            raise IndexError(sample_index)
+
+        record = self.records[sample_index]
+        image_record = record.image
+        identity = (
+            f"stochaflow.class-labeled-image.sample.v1\0{self.seed}\0"
+            f"{epoch}\0{image_record.tree}\0{image_record.path}\0"
+            f"{image_record.sha256}"
+        ).encode()
+        random_seed = int.from_bytes(
+            hashlib.sha256(identity).digest()[:8],
+            byteorder="little",
+        )
+        return (
+            self.transform(
+                self.images[sample_index],
+                random_seed=random_seed,
+            ),
+            record.class_label,
+        )
 
 
 class PairedImageFolderDataset(
@@ -652,6 +732,7 @@ class ImageDatasetFactory:
 
 
 __all__ = [
+    "ClassLabeledImageDataset",
     "CodedLabelSequence",
     "CompactIndexSequence",
     "GeneratedSuperResolutionDataset",

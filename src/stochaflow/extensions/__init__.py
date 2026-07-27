@@ -2,6 +2,8 @@
 
 from stochaflow.data import (
     IMAGE_DATA_SOURCES,
+    ClassLabeledImageFileRecord,
+    ClassLabeledImageFolderArtifactPayload,
     DataArtifact,
     DataArtifactBinding,
     DataArtifactBindings,
@@ -24,6 +26,7 @@ from stochaflow.data import (
     ReferencedDataArtifactIdentity,
     TorchvisionImageArtifactPayload,
 )
+from stochaflow.data.artifact_store import ArtifactMaterializationLock
 from stochaflow.processes import (
     DiscreteGaussianDenoisingProcess,
     DiscreteGaussianProcess,
@@ -76,7 +79,10 @@ from stochaflow.training import (
     compute_objective,
     gaussian_training_target,
 )
-from stochaflow.utils.config import ComponentConfig
+from stochaflow.utils.config import (
+    ComponentConfig,
+    ConfigError,
+)
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.plugins import (
     ExtensionActivationError,
@@ -102,7 +108,11 @@ from stochaflow.utils.registry import REGISTRIES, Registry, RegistryError
 __all__ = [
     "IMAGE_DATA_SOURCES",
     "REGISTRIES",
+    "ArtifactMaterializationLock",
+    "ClassLabeledImageFileRecord",
+    "ClassLabeledImageFolderArtifactPayload",
     "ComponentConfig",
+    "ConfigError",
     "DDIMSampler",
     "DDPMAncestralSampler",
     "DataArtifact",

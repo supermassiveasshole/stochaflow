@@ -129,6 +129,33 @@ registries:
     base: stochaflow.data.DataBuilder
     config_path: data.name / data.params
     entries:
+      class_labeled_image:
+        description: 带认证类别标签的单一图像来源、逐类 validation 划分与无状态增强 recipe。
+        runtime_parameters: [context]
+        inspect: context_parameters
+        parameters:
+          source: {description: "必填 mapping；注册的 ImageDataSource 必须返回 `ClassLabeledImageFolderArtifactPayload`。"}
+          source.name: {description: "必填非空注册名；Builder 不检查具体名称或读取 source 私有参数。"}
+          source.params: {description: "source 私有 mapping；字段由所选 DataSource 严格验证。"}
+          source.materialization: {description: "必填 mapping；字段省略时使用 `cache_root: ./data`、`policy: ensure`、`verification: full`。"}
+          source.materialization.cache_root: {description: "artifact/index 缓存根目录；默认 `./data`。"}
+          source.materialization.policy: {description: "`ensure` 可创建 exact artifact，`require` 只接受已存在 artifact；默认 `ensure`。"}
+          source.materialization.verification: {description: "`manifest` 校验索引与大小，`full` 重新校验全部内容；默认 `full`，strict resume 强制完整验证。"}
+          image: {description: "必填 mapping；`size` 必填，其余字段使用下列默认值。"}
+          image.size: {description: "必填 `[height, width]`；两个维度均为正整数。"}
+          image.channels: {description: "输出通道数；默认 `3`，仅支持 `1` 或 `3`。"}
+          image.normalize: {description: "是否将 `[0, 1]` 映射到 `[-1, 1]`；默认 `true`，必须为布尔值。"}
+          image.random_horizontal_flip: {description: "训练时是否以 0.5 概率水平翻转；默认 `false`，必须为布尔值；随机值由 seed、epoch 与认证 sample identity 无状态派生。"}
+          partition.validation_per_class: {description: "必填正整数；从每个 class 的 train records 精确保留该数量，并须至少留下一个训练样本。"}
+          partition.seed: {description: "默认 `null`；可为整数或非空字符串。null 使用 experiment seed；划分只依赖 seed 与认证 sample identity。"}
+          loader.batch_size: {description: "训练 DataLoader batch size；默认 `128`，必须为正整数。"}
+          loader.num_workers: {description: "DataLoader worker 数；默认 `4`，必须为非负整数。"}
+          loader.shuffle: {description: "训练集是否按 `(seed, epoch)` 确定性 shuffle；默认 `true`，必须为布尔值。"}
+          loader.drop_last: {description: "训练集是否丢弃不足一个 batch 的尾部；默认 `true`，必须为布尔值。"}
+          loader.pin_memory: {description: "是否启用 DataLoader pinned memory；默认 `false`，必须为布尔值。CUDA 用户可显式开启，MPS 不支持 pinned memory。"}
+          loader.persistent_workers: {description: "是否保持 worker；默认 `true`，必须为布尔值，启用时 `num_workers > 0`。"}
+          loader.prefetch_factor: {description: "每个 worker 的预取因子；配置默认 `null`（不覆盖 PyTorch 默认值），非 null 时为正整数且要求 `num_workers > 0`。"}
+          loader.steps_per_epoch: {description: "训练 epoch 的显式 batch 上限；默认 `auto`（使用 loader 长度），或填写正整数且不得超过 sized loader 长度。"}
       image:
         description: 单一 torchvision 或本地图像来源的标准图像 recipe。
         runtime_parameters: [context]

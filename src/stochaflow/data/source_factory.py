@@ -21,6 +21,7 @@ from stochaflow.data.folder_sources import (
 )
 from stochaflow.data.image_contracts import (
     IMAGE_DATA_SOURCES,
+    ClassLabeledImageFolderArtifactPayload,
     ImageArtifactPayload,
     ImageDataSource,
     ImageFolderArtifactPayload,
@@ -94,6 +95,7 @@ class ImageSourceFactory:
         if not isinstance(
             artifact.payload,
             (
+                ClassLabeledImageFolderArtifactPayload,
                 TorchvisionImageArtifactPayload,
                 ImageFolderArtifactPayload,
                 PairedImageFolderArtifactPayload,

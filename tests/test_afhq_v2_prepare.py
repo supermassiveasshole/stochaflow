@@ -2,34 +2,37 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import importlib.util
 import json
 import os
 import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Sized
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import pytest
 import torch
 import yaml
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 from stochaflow.data import (
-    DataSource,
+    ClassLabeledImageFileRecord,
+    ClassLabeledImageFolderArtifactPayload,
     DataSourceContext,
+    ImageFileRecord,
     ManagedDataArtifact,
     ManagedDataArtifactIdentity,
     build_data_loaders,
 )
+from stochaflow.data import artifact_store as _ARTIFACT_STORE
 from stochaflow.sampling.runtime import run_sampling
 from stochaflow.utils.checkpoint import (
     CheckpointManager,
@@ -44,26 +47,35 @@ _REPOSITORY = Path(__file__).resolve().parents[1]
 _EXAMPLE_ROOT = _REPOSITORY / "examples" / "showcases" / "afhq-v2"
 _EXAMPLE_SRC = _EXAMPLE_ROOT / "src"
 _PACKAGE_ROOT = _EXAMPLE_SRC / "stochaflow_afhq_v2"
-_PREPARE_PATH = _PACKAGE_ROOT / "preparation.py"
 _PACKAGED_LOCK_PATH = (
     _PACKAGE_ROOT / "resources" / "afhq-v2.lock.yaml"
 )
 
 
 def _load_prepare_module() -> ModuleType:
-    name = "stochaflow_afhq_v2_prepare_test_module"
-    spec = importlib.util.spec_from_file_location(name, _PREPARE_PATH)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load {_PREPARE_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    example_src = str(_EXAMPLE_SRC)
+    if example_src not in sys.path:
+        sys.path.insert(0, example_src)
+    importlib.invalidate_caches()
+    return importlib.import_module("stochaflow_afhq_v2.preparation")
 
 
 _PREPARE = _load_prepare_module()
-
-
+_DOWNLOADING = importlib.import_module(
+    "stochaflow_afhq_v2._preparation.downloading"
+)
+_PREPARED_ARTIFACT = importlib.import_module(
+    "stochaflow_afhq_v2._preparation.prepared_artifact"
+)
+_PUBLICATION = importlib.import_module(
+    "stochaflow_afhq_v2._preparation.publication"
+)
+_SAFE_TREE = importlib.import_module(
+    "stochaflow_afhq_v2._preparation.safe_tree"
+)
+_SOURCE_ACQUISITION = importlib.import_module(
+    "stochaflow_afhq_v2._preparation.source_acquisition"
+)
 def test_checked_in_source_lock_is_fully_pinned() -> None:
     raw_lock = yaml.safe_load(_PACKAGED_LOCK_PATH.read_text(encoding="utf-8"))
     lock = _PREPARE.load_source_lock(_PACKAGED_LOCK_PATH)
@@ -207,30 +219,61 @@ def _write_tiny_source_lock(archive_path: Path, lock_path: Path) -> Path:
     return lock_path
 
 
-def _load_extension_data_module() -> ModuleType:
+def _load_artifact_module() -> ModuleType:
     example_src = str(_EXAMPLE_SRC)
     if example_src not in sys.path:
         sys.path.insert(0, example_src)
     importlib.invalidate_caches()
-    return importlib.import_module(
-        "stochaflow_afhq_v2.stochaflow_ext.data"
-    )
+    return importlib.import_module("stochaflow_afhq_v2.artifact")
 
 
-def test_prepare_tool_constructs_source_through_registered_catalog(
+def _activate_showcase_extension() -> ModuleType:
+    _load_artifact_module()
+    return importlib.import_module("stochaflow_afhq_v2.stochaflow_ext")
+
+
+def test_prepare_tool_uses_registered_data_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _load_extension_data_module()
     tool = importlib.import_module("stochaflow_afhq_v2.tools.prepare")
     observed: dict[str, Any] = {}
-
-    class PreparedPayload:
-        def __init__(self) -> None:
-            self.class_mapping = {"cat": 0, "dog": 1, "wild": 2}
-            self.train = (object(),)
-            self.validation = (object(),)
-            self.test = (object(),)
+    train_root = tmp_path / "prepared" / "train"
+    test_root = tmp_path / "prepared" / "test"
+    train_root.mkdir(parents=True)
+    test_root.mkdir(parents=True)
+    train_record = ImageFileRecord(
+        tree="train",
+        path="cat/train.png",
+        size_bytes=1,
+        sha256="0" * 64,
+        width=128,
+        height=128,
+    )
+    test_record = ImageFileRecord(
+        tree="test",
+        path="cat/test.png",
+        size_bytes=1,
+        sha256="1" * 64,
+        width=128,
+        height=128,
+    )
+    prepared_payload = ClassLabeledImageFolderArtifactPayload(
+        roots={"train": train_root, "test": test_root},
+        class_mapping={"cat": 0},
+        train=(
+            ClassLabeledImageFileRecord(
+                image=train_record,
+                class_label=0,
+            ),
+        ),
+        test=(
+            ClassLabeledImageFileRecord(
+                image=test_record,
+                class_label=0,
+            ),
+        ),
+    )
 
     class PreparedIdentity:
         def to_dict(self) -> dict[str, Any]:
@@ -240,60 +283,53 @@ def test_prepare_tool_constructs_source_through_registered_catalog(
         artifact_root = tmp_path / "artifact"
         manifest_path = artifact_root / "manifest.yaml"
         identity = PreparedIdentity()
-        payload = PreparedPayload()
+        payload = prepared_payload
 
-    class RecordingSource:
-        def materialize(self, context: DataSourceContext) -> PreparedArtifact:
+    class PreparedSource:
+        def materialize(
+            self,
+            context: DataSourceContext,
+        ) -> PreparedArtifact:
             observed["context"] = context
             return PreparedArtifact()
 
-    class RecordingCatalog:
-        def create(
-            self,
-            name: str,
-            params: dict[str, Any],
-            *,
-            config_path: str,
-        ) -> RecordingSource:
-            observed["name"] = name
-            observed["params"] = params
-            observed["config_path"] = config_path
-            return RecordingSource()
+    def create(
+        name: str,
+        params: dict[str, Any],
+        *,
+        config_path: str,
+    ) -> PreparedSource:
+        observed["name"] = name
+        observed["params"] = params
+        observed["config_path"] = config_path
+        return PreparedSource()
 
-    monkeypatch.setattr(tool, "IMAGE_DATA_SOURCES", RecordingCatalog())
-    monkeypatch.setattr(
-        tool,
-        "AFHQV2ImageFolderArtifactPayload",
-        PreparedPayload,
-    )
+    monkeypatch.setattr(tool.IMAGE_DATA_SOURCES, "create", create)
 
     summary = tool.prepare_artifact(
         cache_root=tmp_path / "cache",
         archive=tmp_path / "afhq_v2.zip",
         lock_file=tmp_path / "lock.yaml",
         resolution=128,
-        validation_per_class=300,
-        validation_seed="seed",
+        downloader="python",
         policy="require",
         verification="full",
     )
 
-    assert observed["name"] == "afhq-v2.official"
-    assert observed["config_path"] == "afhq-v2.prepare.source"
     assert observed["params"] == {
         "archive": str(tmp_path / "afhq_v2.zip"),
         "lock_file": str(tmp_path / "lock.yaml"),
+        "downloader": "python",
         "resolution": 128,
-        "validation_per_class": 300,
-        "validation_seed": "seed",
     }
+    assert observed["name"] == "afhq-v2.official"
+    assert observed["config_path"] == "prepare"
     context = observed["context"]
     assert isinstance(context, DataSourceContext)
     assert context.policy == "require"
     assert context.verification == "full"
     assert summary["counts"] == {
         "train": 1,
-        "validation": 1,
         "test": 1,
     }
 
@@ -302,27 +338,39 @@ def _class_data_config(
     *,
     source_params: dict[str, Any],
     cache_root: Path,
+    validation_per_class: int = 1,
+    partition_seed: int | str = "fixture-seed",
     image_size: int = 4,
+    policy: str = "require",
     num_workers: int = 0,
     shuffle: bool = True,
     random_horizontal_flip: bool = True,
 ) -> ComponentConfig:
+    _activate_showcase_extension()
     return ComponentConfig(
-        name="afhq-v2.class-images",
+        name="class_labeled_image",
         params={
             "source": {
                 "name": "afhq-v2.official",
-                "params": source_params,
+                "params": {
+                    "archive": source_params.get("archive"),
+                    "lock_file": source_params.get("lock_file"),
+                    "downloader": source_params.get("downloader", "auto"),
+                    "resolution": image_size,
+                },
                 "materialization": {
                     "cache_root": str(cache_root),
-                    "policy": "require",
+                    "policy": policy,
                     "verification": "full",
                 },
+            },
+            "partition": {
+                "validation_per_class": validation_per_class,
+                "seed": partition_seed,
             },
             "image": {
                 "size": [image_size, image_size],
                 "channels": 3,
-                "require_exact_size": True,
                 "normalize": True,
                 "random_horizontal_flip": random_horizontal_flip,
             },
@@ -346,32 +394,11 @@ def test_prepare_archive_is_deterministic_and_idempotent(tmp_path: Path) -> None
     source = _tiny_source(archive_path)
     lock = _tiny_lock(archive_path)
 
-    images = _PREPARE.inspect_archive(
-        archive_path,
-        contract=lock.contract,
-    )
-    first_selection = _PREPARE.select_validation_members(
-        images,
-        classes=lock.contract.classes,
-        per_class=1,
-        seed="fixture-seed",
-    )
-    second_selection = _PREPARE.select_validation_members(
-        tuple(reversed(images)),
-        classes=lock.contract.classes,
-        per_class=1,
-        seed="fixture-seed",
-    )
-    assert first_selection == second_selection
-    assert len(first_selection) == 3
-
     first = _PREPARE.prepare_archive(
         source=source,
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
-        validation_seed="fixture-seed",
     )
     assert first.cache_hit is False
     assert first.file_count == 12
@@ -386,12 +413,8 @@ def test_prepare_archive_is_deterministic_and_idempotent(tmp_path: Path) -> None
             "total": 3,
         },
         "train": {
-            "classes": {"cat": 2, "dog": 2, "wild": 2},
-            "total": 6,
-        },
-        "validation": {
-            "classes": {"cat": 1, "dog": 1, "wild": 1},
-            "total": 3,
+            "classes": {"cat": 3, "dog": 3, "wild": 3},
+            "total": 9,
         },
     }
     assert manifest["source"]["archive"]["sha256"] == source.sha256
@@ -403,7 +426,7 @@ def test_prepare_archive_is_deterministic_and_idempotent(tmp_path: Path) -> None
 
     prepared_images = sorted(
         path
-        for split in ("train", "validation", "test")
+        for split in ("train", "test")
         for path in (first.root / split).rglob("*.png")
     )
     assert len(prepared_images) == 12
@@ -422,8 +445,6 @@ def test_prepare_archive_is_deterministic_and_idempotent(tmp_path: Path) -> None
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
-        validation_seed="fixture-seed",
     )
     assert second.cache_hit is True
     assert second.root == first.root
@@ -436,8 +457,6 @@ def test_prepare_archive_is_deterministic_and_idempotent(tmp_path: Path) -> None
         lock=lock,
         cache_root=tmp_path / "independent-cache",
         resolution=4,
-        validation_per_class=1,
-        validation_seed="fixture-seed",
     )
     assert independent.cache_hit is False
     assert independent.artifact_digest == first.artifact_digest
@@ -461,10 +480,10 @@ def test_afhq_regular_file_open_rejects_fifo_without_blocking(
         _PREPARE.sha256_file(fifo)
 
 
-def test_afhq_extension_materializes_and_feeds_image_builder(
+def test_afhq_registered_source_feeds_the_builtin_builder(
     tmp_path: Path,
 ) -> None:
-    extension = _load_extension_data_module()
+    artifact_service = _load_artifact_module()
     archive_path = tmp_path / "afhq_v2.zip"
     _write_tiny_archive(archive_path, image_size=512)
     lock_path = _write_tiny_source_lock(
@@ -476,37 +495,37 @@ def test_afhq_extension_materializes_and_feeds_image_builder(
         "archive": str(archive_path),
         "lock_file": str(lock_path),
         "resolution": 4,
-        "validation_per_class": 1,
-        "validation_seed": "fixture-seed",
     }
-    source = extension.AFHQV2ImageDataSource(
-        source_params,
-        config_path="data.params.source",
-    )
-    assert isinstance(source, DataSource)
-
-    artifact = source.materialize(
+    artifact = artifact_service.materialize_afhq_v2_artifact(
         DataSourceContext(
             cache_root=cache_root,
             policy="ensure",
             verification="full",
-        )
+        ),
+        archive=archive_path,
+        lock_file=lock_path,
+        resolution=4,
     )
 
     assert isinstance(artifact, ManagedDataArtifact)
     assert not isinstance(artifact, Dataset)
     assert artifact.identity.source_name == "afhq-v2.official"
-    assert set(artifact.payload.roots) == {"train", "validation", "test"}
-    assert len(artifact.payload.train) == 6
-    assert len(artifact.payload.validation or ()) == 3
+    assert set(artifact.payload.roots) == {"train", "test"}
+    assert len(artifact.payload.train) == 9
+    assert artifact.payload.validation is None
     assert len(artifact.payload.test or ()) == 3
     assert all(
-        record.tree == "train"
-        and not record.path.startswith("train/")
-        for record in artifact.payload.train
+        entry.image.tree == "train"
+        and not entry.image.path.startswith("train/")
+        for entry in artifact.payload.train
     )
+    assert dict(artifact.payload.class_mapping) == {
+        "cat": 0,
+        "dog": 1,
+        "wild": 2,
+    }
     with pytest.raises(ValueError, match="expected a different data source"):
-        source.materialize(
+        artifact_service.materialize_afhq_v2_artifact(
             DataSourceContext(
                 cache_root=cache_root,
                 policy="require",
@@ -515,10 +534,12 @@ def test_afhq_extension_materializes_and_feeds_image_builder(
                     artifact.identity,
                     source_name="another-source",
                 ),
-            )
+            ),
+            lock_file=lock_path,
+            resolution=4,
         )
     with pytest.raises(ValueError, match="identity does not match"):
-        source.materialize(
+        artifact_service.materialize_afhq_v2_artifact(
             DataSourceContext(
                 cache_root=cache_root,
                 policy="require",
@@ -527,7 +548,9 @@ def test_afhq_extension_materializes_and_feeds_image_builder(
                     artifact.identity,
                     artifact_digest="0" * 64,
                 ),
-            )
+            ),
+            lock_file=lock_path,
+            resolution=4,
         )
 
     cached_archive = (
@@ -541,91 +564,25 @@ def test_afhq_extension_materializes_and_feeds_image_builder(
     cached_archive.unlink()
     archive_path.unlink()
 
-    required = source.materialize(
+    required = artifact_service.materialize_afhq_v2_artifact(
         DataSourceContext(
             cache_root=cache_root,
             policy="require",
             verification="full",
-        )
+        ),
+        lock_file=lock_path,
+        resolution=4,
     )
     assert isinstance(required, ManagedDataArtifact)
     assert required.identity == artifact.identity
     assert required.artifact_root == artifact.artifact_root
 
-    loaders = build_data_loaders(
-        ComponentConfig(
-            name="image",
-            params={
-                "source": {
-                    "name": "afhq-v2.official",
-                    "params": source_params,
-                    "materialization": {
-                        "cache_root": str(cache_root),
-                        "policy": "require",
-                        "verification": "full",
-                    },
-                },
-                "image": {
-                    "size": [4, 4],
-                    "channels": 3,
-                    "normalize": True,
-                    "random_horizontal_flip": False,
-                },
-                "loader": {
-                    "batch_size": 2,
-                    "num_workers": 0,
-                    "shuffle": False,
-                    "drop_last": False,
-                    "pin_memory": False,
-                    "persistent_workers": False,
-                    "prefetch_factor": None,
-                    "steps_per_epoch": "auto",
-                },
-                "partition": {"mode": "official"},
-            },
-        ),
-        seed=7,
-    )
-    images, conditions = next(iter(loaders.train))
-    assert images.shape == (2, 3, 4, 4)
-    assert conditions == {}
-    assert loaders.artifact_bindings is not None
-    assert (
-        loaders.artifact_bindings.identity_for("source")
-        == artifact.identity
-    )
-
     class_loaders = build_data_loaders(
-        ComponentConfig(
-            name="afhq-v2.class-images",
-            params={
-                "source": {
-                    "name": "afhq-v2.official",
-                    "params": source_params,
-                    "materialization": {
-                        "cache_root": str(cache_root),
-                        "policy": "require",
-                        "verification": "full",
-                    },
-                },
-                "image": {
-                    "size": [4, 4],
-                    "channels": 3,
-                    "require_exact_size": True,
-                    "normalize": True,
-                    "random_horizontal_flip": False,
-                },
-                "loader": {
-                    "batch_size": 2,
-                    "num_workers": 0,
-                    "shuffle": False,
-                    "drop_last": False,
-                    "pin_memory": False,
-                    "persistent_workers": False,
-                    "prefetch_factor": None,
-                    "steps_per_epoch": "auto",
-                },
-            },
+        _class_data_config(
+            source_params=source_params,
+            cache_root=cache_root,
+            shuffle=False,
+            random_horizontal_flip=False,
         ),
         seed=7,
     )
@@ -633,46 +590,74 @@ def test_afhq_extension_materializes_and_feeds_image_builder(
     assert class_images.shape == (2, 3, 4, 4)
     assert class_conditions["class_label"].dtype == torch.long
     assert class_conditions["class_label"].tolist() == [0, 0]
-    assert class_loaders.artifact_bindings == loaders.artifact_bindings
+    assert class_loaders.artifact_bindings is not None
+    assert (
+        class_loaders.artifact_bindings.identity_for("source")
+        == artifact.identity
+    )
+    alternate_loaders = build_data_loaders(
+        _class_data_config(
+            source_params=source_params,
+            cache_root=cache_root,
+            validation_per_class=2,
+            partition_seed="alternate-split",
+            shuffle=False,
+            random_horizontal_flip=False,
+        ),
+        seed=7,
+    )
+    assert alternate_loaders.artifact_bindings == (
+        class_loaders.artifact_bindings
+    )
+    assert class_loaders.validation is not None
+    assert alternate_loaders.validation is not None
+    validation_loader = cast(DataLoader[Any], class_loaders.validation)
+    alternate_validation_loader = cast(
+        DataLoader[Any],
+        alternate_loaders.validation,
+    )
+    assert len(cast(Sized, validation_loader.dataset)) == 3
+    assert len(cast(Sized, alternate_validation_loader.dataset)) == 6
 
-    changed_record = artifact.payload.train[0]
+    train_loader = cast(DataLoader[Any], class_loaders.train)
+    dataset_records = cast(Any, train_loader.dataset).records
+    changed_record = dataset_records[0]
     image_path = (
-        artifact.payload.roots[changed_record.tree]
-        / changed_record.path
+        artifact.payload.roots[changed_record.image.tree]
+        / changed_record.image.path
     )
     image_path.write_bytes(b"\0" * image_path.stat().st_size)
-    manifest_only = source.materialize(
+    manifest_only = artifact_service.materialize_afhq_v2_artifact(
         DataSourceContext(
             cache_root=cache_root,
             policy="require",
             verification="manifest",
-        )
+        ),
+        lock_file=lock_path,
+        resolution=4,
     )
     assert manifest_only.identity == artifact.identity
-    with pytest.raises(ValueError, match="image content changed"):
-        next(iter(loaders.train))
-    with pytest.raises(
-        extension.PreparationError,
-        match="prepared image content changed",
-    ):
+    with pytest.raises(ValueError, match="artifact image content changed"):
         next(iter(class_loaders.train))
     with pytest.raises(
-        extension.PreparationError,
+        _PREPARE.PreparationError,
         match="prepared file digest mismatch",
     ):
-        source.materialize(
+        artifact_service.materialize_afhq_v2_artifact(
             DataSourceContext(
                 cache_root=cache_root,
                 policy="require",
                 verification="full",
-            )
+            ),
+            lock_file=lock_path,
+            resolution=4,
         )
 
 
-def test_afhq_class_builder_enforces_mapping_size_and_strict_identity(
+def test_builtin_class_builder_derives_resolution_and_enforces_strict_identity(
     tmp_path: Path,
 ) -> None:
-    extension = _load_extension_data_module()
+    artifact_service = _load_artifact_module()
     archive_path = tmp_path / "afhq_v2.zip"
     _write_tiny_archive(archive_path, image_size=512)
     lock_path = _write_tiny_source_lock(
@@ -684,36 +669,25 @@ def test_afhq_class_builder_enforces_mapping_size_and_strict_identity(
         "archive": str(archive_path),
         "lock_file": str(lock_path),
         "resolution": 4,
-        "validation_per_class": 1,
-        "validation_seed": "fixture-seed",
     }
-    source = extension.AFHQV2ImageDataSource(
-        source_params,
-        config_path="data.params.source",
-    )
-    artifact = source.materialize(
+    artifact_service.materialize_afhq_v2_artifact(
         DataSourceContext(
             cache_root=cache_root,
             policy="ensure",
             verification="full",
-        )
+        ),
+        archive=archive_path,
+        lock_file=lock_path,
+        resolution=4,
     )
-    assert dict(artifact.payload.class_mapping) == {
+    assert dict(artifact_service.AFHQV2_CLASS_MAPPING) == {
         "cat": 0,
         "dog": 1,
         "wild": 2,
     }
-    immutable_mapping: Any = artifact.payload.class_mapping
+    immutable_mapping: Any = artifact_service.AFHQV2_CLASS_MAPPING
     with pytest.raises(TypeError):
         immutable_mapping["cat"] = 2
-    with pytest.raises(ValueError, match="class_mapping must be"):
-        extension.AFHQV2ImageFolderArtifactPayload(
-            roots=artifact.payload.roots,
-            train=artifact.payload.train,
-            validation=artifact.payload.validation,
-            test=artifact.payload.test,
-            class_mapping={"cat": 1, "dog": 0, "wild": 2},
-        )
 
     config = _class_data_config(
         source_params=source_params,
@@ -740,13 +714,16 @@ def test_afhq_class_builder_enforces_mapping_size_and_strict_identity(
             expected_artifacts=None,
         )
 
-    wrong_size = _class_data_config(
+    resized = _class_data_config(
         source_params=source_params,
         cache_root=cache_root,
         image_size=8,
+        policy="ensure",
     )
-    with pytest.raises(ValueError, match="authenticated size 4x4"):
-        build_data_loaders(wrong_size, seed=11)
+    resized_loaders = build_data_loaders(resized, seed=11)
+    resized_images, _ = next(iter(resized_loaders.train))
+    assert resized_images.shape[1:] == (3, 8, 8)
+    assert resized_loaders.artifact_bindings != loaders.artifact_bindings
 
 
 def _collect_epoch(
@@ -766,7 +743,7 @@ def _collect_epoch(
 def test_afhq_class_builder_is_worker_and_resume_deterministic(
     tmp_path: Path,
 ) -> None:
-    _load_extension_data_module()
+    artifact_service = _load_artifact_module()
     archive_path = tmp_path / "afhq_v2.zip"
     _write_tiny_archive(archive_path, image_size=512)
     lock_path = _write_tiny_source_lock(
@@ -778,19 +755,16 @@ def test_afhq_class_builder_is_worker_and_resume_deterministic(
         "archive": str(archive_path),
         "lock_file": str(lock_path),
         "resolution": 4,
-        "validation_per_class": 1,
-        "validation_seed": "fixture-seed",
     }
-    source = _load_extension_data_module().AFHQV2ImageDataSource(
-        source_params,
-        config_path="data.params.source",
-    )
-    source.materialize(
+    artifact_service.materialize_afhq_v2_artifact(
         DataSourceContext(
             cache_root=cache_root,
             policy="ensure",
             verification="full",
-        )
+        ),
+        archive=archive_path,
+        lock_file=lock_path,
+        resolution=4,
     )
     single_worker = build_data_loaders(
         _class_data_config(
@@ -804,15 +778,15 @@ def test_afhq_class_builder_is_worker_and_resume_deterministic(
         _class_data_config(
             source_params=source_params,
             cache_root=cache_root,
-            num_workers=2,
+            num_workers=1,
         ),
         seed=29,
     )
-    resumed_workers = build_data_loaders(
+    resumed_loader = build_data_loaders(
         _class_data_config(
             source_params=source_params,
             cache_root=cache_root,
-            num_workers=2,
+            num_workers=0,
         ),
         seed=29,
         strict_resume=True,
@@ -828,7 +802,7 @@ def test_afhq_class_builder_is_worker_and_resume_deterministic(
         epoch=3,
     )
     resumed_images, resumed_labels = _collect_epoch(
-        resumed_workers.train,
+        resumed_loader.train,
         epoch=3,
     )
     assert torch.equal(worker_labels, single_labels)
@@ -838,10 +812,17 @@ def test_afhq_class_builder_is_worker_and_resume_deterministic(
     assert set(single_labels.tolist()) == {0, 1, 2}
 
     next_images, next_labels = _collect_epoch(single_worker.train, epoch=4)
+    worker_next_images, worker_next_labels = _collect_epoch(
+        persistent_workers.train,
+        epoch=4,
+    )
+    assert torch.equal(worker_next_labels, next_labels)
+    assert torch.equal(worker_next_images, next_images)
     assert not (
         torch.equal(next_labels, single_labels)
         and torch.equal(next_images, single_images)
     )
+    del persistent_workers
 
     assert single_worker.validation is not None
     validation_images, validation_conditions = next(iter(single_worker.validation))
@@ -857,7 +838,7 @@ def test_afhq_class_builder_is_worker_and_resume_deterministic(
 def test_afhq_real_data_pipeline_trains_resumes_validates_and_samples(
     tmp_path: Path,
 ) -> None:
-    extension = _load_extension_data_module()
+    artifact_service = _load_artifact_module()
     archive_path = tmp_path / "afhq_v2.zip"
     _write_tiny_archive(archive_path, image_size=512)
     lock_path = _write_tiny_source_lock(
@@ -869,23 +850,21 @@ def test_afhq_real_data_pipeline_trains_resumes_validates_and_samples(
         "archive": str(archive_path),
         "lock_file": str(lock_path),
         "resolution": 8,
-        "validation_per_class": 1,
-        "validation_seed": "pipeline-fixture-seed",
     }
-    source = extension.AFHQV2ImageDataSource(
-        source_params,
-        config_path="data.params.source",
-    )
-    source.materialize(
+    artifact_service.materialize_afhq_v2_artifact(
         DataSourceContext(
             cache_root=cache_root,
             policy="ensure",
             verification="full",
-        )
+        ),
+        archive=archive_path,
+        lock_file=lock_path,
+        resolution=8,
     )
     data_config = _class_data_config(
         source_params=source_params,
         cache_root=cache_root,
+        partition_seed="pipeline-fixture-seed",
         image_size=8,
     )
     raw_config = {
@@ -1158,23 +1137,21 @@ def test_afhq_strict_resume_preflights_identity_before_cache_io(
     changed_value: str,
     message: str,
 ) -> None:
-    extension = _load_extension_data_module()
+    artifact_service = _load_artifact_module()
     archive_path = tmp_path / "afhq_v2.zip"
     _write_tiny_archive(archive_path, image_size=512)
     lock_path = _write_tiny_source_lock(
         archive_path,
         tmp_path / "afhq-v2.lock.yaml",
     )
-    lock = extension.load_source_lock(lock_path)
-    plan = extension.build_preparation_plan(
+    lock = _PREPARE.load_source_lock(lock_path)
+    plan = _PREPARE.build_preparation_plan(
         lock=lock,
         resolution=4,
-        validation_per_class=1,
-        validation_seed="fixture-seed",
     )
     assert lock.expected_sha256 is not None
     expected = ManagedDataArtifactIdentity(
-        artifact_type="stochaflow.image-folder.v1",
+        artifact_type="stochaflow.class-labeled-image-folder.v1",
         source_name="afhq-v2.official",
         source_digest=lock.expected_sha256,
         materializer_name=str(plan.recipe["id"]),
@@ -1191,64 +1168,115 @@ def test_afhq_strict_resume_preflights_identity_before_cache_io(
         pytest.fail("strict identity mismatch reached cache I/O")
 
     monkeypatch.setattr(
-        extension,
+        artifact_service.preparation,
         "require_prepared_artifact",
         unexpected_cache_io,
     )
     monkeypatch.setattr(
-        extension,
+        artifact_service.preparation,
         "acquire_official_archive",
         unexpected_cache_io,
-    )
-    source = extension.AFHQV2ImageDataSource(
-        {
-            "archive": str(archive_path),
-            "lock_file": str(lock_path),
-            "resolution": 4,
-            "validation_per_class": 1,
-            "validation_seed": "fixture-seed",
-        },
-        config_path="data.params.source",
     )
     cache_root = tmp_path / "cache"
 
     with pytest.raises(ValueError, match=message):
-        source.materialize(
+        artifact_service.materialize_afhq_v2_artifact(
             DataSourceContext(
                 cache_root=cache_root,
                 policy="ensure",
                 verification="full",
                 expected_identity=expected,
-            )
+            ),
+            archive=archive_path,
+            lock_file=lock_path,
+            resolution=4,
         )
 
     assert calls == []
     assert not cache_root.exists()
 
 
-def test_afhq_source_config_has_one_public_validation_entrypoint() -> None:
-    extension = _load_extension_data_module()
-    config = extension.AFHQV2DataSourceConfig.from_params(
-        {"resolution": 64, "validation_per_class": 100},
-        path="data.params.source.params",
+def test_builtin_builder_rejects_unknown_and_source_private_fields(
+    tmp_path: Path,
+) -> None:
+    base = _class_data_config(
+        source_params={
+            "archive": str(tmp_path / "archive.zip"),
+            "lock_file": str(tmp_path / "lock.yaml"),
+        },
+        cache_root=tmp_path / "cache",
     )
 
-    config.validate(path="data.params.source.params")
-    with pytest.raises(ValueError, match="unknown AFHQ-v2 source field"):
-        extension.AFHQV2DataSourceConfig.from_params(
-            {"unexpected": True},
-            path="data.params.source.params",
+    with pytest.raises(ValueError, match="unknown config field"):
+        build_data_loaders(
+            ComponentConfig(
+                name=base.name,
+                params={**base.params, "unexpected": True},
+            ),
+            seed=1,
         )
+    source = base.params["source"]
+    assert isinstance(source, dict)
+    source_params = source["params"]
+    assert isinstance(source_params, dict)
     with pytest.raises(ValueError, match="downloader must be"):
-        extension.AFHQV2DataSourceConfig.from_params(
-            {"downloader": "mirror"},
-            path="data.params.source.params",
+        build_data_loaders(
+            ComponentConfig(
+                name=base.name,
+                params={
+                    **base.params,
+                    "source": {
+                        **source,
+                        "params": {
+                            **source_params,
+                            "downloader": "mirror",
+                        },
+                    },
+                },
+            ),
+            seed=1,
         )
     for value in ([], {}):
         with pytest.raises(ValueError, match="downloader must be"):
-            extension.AFHQV2DataSourceConfig.from_params(
-                {"downloader": value},
-                path="data.params.source.params",
+            build_data_loaders(
+                ComponentConfig(
+                    name=base.name,
+                    params={
+                        **base.params,
+                        "source": {
+                            **source,
+                            "params": {
+                                **source_params,
+                                "downloader": value,
+                            },
+                        },
+                    },
+                ),
+                seed=1,
+            )
+    for field, value in (
+        ("validation_per_class", 1),
+        ("validation_seed", "source-must-not-own-splits"),
+    ):
+        with pytest.raises(
+            ValueError,
+            match=rf"unknown config field.*source\.params\.{field}",
+        ):
+            build_data_loaders(
+                ComponentConfig(
+                    name=base.name,
+                    params={
+                        **base.params,
+                        "source": {
+                            **source,
+                            "params": {
+                                **source_params,
+                                field: value,
+                            },
+                        },
+                    },
+                ),
+                seed=1,
             )
 
 
@@ -1262,7 +1290,6 @@ def test_cache_hit_rejects_modified_prepared_image(tmp_path: Path) -> None:
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     image_path = next((artifact.root / "train").rglob("*.png"))
     image_path.write_bytes(b"\0" * image_path.stat().st_size)
@@ -1276,7 +1303,6 @@ def test_cache_hit_rejects_modified_prepared_image(tmp_path: Path) -> None:
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
         )
 
 
@@ -1288,7 +1314,7 @@ def test_prepare_rejects_archive_path_substitution_before_publication(
     _write_tiny_archive(archive_path)
     source = _tiny_source(archive_path)
     lock = _tiny_lock(archive_path)
-    original_process = _PREPARE._process_images
+    original_process = _PUBLICATION._process_images
     substituted = False
 
     def substitute_archive(**kwargs: Any) -> Any:
@@ -1302,19 +1328,18 @@ def test_prepare_rejects_archive_path_substitution_before_publication(
         substituted = True
         return original_process(**kwargs)
 
-    monkeypatch.setattr(_PREPARE, "_process_images", substitute_archive)
+    monkeypatch.setattr(_PUBLICATION, "_process_images", substitute_archive)
     cache_root = tmp_path / "cache"
 
     with pytest.raises(
         _PREPARE.PreparationError,
-        match=r"changed while it was in use",
+        match=r"path no longer names the opened file",
     ):
         _PREPARE.prepare_archive(
             source=source,
             lock=lock,
             cache_root=cache_root,
             resolution=4,
-            validation_per_class=1,
         )
 
     assert substituted
@@ -1336,7 +1361,6 @@ def test_cache_hit_rejects_modified_manifest_recipe(tmp_path: Path) -> None:
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     manifest = yaml.safe_load(artifact.manifest_path.read_text(encoding="utf-8"))
     manifest["preparation"]["recipe"]["encoding"]["compress_level"] = 1
@@ -1351,7 +1375,6 @@ def test_cache_hit_rejects_modified_manifest_recipe(tmp_path: Path) -> None:
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
         )
 
 
@@ -1369,7 +1392,6 @@ def test_prepared_manifest_requires_exact_integer_schema_version(
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     manifest = yaml.safe_load(artifact.manifest_path.read_text(encoding="utf-8"))
     manifest["schema_version"] = schema_version
@@ -1386,7 +1408,6 @@ def test_prepared_manifest_requires_exact_integer_schema_version(
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
         )
 
 
@@ -1400,7 +1421,6 @@ def test_cache_hit_rejects_missing_inventory(tmp_path: Path) -> None:
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     (artifact.root / "files.sha256").unlink()
 
@@ -1413,7 +1433,6 @@ def test_cache_hit_rejects_missing_inventory(tmp_path: Path) -> None:
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
         )
 
 
@@ -1476,7 +1495,6 @@ def test_prepared_metadata_verification_does_not_follow_symlinks(
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     metadata_path = artifact.root / metadata_name
     outside = tmp_path / f"outside-{metadata_name}"
@@ -1488,7 +1506,6 @@ def test_prepared_metadata_verification_does_not_follow_symlinks(
     plan = _PREPARE.build_preparation_plan(
         lock=lock,
         resolution=4,
-        validation_per_class=1,
     )
 
     with pytest.raises(
@@ -1517,7 +1534,6 @@ def test_full_verification_rejects_symlinked_split_ancestor(
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     class_path = artifact.root / "train" / "cat"
     outside = tmp_path / "outside-cat"
@@ -1535,7 +1551,6 @@ def test_full_verification_rejects_symlinked_split_ancestor(
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
             full=True,
         )
 
@@ -1550,7 +1565,6 @@ def test_prepared_root_must_not_be_a_symlink(tmp_path: Path) -> None:
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     outside = tmp_path / "outside-artifact"
     _replace_path_with_symlink(
@@ -1567,7 +1581,6 @@ def test_prepared_root_must_not_be_a_symlink(tmp_path: Path) -> None:
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
             full=True,
         )
 
@@ -1586,7 +1599,6 @@ def test_full_verification_rejects_unexpected_root_entries(
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     unexpected = artifact.root / "unexpected"
     if entry_kind == "file":
@@ -1602,7 +1614,6 @@ def test_full_verification_rejects_unexpected_root_entries(
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
             full=True,
         )
 
@@ -1620,7 +1631,6 @@ def test_full_verification_rejects_windows_junction_ancestor(
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     class_path = artifact.root / "train" / "cat"
     outside = tmp_path / "outside-cat-junction"
@@ -1643,7 +1653,6 @@ def test_full_verification_rejects_windows_junction_ancestor(
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
             full=True,
         )
 
@@ -1661,7 +1670,6 @@ def test_directory_enumeration_detects_split_substitution(
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     split_path = artifact.root / "train"
     outside = tmp_path / "outside-train"
@@ -1680,17 +1688,16 @@ def test_directory_enumeration_detects_split_substitution(
             _create_directory_link(split_path, outside)
         return original_scandir(path)
 
-    monkeypatch.setattr(_PREPARE.os, "scandir", substitute_before_scan)
+    monkeypatch.setattr(_SAFE_TREE.os, "scandir", substitute_before_scan)
 
     with pytest.raises(
         _PREPARE.PreparationError,
-        match=r"unsafe|symlink|reparse|changed",
+        match=r"invalid layout.*unexpected=.*original-train",
     ):
         _PREPARE.require_prepared_artifact(
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
             full=True,
         )
     assert substituted
@@ -1714,15 +1721,13 @@ def test_verification_rejects_intermediate_root_link_substitution(
         lock=lock,
         cache_root=container / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     plan = _PREPARE.build_preparation_plan(
         lock=lock,
         resolution=4,
-        validation_per_class=1,
     )
     preserved = tmp_path / "preserved-container"
-    original = _PREPARE.canonical_directory
+    original = _PREPARED_ARTIFACT.canonical_directory
     substituted = False
 
     def substitute_after_check(path: Path, *, label: str) -> Path:
@@ -1735,7 +1740,7 @@ def test_verification_rejects_intermediate_root_link_substitution(
         return result
 
     monkeypatch.setattr(
-        _PREPARE,
+        _PREPARED_ARTIFACT,
         "canonical_directory",
         substitute_after_check,
     )
@@ -1767,7 +1772,6 @@ def test_quarantine_rejects_linked_cache_ancestor(tmp_path: Path) -> None:
         lock=lock,
         cache_root=cache_root,
         resolution=4,
-        validation_per_class=1,
     )
     prepared_base = artifact.root.parent
     outside = tmp_path / "outside-prepared-base"
@@ -1781,7 +1785,7 @@ def test_quarantine_rejects_linked_cache_ancestor(tmp_path: Path) -> None:
         _PREPARE.PreparationError,
         match=r"quarantine|symlink|reparse|unsafe",
     ):
-        _PREPARE._quarantine_invalid_prepared_artifact(
+        _PUBLICATION._quarantine_invalid_prepared_artifact(
             artifact.root,
             cache_root=cache_root,
         )
@@ -1812,7 +1816,6 @@ def test_prepare_rejects_linked_prepared_cache_before_writing_outside(
             lock=lock,
             cache_root=cache_root,
             resolution=4,
-            validation_per_class=1,
         )
 
     assert list(outside.iterdir()) == []
@@ -1821,7 +1824,7 @@ def test_prepare_rejects_linked_prepared_cache_before_writing_outside(
 def test_ensure_repairs_invalid_prepared_artifact_under_lock(
     tmp_path: Path,
 ) -> None:
-    extension = _load_extension_data_module()
+    artifact_service = _load_artifact_module()
     archive_path = tmp_path / "afhq_v2.zip"
     _write_tiny_archive(archive_path, image_size=512)
     lock_path = _write_tiny_source_lock(
@@ -1829,31 +1832,33 @@ def test_ensure_repairs_invalid_prepared_artifact_under_lock(
         tmp_path / "afhq-v2.lock.yaml",
     )
     cache_root = tmp_path / "cache"
-    source = extension.AFHQV2ImageDataSource(
-        {
-            "archive": str(archive_path),
-            "lock_file": str(lock_path),
-            "resolution": 4,
-            "validation_per_class": 1,
-            "validation_seed": "fixture-seed",
-        },
-        config_path="data.params.source",
-    )
     context = DataSourceContext(
         cache_root=cache_root,
         policy="ensure",
         verification="full",
     )
-    first = source.materialize(context)
+    def materialize() -> Any:
+        return artifact_service.materialize_afhq_v2_artifact(
+            context,
+            archive=archive_path,
+            lock_file=lock_path,
+            resolution=4,
+        )
+
+    first = materialize()
     record = first.payload.train[0]
-    image_path = first.payload.roots[record.tree] / record.path
+    image_path = (
+        first.payload.roots[record.image.tree] / record.image.path
+    )
     original = image_path.read_bytes()
     image_path.write_bytes(b"\0" * len(original))
 
-    repaired = source.materialize(context)
+    repaired = materialize()
 
     assert repaired.identity == first.identity
-    repaired_path = repaired.payload.roots[record.tree] / record.path
+    repaired_path = (
+        repaired.payload.roots[record.image.tree] / record.image.path
+    )
     assert repaired_path.read_bytes() == original
     quarantined = list(
         first.artifact_root.parent.glob(
@@ -1861,7 +1866,9 @@ def test_ensure_repairs_invalid_prepared_artifact_under_lock(
         )
     )
     assert len(quarantined) == 1
-    quarantined_image = quarantined[0] / record.tree / record.path
+    quarantined_image = (
+        quarantined[0] / record.image.tree / record.image.path
+    )
     assert quarantined_image.read_bytes() == b"\0" * len(original)
 
 
@@ -1877,7 +1884,6 @@ def test_require_failure_never_quarantines_or_repairs(
         lock=lock,
         cache_root=tmp_path / "cache",
         resolution=4,
-        validation_per_class=1,
     )
     image_path = next((artifact.root / "train").rglob("*.png"))
     corrupt = b"\0" * image_path.stat().st_size
@@ -1891,7 +1897,6 @@ def test_require_failure_never_quarantines_or_repairs(
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
             full=True,
         )
 
@@ -1914,7 +1919,6 @@ def test_concurrent_preparation_waits_and_converges(
             lock=lock,
             cache_root=cache_root,
             resolution=4,
-            validation_per_class=1,
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -1937,11 +1941,13 @@ def test_preparation_lock_times_out_without_deleting_owner(
     with _PREPARE.ArtifactPreparationLock(lock_path):
         metadata = json.loads(lock_path.read_text(encoding="utf-8"))
         assert set(metadata) == {
-            "created_unix",
+            "created_at_ns",
             "hostname",
             "nonce",
             "pid",
+            "schema_version",
         }
+        assert metadata["schema_version"] == 1
         with pytest.raises(
             _PREPARE.PreparationError,
             match="timed out waiting",
@@ -1959,17 +1965,49 @@ def test_preparation_lock_times_out_without_deleting_owner(
         assert lock_path.is_file()
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("cannot open fixture lock"),
+        ValueError("unsafe fixture lock"),
+        RuntimeError("fixture lock timeout"),
+    ],
+)
+def test_preparation_lock_translates_framework_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    def fail_to_enter(
+        lock: _ARTIFACT_STORE.ArtifactMaterializationLock,
+    ) -> None:
+        del lock
+        raise error
+
+    monkeypatch.setattr(
+        _ARTIFACT_STORE.ArtifactMaterializationLock,
+        "__enter__",
+        fail_to_enter,
+    )
+
+    with (
+        pytest.raises(_PREPARE.PreparationError, match=str(error)),
+        _PREPARE.ArtifactPreparationLock(tmp_path / "prepare.lock"),
+    ):
+        pytest.fail("framework lock failure was not translated")
+
+
 def test_preparation_lock_metadata_handles_partial_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_write = _PREPARE.os.write
+    original_write = _ARTIFACT_STORE.os.write
 
     def partial_write(descriptor: int, payload: Any) -> int:
         size = max(1, len(payload) // 2)
         return original_write(descriptor, payload[:size])
 
-    monkeypatch.setattr(_PREPARE.os, "write", partial_write)
+    monkeypatch.setattr(_ARTIFACT_STORE.os, "write", partial_write)
     lock_path = tmp_path / "partial-write.lock"
 
     with _PREPARE.ArtifactPreparationLock(lock_path):
@@ -1977,11 +2015,13 @@ def test_preparation_lock_metadata_handles_partial_writes(
 
     assert metadata["pid"] == os.getpid()
     assert set(metadata) == {
-        "created_unix",
+        "created_at_ns",
         "hostname",
         "nonce",
         "pid",
+        "schema_version",
     }
+    assert metadata["schema_version"] == 1
 
 
 @pytest.mark.parametrize(
@@ -2126,7 +2166,6 @@ def test_prepare_rejects_non_rgb_source(tmp_path: Path) -> None:
             lock=lock,
             cache_root=tmp_path / "cache",
             resolution=4,
-            validation_per_class=1,
         )
 
 
@@ -2243,7 +2282,7 @@ def test_wrong_hash_completed_download_is_quarantined_and_retried(
         return destination
 
     monkeypatch.setattr(
-        _PREPARE,
+        _SOURCE_ACQUISITION,
         "download_official_archive",
         fake_download,
     )
@@ -2275,7 +2314,10 @@ def test_parse_content_range(
     start: int,
     expected: int,
 ) -> None:
-    assert _PREPARE._parse_content_range(header, expected_start=start) == expected
+    assert _DOWNLOADING._parse_content_range(
+        header,
+        expected_start=start,
+    ) == expected
 
 
 @pytest.mark.parametrize(
@@ -2292,4 +2334,4 @@ def test_parse_content_range_rejects_invalid_values(
     start: int,
 ) -> None:
     with pytest.raises(_PREPARE.SourceIntegrityError):
-        _PREPARE._parse_content_range(header, expected_start=start)
+        _DOWNLOADING._parse_content_range(header, expected_start=start)

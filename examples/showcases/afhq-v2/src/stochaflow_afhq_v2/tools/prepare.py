@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
-from stochaflow.extensions import IMAGE_DATA_SOURCES, DataSourceContext
-from stochaflow_afhq_v2.stochaflow_ext.data import (
-    AFHQV2ImageFolderArtifactPayload,
+from stochaflow.extensions import (
+    IMAGE_DATA_SOURCES,
+    ClassLabeledImageFolderArtifactPayload,
+    DataSourceContext,
+)
+from stochaflow_afhq_v2.artifact import (
+    AFHQV2_SOURCE_NAME,
 )
 
 
@@ -22,10 +27,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--archive", type=Path, default=None)
     parser.add_argument("--lock-file", type=Path, default=None)
     parser.add_argument("--resolution", type=int, default=128)
-    parser.add_argument("--validation-per-class", type=int, default=300)
     parser.add_argument(
-        "--validation-seed",
-        default="stochaflow-afhq-v2-validation-v1",
+        "--downloader",
+        choices=("auto", "curl", "python"),
+        default="auto",
+        help="Select the official archive downloader for policy=ensure.",
     )
     parser.add_argument(
         "--policy",
@@ -47,26 +53,25 @@ def prepare_artifact(
     archive: Path | None,
     lock_file: Path | None,
     resolution: int,
-    validation_per_class: int,
-    validation_seed: str,
+    downloader: Literal["auto", "curl", "python"],
     policy: Literal["ensure", "require"],
     verification: Literal["manifest", "full"],
 ) -> dict[str, Any]:
-    """Materialize through the registered source lifecycle and summarize it."""
+    """Materialize through the registered source used by the DataBuilder."""
 
-    params: dict[str, Any] = {
+    source_params: dict[str, Any] = {
+        "downloader": downloader,
         "resolution": resolution,
-        "validation_per_class": validation_per_class,
-        "validation_seed": validation_seed,
     }
     if archive is not None:
-        params["archive"] = str(archive)
+        source_params["archive"] = str(archive)
     if lock_file is not None:
-        params["lock_file"] = str(lock_file)
+        source_params["lock_file"] = str(lock_file)
+    importlib.import_module("stochaflow_afhq_v2.stochaflow_ext.source")
     source = IMAGE_DATA_SOURCES.create(
-        "afhq-v2.official",
-        params,
-        config_path="afhq-v2.prepare.source",
+        AFHQV2_SOURCE_NAME,
+        source_params,
+        config_path="prepare",
     )
     artifact = source.materialize(
         DataSourceContext(
@@ -76,8 +81,15 @@ def prepare_artifact(
         )
     )
     payload = artifact.payload
-    if not isinstance(payload, AFHQV2ImageFolderArtifactPayload):
-        raise TypeError("AFHQ-v2 source returned an incompatible payload")
+    if not isinstance(payload, ClassLabeledImageFolderArtifactPayload):
+        raise TypeError(
+            "registered AFHQ-v2 source must return a class-labeled "
+            "image-folder payload"
+        )
+    if payload.validation is not None or payload.test is None:
+        raise ValueError(
+            "registered AFHQ-v2 source must expose official train/test only"
+        )
     return {
         "artifact_root": str(artifact.artifact_root),
         "manifest_path": str(artifact.manifest_path),
@@ -85,8 +97,7 @@ def prepare_artifact(
         "class_mapping": dict(payload.class_mapping),
         "counts": {
             "train": len(payload.train),
-            "validation": len(payload.validation or ()),
-            "test": len(payload.test or ()),
+            "test": len(payload.test),
         },
     }
 
@@ -100,8 +111,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         archive=args.archive,
         lock_file=args.lock_file,
         resolution=args.resolution,
-        validation_per_class=args.validation_per_class,
-        validation_seed=args.validation_seed,
+        downloader=args.downloader,
         policy=args.policy,
         verification=args.verification,
     )

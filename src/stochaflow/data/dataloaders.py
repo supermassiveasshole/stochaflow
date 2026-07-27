@@ -12,10 +12,14 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from stochaflow.data.artifacts import DataArtifactBindings
-from stochaflow.data.datasets import MultiResolutionDataset
+from stochaflow.data.datasets import (
+    ClassLabeledImageDataset,
+    MultiResolutionDataset,
+)
 from stochaflow.data.recipe_config import LoaderRecipeConfig
 from stochaflow.data.samplers import (
     EpochRandomSampler,
+    EpochTaggedIndexSampler,
     MixtureBatchSampler,
     ResolutionBucketPolicy,
 )
@@ -92,6 +96,24 @@ def collate_super_resolution_batch(
     )
 
 
+def collate_class_labeled_image_batch(
+    batch: list[tuple[torch.Tensor, int]],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Stack images and expose class labels through the condition mapping."""
+
+    if not batch:
+        raise ValueError("class-labeled image batch must not be empty")
+    return (
+        torch.stack([image for image, _ in batch]),
+        {
+            "class_label": torch.tensor(
+                [class_label for _, class_label in batch],
+                dtype=torch.long,
+            )
+        },
+    )
+
+
 def seed_data_loader_worker(worker_id: int) -> None:
     """Seed Python and NumPy from PyTorch's deterministic worker seed."""
 
@@ -149,6 +171,37 @@ def build_map_data_loader(
     )
 
 
+def build_class_labeled_image_data_loader(
+    dataset: ClassLabeledImageDataset | None,
+    config: LoaderRecipeConfig,
+    *,
+    training: bool,
+    seed: int,
+) -> DataLoader[Any] | None:
+    """Build a class-labeled loader with epoch-aware training indices."""
+
+    if dataset is None:
+        return None
+    sampler = (
+        EpochTaggedIndexSampler(
+            dataset,
+            seed=seed,
+            shuffle=config.shuffle,
+        )
+        if training
+        else None
+    )
+    return DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        sampler=sampler,
+        drop_last=config.drop_last if training else False,
+        collate_fn=collate_class_labeled_image_batch,
+        **data_loader_kwargs(config, seed=seed),
+    )
+
+
 def build_multi_resolution_data_loader(
     dataset: MultiResolutionDataset | None,
     policy: ResolutionBucketPolicy,
@@ -195,8 +248,10 @@ def configured_steps_per_epoch(
 
 __all__ = [
     "DataLoaders",
+    "build_class_labeled_image_data_loader",
     "build_map_data_loader",
     "build_multi_resolution_data_loader",
+    "collate_class_labeled_image_batch",
     "collate_image_batch",
     "collate_super_resolution_batch",
     "configured_steps_per_epoch",

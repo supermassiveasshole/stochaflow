@@ -8,12 +8,21 @@ import pytest
 
 from stochaflow import data, processes, sampling, training
 from stochaflow import extensions as public
+from stochaflow.data import artifact_store
 from stochaflow.utils import config, logging, plugins, registry
 
 
 def test_public_extension_contracts_reexport_runtime_types() -> None:
     expected = {
+        "ArtifactMaterializationLock": (
+            artifact_store.ArtifactMaterializationLock
+        ),
         "ComponentConfig": config.ComponentConfig,
+        "ConfigError": config.ConfigError,
+        "ClassLabeledImageFileRecord": data.ClassLabeledImageFileRecord,
+        "ClassLabeledImageFolderArtifactPayload": (
+            data.ClassLabeledImageFolderArtifactPayload
+        ),
         "DataArtifact": data.DataArtifact,
         "DataArtifactBinding": data.DataArtifactBinding,
         "DataArtifactBindings": data.DataArtifactBindings,

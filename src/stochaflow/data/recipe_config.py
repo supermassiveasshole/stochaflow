@@ -156,6 +156,34 @@ class PartitionRecipeConfig:
 
 
 @dataclass(slots=True)
+class ClassStratifiedPartitionRecipeConfig:
+    """Per-class validation holdout policy for labeled image records."""
+
+    validation_per_class: int
+    seed: int | str | None = None
+
+    def validate(self, *, path: str) -> None:
+        """Validate the holdout size and optional stable seed override."""
+
+        validation_per_class = cast(object, self.validation_per_class)
+        if (
+            not isinstance(validation_per_class, int)
+            or isinstance(validation_per_class, bool)
+            or validation_per_class <= 0
+        ):
+            raise ConfigError(
+                f"{path}.validation_per_class must be a positive integer"
+            )
+        seed = cast(object, self.seed)
+        if seed is None:
+            return
+        if isinstance(seed, bool) or not isinstance(seed, (int, str)):
+            raise ConfigError(f"{path}.seed must be an integer, string, or null")
+        if isinstance(seed, str) and not seed.strip():
+            raise ConfigError(f"{path}.seed must be a non-empty string")
+
+
+@dataclass(slots=True)
 class DataSourceMaterializationConfig:
     """Cache, acquisition, and verification policy for one data source."""
 
@@ -244,6 +272,24 @@ class ImageDataBuilderConfig:
 
     def validate(self, *, path: str = "data.params") -> None:
         """Validate the complete recipe once before materialization."""
+
+        self.source.validate(path=f"{path}.source")
+        self.image.validate(path=f"{path}.image")
+        self.partition.validate(path=f"{path}.partition")
+        self.loader.validate(path=f"{path}.loader")
+
+
+@dataclass(slots=True)
+class ClassLabeledImageDataBuilderConfig:
+    """Complete single-source class-labeled image recipe."""
+
+    source: ImageSourceConfig
+    image: ImageRecipeConfig
+    partition: ClassStratifiedPartitionRecipeConfig
+    loader: LoaderRecipeConfig = field(default_factory=LoaderRecipeConfig)
+
+    def validate(self, *, path: str = "data.params") -> None:
+        """Validate the complete class-labeled recipe before materialization."""
 
         self.source.validate(path=f"{path}.source")
         self.image.validate(path=f"{path}.image")
@@ -517,6 +563,8 @@ class MultiResolutionDataBuilderConfig:
 
 
 __all__ = [
+    "ClassLabeledImageDataBuilderConfig",
+    "ClassStratifiedPartitionRecipeConfig",
     "DataSourceMaterializationConfig",
     "ImageDataBuilderConfig",
     "ImageRecipeConfig",

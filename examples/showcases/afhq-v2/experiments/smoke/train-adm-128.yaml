@@ -7,22 +7,22 @@ extensions:
   plugins: [stochaflow-afhq-v2]
 
 data:
-  name: afhq-v2.class-images
+  name: class_labeled_image
   params:
     source:
       name: afhq-v2.official
-      params:
-        resolution: 128
-        validation_per_class: 300
-        validation_seed: stochaflow-afhq-v2-validation-v1
       materialization:
         cache_root: ./data
         policy: require
         verification: full
+      params:
+        resolution: 128
+    partition:
+      validation_per_class: 300
+      seed: stochaflow-afhq-v2-validation-v1
     image:
       size: [128, 128]
       channels: 3
-      require_exact_size: true
       normalize: true
       random_horizontal_flip: true
     loader:

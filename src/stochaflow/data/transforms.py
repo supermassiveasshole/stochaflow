@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
-from typing import Any
+from typing import Any, cast
 
 import torch
 from PIL import Image
@@ -64,6 +65,17 @@ def _to_float_tensor(image: Any, *, normalize: bool) -> torch.Tensor:
     return tensor
 
 
+def _random_for_domain(random_seed: int, *, domain: str) -> random.Random:
+    identity = (
+        f"stochaflow.image-transform.{domain}.v1\0{random_seed}"
+    ).encode()
+    domain_seed = int.from_bytes(
+        hashlib.sha256(identity).digest()[:8],
+        byteorder="little",
+    )
+    return random.Random(domain_seed)
+
+
 class ImageTransform:
     """Resize-cover, crop, augment, convert, and normalize one image."""
 
@@ -82,7 +94,18 @@ class ImageTransform:
         self.normalize = normalize
         self.random_horizontal_flip = random_horizontal_flip
 
-    def __call__(self, image: Any) -> torch.Tensor:
+    def __call__(
+        self,
+        image: Any,
+        *,
+        random_seed: int | None = None,
+    ) -> torch.Tensor:
+        random_seed_value = cast(object, random_seed)
+        if random_seed_value is not None and (
+            isinstance(random_seed_value, bool)
+            or not isinstance(random_seed_value, int)
+        ):
+            raise TypeError("image transform random_seed must be an integer")
         image = _convert_channels(image, self.channels)
         width, height = image_size(image)
         scale = max(self.width / width, self.height / height)
@@ -95,15 +118,33 @@ class ImageTransform:
         )
         crop_size = (self.height, self.width)
         if self.role == "train":
-            top, left, crop_height, crop_width = RandomCrop.get_params(
-                image,
-                output_size=crop_size,
-            )
+            if random_seed is None:
+                top, left, crop_height, crop_width = RandomCrop.get_params(
+                    image,
+                    output_size=crop_size,
+                )
+            else:
+                crop_random = _random_for_domain(
+                    random_seed,
+                    domain="crop",
+                )
+                top = crop_random.randrange(resized_height - self.height + 1)
+                left = crop_random.randrange(resized_width - self.width + 1)
+                crop_height, crop_width = crop_size
             image = vision_functional.crop(
                 image, top, left, crop_height, crop_width
             )
-            if self.random_horizontal_flip and random.random() < 0.5:
-                image = vision_functional.hflip(image)
+            if self.random_horizontal_flip:
+                flip_value = (
+                    random.random()
+                    if random_seed is None
+                    else _random_for_domain(
+                        random_seed,
+                        domain="horizontal-flip",
+                    ).random()
+                )
+                if flip_value < 0.5:
+                    image = vision_functional.hflip(image)
         else:
             image = vision_functional.center_crop(image, list(crop_size))
         return _to_float_tensor(image, normalize=self.normalize)

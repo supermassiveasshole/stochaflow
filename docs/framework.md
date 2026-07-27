@@ -11,7 +11,7 @@ Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它
 
 | 领域 | 内置能力 | 扩展边界 |
 | --- | --- | --- |
-| 数据 | 普通图像、超分辨率配对、多源多分辨率图像 recipe | `DataBuilder` 直接组装任意 Dataset、sampler、collate 和 loader |
+| 数据 | 普通图像、有标签图像、超分辨率配对、多源多分辨率图像 recipe | `ImageDataSource` 适配兼容 artifact；独立数据生命周期使用自定义 `DataBuilder` |
 | 模型 | 无条件 UNet、class-conditional ADM-UNet 与 pixel DiT | 注册满足任务 capability 的普通 `nn.Module`，模型不拥有训练或采样策略 |
 | 训练 | 无条件/类条件 Gaussian denoising、supervised、混合精度与固定梯度累积 | `TrainingBuilder` 组合资产，`TrainingStrategy` 只解释 batch 并计算 loss/metrics |
 | 概率过程 | 离散 VP Gaussian Process 与 linear/cosine schedule | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
@@ -39,9 +39,11 @@ SamplingBuilder；这些组件可以继续复用离散 Gaussian Process 和 DDPM
 - `class_conditional_diffusion_quality` 使用真实 batch labels 做 reconstruction，并用固定
   class allocation 和 guidance 生成训练期 diagnostic artifacts。
 
-Process、Sampler 和 `GenerativeDynamics` 根接口都没有增加 class 或 CFG 方法。新增
-labeled dataset 仍由一个 DataBuilder 定义 batch；新增兼容 denoiser 只需注册模型，不需要
-修改 runner。完整可运行例子见 [AFHQ-v2 类条件生成](tutorials/afhq-v2.md)。
+Process、Sampler 和 `GenerativeDynamics` 根接口都没有增加 class 或 CFG 方法。新的
+单标签图像来源只需发布标准 class-labeled artifact，即可复用内置
+`class_labeled_image` Builder；只有不同的 batch 或数据生命周期才需要自定义
+DataBuilder。新增兼容 denoiser 只需注册模型，不需要修改 runner。完整可运行例子见
+[AFHQ-v2 类条件生成](tutorials/afhq-v2.md)。
 
 ## 三层组织方式
 
@@ -63,7 +65,7 @@ flowchart TB
     end
 
     subgraph Task["任务层"]
-        Data["DataBuilder"]
+        Data["DataSource + DataBuilder"]
         Training["TrainingBuilder + Strategy"]
         Sampling["SamplingBuilder"]
         Artifact["Artifact Writer"]
@@ -117,7 +119,8 @@ DDPM/DDIM 也调用同一组 primitive，避免维护两份数学实现。
 
 任务层拥有 Python 中最难被通用 YAML 正确表达的组合：
 
-- DataBuilder 决定数据来源、划分、sampler、collate 和 loader；
+- DataSource 决定怎样读取、处理并 materialize 来源为标准 artifact；
+- DataBuilder 消费 artifact，决定划分、Dataset、sampler、collate 和 loader；
 - TrainingBuilder 验证并组合 core 注入的 primary model、可选 Process/Objective，同时
   构造和声明项目辅助模块；
 - TrainingStrategy 决定怎样解释 structured batch、调用模型并计算 loss/metrics；
@@ -142,9 +145,10 @@ DataBuilder.build() -> DataLoaders
 `steps_per_epoch`。核心不认识 Dataset 类型、split 策略、sample key、bucket metadata、
 condition 字段或图像尺寸。
 
-内置 `image`、`super_resolution` 和 `multi_resolution_image` recipe 可以提供
-holdout/K-fold 等便利功能，但这些只是对应 recipe 的私有能力。自定义 DataBuilder
-不需要、也不应被迫支持这些组合。具体配置与 batch 约定见
+内置 `image`、`class_labeled_image`、`super_resolution` 和
+`multi_resolution_image` recipe 提供各自的划分与加载策略。兼容标准 payload 的新来源
+只需实现 DataSource；不同 batch 或运行时组合才实现自定义 DataBuilder，且不需要、
+也不应被迫支持其他 recipe 的私有能力。具体配置与 batch 约定见
 [数据构建](configuration/data-pipeline.md)。
 
 ## 训练组合边界

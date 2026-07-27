@@ -78,13 +78,17 @@ only as class-level style guidance:
 Validate cross-component compatibility at the Strategy or Builder boundary,
 where the complete task composition is known. In particular:
 
-- DataBuilder is the only core data extension entrypoint. It directly assembles
-  ordinary Dataset, split, transform, PyTorch sampler, collate, and DataLoader
-  objects and returns the ready train/validation/test iterables. Core code treats
-  batches as structured `Any` and must not impose image, condition, target, sample-key,
-  bucket, or metadata fields. Do not create universal Dataset/Sampler/DataLoader
-  registries or schemas; optional source adapters may exist only as helpers for
-  a specific built-in recipe.
+- DataSource is the artifact-producing data extension entrypoint. It acquires,
+  reads, validates, and transforms external data, then materializes it as a
+  verified DataArtifact. It must not construct runtime Dataset views, data
+  partitions, PyTorch samplers, collate functions, or DataLoader objects.
+  DataBuilder is the runtime data-composition entrypoint. It selects and invokes
+  compatible DataSources, binds artifact identities, and assembles ordinary
+  Dataset views, splits, transforms, PyTorch samplers, collate functions, and
+  ready train/validation/test iterables. Core code treats batches as structured
+  `Any` and must not impose image, condition, target, sample-key, bucket, or
+  metadata fields. Do not create universal Dataset/Sampler/DataLoader registries
+  or schemas.
 - TrainingBuilder is the training-side composition entrypoint. It assembles a
   TrainingPlan containing an injected TrainingStrategy, the primary model,
   optional Process and Objective, and any named auxiliary modules. Core code

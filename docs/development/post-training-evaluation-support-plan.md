@@ -138,7 +138,7 @@ validation split 混淆。
 
 | 已有能力 | 对 Evaluation 的价值 |
 | --- | --- |
-| `DataBuilder -> DataLoaders` | 仍是 core 唯一数据扩展入口，batch 保持 `Any` |
+| `DataSource -> DataArtifact`、`DataBuilder -> DataLoaders` | source 负责可验证 artifact，Builder 负责 runtime data composition，batch 保持 `Any` |
 | `TrainingStrategy.evaluation_step()` | 现成的训练 phase batch/model 解释边界 |
 | checkpoint v8 与 safe loading | config、资产 state、epoch/global step、extension provenance |
 | best/latest checkpoint 选择 | 可解析默认候选，但 formal run 仍需冻结具体文件/hash |
@@ -445,7 +445,8 @@ flowchart TD
 
 1. Resolver 只处理 authority、safe loading、extension activation 和只读 state
    projection；
-2. DataBuilder 仍是 core 唯一数据扩展入口；
+2. DataSource 仍是 artifact-producing extension entrypoint，DataBuilder 仍是 runtime
+   data composition entrypoint；Evaluation 不新增 Dataset/loader registry；
 3. SamplingBuilder 或由 sampling/task 层拥有的 factory 继续组合 model adapter、
    condition、guidance、initialization、Process/Dynamics/Sampler，并注入一个已验证的
    窄 inference capability；
@@ -1701,7 +1702,8 @@ uv run pytest tests/test_experiment_runner.py
 ### 18.1 架构
 
 - Training、Evaluation、Sampling 是三个独立 request/outcome；
-- DataBuilder 仍是唯一 core data entrypoint；
+- DataSource 与 DataBuilder 分别保持 artifact-producing 和 runtime composition
+  data entrypoint；
 - EvaluationBuilder 是唯一任务评估 composition entrypoint；
 - Runner 不含 task/model/process/metric-name 分支；
 - MetricEngine 被 training 与 evaluation 共用；

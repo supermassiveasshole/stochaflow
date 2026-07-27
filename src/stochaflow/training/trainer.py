@@ -763,9 +763,10 @@ class Trainer:
                 raise RuntimeError(
                     "accumulation window did not produce an output"
                 )
-            stacked_losses = torch.stack(tuple(loss_tensors)).to(
-                device="cpu",
-                dtype=torch.float64,
+            stacked_losses = (
+                torch.stack(tuple(loss_tensors))
+                .to(device="cpu")
+                .to(dtype=torch.float64)
             )
             losses = tuple(
                 float(value) for value in stacked_losses.tolist()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 from array import array
@@ -127,6 +128,65 @@ class EpochRandomSampler(Sampler[int]):
 
         if epoch < 0:
             raise ValueError("epoch must be non-negative")
+        self.epoch = epoch
+
+
+class EpochTaggedIndexSampler(Sampler[tuple[int, int]]):
+    """Emit deterministic indices tagged with their current training epoch."""
+
+    def __init__(
+        self,
+        dataset: Dataset[Any],
+        *,
+        seed: int,
+        shuffle: bool,
+    ) -> None:
+        self.size = len(cast(Sized, dataset))
+        if self.size <= 0:
+            raise ValueError("epoch-tagged sampler dataset must not be empty")
+        seed_value = cast(object, seed)
+        if isinstance(seed_value, bool) or not isinstance(seed_value, int):
+            raise TypeError("epoch-tagged sampler seed must be an integer")
+        shuffle_value = cast(object, shuffle)
+        if not isinstance(shuffle_value, bool):
+            raise TypeError("epoch-tagged sampler shuffle must be boolean")
+        self.seed = seed
+        self.shuffle = shuffle
+        self.epoch = 0
+
+    def __iter__(self) -> Iterator[tuple[int, int]]:
+        epoch = self.epoch
+        if self.shuffle:
+            identity = (
+                f"stochaflow.epoch-tagged-index.shuffle.v1\0"
+                f"{self.seed}\0{epoch}"
+            ).encode()
+            epoch_seed = int.from_bytes(
+                hashlib.sha256(identity).digest()[:8],
+                byteorder="little",
+            )
+            generator = torch.Generator().manual_seed(epoch_seed)
+            indices = cast(
+                list[int],
+                torch.randperm(self.size, generator=generator).tolist(),
+            )
+        else:
+            indices = range(self.size)
+        yield from ((epoch, index) for index in indices)
+
+    def __len__(self) -> int:
+        return self.size
+
+    def set_epoch(self, epoch: int) -> None:
+        """Select the permutation and sample-randomness epoch."""
+
+        epoch_value = cast(object, epoch)
+        if (
+            isinstance(epoch_value, bool)
+            or not isinstance(epoch_value, int)
+            or epoch_value < 0
+        ):
+            raise ValueError("sampler epoch must be a non-negative integer")
         self.epoch = epoch
 
 
@@ -506,6 +566,7 @@ __all__ = [
     "CompactSamplerIndex",
     "CyclingIndexPool",
     "EpochRandomSampler",
+    "EpochTaggedIndexSampler",
     "MixtureBatchSampler",
     "ResolutionBucket",
     "ResolutionBucketPolicy",

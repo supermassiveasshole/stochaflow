@@ -16,6 +16,7 @@ from stochaflow.extensions import ...
 | 符号 | 用途 |
 | --- | --- |
 | `ComponentConfig` | 一个 registry/native-provider component 的 `name` 与不透明 `params` 声明 |
+| `ConfigError` | extension 私有参数的统一配置校验错误 |
 | `REGISTRIES` | 进程级 Registry catalog；extension 用对应 registry 的 `register(name)` 注册组件 |
 | `Registry` | 具名组件容器及 resolve/create/register 契约 |
 | `RegistryError` | 注册、解析或构建失败 |
@@ -30,6 +31,7 @@ from stochaflow.extensions import ...
 | `IMAGE_DATA_SOURCES` | 复用内置 image recipe 时注册 `ImageDataSource` 的受限 Registry |
 | `DataSource` | 只负责物化一个带 identity 的 `DataArtifact`，不构造训练数据栈 |
 | `DataSourceContext` | cache root、ensure/require、verification 与 strict-resume expected identity |
+| `ArtifactMaterializationLock` | 在 framework cache root 内串行化同一 artifact 的 materialization |
 | `ImageDataSource` | 内置 image recipe 可消费的 source-adapter 基类 |
 | `DataArtifact` | 已验证 artifact 的 identity 与公开 payload 契约 |
 | `ManagedDataArtifact` | Stochaflow 管理、可重建内容的 artifact handle |
@@ -42,19 +44,22 @@ from stochaflow.extensions import ...
 | `ImageDimensions` | 一条由 artifact 认证的图像宽高记录 |
 | `ImageDimensionTable` | 紧凑、只读、可按索引读取的认证图像尺寸表 |
 | `ImageFileRecord` | reference inventory 中的相对路径、字节数、SHA-256 与认证宽高 |
+| `ClassLabeledImageFileRecord` | 一个认证图像记录及其非负整数 class label |
 | `ImageFilePair` | paired image payload 中严格对齐的 HR/LR 记录 |
 | `TorchvisionImageArtifactPayload` | torchvision source 交给 image recipe 的公开 payload |
 | `ImageFolderArtifactPayload` | 单目录或 split image folders 的公开 payload |
+| `ClassLabeledImageFolderArtifactPayload` | 带连续 class mapping 与逐样本标签的 image-folder payload |
 | `PairedImageFolderArtifactPayload` | paired HR/LR image folders 的公开 payload |
 | `DataBuilder` | 组装一份独立训练运行的完整数据栈 |
 | `DataBuilderContext` | 深复制的私有 `params`、seed 与 strict-resume artifact expectations |
 | `DataLoaders` | 可重复迭代 loader、可选 `steps_per_epoch` 与本次运行的 `artifact_bindings` |
 
-`DataBuilder` 仍是核心唯一的数据扩展入口。`ImageDataSource` 只是复用内置 image recipe
-生命周期的可选 adapter：它必须通过 `IMAGE_DATA_SOURCES` 注册，只物化 artifact，并返回
-上述公开 payload 之一。它不拥有 Dataset、split、transform、collate、bucket、PyTorch
-sampler 或 DataLoader；这些仍由具体 DataBuilder 及其私有 helper 组装。自定义 batch
-语义应实现独立 `DataBuilder`。
+`DataBuilder` 是运行时数据组合入口；`ImageDataSource` 是复用内置 image recipe 的来源
+扩展入口。DataSource 通过 `IMAGE_DATA_SOURCES` 注册，只负责读取、处理、materialize
+artifact，并返回上述公开 payload 之一；它不构造 Dataset、split、transform、collate、
+PyTorch sampler 或 DataLoader。标准 class-labeled payload 可直接交给内置
+`class_labeled_image` Builder；只有 payload 或 batch 生命周期不兼容现有 recipe 时，
+才实现独立 `DataBuilder`。
 
 最小实现签名：
 

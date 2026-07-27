@@ -240,6 +240,31 @@ class ImageFileRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ClassLabeledImageFileRecord:
+    """One authenticated image record with a non-negative class label."""
+
+    image: ImageFileRecord
+    class_label: int
+
+    def __post_init__(self) -> None:
+        image = cast(object, self.image)
+        if not isinstance(image, ImageFileRecord):
+            raise TypeError(
+                "class-labeled image record image must be ImageFileRecord"
+            )
+        class_label = cast(object, self.class_label)
+        if (
+            not isinstance(class_label, int)
+            or isinstance(class_label, bool)
+            or class_label < 0
+        ):
+            raise ValueError(
+                "class-labeled image record class_label must be "
+                "a non-negative integer"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ImageFilePair:
     """One high/low-resolution pair matched by relative stem."""
 
@@ -325,6 +350,69 @@ def immutable_pairs(
     ):
         raise TypeError(f"{label} inventory must contain ImageFilePair")
     return pairs
+
+
+def immutable_class_mapping(
+    value: Mapping[str, int],
+    *,
+    label: str,
+) -> Mapping[str, int]:
+    """Validate and freeze one contiguous class-name-to-label mapping."""
+
+    value_object = cast(object, value)
+    if not isinstance(value_object, Mapping):
+        raise TypeError(f"{label} class_mapping must be a mapping")
+    normalized: dict[str, int] = {}
+    for class_name, class_label in value.items():
+        class_name_value = cast(object, class_name)
+        if not isinstance(class_name_value, str) or not class_name_value:
+            raise TypeError(
+                f"{label} class_mapping names must be non-empty strings"
+            )
+        class_label_value = cast(object, class_label)
+        if (
+            not isinstance(class_label_value, int)
+            or isinstance(class_label_value, bool)
+            or class_label_value < 0
+        ):
+            raise ValueError(
+                f"{label} class_mapping labels must be non-negative integers"
+            )
+        normalized[class_name] = class_label
+    if not normalized:
+        raise ValueError(f"{label} class_mapping must not be empty")
+    labels = tuple(normalized.values())
+    if len(labels) != len(set(labels)):
+        raise ValueError(f"{label} class_mapping labels must be unique")
+    if set(labels) != set(range(len(labels))):
+        raise ValueError(
+            f"{label} class_mapping labels must be contiguous from zero"
+        )
+    return MappingProxyType(normalized)
+
+
+def immutable_class_labeled_records(
+    value: Sequence[ClassLabeledImageFileRecord],
+    *,
+    label: str,
+) -> tuple[ClassLabeledImageFileRecord, ...]:
+    """Copy and validate a public class-labeled record sequence."""
+
+    value_object = cast(object, value)
+    if isinstance(value_object, (str, bytes)) or not isinstance(
+        value_object,
+        Sequence,
+    ):
+        raise TypeError(f"{label} inventory must be a sequence")
+    records = tuple(value)
+    if any(
+        not isinstance(cast(object, record), ClassLabeledImageFileRecord)
+        for record in records
+    ):
+        raise TypeError(
+            f"{label} inventory must contain ClassLabeledImageFileRecord"
+        )
+    return records
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +502,57 @@ class ImageFolderArtifactPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class ClassLabeledImageFolderArtifactPayload:
+    """Class-labeled native image partitions and canonical inventories."""
+
+    roots: Mapping[str, Path]
+    class_mapping: Mapping[str, int]
+    train: tuple[ClassLabeledImageFileRecord, ...]
+    validation: tuple[ClassLabeledImageFileRecord, ...] | None = None
+    test: tuple[ClassLabeledImageFileRecord, ...] | None = None
+
+    def __post_init__(self) -> None:
+        label = "class-labeled image folder payload"
+        roots = immutable_roots(self.roots, label=label)
+        class_mapping = immutable_class_mapping(
+            self.class_mapping,
+            label=label,
+        )
+        object.__setattr__(self, "roots", roots)
+        object.__setattr__(self, "class_mapping", class_mapping)
+        known_labels = frozenset(class_mapping.values())
+        for role in ("train", "validation", "test"):
+            records_value = getattr(self, role)
+            if records_value is None:
+                continue
+            records = immutable_class_labeled_records(
+                records_value,
+                label=f"{label} {role}",
+            )
+            object.__setattr__(self, role, records)
+            if any(record.image.tree not in roots for record in records):
+                raise ValueError(
+                    f"{label} {role} inventory uses an unknown tree"
+                )
+            if any(
+                record.class_label not in known_labels
+                for record in records
+            ):
+                raise ValueError(
+                    f"{label} {role} inventory uses an unknown class label"
+                )
+        if not self.train:
+            raise ValueError(f"{label} train inventory must not be empty")
+        train_labels = {record.class_label for record in self.train}
+        missing_labels = sorted(known_labels - train_labels)
+        if missing_labels:
+            raise ValueError(
+                f"{label} train inventory is missing class labels: "
+                + ", ".join(str(value) for value in missing_labels)
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class PairedImageFolderArtifactPayload:
     """Native paired-image partitions and immutable pair inventories."""
 
@@ -453,7 +592,8 @@ class PairedImageFolderArtifactPayload:
 
 
 type ImageArtifactPayload = (
-    TorchvisionImageArtifactPayload
+    ClassLabeledImageFolderArtifactPayload
+    | TorchvisionImageArtifactPayload
     | ImageFolderArtifactPayload
     | PairedImageFolderArtifactPayload
 )
@@ -479,6 +619,8 @@ IMAGE_DATA_SOURCES: Registry[type[ImageDataSource]] = Registry(
 __all__ = [
     "IMAGE_DATA_SOURCES",
     "IMAGE_SUFFIXES",
+    "ClassLabeledImageFileRecord",
+    "ClassLabeledImageFolderArtifactPayload",
     "ImageArtifactPayload",
     "ImageDataSource",
     "ImageDimensionTable",
@@ -488,6 +630,8 @@ __all__ = [
     "ImageFolderArtifactPayload",
     "PairedImageFolderArtifactPayload",
     "TorchvisionImageArtifactPayload",
+    "immutable_class_labeled_records",
+    "immutable_class_mapping",
     "immutable_pairs",
     "immutable_records",
     "immutable_roots",

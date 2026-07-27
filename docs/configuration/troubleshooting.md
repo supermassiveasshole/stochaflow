@@ -97,7 +97,8 @@ activation 完整成功后才可幂等复用，一个进程也不能先后切换
 
 ### `registrations must inherit ...`
 
-注册类继承了错误基类。数据入口继承 `DataBuilder`，采样输出继承
+注册类继承了错误基类。运行时数据组合继承 `DataBuilder`；复用内置 image Builder 的
+来源 adapter 继承 `ImageDataSource` 并注册到 `IMAGE_DATA_SOURCES`。采样输出继承
 `SamplingArtifactWriter`，概率过程继承 `Process`，求解器继承 `Sampler`，任务采样器
 继承 `SamplingBuilder`；模型/目标继承 `torch.nn.Module`，logger 继承
 `ExperimentLogger`。复用内置 Gaussian 训练或采样还需分别实现
@@ -179,7 +180,8 @@ holdout 样本数为 0 或占满 train。浮点比例必须位于 0 与 1 之间
 
 自定义 DataBuilder 应通过 transform、Sampler 或 collate 保证 batch 兼容。
 `multi_resolution_image` 会在其私有实现中扫描图像尺寸、选择 bucket 并 resize/crop；
-若扩展数据不满足该 recipe 的约束，应注册自己的 DataBuilder。
+兼容标准 payload 的新来源只需实现 ImageDataSource；若 payload 或 batch 生命周期不满足
+任何内置 recipe 的约束，再注册自己的 DataBuilder。
 
 ### batch size 与配置值不同
 

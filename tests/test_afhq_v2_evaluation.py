@@ -56,8 +56,14 @@ if example_src not in sys.path:
 evaluation = importlib.import_module(
     "stochaflow_afhq_v2.tools.evaluation"
 )
+evaluation_inputs = importlib.import_module(
+    "stochaflow_afhq_v2.tools.evaluation_inputs"
+)
 evaluation_metrics = importlib.import_module(
     "stochaflow_afhq_v2.tools.evaluation_metrics"
+)
+evaluation_workspace = importlib.import_module(
+    "stochaflow_afhq_v2.tools.evaluation_workspace"
 )
 build_argument_parser = importlib.import_module(
     "stochaflow_afhq_v2.tools.evaluate"
@@ -396,7 +402,7 @@ def test_evaluation_uses_core_sampling_strict_test_data_and_fake_providers(
         output_dir: str | Path | None,
         device_name: str | None,
     ) -> SamplingRunResult:
-        assert inputs.config.data.name == "afhq-v2.class-images"
+        assert inputs.config.data.name == "class_labeled_image"
         assert extensions.config.sampling.num_samples == 6
         assert device_name == "cpu"
         events.append("sampling")
@@ -454,11 +460,15 @@ def test_evaluation_uses_core_sampling_strict_test_data_and_fake_providers(
 
     monkeypatch.setattr(evaluation, "resolve_sampling_inputs", fake_resolve)
     monkeypatch.setattr(evaluation, "activate_extension_plugins", fake_activate)
-    monkeypatch.setattr(evaluation, "build_data_loaders", fake_build_data)
+    monkeypatch.setattr(
+        evaluation_inputs,
+        "build_data_loaders",
+        fake_build_data,
+    )
     monkeypatch.setattr(evaluation, "run_resolved_sampling", fake_run_sampling)
     monkeypatch.setattr(
-        evaluation,
-        "_checkpoint_progress",
+        evaluation_inputs,
+        "checkpoint_progress",
         lambda path: {"epoch": 17, "global_step": 420},
     )
 
@@ -483,7 +493,7 @@ def test_evaluation_uses_core_sampling_strict_test_data_and_fake_providers(
     ]
     assert events[7] == "sampling"
     assert calls["data"] == {
-        "name": "afhq-v2.class-images",
+        "name": "class_labeled_image",
         "seed": 20260726,
         "strict_resume": True,
         "expected": bindings,
@@ -552,18 +562,67 @@ def test_evaluation_requires_explicit_frozen_weights(tmp_path: Path) -> None:
         evaluation.load_evaluation_document(config_path)
 
 
-def test_checkpoint_progress_requires_positive_epoch(
+def test_checkpoint_progress_uses_memory_mapping_and_requires_positive_epoch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_load(
+        path: Path,
+        *,
+        map_location: str,
+        weights_only: bool,
+        mmap: bool,
+    ) -> dict[str, int]:
+        calls.update(
+            {
+                "path": path,
+                "map_location": map_location,
+                "weights_only": weights_only,
+                "mmap": mmap,
+            }
+        )
+        return {"epoch": 0, "global_step": 0}
+
     monkeypatch.setattr(
-        evaluation.CheckpointManager,
-        "load_payload",
-        lambda *args, **kwargs: {"epoch": 0, "global_step": 0},
+        evaluation_inputs.torch,
+        "load",
+        fake_load,
     )
+    checkpoint = tmp_path / "best.pt"
 
     with pytest.raises(ValueError, match="epoch must be positive"):
-        evaluation._checkpoint_progress(tmp_path / "best.pt")
+        evaluation_inputs.checkpoint_progress(checkpoint)
+
+    assert calls == {
+        "path": checkpoint,
+        "map_location": "cpu",
+        "weights_only": True,
+        "mmap": True,
+    }
+
+
+def test_result_checkpoint_header_drops_tensor_state(tmp_path: Path) -> None:
+    config_path = _small_evaluation_config(tmp_path / "evaluation.yaml")
+    inputs = _resolved_inputs(
+        config_path,
+        tmp_path / "best.pt",
+        _bindings(),
+    )
+    inputs.checkpoint["model_state_dict"] = {
+        "weight": torch.ones((2, 2)),
+    }
+    inputs.checkpoint["ema_model_state_dict"] = {
+        "weight": torch.zeros((2, 2)),
+    }
+
+    retained = evaluation_inputs.retain_result_checkpoint_header(inputs)
+
+    assert retained.checkpoint == {"format_version": 9}
+    assert retained.config is inputs.config
+    assert retained.extension_plan is inputs.extension_plan
+    assert "model_state_dict" in inputs.checkpoint
 
 
 def test_unavailable_execution_device_fails_before_side_effects(
@@ -596,8 +655,8 @@ def test_unavailable_execution_device_fails_before_side_effects(
 
     monkeypatch.setattr(evaluation, "resolve_sampling_inputs", fake_resolve)
     monkeypatch.setattr(
-        evaluation,
-        "_checkpoint_progress",
+        evaluation_inputs,
+        "checkpoint_progress",
         lambda path: {"epoch": 1, "global_step": 0},
     )
     monkeypatch.setattr(
@@ -606,7 +665,7 @@ def test_unavailable_execution_device_fails_before_side_effects(
         lambda *args, **kwargs: calls.append("activate"),
     )
     monkeypatch.setattr(
-        evaluation,
+        evaluation_inputs,
         "build_data_loaders",
         lambda *args, **kwargs: calls.append("data"),
     )
@@ -826,8 +885,8 @@ def test_sampling_failure_never_publishes_formal_evaluation_directory(
     ]
     monkeypatch.setattr(evaluation, "resolve_sampling_inputs", fake_resolve)
     monkeypatch.setattr(
-        evaluation,
-        "_checkpoint_progress",
+        evaluation_inputs,
+        "checkpoint_progress",
         lambda path: {"epoch": 1, "global_step": 0},
     )
     monkeypatch.setattr(
@@ -840,7 +899,7 @@ def test_sampling_failure_never_publishes_formal_evaluation_directory(
         ),
     )
     monkeypatch.setattr(
-        evaluation,
+        evaluation_inputs,
         "build_data_loaders",
         lambda *args, **kwargs: DataLoaders(
             train=[0],
@@ -880,7 +939,7 @@ def test_atomic_publish_does_not_replace_concurrent_destination(
     foreign.write_text("preserve", encoding="utf-8")
 
     with pytest.raises(FileExistsError):
-        evaluation._atomic_publish_directory(staging, destination)
+        evaluation_workspace.atomic_publish_directory(staging, destination)
 
     assert staging.is_dir()
     assert foreign.read_text(encoding="utf-8") == "preserve"
@@ -922,7 +981,7 @@ def test_real_tiny_checkpoint_and_core_sampling_lifecycle(
         strict_resume: bool,
         expected_artifacts: DataArtifactBindings,
     ) -> DataLoaders:
-        assert config.name == "afhq-v2.class-images"
+        assert config.name == "class_labeled_image"
         assert seed == 20260726
         assert strict_resume is True
         assert expected_artifacts == bindings
@@ -933,7 +992,11 @@ def test_real_tiny_checkpoint_and_core_sampling_lifecycle(
         )
 
     monkeypatch.setattr(plugin_runtime.metadata, "entry_points", discover)
-    monkeypatch.setattr(evaluation, "build_data_loaders", fake_build_data)
+    monkeypatch.setattr(
+        evaluation_inputs,
+        "build_data_loaders",
+        fake_build_data,
+    )
     plugin_runtime._reset_extension_activation_state_for_testing()
     try:
         result = evaluation.evaluate_checkpoint(

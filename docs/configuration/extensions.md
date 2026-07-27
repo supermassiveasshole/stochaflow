@@ -26,9 +26,11 @@ CLI 安装在同一 Python environment。Stochaflow 不扫描源码目录、工�
 | `loggers` | `ExperimentLogger` 类 | `logging.backends[].name` |
 | `diagnostics` | `TrainingDiagnostic` 类 | `diagnostics[].name` |
 
-Dataset、source、partition、degradation、PyTorch 数据 sampler、collate 和 DataLoader
-不拥有全局 Registry。一个自定义 `DataBuilder` 完整拥有数据组合及其兼容性。生成算法的
-`Sampler` 则通过 `REGISTRIES.samplers` 注册，由 SamplingBuilder 组合。
+Dataset、partition、degradation、PyTorch 数据 sampler、collate 和 DataLoader 不拥有
+全局 Registry。`IMAGE_DATA_SOURCES` 是内置 image recipes 专用的窄 source-adapter
+Registry，不属于 `RegistryCatalog`，也不是通用 Dataset Registry。一个自定义
+`DataBuilder` 完整拥有不同的数据组合及其兼容性。生成算法的 `Sampler` 则通过
+`REGISTRIES.samplers` 注册，由 SamplingBuilder 组合。
 
 标准 PyTorch optimizer 和 LR scheduler 不在上述 Registry 中逐项注册。配置可以直接写
 受限原生 target：
@@ -226,12 +228,13 @@ python -c "import sys; from importlib.metadata import entry_points, version; pri
 这只列出已安装 entry point，不导入扩展代码或列举其 Registry components。实际 component
 registration 在 runtime 激活 YAML 选中的插件后发生。
 
-第三方代码应从 `stochaflow.extensions` 导入稳定契约。`DataBuilder` 仍是核心运行时唯一的
-数据扩展入口，负责交付完整的 `DataLoaders`。对于复用内置 image recipe 的扩展，
-`ImageDataSource`、`IMAGE_DATA_SOURCES`、`DataArtifact`、identity/binding 类型以及三个
-公开 image payload 是受限的 source-adapter 契约：source 只物化带 identity 的 artifact，
-由内置 `ImageDatasetFactory` 消费 payload，不得构造 Dataset、transform、sampler 或
-DataLoader。partition、transform、bucket 与 sampler helper 仍为内置 recipe 的私有实现。
+第三方代码应从 `stochaflow.extensions` 导入稳定契约。`DataBuilder` 是核心运行时数据
+组合入口，负责交付完整的 `DataLoaders`。对于复用内置 image recipe 的扩展，
+`ImageDataSource`、`IMAGE_DATA_SOURCES`、`DataArtifact`、identity/binding 类型以及公开
+image payload 是受限的 source-adapter 契约：source 只读取、处理并物化带 identity 的
+artifact，不构造 Dataset、transform、sampler 或 DataLoader。标准
+`ClassLabeledImageFolderArtifactPayload` 由内置 `class_labeled_image` Builder 消费；
+只有不同的 payload/batch 生命周期才需要注册自定义 DataBuilder。
 
 需要查看跨 data/training/sampling 三条扩展轴的完整实现时，参考两个彼此独立、可安装的
 [纵向扩展项目](reference-projects.md)。它们分别展示 Physics reconstruction 对离散

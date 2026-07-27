@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 from torch.utils.data import DataLoader, Dataset
@@ -13,6 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 from stochaflow.data.artifacts import DataArtifactBindings
 from stochaflow.data.dataloaders import (
     DataLoaders,
+    build_class_labeled_image_data_loader,
     build_map_data_loader,
     build_multi_resolution_data_loader,
     collate_image_batch,
@@ -20,6 +22,7 @@ from stochaflow.data.dataloaders import (
     configured_steps_per_epoch,
 )
 from stochaflow.data.datasets import (
+    ClassLabeledImageDataset,
     GeneratedSuperResolutionDataset,
     ImageDatasetFactory,
     ImageDatasetPartitions,
@@ -29,10 +32,16 @@ from stochaflow.data.datasets import (
     combine_image_datasets,
 )
 from stochaflow.data.image_contracts import (
+    ClassLabeledImageFileRecord,
+    ClassLabeledImageFolderArtifactPayload,
     PairedImageFolderArtifactPayload,
 )
-from stochaflow.data.partition import partition_datasets
+from stochaflow.data.partition import (
+    partition_class_labeled_records,
+    partition_datasets,
+)
 from stochaflow.data.recipe_config import (
+    ClassLabeledImageDataBuilderConfig,
     ImageDataBuilderConfig,
     MultiResolutionDataBuilderConfig,
     SuperResolutionDataBuilderConfig,
@@ -247,6 +256,114 @@ class ImageDataBuilder(DataBuilder):
                 training=False,
                 seed=self.context.seed + 2,
                 collate_fn=collate_image_batch,
+            ),
+            steps_per_epoch=configured_steps_per_epoch(self.config.loader),
+            artifact_bindings=bindings,
+        )
+
+
+@REGISTRIES.data_builders.register("class_labeled_image")
+class ClassLabeledImageDataBuilder(DataBuilder):
+    """Class-conditioned image recipe for labeled folder artifacts."""
+
+    def __init__(self, context: DataBuilderContext) -> None:
+        super().__init__(context)
+        self.config = cast(
+            ClassLabeledImageDataBuilderConfig,
+            coerce_config_section(
+                ClassLabeledImageDataBuilderConfig,
+                context.params,
+                "data.params",
+            ),
+        )
+        self.config.validate()
+        self.source_factory = ImageSourceFactory()
+
+    def _dataset(
+        self,
+        roots: Mapping[str, Path],
+        records: Sequence[ClassLabeledImageFileRecord],
+        *,
+        training: bool,
+    ) -> ClassLabeledImageDataset:
+        role = "train" if training else "eval"
+        return ClassLabeledImageDataset(
+            roots=roots,
+            records=records,
+            transform=ImageTransform(
+                self.config.image.resolved_size,
+                role=role,
+                channels=self.config.image.channels,
+                normalize=self.config.image.normalize,
+                random_horizontal_flip=(
+                    self.config.image.random_horizontal_flip
+                    if training
+                    else False
+                ),
+            ),
+            seed=self.context.seed,
+        )
+
+    def build(self) -> DataLoaders:
+        """Materialize one labeled artifact and assemble class-aware loaders."""
+
+        self.context.require_artifact_ids(("source",))
+        artifact = self.source_factory.materialize(
+            self.config.source,
+            binding_id="source",
+            builder_context=self.context,
+            path="data.params.source",
+        )
+        payload = artifact.payload
+        if not isinstance(payload, ClassLabeledImageFolderArtifactPayload):
+            raise TypeError(
+                "class_labeled_image DataBuilder requires a "
+                "ClassLabeledImageFolderArtifactPayload"
+            )
+        bindings = artifact_bindings((("source", artifact),))
+        self.context.verify_artifacts(bindings)
+        if payload.validation is not None:
+            raise ValueError(
+                "class_labeled_image DataBuilder requires a source without "
+                "native validation records"
+            )
+        train_records, validation_records = partition_class_labeled_records(
+            payload.train,
+            self.config.partition,
+            seed=self.context.seed,
+        )
+        train = self._dataset(payload.roots, train_records, training=True)
+        validation = self._dataset(
+            payload.roots,
+            validation_records,
+            training=False,
+        )
+        test = (
+            self._dataset(payload.roots, payload.test, training=False)
+            if payload.test is not None
+            else None
+        )
+        return DataLoaders(
+            train=cast(
+                DataLoader[Any],
+                build_class_labeled_image_data_loader(
+                    train,
+                    self.config.loader,
+                    training=True,
+                    seed=self.context.seed,
+                ),
+            ),
+            validation=build_class_labeled_image_data_loader(
+                validation,
+                self.config.loader,
+                training=False,
+                seed=self.context.seed + 1,
+            ),
+            test=build_class_labeled_image_data_loader(
+                test,
+                self.config.loader,
+                training=False,
+                seed=self.context.seed + 2,
             ),
             steps_per_epoch=configured_steps_per_epoch(self.config.loader),
             artifact_bindings=bindings,
@@ -523,6 +640,7 @@ class MultiResolutionImageDataBuilder(DataBuilder):
 
 
 __all__ = [
+    "ClassLabeledImageDataBuilder",
     "DataBuilder",
     "DataBuilderContext",
     "ImageDataBuilder",

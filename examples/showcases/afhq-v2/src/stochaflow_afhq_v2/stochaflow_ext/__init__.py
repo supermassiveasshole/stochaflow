@@ -1,5 +1,5 @@
-"""Register the AFHQ-v2 source and class-aware data recipe."""
+"""Register the official AFHQ-v2 DataSource."""
 
-from . import builder, data
+from . import source
 
-__all__ = ["builder", "data"]
+__all__ = ["source"]

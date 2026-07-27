@@ -745,19 +745,30 @@ def open_cache_file(
         | getattr(os, "O_CLOEXEC", 0)
     )
     if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
-        parent_descriptor = _open_posix_directory_chain(
-            parent,
-            label=f"{label} parent",
-        )
-        try:
-            descriptor = os.open(
-                canonical.name,
-                flags | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-                dir_fd=parent_descriptor,
+        descriptor: int | None = None
+        for attempt in range(2):
+            parent_descriptor = _open_posix_directory_chain(
+                parent,
+                label=f"{label} parent",
             )
-        finally:
-            os.close(parent_descriptor)
+            try:
+                descriptor = os.open(
+                    canonical.name,
+                    flags | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
+                break
+            except FileNotFoundError:
+                # macOS may transiently report ENOENT when two threads create
+                # the same O_NOFOLLOW file. Reopening the no-follow directory
+                # chain keeps the retry anchored and safe.
+                if attempt > 0:
+                    raise
+            finally:
+                os.close(parent_descriptor)
+        if descriptor is None:
+            raise RuntimeError(f"{label} could not be opened")
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             os.close(descriptor)

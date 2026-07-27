@@ -113,6 +113,54 @@ K-fold 配置只代表一次独立运行；需要五折时执行五次配置或�
 batch 为 `(images, {})`。`loader.pin_memory` 的可移植默认值为 `false`；CUDA 用户可在
 测量吞吐后显式开启，MPS 用户应保持关闭。
 
+## `class_labeled_image` recipe
+
+`class_labeled_image` 消费 DataSource 发布的标准
+`ClassLabeledImageFolderArtifactPayload`。payload 必须认证连续的
+`class_mapping`（label 为 `0..N-1`）和每条记录的 `class_label`；Builder 不从目录名
+猜测标签，也不读取 source 私有参数：
+
+```yaml
+data:
+  name: class_labeled_image
+  params:
+    source:
+      name: my-project.animals
+      params: {}
+      materialization:
+        cache_root: ./data
+        policy: require
+        verification: full
+    partition:
+      validation_per_class: 300
+      seed: stable-validation-v1
+    image:
+      size: [128, 128]
+      channels: 3
+      normalize: true
+      random_horizontal_flip: true
+    loader:
+      batch_size: 8
+      num_workers: 2
+      shuffle: true
+      drop_last: true
+      pin_memory: true
+      persistent_workers: true
+      prefetch_factor: 4
+      steps_per_epoch: auto
+```
+
+Builder 从 source 的 train inventory 中按 `(partition seed, authenticated sample
+identity)` 每类精确保留 `validation_per_class` 条，并保证每类至少剩一条训练记录。
+`partition.seed` 可为整数或非空字符串；省略时使用 experiment seed。当前 recipe 要求
+source 不提供原生 validation，test 可选。默认 batch 为
+`(images, {"class_label": labels})`，其中 labels 是 `torch.long`。
+
+训练 sampler 总是把 epoch 随 index 传给 Dataset。crop 与 flip 使用由 run seed、epoch
+和认证 sample identity 派生的无状态随机值，因此 `num_workers=0`、persistent workers
+和 epoch-boundary strict resume 会产生相同的 batch Tensor。新的兼容数据集只需实现并
+注册 `ImageDataSource`，将来源 materialize 成上述 payload；无需自定义 DataBuilder。
+
 ## `super_resolution` recipe
 
 这个 recipe **只构建数据**：它把每个 batch 组织为
@@ -246,10 +294,11 @@ sampler 根据当前是否启用加权混合，只构造 bucket 索引或 `(sour
 
 ## Epoch 与恢复边界
 
-三个内置 recipe 的训练 sampler 都根据 experiment seed 与 epoch 重建索引顺序：
+四个内置 recipe 的训练 sampler 都根据 experiment seed 与 epoch 重建索引顺序：
 `image`/`super_resolution` 使用 recipe 私有的 epoch-aware shuffle，
-`multi_resolution_image` 使用自己的 `set_epoch()` batch sampler。因此在数据与配置不变时，
-strict resume 可以重建对应 epoch 的索引/batch 顺序。
+`class_labeled_image` 还把 epoch 传入无状态增强，`multi_resolution_image` 使用自己的
+`set_epoch()` batch sampler。因此在数据与配置不变时，strict resume 可以重建对应
+epoch 的索引/batch 顺序。
 
 每个 source 的完整 artifact identity 会按 source id 排序后写入 run manifest 与
 checkpoint。strict resume 在构建数据前注入 checkpoint 中的 expected bindings；任何
@@ -264,9 +313,11 @@ Windows 会拒绝 symlink/junction/reparse point，并在操作前后复核祖�
 对错误目标绝对零副作用。生产缓存应通过 ACL 限制为训练账户独占写入。
 
 checkpoint 不保存 DataLoader iterator、worker 或 transform 的随机状态。使用
-`num_workers > 0` 的随机 crop/flip 不保证与不中断运行产生逐位相同的 batch Tensor；
-需要这一保证的任务应使用无 worker 随机增强、stateless `(seed, epoch, sample index)`
-增强，或在自定义 DataBuilder 中实现自己的恢复契约。
+`image`、`super_resolution` 或 `multi_resolution_image` 中 worker-local 的随机
+crop/flip，不保证与不中断运行产生逐位相同的 batch Tensor；
+`class_labeled_image` 已内置 stateless `(seed, epoch, sample identity)` 增强。其他
+需要逐位恢复保证的任务也应采用无 worker 随机增强、无状态增强，或在自定义
+DataBuilder 中明确自己的恢复契约。
 
 ## 自定义 DataBuilder
 

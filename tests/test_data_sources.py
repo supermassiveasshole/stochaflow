@@ -428,6 +428,29 @@ def test_anchored_regular_file_open_rejects_fifo_without_blocking(
         )
 
 
+def test_open_cache_file_concurrent_creation_converges(
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    lock_path = cache_root / ".locks" / "materialize.lock"
+
+    def open_lock() -> int:
+        return artifact_io.open_cache_file(
+            cache_root,
+            lock_path,
+            label="concurrent lock",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(open_lock) for _ in range(2)]
+        descriptors = [future.result() for future in futures]
+    try:
+        assert lock_path.is_file()
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+
 def test_require_miss_is_read_only(tmp_path: Path) -> None:
     root = tmp_path / "images"
     write_image(root / "sample.png")

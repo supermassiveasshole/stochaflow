@@ -12,6 +12,11 @@ dependencies = [
     "stochaflow==0.1.0",
 ]
 
+[project.optional-dependencies]
+quality = [
+    "stochaflow[quality]==0.1.0",
+]
+
 [project.scripts]
 stochaflow-afhq-v2-prepare = "stochaflow_afhq_v2.tools.prepare:main"
 stochaflow-afhq-v2-capacity = "stochaflow_afhq_v2.tools.capacity:main"
@@ -28,3 +33,6 @@ stochaflow_afhq_v2 = ["resources/*.yaml"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv.sources]
+stochaflow = { path = "../../..", editable = true }

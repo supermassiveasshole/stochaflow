@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import math
 import sys
 import tomllib
@@ -12,10 +12,13 @@ import pytest
 import torch
 import yaml
 
+from stochaflow.data import IMAGE_DATA_SOURCES
 from stochaflow.utils.config import StochaflowConfig, load_config
+from stochaflow.utils.registry import REGISTRIES
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SHOWCASE = _ROOT / "examples" / "showcases" / "afhq-v2"
+_EXAMPLE_SRC = _SHOWCASE / "src"
 _ADM_CONFIG = _SHOWCASE / "experiments" / "production" / "train-adm-128.yaml"
 _DIT_CONFIG = _SHOWCASE / "experiments" / "production" / "train-dit-128.yaml"
 _SMOKE_CONFIG = _SHOWCASE / "experiments" / "smoke" / "train-adm-128.yaml"
@@ -41,29 +44,31 @@ def _condition_allocations(raw: dict[str, Any]) -> list[dict[str, int]]:
     return raw["sampling"]["builder"]["params"]["conditions"]
 
 
+def _showcase_tool_module(name: str) -> ModuleType:
+    example_src = str(_EXAMPLE_SRC)
+    if example_src not in sys.path:
+        sys.path.insert(0, example_src)
+    importlib.invalidate_caches()
+    return importlib.import_module(f"stochaflow_afhq_v2.tools.{name}")
+
+
 def _capacity_module() -> ModuleType:
-    path = (
-        _SHOWCASE
-        / "src"
-        / "stochaflow_afhq_v2"
-        / "tools"
-        / "capacity.py"
-    )
-    name = "stochaflow_afhq_v2_capacity_test_module"
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    return _showcase_tool_module("capacity")
 
 
-def test_afhq_showcase_is_an_installable_source_and_builder_extension() -> None:
+def test_afhq_showcase_registers_only_the_source_extension() -> None:
+    example_src = str(_EXAMPLE_SRC)
+    if example_src not in sys.path:
+        sys.path.insert(0, example_src)
+    importlib.import_module("stochaflow_afhq_v2.stochaflow_ext")
     declaration = tomllib.loads(
         (_SHOWCASE / "pyproject.toml").read_text(encoding="utf-8")
     )
 
+    assert "class_labeled_image" in REGISTRIES.data_builders.names()
+    assert "afhq-v2.class-images" not in REGISTRIES.data_builders.names()
+    assert "afhq-v2.official" in IMAGE_DATA_SOURCES.names()
+    assert (_SHOWCASE / "uv.lock").is_file()
     assert declaration["project"]["name"] == "stochaflow-afhq-v2"
     assert declaration["project"]["entry-points"]["stochaflow.extensions"] == {
         "stochaflow-afhq-v2": "stochaflow_afhq_v2.stochaflow_ext"
@@ -82,12 +87,24 @@ def test_afhq_showcase_is_an_installable_source_and_builder_extension() -> None:
     assert declaration["tool"]["setuptools"]["package-data"] == {
         "stochaflow_afhq_v2": ["resources/*.yaml"]
     }
+    assert declaration["tool"]["uv"]["sources"]["stochaflow"] == {
+        "path": "../../..",
+        "editable": True,
+    }
+    assert declaration["project"]["optional-dependencies"]["quality"] == [
+        "stochaflow[quality]==0.1.0"
+    ]
     package = _SHOWCASE / "src" / "stochaflow_afhq_v2"
     assert (package / "resources" / "afhq-v2.lock.yaml").is_file()
     assert (package / "preparation.py").is_file()
-    assert (package / "stochaflow_ext" / "data.py").is_file()
-    assert (package / "stochaflow_ext" / "builder.py").is_file()
-    assert (package / "stochaflow_ext" / "dataset.py").is_file()
+    assert (package / "artifact.py").is_file()
+    assert (package / "stochaflow_ext" / "source.py").is_file()
+    assert not (package / "stochaflow_ext" / "builder.py").exists()
+    assert not (package / "stochaflow_ext" / "batching.py").exists()
+    assert not (package / "stochaflow_ext" / "partitioning.py").exists()
+    assert not (package / "stochaflow_ext" / "config.py").exists()
+    assert not (package / "stochaflow_ext" / "data.py").exists()
+    assert not (package / "stochaflow_ext" / "dataset.py").exists()
     assert not (_SHOWCASE / "prepare.py").exists()
     assert not (_SHOWCASE / "experiments" / "ddpm_128.yaml").exists()
 
@@ -103,15 +120,25 @@ def test_afhq_production_configs_parse_and_share_one_pipeline_contract() -> None
     assert adm["extensions"]["plugins"] == ["stochaflow-afhq-v2"]
     assert dit["extensions"] == adm["extensions"]
     for raw, config in ((adm, adm_config), (dit, dit_config)):
-        assert config.data.name == "afhq-v2.class-images"
-        assert raw["data"]["params"]["source"]["name"] == "afhq-v2.official"
-        assert raw["data"]["params"]["source"]["materialization"] == {
+        assert config.data.name == "class_labeled_image"
+        source = raw["data"]["params"]["source"]
+        assert source["name"] == "afhq-v2.official"
+        assert source["params"] == {"resolution": 128}
+        assert source["materialization"] == {
             "cache_root": "./data",
             "policy": "require",
             "verification": "full",
         }
-        assert set(raw["data"]["params"]) == {"source", "image", "loader"}
-        assert raw["data"]["params"]["image"]["require_exact_size"] is True
+        assert set(raw["data"]["params"]) == {
+            "source",
+            "partition",
+            "image",
+            "loader",
+        }
+        assert raw["data"]["params"]["partition"] == {
+            "validation_per_class": 300,
+            "seed": "stochaflow-afhq-v2-validation-v1",
+        }
         assert raw["training"] == {
             "name": "class_conditional_gaussian_denoising",
             "params": {
@@ -182,7 +209,7 @@ def test_afhq_step_schedule_is_derived_from_the_locked_dataset_counts() -> None:
     lock = _raw(_LOCK)
     raw = _raw(_ADM_CONFIG)
     source_train = lock["dataset_contract"]["source_splits"]["train"]
-    validation_per_class = raw["data"]["params"]["source"]["params"][
+    validation_per_class = raw["data"]["params"]["partition"][
         "validation_per_class"
     ]
     num_classes = len(lock["dataset_contract"]["class_mapping"])
@@ -209,9 +236,10 @@ def test_afhq_smoke_config_is_bounded_and_uses_the_real_data_contract() -> None:
     raw = _raw(_SMOKE_CONFIG)
     config = load_config(_SMOKE_CONFIG)
 
-    assert config.data.name == "afhq-v2.class-images"
-    assert raw["data"]["params"]["source"]["materialization"]["policy"] == (
-        "require"
+    assert config.data.name == "class_labeled_image"
+    assert (
+        raw["data"]["params"]["source"]["materialization"]["policy"]
+        == "require"
     )
     assert raw["data"]["params"]["loader"] == {
         "batch_size": 2,
@@ -402,6 +430,7 @@ def test_afhq_capacity_all_unsupported_skips_model_data_and_outputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _capacity_module()
+    provenance = _showcase_tool_module("capacity_provenance")
     calls: list[str] = []
     run_root = tmp_path / "capacity"
 
@@ -435,7 +464,7 @@ def test_afhq_capacity_all_unsupported_skips_model_data_and_outputs(
         "_profile_trials",
         lambda *args, **kwargs: pytest.fail("DataBuilder must be skipped"),
     )
-    monkeypatch.setattr(module, "_code_identity", lambda: {"test": True})
+    monkeypatch.setattr(module, "code_identity", lambda: {"test": True})
 
     report = module.capacity_report(
         _ADM_CONFIG,
@@ -457,7 +486,7 @@ def test_afhq_capacity_all_unsupported_skips_model_data_and_outputs(
     ]
     assert all(
         trial["resolved_config_sha256"]
-        == module._canonical_sha256(trial["resolved_config"])
+        == provenance.canonical_sha256(trial["resolved_config"])
         for trial in report["trials"]
     )
     assert not run_root.exists()
@@ -468,6 +497,7 @@ def test_afhq_capacity_partial_support_builds_one_data_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _capacity_module()
+    provenance = _showcase_tool_module("capacity_provenance")
     base = load_config(_ADM_CONFIG)
     bindings = object()
     build_calls: list[object] = []
@@ -496,7 +526,7 @@ def test_afhq_capacity_partial_support_builds_one_data_recipe(
             "status": "ok",
             "micro_batch_size": 4,
             "precision": config.trainer.precision,
-            **module._trial_config_identity(config),
+            **provenance.trial_config_identity(config),
         }
 
     monkeypatch.setattr(
@@ -541,7 +571,9 @@ def test_afhq_capacity_measurement_closes_training_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _capacity_module()
-    config = module._trial_config(
+    capacity_config = _showcase_tool_module("capacity_config")
+    provenance = _showcase_tool_module("capacity_provenance")
+    config = capacity_config.trial_config(
         load_config(_ADM_CONFIG),
         micro_batch=4,
         precision="fp32",
@@ -619,7 +651,7 @@ def test_afhq_capacity_measurement_closes_training_runtime(
     assert report["measurement"]["successful_optimizer_updates"] == 25
     assert report["measurement"]["processed_images"] == 800
     assert report["measurement"]["data_wait_compute_ratio"] == 0.25
-    assert report["resolved_config_sha256"] == module._canonical_sha256(
+    assert report["resolved_config_sha256"] == provenance.canonical_sha256(
         report["resolved_config"]
     )
     assert report["output_dir"] == str((tmp_path / "trial").resolve())
@@ -633,9 +665,9 @@ def test_afhq_capacity_keeps_effective_batch_near_32(
     micro_batch: int,
     expected_accumulation: int,
 ) -> None:
-    module = _capacity_module()
+    capacity_config = _showcase_tool_module("capacity_config")
 
     assert (
-        module._accumulation_for_micro_batch(micro_batch)
+        capacity_config.accumulation_for_micro_batch(micro_batch)
         == expected_accumulation
     )
