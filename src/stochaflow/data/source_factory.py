@@ -80,6 +80,8 @@ class ImageSourceFactory:
         )
         context = config.materialization.context(
             expected_identity=expected,
+            verification_observer=builder_context.verification_observer,
+            verification_workers=builder_context.verification_workers,
             path=f"{path}.materialization",
         )
         artifact = source.materialize(context)

@@ -4,6 +4,7 @@ import importlib
 import math
 import sys
 import tomllib
+from copy import deepcopy
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -140,6 +141,10 @@ def test_afhq_production_configs_parse_and_share_one_pipeline_contract() -> None
 
     assert isinstance(adm_config, StochaflowConfig)
     assert isinstance(dit_config, StochaflowConfig)
+    assert adm["experiment"]["name"] == "afhq_v2_adm_128"
+    assert adm["experiment"]["output_dir"] == "outputs/afhq-v2/adm-128"
+    assert dit["experiment"]["name"] == "afhq_v2_dit_b8_128"
+    assert dit["experiment"]["output_dir"] == "outputs/afhq-v2/dit-b8-128"
     assert adm["extensions"]["plugins"] == ["stochaflow-afhq-v2"]
     assert dit["extensions"] == adm["extensions"]
     for raw, config in ((adm, adm_config), (dit, dit_config)):
@@ -170,7 +175,6 @@ def test_afhq_production_configs_parse_and_share_one_pipeline_contract() -> None
             },
         }
         assert raw["trainer"]["precision"] == "bf16-mixed"
-        assert raw["trainer"]["accumulate_grad_batches"] == 4
         assert raw["trainer"]["num_epochs"] == 200
         assert raw["artifacts"]["checkpoint_every"] == 5
         assert raw["sampling"]["run_after_training"] is True
@@ -206,32 +210,52 @@ def test_afhq_production_configs_parse_and_share_one_pipeline_contract() -> None
             "patch_size": 8,
             "in_channels": 3,
             "out_channels": 3,
-            "hidden_size": 384,
+            "hidden_size": 768,
             "depth": 12,
-            "num_heads": 6,
+            "num_heads": 12,
             "mlp_ratio": 4.0,
             "num_classes": 3,
         },
     }
-    for section in (
-        "data",
-        "process",
-        "training",
-        "objective",
-        "optimizer",
-        "lr_scheduler",
-        "ema",
-        "sampling",
-        "diagnostics",
-        "trainer",
-        "artifacts",
-    ):
-        assert dit[section] == adm[section]
+    assert adm["data"]["params"]["loader"]["batch_size"] == 8
+    assert dit["data"]["params"]["loader"]["batch_size"] == 32
+    assert adm["trainer"]["accumulate_grad_batches"] == 4
+    assert dit["trainer"]["accumulate_grad_batches"] == 1
+    adm_shared = deepcopy(adm)
+    dit_shared = deepcopy(dit)
+    for config in (adm_shared, dit_shared):
+        config.pop("model")
+        config["experiment"].pop("name")
+        config["experiment"].pop("output_dir")
+        config["data"]["params"]["loader"].pop("batch_size")
+        config["trainer"].pop("accumulate_grad_batches")
+        config["lr_scheduler"]["params"].pop("warmup_steps")
+        config["lr_scheduler"]["params"].pop("total_steps")
+    assert dit_shared == adm_shared
 
 
-def test_afhq_step_schedule_is_derived_from_the_locked_dataset_counts() -> None:
+@pytest.mark.parametrize(
+    (
+        "config_path",
+        "expected_microbatches",
+        "expected_updates",
+        "expected_total_steps",
+        "expected_warmup_steps",
+    ),
+    [
+        (_ADM_CONFIG, 1_679, 420, 84_000, 1_680),
+        (_DIT_CONFIG, 419, 419, 83_800, 1_676),
+    ],
+)
+def test_afhq_step_schedule_is_derived_from_the_locked_dataset_counts(
+    config_path: Path,
+    expected_microbatches: int,
+    expected_updates: int,
+    expected_total_steps: int,
+    expected_warmup_steps: int,
+) -> None:
     lock = _raw(_LOCK)
-    raw = _raw(_ADM_CONFIG)
+    raw = _raw(config_path)
     source_train = lock["dataset_contract"]["source_splits"]["train"]
     validation_per_class = raw["data"]["params"]["partition"][
         "validation_per_class"
@@ -248,10 +272,10 @@ def test_afhq_step_schedule_is_derived_from_the_locked_dataset_counts() -> None:
     warmup_steps = round(total_steps * 0.02)
 
     assert prepared_train == 13_436
-    assert microbatches == 1_679
-    assert updates == 420
-    assert total_steps == 84_000
-    assert warmup_steps == 1_680
+    assert microbatches == expected_microbatches
+    assert updates == expected_updates
+    assert total_steps == expected_total_steps
+    assert warmup_steps == expected_warmup_steps
     assert raw["lr_scheduler"]["params"]["total_steps"] == total_steps
     assert raw["lr_scheduler"]["params"]["warmup_steps"] == warmup_steps
 

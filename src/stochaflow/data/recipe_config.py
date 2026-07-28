@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from stochaflow.data.artifact_io import MAX_ARTIFACT_VERIFICATION_WORKERS
 from stochaflow.data.artifacts import (
+    ArtifactVerificationObserver,
     DataArtifactIdentity,
     DataSourceContext,
 )
@@ -195,6 +197,7 @@ class DataSourceMaterializationConfig:
     cache_root: str = "./.stochaflow-cache"
     policy: str = "ensure"
     verification: str = "full"
+    verification_workers: int | None = None
 
     def validate(self, *, path: str) -> None:
         """Validate the source lifecycle policy."""
@@ -211,11 +214,24 @@ class DataSourceMaterializationConfig:
             "full",
         }:
             raise ConfigError(f"{path}.verification must be manifest or full")
+        verification_workers = cast(object, self.verification_workers)
+        if verification_workers is not None and (
+            not isinstance(verification_workers, int)
+            or isinstance(verification_workers, bool)
+            or verification_workers <= 0
+            or verification_workers > MAX_ARTIFACT_VERIFICATION_WORKERS
+        ):
+            raise ConfigError(
+                f"{path}.verification_workers must be an integer between 1 and "
+                f"{MAX_ARTIFACT_VERIFICATION_WORKERS}, or null"
+            )
 
     def context(
         self,
         *,
         expected_identity: DataArtifactIdentity | None = None,
+        verification_observer: ArtifactVerificationObserver | None = None,
+        verification_workers: int | None = None,
         path: str = "data source materialization",
     ) -> DataSourceContext:
         """Build the canonical framework context for this source selection."""
@@ -226,6 +242,12 @@ class DataSourceMaterializationConfig:
             policy=cast(Any, self.policy),
             verification=cast(Any, self.verification),
             expected_identity=expected_identity,
+            verification_observer=verification_observer,
+            verification_workers=(
+                self.verification_workers
+                if verification_workers is None
+                else verification_workers
+            ),
         )
 
 

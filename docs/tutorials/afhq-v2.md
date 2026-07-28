@@ -70,6 +70,10 @@ uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-prepare \
   --downloader auto
 ```
 
+在交互式终端中，prepare CLI 会把 `full` artifact 验证进度写入 stderr；最终 JSON
+摘要仍单独写入 stdout。`--progress` 可以强制显示，`--no-progress` 可以关闭，因此
+重定向或自动化脚本不会混入进度文本。
+
 已经持有官方 ZIP 时，可以避免再次下载：
 
 ```bash
@@ -138,7 +142,8 @@ uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-prepare \
   --cache-root ./data \
   --resolution 128 \
   --policy require \
-  --verification full
+  --verification full \
+  --artifact-verification-workers 8
 ```
 
 `require` 不创建目录、lock 或 locator，不下载、不重建、不隔离损坏项。production 与
@@ -240,7 +245,7 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
   --config examples/showcases/afhq-v2/experiments/production/train-adm-128.yaml
 ```
 
-DiT-S/8 对照：
+DiT-B/8 对照：
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow train \
@@ -248,23 +253,33 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
 ```
 
 ADM 保留高分辨率卷积路径，并在 32×32、16×16 和 middle 使用 Transformer blocks。
-DiT-S/8 使用 8×8 patches、384 hidden size、12 blocks 和 6 heads。二者实现同一
+DiT-B/8 使用 8×8 patches、768 hidden size、12 blocks 和 12 heads。二者实现同一
 `ClassConditionalDenoiser` capability，并共享：
 
 - 128×128 data 与固定 class mapping；
 - cosine 1,000-step discrete Gaussian Process；
 - `v` prediction、MSE mean 与 condition dropout 0.1；
-- micro batch 8、accumulation 4、effective batch 32；
+- effective batch 32；ADM 使用 micro batch 8、accumulation 4，DiT 使用
+  micro batch 32、accumulation 1；
 - BF16 mixed precision、AdamW、EMA 和 step scheduler；
 - validation/test 与 class-balanced diagnostic/sampling protocol。
 
-生产配置不启用 early stopping。每 epoch 的 micro-batches 和 optimizer updates 为：
+生产配置不启用 early stopping。ADM 的 micro-batches 和 optimizer updates 为：
 
 ```text
 floor(13,436 / 8) = 1,679 micro-batches
 ceil(1,679 / 4) = 420 optimizer updates
 200 × 420 = 84,000 total updates
 round(0.02 × 84,000) = 1,680 warmup updates
+```
+
+DiT 的对应计划为：
+
+```text
+floor(13,436 / 32) = 419 micro-batches
+ceil(419 / 1) = 419 optimizer updates
+200 × 419 = 83,800 total updates
+round(0.02 × 83,800) = 1,676 warmup updates
 ```
 
 Trainer 对每个 accumulation window 的 scalar micro-batch losses 等权平均。最后的 partial
@@ -311,11 +326,14 @@ strict resume：
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow train \
   --resume outputs/afhq-v2/adm-128/<run-id> \
-  --epochs 200
+  --epochs 200 \
+  --artifact-verification-workers 8
 ```
 
 恢复以 checkpoint config 为权威；model、optimizer、precision、accumulation 和 data
-identity 不能由新 config 替换。新运行写入 sibling timestamp directory，不续写旧日志。
+identity 不能由新 config 替换。`--artifact-verification-workers` 只覆盖本次完整验证的
+线程数，不改变 checkpoint config 或 artifact identity。新运行写入 sibling timestamp
+directory，不续写旧日志。
 
 ## Classifier-free guidance sampling
 

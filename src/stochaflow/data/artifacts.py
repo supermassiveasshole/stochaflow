@@ -7,9 +7,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 
 from stochaflow.data.artifact_io import (
+    MAX_ARTIFACT_VERIFICATION_WORKERS,
     canonical_directory,
     lexical_absolute_path,
     read_regular_file,
@@ -33,6 +34,48 @@ _IDENTITY_FIELDS = frozenset(
 _BINDING_FIELDS = frozenset({"id", "identity"})
 _COLLECTION_FIELDS = frozenset({"schema_version", "bindings"})
 _SHA256_LENGTH = 64
+
+type ArtifactVerificationPhase = Literal["validate", "post_load"]
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactVerificationEvent:
+    """Progress for one complete artifact-content verification pass."""
+
+    artifact_type: str
+    source_name: str
+    materializer_name: str
+    phase: ArtifactVerificationPhase
+    completed: int
+    total: int
+
+    def __post_init__(self) -> None:
+        for name in ("artifact_type", "source_name", "materializer_name"):
+            _non_empty_string(
+                getattr(self, name),
+                path=f"artifact verification event.{name}",
+            )
+        if self.phase not in {"validate", "post_load"}:
+            raise ValueError(
+                "artifact verification event.phase must be validate or post_load"
+            )
+        for name in ("completed", "total"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(
+                    f"artifact verification event.{name} must be non-negative"
+                )
+        if self.completed > self.total:
+            raise ValueError(
+                "artifact verification event.completed must not exceed total"
+            )
+
+
+class ArtifactVerificationObserver(Protocol):
+    """Receive ordered progress events for full artifact verification."""
+
+    def __call__(self, event: ArtifactVerificationEvent, /) -> None:
+        """Observe one artifact verification progress update."""
 
 
 def _non_empty_string(value: object, *, path: str) -> str:
@@ -348,6 +391,8 @@ class DataSourceContext:
     policy: Literal["require", "ensure"]
     verification: Literal["manifest", "full"]
     expected_identity: DataArtifactIdentity | None = None
+    verification_observer: ArtifactVerificationObserver | None = None
+    verification_workers: int | None = None
 
     def __post_init__(self) -> None:
         policy = cast(object, self.policy)
@@ -370,6 +415,23 @@ class DataSourceContext:
             raise TypeError(
                 "data source expected_identity must be DataArtifactIdentity or None"
             )
+        observer = cast(object, self.verification_observer)
+        if observer is not None and not callable(observer):
+            raise TypeError(
+                "data source verification_observer must be callable or None"
+            )
+        verification_workers = cast(object, self.verification_workers)
+        if verification_workers is not None and (
+            not isinstance(verification_workers, int)
+            or isinstance(verification_workers, bool)
+            or verification_workers <= 0
+            or verification_workers > MAX_ARTIFACT_VERIFICATION_WORKERS
+        ):
+            raise ConfigError(
+                "data source materialization.verification_workers must be "
+                "an integer between 1 and "
+                f"{MAX_ARTIFACT_VERIFICATION_WORKERS}, or null"
+            )
         object.__setattr__(
             self,
             "cache_root",
@@ -380,6 +442,9 @@ class DataSourceContext:
 
 
 __all__ = [
+    "ArtifactVerificationEvent",
+    "ArtifactVerificationObserver",
+    "ArtifactVerificationPhase",
     "DataArtifact",
     "DataArtifactBinding",
     "DataArtifactBindings",

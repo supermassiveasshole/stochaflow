@@ -9,11 +9,17 @@ import os
 import shutil
 import stat
 import sys
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import cast
 from uuid import uuid4
+
+MAX_ARTIFACT_VERIFICATION_WORKERS = 8
+_HASH_TASKS_PER_WORKER = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -883,10 +889,85 @@ def scan_regular_files(
     hash_contents: bool,
     label: str,
     path_filter: Callable[[str], bool] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+    workers: int | None = None,
 ) -> tuple[ArtifactFileSnapshot, ...]:
-    """Enumerate regular files without following links or reopening for hashing."""
+    """Enumerate regular files and hash independent contents concurrently.
+
+    Progress callbacks run on the calling thread in deterministic path order.
+    """
 
     canonical_root = canonical_directory(root, label=label)
+    candidates = _enumerate_regular_files(
+        canonical_root,
+        label=label,
+        path_filter=path_filter,
+    )
+    if not hash_contents:
+        return candidates
+    total = len(candidates)
+    if on_progress is not None:
+        on_progress(0, total)
+    if not candidates:
+        return ()
+
+    def report_hash_progress(completed: int, progress_total: int) -> None:
+        if on_progress is not None and completed < progress_total:
+            on_progress(completed, progress_total)
+
+    hash_progress = report_hash_progress if on_progress is not None else None
+    worker_count = _artifact_hash_worker_count(workers)
+    if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
+        root_descriptor = _open_posix_directory_chain(
+            canonical_root,
+            label=label,
+        )
+        try:
+            hashed = _hash_regular_file_candidates(
+                candidates,
+                worker_count=worker_count,
+                hash_candidate=lambda candidate: (
+                    _snapshot_posix_regular_path(
+                        root_descriptor,
+                        candidate,
+                        label=label,
+                    )
+                ),
+                on_progress=hash_progress,
+            )
+        finally:
+            os.close(root_descriptor)
+    else:
+        hashed = _hash_regular_file_candidates(
+            candidates,
+            worker_count=worker_count,
+            hash_candidate=lambda candidate: (
+                _snapshot_windows_regular_path(
+                    canonical_root,
+                    candidate,
+                    label=label,
+                )
+            ),
+            on_progress=hash_progress,
+        )
+    after = _enumerate_regular_files(
+        canonical_root,
+        label=label,
+        path_filter=path_filter,
+    )
+    if not _same_snapshot_metadata(candidates, after):
+        raise ValueError(f"{label} changed during content hashing")
+    if on_progress is not None:
+        on_progress(total, total)
+    return hashed
+
+
+def _enumerate_regular_files(
+    canonical_root: Path,
+    *,
+    label: str,
+    path_filter: Callable[[str], bool] | None,
+) -> tuple[ArtifactFileSnapshot, ...]:
     if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
         descriptor = _open_posix_directory_chain(
             canonical_root,
@@ -896,7 +977,6 @@ def scan_regular_files(
             snapshots = _scan_posix_directory(
                 descriptor,
                 (),
-                hash_contents=hash_contents,
                 label=label,
                 path_filter=path_filter,
             )
@@ -906,11 +986,130 @@ def scan_regular_files(
         snapshots = _scan_windows_directory(
             canonical_root,
             canonical_root,
-            hash_contents=hash_contents,
             label=label,
             path_filter=path_filter,
         )
     return tuple(sorted(snapshots, key=lambda item: item.relative_path))
+
+
+def _artifact_hash_worker_count(requested_workers: int | None = None) -> int:
+    requested = cast(object, requested_workers)
+    if requested is not None:
+        if not isinstance(requested, int) or isinstance(requested, bool):
+            raise TypeError("artifact hash workers must be an integer or None")
+        if requested <= 0:
+            raise ValueError("artifact hash workers must be positive")
+        if requested > MAX_ARTIFACT_VERIFICATION_WORKERS:
+            raise ValueError(
+                "artifact hash workers must not exceed "
+                f"{MAX_ARTIFACT_VERIFICATION_WORKERS}"
+            )
+        return requested
+    return min(
+        MAX_ARTIFACT_VERIFICATION_WORKERS,
+        max(1, os.cpu_count() or 1),
+    )
+
+
+def _hash_regular_file_candidates(
+    candidates: tuple[ArtifactFileSnapshot, ...],
+    *,
+    worker_count: int,
+    hash_candidate: Callable[[ArtifactFileSnapshot], ArtifactFileSnapshot],
+    on_progress: Callable[[int, int], None] | None,
+) -> tuple[ArtifactFileSnapshot, ...]:
+    total = len(candidates)
+    if worker_count <= 1:
+        snapshots: list[ArtifactFileSnapshot] = []
+        for completed, candidate in enumerate(candidates, start=1):
+            snapshots.append(hash_candidate(candidate))
+            if on_progress is not None:
+                on_progress(completed, total)
+        return tuple(snapshots)
+
+    executor = ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="stochaflow-artifact-hash",
+    )
+    pending: deque[Future[ArtifactFileSnapshot]] = deque()
+    iterator: Iterator[ArtifactFileSnapshot] = iter(candidates)
+    snapshots = []
+
+    def submit_next() -> bool:
+        try:
+            candidate = next(iterator)
+        except StopIteration:
+            return False
+        pending.append(executor.submit(hash_candidate, candidate))
+        return True
+
+    try:
+        for _ in range(worker_count * _HASH_TASKS_PER_WORKER):
+            if not submit_next():
+                break
+        while pending:
+            snapshot = pending.popleft().result()
+            snapshots.append(snapshot)
+            if on_progress is not None:
+                on_progress(len(snapshots), total)
+            submit_next()
+    finally:
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+    return tuple(snapshots)
+
+
+def _same_snapshot_metadata(
+    before: tuple[ArtifactFileSnapshot, ...],
+    after: tuple[ArtifactFileSnapshot, ...],
+) -> bool:
+    return len(before) == len(after) and all(
+        first.relative_path == second.relative_path
+        and _same_artifact_snapshot_state(first, second)
+        for first, second in zip(before, after, strict=True)
+    )
+
+
+def _same_artifact_snapshot_state(
+    first: ArtifactFileSnapshot,
+    second: ArtifactFileSnapshot,
+) -> bool:
+    first_identity = (first.device, first.inode)
+    second_identity = (second.device, second.inode)
+    same_file = (
+        first_identity == second_identity
+        if first_identity != (0, 0) and second_identity != (0, 0)
+        else (
+            first.mode == second.mode
+            and first.size_bytes == second.size_bytes
+            and first.modified_ns == second.modified_ns
+        )
+    )
+    return (
+        same_file
+        and first.size_bytes == second.size_bytes
+        and first.modified_ns == second.modified_ns
+    )
+
+
+def _snapshot_matches_metadata(
+    snapshot: ArtifactFileSnapshot,
+    metadata: os.stat_result,
+) -> bool:
+    return _same_artifact_snapshot_state(
+        snapshot,
+        ArtifactFileSnapshot(
+            relative_path=snapshot.relative_path,
+            size_bytes=metadata.st_size,
+            sha256=None,
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
+            mode=metadata.st_mode,
+            modified_ns=metadata.st_mtime_ns,
+            changed_ns=metadata.st_ctime_ns,
+        ),
+    )
 
 
 def _relative_parts(relative_path: str, *, label: str) -> tuple[str, ...]:
@@ -1295,7 +1494,6 @@ def _scan_posix_directory(
     directory_descriptor: int,
     relative_parts: tuple[str, ...],
     *,
-    hash_contents: bool,
     label: str,
     path_filter: Callable[[str], bool] | None,
 ) -> list[ArtifactFileSnapshot]:
@@ -1330,13 +1528,13 @@ def _scan_posix_directory(
                 opened = os.fstat(child_descriptor)
                 if not _same_file(observed, opened):
                     raise ValueError(
-                        f"{label} directory changed during enumeration: {rendered}"
+                        f"{label} directory changed during enumeration: "
+                        f"{rendered}"
                     )
                 snapshots.extend(
                     _scan_posix_directory(
                         child_descriptor,
                         relative,
-                        hash_contents=hash_contents,
                         label=label,
                         path_filter=path_filter,
                     )
@@ -1344,41 +1542,17 @@ def _scan_posix_directory(
             finally:
                 os.close(child_descriptor)
         elif stat.S_ISREG(observed.st_mode):
-            descriptor, opened = _open_posix_regular_file(
+            selected = path_filter is None or path_filter(rendered)
+            snapshot = _snapshot_posix_regular_file(
                 directory_descriptor,
                 entry.name,
+                observed=observed,
+                relative_path=rendered,
+                hash_contents=False,
                 label=label,
             )
-            try:
-                if not _same_file(observed, opened):
-                    raise ValueError(
-                        f"{label} file changed during enumeration: {rendered}"
-                    )
-                selected = path_filter is None or path_filter(rendered)
-                digest = (
-                    _digest_descriptor(descriptor)
-                    if hash_contents and selected
-                    else None
-                )
-                if not _same_file_state(opened, os.fstat(descriptor)):
-                    raise ValueError(
-                        f"{label} file changed during enumeration: {rendered}"
-                    )
-                if selected:
-                    snapshots.append(
-                        ArtifactFileSnapshot(
-                            relative_path=rendered,
-                            size_bytes=opened.st_size,
-                            sha256=digest,
-                            device=opened.st_dev,
-                            inode=opened.st_ino,
-                            mode=opened.st_mode,
-                            modified_ns=opened.st_mtime_ns,
-                            changed_ns=opened.st_ctime_ns,
-                        )
-                    )
-            finally:
-                os.close(descriptor)
+            if selected:
+                snapshots.append(snapshot)
         else:
             raise ValueError(
                 f"{label} contains an unsupported filesystem entry: {rendered}"
@@ -1392,6 +1566,88 @@ def _scan_posix_directory(
             f"{label} directory changed during enumeration: {rendered}"
         )
     return snapshots
+
+
+def _snapshot_posix_regular_file(
+    directory_descriptor: int,
+    name: str,
+    *,
+    observed: os.stat_result,
+    relative_path: str,
+    hash_contents: bool,
+    label: str,
+) -> ArtifactFileSnapshot:
+    descriptor, opened = _open_posix_regular_file(
+        directory_descriptor,
+        name,
+        label=label,
+    )
+    try:
+        if not _same_file(observed, opened):
+            raise ValueError(
+                f"{label} file changed during enumeration: {relative_path}"
+            )
+        digest = _digest_descriptor(descriptor) if hash_contents else None
+        if not _same_file_state(opened, os.fstat(descriptor)):
+            raise ValueError(
+                f"{label} file changed during enumeration: {relative_path}"
+            )
+        return ArtifactFileSnapshot(
+            relative_path=relative_path,
+            size_bytes=opened.st_size,
+            sha256=digest,
+            device=opened.st_dev,
+            inode=opened.st_ino,
+            mode=opened.st_mode,
+            modified_ns=opened.st_mtime_ns,
+            changed_ns=opened.st_ctime_ns,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _snapshot_posix_regular_path(
+    root_descriptor: int,
+    candidate: ArtifactFileSnapshot,
+    *,
+    label: str,
+) -> ArtifactFileSnapshot:
+    parts = _relative_parts(candidate.relative_path, label=label)
+    directory_descriptor = root_descriptor
+    opened_directories: list[int] = []
+    try:
+        for component in parts[:-1]:
+            directory_descriptor = _open_posix_relative_directory(
+                directory_descriptor,
+                component,
+                label=label,
+            )
+            opened_directories.append(directory_descriptor)
+        observed = os.stat(
+            parts[-1],
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            _is_link_or_reparse(observed)
+            or not stat.S_ISREG(observed.st_mode)
+            or not _snapshot_matches_metadata(candidate, observed)
+        ):
+            raise ValueError(
+                f"{label} file changed during enumeration: "
+                f"{candidate.relative_path}"
+            )
+        return _snapshot_posix_regular_file(
+            directory_descriptor,
+            parts[-1],
+            observed=observed,
+            relative_path=candidate.relative_path,
+            hash_contents=True,
+            label=label,
+        )
+    finally:
+        for descriptor in reversed(opened_directories):
+            os.close(descriptor)
 
 
 def _validate_windows_directory_chain(path: Path, *, label: str) -> None:
@@ -1519,7 +1775,6 @@ def _scan_windows_directory(
     root: Path,
     directory: Path,
     *,
-    hash_contents: bool,
     label: str,
     path_filter: Callable[[str], bool] | None,
 ) -> list[ArtifactFileSnapshot]:
@@ -1548,52 +1803,21 @@ def _scan_windows_directory(
                 _scan_windows_directory(
                     root,
                     path,
-                    hash_contents=hash_contents,
                     label=label,
                     path_filter=path_filter,
                 )
             )
         elif stat.S_ISREG(observed.st_mode):
-            parts = PurePosixPath(relative).parts
-            descriptor, opened, ancestors = _open_windows_regular_file(
+            selected = path_filter is None or path_filter(relative)
+            snapshot = _snapshot_windows_regular_file(
                 root,
-                parts,
+                relative,
+                observed=observed,
+                hash_contents=False,
                 label=label,
             )
-            try:
-                if not _same_file(observed, opened):
-                    raise ValueError(
-                        f"{label} file changed during enumeration: {path}"
-                    )
-                selected = path_filter is None or path_filter(relative)
-                digest = (
-                    _digest_descriptor(descriptor)
-                    if hash_contents and selected
-                    else None
-                )
-                if not _same_file_state(opened, os.fstat(descriptor)):
-                    raise ValueError(
-                        f"{label} file changed during enumeration: {path}"
-                    )
-                _validate_windows_ancestor_snapshots(
-                    ancestors,
-                    label=label,
-                )
-                if selected:
-                    snapshots.append(
-                        ArtifactFileSnapshot(
-                            relative_path=relative,
-                            size_bytes=opened.st_size,
-                            sha256=digest,
-                            device=opened.st_dev,
-                            inode=opened.st_ino,
-                            mode=opened.st_mode,
-                            modified_ns=opened.st_mtime_ns,
-                            changed_ns=opened.st_ctime_ns,
-                        )
-                    )
-            finally:
-                os.close(descriptor)
+            if selected:
+                snapshots.append(snapshot)
         else:
             raise ValueError(
                 f"{label} contains an unsupported filesystem entry: {path}"
@@ -1602,6 +1826,76 @@ def _scan_windows_directory(
     if not _same_file_state(before, after):
         raise ValueError(f"{label} directory changed during enumeration: {directory}")
     return snapshots
+
+
+def _snapshot_windows_regular_file(
+    root: Path,
+    relative_path: str,
+    *,
+    observed: os.stat_result,
+    hash_contents: bool,
+    label: str,
+) -> ArtifactFileSnapshot:
+    parts = PurePosixPath(relative_path).parts
+    path = root.joinpath(*parts)
+    descriptor, opened, ancestors = _open_windows_regular_file(
+        root,
+        parts,
+        label=label,
+    )
+    try:
+        if not _same_file(observed, opened):
+            raise ValueError(
+                f"{label} file changed during enumeration: {path}"
+            )
+        digest = _digest_descriptor(descriptor) if hash_contents else None
+        if not _same_file_state(opened, os.fstat(descriptor)):
+            raise ValueError(
+                f"{label} file changed during enumeration: {path}"
+            )
+        _validate_windows_ancestor_snapshots(
+            ancestors,
+            label=label,
+        )
+        return ArtifactFileSnapshot(
+            relative_path=relative_path,
+            size_bytes=opened.st_size,
+            sha256=digest,
+            device=opened.st_dev,
+            inode=opened.st_ino,
+            mode=opened.st_mode,
+            modified_ns=opened.st_mtime_ns,
+            changed_ns=opened.st_ctime_ns,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _snapshot_windows_regular_path(
+    root: Path,
+    candidate: ArtifactFileSnapshot,
+    *,
+    label: str,
+) -> ArtifactFileSnapshot:
+    parts = _relative_parts(candidate.relative_path, label=label)
+    path = root.joinpath(*parts)
+    observed = path.lstat()
+    if (
+        _is_link_or_reparse(observed)
+        or not stat.S_ISREG(observed.st_mode)
+        or not _snapshot_matches_metadata(candidate, observed)
+    ):
+        raise ValueError(
+            f"{label} file changed during enumeration: "
+            f"{candidate.relative_path}"
+        )
+    return _snapshot_windows_regular_file(
+        root,
+        candidate.relative_path,
+        observed=observed,
+        hash_contents=True,
+        label=label,
+    )
 
 
 __all__ = [

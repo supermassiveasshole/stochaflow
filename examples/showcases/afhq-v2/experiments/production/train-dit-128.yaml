@@ -1,7 +1,7 @@
 experiment:
-  name: afhq_v2_dit_s8_128
+  name: afhq_v2_dit_b8_128
   seed: 20260726
-  output_dir: outputs/afhq-v2/dit-s8-128
+  output_dir: outputs/afhq-v2/dit-b8-128
 
 extensions:
   plugins: [stochaflow-afhq-v2]
@@ -26,7 +26,7 @@ data:
       normalize: true
       random_horizontal_flip: true
     loader:
-      batch_size: 8
+      batch_size: 32
       num_workers: 2
       shuffle: true
       drop_last: true
@@ -42,9 +42,9 @@ model:
     patch_size: 8
     in_channels: 3
     out_channels: 3
-    hidden_size: 384
+    hidden_size: 768
     depth: 12
-    num_heads: 6
+    num_heads: 12
     mlp_ratio: 4.0
     num_classes: 3
 
@@ -81,8 +81,8 @@ lr_scheduler:
   name: warmup_cosine
   interval: step
   params:
-    warmup_steps: 1680
-    total_steps: 84000
+    warmup_steps: 1676
+    total_steps: 83800
     min_lr_ratio: 0.05
 
 ema:
@@ -182,7 +182,7 @@ trainer:
   num_epochs: 200
   device: auto
   precision: bf16-mixed
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 1
   max_grad_norm: 1.0
   show_progress: true
   early_stopping:

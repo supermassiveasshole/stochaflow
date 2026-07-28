@@ -10,6 +10,9 @@ from .artifact_store import (
     canonical_artifact_json_bytes,
 )
 from .artifacts import (
+    ArtifactVerificationEvent,
+    ArtifactVerificationObserver,
+    ArtifactVerificationPhase,
     DataArtifact,
     DataArtifactBinding,
     DataArtifactBindings,
@@ -45,6 +48,9 @@ from .recipe_config import DataSourceMaterializationConfig
 
 __all__ = [
     "IMAGE_DATA_SOURCES",
+    "ArtifactVerificationEvent",
+    "ArtifactVerificationObserver",
+    "ArtifactVerificationPhase",
     "ClassLabeledImageDataBuilder",
     "ClassLabeledImageFileRecord",
     "ClassLabeledImageFolderArtifactPayload",

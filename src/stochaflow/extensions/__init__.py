@@ -2,6 +2,9 @@
 
 from stochaflow.data import (
     IMAGE_DATA_SOURCES,
+    ArtifactVerificationEvent,
+    ArtifactVerificationObserver,
+    ArtifactVerificationPhase,
     ClassLabeledImageFileRecord,
     ClassLabeledImageFolderArtifactPayload,
     DataArtifact,
@@ -112,6 +115,9 @@ from stochaflow.utils.registry import REGISTRIES, Registry, RegistryError
 __all__ = [
     "IMAGE_DATA_SOURCES",
     "REGISTRIES",
+    "ArtifactVerificationEvent",
+    "ArtifactVerificationObserver",
+    "ArtifactVerificationPhase",
     "ClassLabeledImageFileRecord",
     "ClassLabeledImageFolderArtifactPayload",
     "ComponentConfig",

@@ -48,6 +48,7 @@ data:
         cache_root: ./data
         policy: ensure
         verification: manifest
+        verification_workers: null
     partition:
       mode: holdout
       validation_size: 5000
@@ -66,6 +67,10 @@ data:
       prefetch_factor: null
       steps_per_epoch: auto
 ```
+
+`verification_workers: null` 自动选择 `min(8, logical CPUs)` 个 artifact 哈希线程；
+也可以配置 `1..8` 范围内的整数。训练 CLI 的 `--artifact-verification-workers N`
+仅覆盖本次运行，包括 strict resume，不改变 artifact identity 或 digest。
 
 `source` 只有一种规范结构：`name` 选择已注册的 `ImageDataSource`，`params` 是该
 source 的私有参数，`materialization` 声明缓存、获取策略与验证强度。

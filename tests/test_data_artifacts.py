@@ -151,6 +151,29 @@ def test_expected_identity_forces_full_verification(tmp_path: Path) -> None:
     assert context.verification == "full"
 
 
+def test_data_source_context_accepts_only_callable_verification_observer(
+    tmp_path: Path,
+) -> None:
+    def observer(event: object) -> None:
+        del event
+
+    context = DataSourceContext(
+        cache_root=tmp_path,
+        policy="require",
+        verification="full",
+        verification_observer=observer,
+    )
+
+    assert context.verification_observer is observer
+    with pytest.raises(TypeError, match="verification_observer"):
+        DataSourceContext(
+            cache_root=tmp_path,
+            policy="require",
+            verification="full",
+            verification_observer=object(),  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

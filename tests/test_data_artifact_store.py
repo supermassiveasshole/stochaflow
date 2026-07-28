@@ -24,7 +24,11 @@ from stochaflow.data.artifact_store import (
     canonical_artifact_digest,
     canonical_artifact_json_bytes,
 )
-from stochaflow.data.artifacts import DataArtifact, DataSourceContext
+from stochaflow.data.artifacts import (
+    ArtifactVerificationEvent,
+    DataArtifact,
+    DataSourceContext,
+)
 
 
 def context(
@@ -33,12 +37,16 @@ def context(
     policy: str = "ensure",
     verification: str = "full",
     expected_identity: object = None,
+    verification_observer: object = None,
+    verification_workers: object = None,
 ) -> DataSourceContext:
     return DataSourceContext(
         cache_root=cache_root,
         policy=policy,  # type: ignore[arg-type]
         verification=verification,  # type: ignore[arg-type]
         expected_identity=expected_identity,  # type: ignore[arg-type]
+        verification_observer=verification_observer,  # type: ignore[arg-type]
+        verification_workers=verification_workers,  # type: ignore[arg-type]
     )
 
 
@@ -180,6 +188,206 @@ def test_ensure_cache_hit_does_not_build(tmp_path: Path) -> None:
 
     assert second.identity == first.identity
     assert [name for name, _, _ in second_calls] == ["load"]
+
+
+def test_verification_workers_do_not_change_artifact_identity(
+    tmp_path: Path,
+) -> None:
+    first = materialize_managed(
+        context(
+            tmp_path / "first-cache",
+            verification_workers=1,
+        ),
+        [],
+    )
+    second = materialize_managed(
+        context(
+            tmp_path / "second-cache",
+            verification_workers=4,
+        ),
+        [],
+    )
+
+    assert first.identity == second.identity
+
+
+def test_full_cache_hit_reuses_validation_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_root = tmp_path / "cache"
+    artifact = materialize_managed(context(cache_root), [])
+    original_scan = artifact_store_module.scan_regular_files
+    scans: list[tuple[Path, bool, object]] = []
+
+    def tracked_scan(root: Path, **kwargs: object):
+        scans.append(
+            (
+                Path(root),
+                bool(kwargs["hash_contents"]),
+                kwargs["workers"],
+            )
+        )
+        return original_scan(root, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        artifact_store_module,
+        "scan_regular_files",
+        tracked_scan,
+    )
+
+    materialize_managed(
+        context(
+            cache_root,
+            policy="require",
+            verification="full",
+            verification_workers=3,
+        ),
+        [],
+    )
+
+    assert scans == [
+        (artifact.root, True, 3),
+        (artifact.root, True, 3),
+    ]
+
+
+def test_strict_resume_reuses_validation_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_root = tmp_path / "cache"
+    artifact = materialize_managed(context(cache_root), [])
+    original_scan = artifact_store_module.scan_regular_files
+    scans: list[tuple[Path, bool]] = []
+
+    def tracked_scan(root: Path, **kwargs: object):
+        scans.append((Path(root), bool(kwargs["hash_contents"])))
+        return original_scan(root, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        artifact_store_module,
+        "scan_regular_files",
+        tracked_scan,
+    )
+
+    materialize_managed(
+        context(
+            cache_root,
+            policy="require",
+            verification="manifest",
+            expected_identity=artifact.identity,
+        ),
+        [],
+    )
+
+    assert scans == [(artifact.root, True), (artifact.root, True)]
+
+
+def test_framework_identity_validation_scans_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_root = tmp_path / "cache"
+    artifact = materialize_managed(context(cache_root), [])
+    store = DataArtifactStore(context(cache_root))
+    original_scan = artifact_store_module.scan_regular_files
+    scans: list[Path] = []
+
+    def tracked_scan(root: Path, **kwargs: object):
+        scans.append(Path(root))
+        return original_scan(root, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        artifact_store_module,
+        "scan_regular_files",
+        tracked_scan,
+    )
+
+    identity = store._load_framework_identity(
+        artifact.root,
+        kind="managed",
+        artifact_type="tests.bytes.v1",
+        verification="full",
+    )
+
+    assert identity == artifact.identity
+    assert scans == [artifact.root]
+
+
+def test_full_verification_reports_two_ordered_phases(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    artifact = materialize_managed(context(cache_root), [])
+    events: list[ArtifactVerificationEvent] = []
+
+    materialize_managed(
+        context(
+            cache_root,
+            policy="require",
+            verification="full",
+            verification_observer=events.append,
+        ),
+        [],
+    )
+
+    total = 3
+    assert [
+        (event.phase, event.completed, event.total)
+        for event in events
+    ] == [
+        *[("validate", completed, total) for completed in range(total + 1)],
+        *[("post_load", completed, total) for completed in range(total + 1)],
+    ]
+    assert {event.artifact_type for event in events} == {
+        artifact.identity.artifact_type
+    }
+
+
+def test_manifest_verification_does_not_report_hash_progress(
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    materialize_managed(context(cache_root), [])
+    events: list[ArtifactVerificationEvent] = []
+
+    materialize_managed(
+        context(
+            cache_root,
+            policy="require",
+            verification="manifest",
+            verification_observer=events.append,
+        ),
+        [],
+    )
+
+    assert events == []
+
+
+def test_observer_failure_does_not_quarantine_valid_artifact(
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    artifact = materialize_managed(context(cache_root), [])
+
+    class ObserverFailure(RuntimeError):
+        pass
+
+    def fail(_: ArtifactVerificationEvent) -> None:
+        raise ObserverFailure("progress renderer failed")
+
+    with pytest.raises(ObserverFailure, match="progress renderer failed"):
+        materialize_managed(
+            context(
+                cache_root,
+                policy="ensure",
+                verification="full",
+                verification_observer=fail,
+            ),
+            [],
+        )
+
+    quarantine = artifact.root.parents[1] / "quarantine" / "objects"
+    assert not tuple(quarantine.iterdir())
 
 
 def test_require_miss_is_completely_read_only(tmp_path: Path) -> None:
@@ -894,10 +1102,11 @@ def test_object_layout_violation_is_read_only_or_repaired_by_policy(
         except OSError as exc:
             pytest.skip(f"symlinks are unavailable: {exc}")
     else:
-        if not hasattr(os, "mkfifo"):
+        mkfifo = getattr(os, "mkfifo", None)
+        if mkfifo is None:
             pytest.skip("FIFO files are unavailable")
         extra = artifact.root / "unexpected-fifo"
-        os.mkfifo(extra)
+        mkfifo(extra)
     namespace = artifact.root.parents[1]
 
     with pytest.raises(DataArtifactValidationError):

@@ -800,10 +800,11 @@ native provider，扩展 Registry 不能占用。
 | `source` | 必填 mapping；注册的 ImageDataSource 必须返回 finite authenticated `ClassLabeledImageFolderArtifactPayload`，其 validation 必须为 null、test 可选；相同 payload type 不自动代表 runtime recipe 兼容。 |
 | `source.name` | 必填非空注册名；Builder 不检查具体名称或读取 source 私有参数。 |
 | `source.params` | source 私有 mapping；字段由所选 DataSource 严格验证。 |
-| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。 |
+| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`、`verification_workers: null`。 |
 | `source.materialization.cache_root` | schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。 |
 | `source.materialization.policy` | `ensure` 可创建或修复 exact artifact；`require` 完全只读，只接受已存在 artifact；默认 `ensure`。 |
 | `source.materialization.verification` | `manifest` 校验索引与大小，`full` 重新校验全部内容；默认 `full`，strict resume 强制完整验证。 |
+| `source.materialization.verification_workers` | 完整内容验证使用的并行哈希线程数；null 自动选择 `min(8, logical CPUs)`，显式值必须为 `1..8` 范围内的整数；不进入 artifact identity 或 digest。 |
 | `image` | 必填 mapping；`size` 必填，其余字段使用下列默认值。 |
 | `image.size` | 必填 `[height, width]`；两个维度均为正整数。 |
 | `image.channels` | 输出通道数；默认 `3`，仅支持 `1` 或 `3`。 |
@@ -835,10 +836,11 @@ native provider，扩展 Registry 不能占用。
 | `source.params.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
 | `source.params.root` | `image_folder` 时必填的本地/NFS 根目录。 |
 | `source.params.layout` | folder source 布局；`flat` 递归读取单一根目录，`split` 读取 train/validation/test 子目录。 |
-| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。 |
+| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`、`verification_workers: null`。 |
 | `source.materialization.cache_root` | schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。 |
 | `source.materialization.policy` | `ensure` 可创建或修复 exact artifact；`require` 完全只读，只接受已存在 artifact；默认 `ensure`。 |
 | `source.materialization.verification` | `manifest` 校验索引与大小，`full` 重新校验全部内容；默认 `full`，strict resume 强制完整验证。 |
+| `source.materialization.verification_workers` | 完整内容验证使用的并行哈希线程数；null 自动选择 `min(8, logical CPUs)`，显式值必须为 `1..8` 范围内的整数；不进入 artifact identity 或 digest。 |
 | `image` | 必填 mapping；`size` 必填，其余字段使用下列默认值。 |
 | `image.size` | 必填 `[height, width]`；两个维度均为正整数。 |
 | `image.channels` | 输出通道数；默认 `3`，仅支持 `1` 或 `3`。 |
@@ -874,10 +876,11 @@ native provider，扩展 Registry 不能占用。
 | `sources[].source.params.dataset` | `torchvision` 时必填；`MNIST`、`CIFAR10` 或 `Flowers102`（大小写不敏感）。 |
 | `sources[].source.params.root` | `image_folder` 时必填的本地/NFS 根目录。 |
 | `sources[].source.params.layout` | folder source 布局；`flat` 或 `split`。 |
-| `sources[].source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。 |
+| `sources[].source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`、`verification_workers: null`。 |
 | `sources[].source.materialization.cache_root` | schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。 |
 | `sources[].source.materialization.policy` | `ensure` 可创建或修复，`require` 完全只读；默认 `ensure`。 |
 | `sources[].source.materialization.verification` | `manifest` 或 `full`；默认 `full`，strict resume 强制完整验证。 |
+| `sources[].source.materialization.verification_workers` | 完整内容验证使用的并行哈希线程数；null 自动选择 `min(8, logical CPUs)`，显式值必须为 `1..8` 范围内的整数；不进入 artifact identity 或 digest。 |
 | `image` | 必填 mapping；内部字段均使用下列默认值。 |
 | `image.channels` | 输出通道数；默认 `3`，仅支持 `1` 或 `3`。 |
 | `image.normalize` | 是否将 `[0, 1]` 映射到 `[-1, 1]`；默认 `true`，必须为布尔值。 |
@@ -919,10 +922,11 @@ native provider，扩展 Registry 不能占用。
 | `source.params.high_resolution_root` | `paired_image_folders` 时必填的 HR 根目录。 |
 | `source.params.low_resolution_root` | `paired_image_folders` 时必填的 LR 根目录；与 HR 按相对路径 stem 配对。 |
 | `source.params.layout` | folder source 布局；`flat` 或 `split`。 |
-| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`。 |
+| `source.materialization` | 必填 mapping；字段省略时使用 `cache_root: ./.stochaflow-cache`、`policy: ensure`、`verification: full`、`verification_workers: null`。 |
 | `source.materialization.cache_root` | schema-v2 artifact/index 缓存根目录；默认 `./.stochaflow-cache`；referenced source 必须与被引用的数据根分离。 |
 | `source.materialization.policy` | `ensure` 可创建或修复，`require` 完全只读；默认 `ensure`。 |
 | `source.materialization.verification` | `manifest` 或 `full`；默认 `full`，strict resume 强制完整验证。 |
+| `source.materialization.verification_workers` | 完整内容验证使用的并行哈希线程数；null 自动选择 `min(8, logical CPUs)`，显式值必须为 `1..8` 范围内的整数；不进入 artifact identity 或 digest。 |
 | `image` | 必填 mapping；HR/LR size 必填，其余字段使用下列默认值。 |
 | `image.high_resolution` | 必填 HR `[height, width]`；两个维度均为正整数。 |
 | `image.low_resolution` | 必填 LR `[height, width]`；两个维度均为正整数；bicubic 模式要求每轴 LR 不大于 HR，paired 模式要求每轴 HR/LR 缩放比为整数。 |
@@ -1290,6 +1294,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | `--deterministic` | 否 | `false` | 启用 PyTorch 严格确定性算法；没有确定性实现的算子会报错。 |
 | `--progress` | 否 | `false` | 启用 Rich 进度条；strict resume 时覆盖 checkpoint 保存的关闭状态。 |
 | `--no-progress` | 否 | `false` | 禁用 Rich 进度条；strict resume 时覆盖 checkpoint 保存的开启状态。 |
+| `--artifact-verification-workers` | 否 | `—` | 覆盖所有 source.materialization.verification_workers；必须为 `1..8` 范围内的整数，仅影响本次 artifact 哈希并行度。 |
 | `--force-extension-version-mismatch` | 否 | `false` | 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。 |
 | `--skip-final-sample` | 否 | `false` | 即使 sampling.run_after_training 为 true，也跳过本次训练完成后的 selected-best checkpoint inference。 |
 

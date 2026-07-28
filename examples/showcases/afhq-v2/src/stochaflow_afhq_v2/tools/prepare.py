@@ -5,14 +5,19 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
 from stochaflow.extensions import (
     IMAGE_DATA_SOURCES,
+    ArtifactVerificationObserver,
     ClassLabeledImageFolderArtifactPayload,
     DataSourceContext,
+)
+from stochaflow.scripts.artifact_reporting import (
+    RichArtifactVerificationReporter,
 )
 from stochaflow_afhq_v2.artifact import (
     AFHQV2_SOURCE_NAME,
@@ -48,6 +53,29 @@ def build_argument_parser() -> argparse.ArgumentParser:
         choices=("manifest", "full"),
         default="full",
     )
+    parser.add_argument(
+        "--artifact-verification-workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Artifact hashing workers (1-8); defaults to min(8, logical CPUs)."
+        ),
+    )
+    progress = parser.add_mutually_exclusive_group()
+    progress.add_argument(
+        "--progress",
+        action="store_true",
+        dest="progress",
+        help="Force artifact verification progress on stderr.",
+    )
+    progress.add_argument(
+        "--no-progress",
+        action="store_false",
+        dest="progress",
+        help="Disable artifact verification progress.",
+    )
+    parser.set_defaults(progress=None)
     return parser
 
 
@@ -60,6 +88,8 @@ def prepare_artifact(
     downloader: Literal["auto", "curl", "python"],
     policy: Literal["ensure", "require"],
     verification: Literal["manifest", "full"],
+    verification_observer: ArtifactVerificationObserver | None = None,
+    verification_workers: int | None = None,
 ) -> dict[str, Any]:
     """Materialize through the registered source used by the DataBuilder."""
 
@@ -82,6 +112,8 @@ def prepare_artifact(
             cache_root=cache_root,
             policy=policy,
             verification=verification,
+            verification_observer=verification_observer,
+            verification_workers=verification_workers,
         )
     )
     payload = artifact.payload
@@ -110,15 +142,29 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Prepare/verify AFHQ-v2 and print a machine-readable summary."""
 
     args = build_argument_parser().parse_args(argv)
-    summary = prepare_artifact(
-        cache_root=args.cache_root,
-        archive=args.archive,
-        lock_file=args.lock_file,
-        resolution=args.resolution,
-        downloader=args.downloader,
-        policy=args.policy,
-        verification=args.verification,
+    show_progress = (
+        sys.stderr.isatty()
+        if args.progress is None
+        else bool(args.progress)
     )
+    reporter = RichArtifactVerificationReporter() if show_progress else None
+    try:
+        summary = prepare_artifact(
+            cache_root=args.cache_root,
+            archive=args.archive,
+            lock_file=args.lock_file,
+            resolution=args.resolution,
+            downloader=args.downloader,
+            policy=args.policy,
+            verification=args.verification,
+            verification_observer=(
+                reporter.observe if reporter is not None else None
+            ),
+            verification_workers=args.artifact_verification_workers,
+        )
+    finally:
+        if reporter is not None:
+            reporter.close()
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 

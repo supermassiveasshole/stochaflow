@@ -34,6 +34,8 @@ from stochaflow.data.artifact_io import (
     write_cache_file,
 )
 from stochaflow.data.artifacts import (
+    ArtifactVerificationEvent,
+    ArtifactVerificationPhase,
     DataArtifact,
     DataArtifactIdentity,
     DataSourceContext,
@@ -102,6 +104,14 @@ class DataArtifactLocatorMismatch(DataArtifactValidationError):
     """A valid locator target belongs to a different producer contract."""
 
 
+class ArtifactVerificationObserverFailure(Exception):
+    """Internal wrapper keeping observer errors outside corruption handling."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
 @dataclass(frozen=True, slots=True)
 class ManagedDataArtifactBuild:
     """Producer facts returned after writing managed content."""
@@ -129,6 +139,15 @@ class DataArtifactLoadContext:
     identity: DataArtifactIdentity
     domain: Mapping[str, object]
     verification: Literal["manifest", "full"]
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedArtifactObject:
+    """Identity, domain, and exact evidence from one verified object scan."""
+
+    identity: DataArtifactIdentity
+    domain: Mapping[str, object]
+    snapshot: tuple[ArtifactFileSnapshot, ...]
 
 
 def _assert_json_value(value: object, *, path: str) -> None:
@@ -636,11 +655,14 @@ def _assert_build_scope(
 def _write_inventory(
     paths: ArtifactStorePaths,
     object_root: Path,
+    *,
+    verification_workers: int | None,
 ) -> tuple[dict[str, object], str]:
     snapshots = scan_regular_files(
         object_root / "data",
         hash_contents=True,
         label="data artifact stored files",
+        workers=verification_workers,
     )
     records = _inventory_records(snapshots)
     digest = canonical_artifact_digest(records)
@@ -684,9 +706,11 @@ def _write_inventory(
 def _read_inventory(
     root: Path,
     value: object,
-    *,
-    verification: Literal["manifest", "full"],
-) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+) -> tuple[
+    str,
+    tuple[dict[str, object], ...],
+    tuple[tuple[str, str], ...],
+]:
     stored = _strict_mapping(
         value,
         fields=_STORED_FILES_FIELDS,
@@ -711,7 +735,7 @@ def _read_inventory(
     if len(serialized_shards) != expected_shards:
         raise ValueError("data artifact inventory shard count is not canonical")
     records: list[dict[str, object]] = []
-    shard_paths: list[str] = []
+    shard_digests: list[tuple[str, str]] = []
     for shard_index, raw_shard in enumerate(serialized_shards):
         shard = _strict_mapping(
             raw_shard,
@@ -721,7 +745,6 @@ def _read_inventory(
         expected_path = f"inventory/{shard_index:06d}.jsonl"
         if shard["path"] != expected_path:
             raise ValueError("data artifact inventory shard path is not canonical")
-        shard_paths.append(expected_path)
         expected_count = min(
             _RECORD_LIMIT,
             record_count - shard_index * _RECORD_LIMIT,
@@ -742,6 +765,7 @@ def _read_inventory(
         )
         if _sha256_bytes(encoded) != shard_digest:
             raise ValueError("data artifact inventory shard digest mismatch")
+        shard_digests.append((expected_path, shard_digest))
         lines = encoded.splitlines(keepends=True)
         if len(lines) != expected_count:
             raise ValueError("data artifact inventory shard record count mismatch")
@@ -772,27 +796,48 @@ def _read_inventory(
         raise ValueError("data artifact inventory contains duplicate paths")
     if canonical_artifact_digest(records) != expected_digest:
         raise ValueError("data artifact stored-files digest mismatch")
-    observed = scan_regular_files(
-        root / "data",
-        hash_contents=verification == "full",
-        label="data artifact stored files",
+    return expected_digest, tuple(records), tuple(shard_digests)
+
+
+def _validate_inventory_snapshot(
+    snapshot: Sequence[ArtifactFileSnapshot],
+    *,
+    records: Sequence[Mapping[str, object]],
+    shard_digests: Sequence[tuple[str, str]],
+    manifest_sha256: str,
+    verification: Literal["manifest", "full"],
+) -> None:
+    data_snapshots = tuple(
+        item
+        for item in snapshot
+        if item.relative_path.startswith("data/")
     )
-    if len(observed) != len(records):
+    if len(data_snapshots) != len(records):
         raise ValueError("data artifact stored-file count mismatch")
-    for snapshot, record in zip(observed, records, strict=True):
+    for item, record in zip(data_snapshots, records, strict=True):
+        relative_path = item.relative_path.removeprefix("data/")
         if (
-            snapshot.relative_path != record["path"]
-            or snapshot.size_bytes != record["size_bytes"]
+            relative_path != record["path"]
+            or item.size_bytes != record["size_bytes"]
             or (
                 verification == "full"
-                and snapshot.sha256 != record["sha256"]
+                and item.sha256 != record["sha256"]
             )
         ):
             raise ValueError(
-                f"data artifact stored file does not match inventory: "
-                f"{snapshot.relative_path}"
+                "data artifact stored file does not match inventory: "
+                f"{relative_path}"
             )
-    return expected_digest, tuple(paths), tuple(shard_paths)
+    if verification != "full":
+        return
+    by_path = {item.relative_path: item for item in snapshot}
+    if by_path["manifest.json"].sha256 != manifest_sha256:
+        raise ValueError("data artifact manifest changed during validation")
+    for path, digest in shard_digests:
+        if by_path[path].sha256 != digest:
+            raise ValueError(
+                "data artifact inventory shard changed during validation"
+            )
 
 
 def _validate_object_layout(
@@ -800,6 +845,7 @@ def _validate_object_layout(
     *,
     stored_paths: Sequence[str],
     shard_paths: Sequence[str],
+    snapshot: Sequence[ArtifactFileSnapshot],
 ) -> None:
     expected_root_entries = {"data", "inventory", "manifest.json"}
     observed_root_entries = {entry.name for entry in root.iterdir()}
@@ -837,11 +883,7 @@ def _validate_object_layout(
     }
     observed_files = {
         snapshot.relative_path
-        for snapshot in scan_regular_files(
-            root,
-            hash_contents=False,
-            label="data artifact object layout",
-        )
+        for snapshot in snapshot
     }
     if observed_files != expected_files:
         raise ValueError("data artifact object contains unexpected stored files")
@@ -908,16 +950,19 @@ class DataArtifactStore:
     ) -> DataArtifact[PayloadT]:
         """Load or build one cache-owned artifact."""
 
-        return self._materialize(
-            kind="managed",
-            artifact_type=artifact_type,
-            source_name=source_name,
-            materializer_name=materializer_name,
-            locator_key=locator_key,
-            referenced_roots={},
-            build=build,
-            load=load,
-        )
+        try:
+            return self._materialize(
+                kind="managed",
+                artifact_type=artifact_type,
+                source_name=source_name,
+                materializer_name=materializer_name,
+                locator_key=locator_key,
+                referenced_roots={},
+                build=build,
+                load=load,
+            )
+        except ArtifactVerificationObserverFailure as exc:
+            raise exc.error from None
 
     def materialize_referenced[PayloadT](
         self,
@@ -932,16 +977,19 @@ class DataArtifactStore:
     ) -> DataArtifact[PayloadT]:
         """Load or build an index whose represented content remains external."""
 
-        return self._materialize(
-            kind="referenced",
-            artifact_type=artifact_type,
-            source_name=source_name,
-            materializer_name=materializer_name,
-            locator_key=locator_key,
-            referenced_roots=referenced_roots,
-            build=build,
-            load=load,
-        )
+        try:
+            return self._materialize(
+                kind="referenced",
+                artifact_type=artifact_type,
+                source_name=source_name,
+                materializer_name=materializer_name,
+                locator_key=locator_key,
+                referenced_roots=referenced_roots,
+                build=build,
+                load=load,
+            )
+        except ArtifactVerificationObserverFailure as exc:
+            raise exc.error from None
 
     def _materialize[PayloadT](
         self,
@@ -1163,28 +1211,25 @@ class DataArtifactStore:
     ) -> DataArtifact[PayloadT]:
         object_root = paths.objects / expected.artifact_digest
         try:
-            candidate_identity = self._load_framework_identity(
+            validated = self._validate_object(
                 object_root,
                 kind=kind,
                 artifact_type=artifact_type,
+                expected=None,
                 verification="full",
             )
         except (OSError, DataArtifactValidationError):
             if self.context.policy == "require":
                 raise
         else:
-            if candidate_identity != expected:
+            if validated.identity != expected:
                 raise DataArtifactValidationError(
                     "data artifact identity does not match expected identity"
                 )
             try:
-                return self._load_object(
+                return self._load_validated_object(
                     object_root,
-                    kind=kind,
-                    artifact_type=artifact_type,
-                    source_name=source_name,
-                    materializer_name=materializer_name,
-                    expected=expected,
+                    validated=validated,
                     verification="full",
                     load=load,
                 )
@@ -1197,10 +1242,11 @@ class DataArtifactStore:
             cache_root=paths.cache_root,
         ):
             try:
-                candidate_identity = self._load_framework_identity(
+                validated = self._validate_object(
                     object_root,
                     kind=kind,
                     artifact_type=artifact_type,
+                    expected=None,
                     verification="full",
                 )
             except FileNotFoundError:
@@ -1213,18 +1259,14 @@ class DataArtifactStore:
                     is_directory=True,
                 )
             else:
-                if candidate_identity != expected:
+                if validated.identity != expected:
                     raise DataArtifactValidationError(
                         "data artifact identity does not match expected identity"
                     )
                 try:
-                    return self._load_object(
+                    return self._load_validated_object(
                         object_root,
-                        kind=kind,
-                        artifact_type=artifact_type,
-                        source_name=source_name,
-                        materializer_name=materializer_name,
-                        expected=expected,
+                        validated=validated,
                         verification="full",
                         load=load,
                     )
@@ -1345,7 +1387,11 @@ class DataArtifactStore:
                 path="build.materialization_digest",
             )
             domain = _mapping_copy(result.domain, path="build.domain")
-            stored_files, stored_files_digest = _write_inventory(paths, staging)
+            stored_files, stored_files_digest = _write_inventory(
+                paths,
+                staging,
+                verification_workers=self.context.verification_workers,
+            )
             if kind == "managed":
                 content_digest = stored_files_digest
             else:
@@ -1462,50 +1508,13 @@ class DataArtifactStore:
         artifact_type: str,
         verification: Literal["manifest", "full"],
     ) -> DataArtifactIdentity:
-        try:
-            raw, _ = _load_canonical_json(
-                root,
-                "manifest.json",
-                label="data artifact manifest",
-            )
-            manifest = _strict_mapping(
-                raw,
-                fields=_MANIFEST_FIELDS,
-                path="data artifact manifest",
-            )
-            source = _strict_mapping(
-                manifest["source"],
-                fields=_NAMED_DIGEST_FIELDS,
-                path="data artifact manifest.source",
-            )
-            materializer = _strict_mapping(
-                manifest["materializer"],
-                fields=_NAMED_DIGEST_FIELDS,
-                path="data artifact manifest.materializer",
-            )
-            source_name = _non_empty_string(
-                source["name"],
-                path="data artifact manifest.source.name",
-            )
-            materializer_name = _non_empty_string(
-                materializer["name"],
-                path="data artifact manifest.materializer.name",
-            )
-        except DataArtifactValidationError:
-            raise
-        except (TypeError, ValueError) as exc:
-            raise DataArtifactValidationError(str(exc)) from exc
-        artifact = self._load_object(
+        return self._validate_object(
             root,
             kind=kind,
             artifact_type=artifact_type,
-            source_name=source_name,
-            materializer_name=materializer_name,
             expected=None,
             verification=verification,
-            load=lambda _: None,
-        )
-        return artifact.identity
+        ).identity
 
     def _load_compatible_object[PayloadT](
         self,
@@ -1519,10 +1528,11 @@ class DataArtifactStore:
         load: Callable[[DataArtifactLoadContext], PayloadT],
     ) -> DataArtifact[PayloadT]:
         try:
-            identity = self._load_framework_identity(
+            validated = self._validate_object(
                 root,
                 kind=kind,
                 artifact_type=artifact_type,
+                expected=None,
                 verification=verification,
             )
         except DataArtifactValidationError:
@@ -1532,19 +1542,15 @@ class DataArtifactStore:
                 f"data artifact object could not be read: {root}"
             ) from exc
         if (
-            identity.source_name != source_name
-            or identity.materializer_name != materializer_name
+            validated.identity.source_name != source_name
+            or validated.identity.materializer_name != materializer_name
         ):
             raise DataArtifactLocatorMismatch(
                 "data artifact locator targets an incompatible producer"
             )
-        return self._load_object(
+        return self._load_validated_object(
             root,
-            kind=kind,
-            artifact_type=artifact_type,
-            source_name=source_name,
-            materializer_name=materializer_name,
-            expected=None,
+            validated=validated,
             verification=verification,
             load=load,
         )
@@ -1611,7 +1617,39 @@ class DataArtifactStore:
         verification: Literal["manifest", "full"],
         load: Callable[[DataArtifactLoadContext], PayloadT],
     ) -> DataArtifact[PayloadT]:
+        validated = self._validate_object(
+            root,
+            kind=kind,
+            artifact_type=artifact_type,
+            expected=expected,
+            verification=verification,
+        )
+        if validated.identity.source_name != source_name:
+            raise DataArtifactValidationError(
+                "data artifact source name does not match"
+            )
+        if validated.identity.materializer_name != materializer_name:
+            raise DataArtifactValidationError(
+                "data artifact materializer name does not match"
+            )
+        return self._load_validated_object(
+            root,
+            validated=validated,
+            verification=verification,
+            load=load,
+        )
+
+    def _validate_object(
+        self,
+        root: Path,
+        *,
+        kind: Literal["managed", "referenced"],
+        artifact_type: str,
+        expected: DataArtifactIdentity | None,
+        verification: Literal["manifest", "full"],
+    ) -> ValidatedArtifactObject:
         try:
+            root = canonical_directory(root, label="data artifact object")
             raw, manifest_bytes = _load_canonical_json(
                 root,
                 "manifest.json",
@@ -1643,10 +1681,14 @@ class DataArtifactStore:
                 fields=_NAMED_DIGEST_FIELDS,
                 path="data artifact manifest.materializer",
             )
-            if source["name"] != source_name:
-                raise ValueError("data artifact source name does not match")
-            if materializer["name"] != materializer_name:
-                raise ValueError("data artifact materializer name does not match")
+            source_name = _non_empty_string(
+                source["name"],
+                path="data artifact manifest.source.name",
+            )
+            materializer_name = _non_empty_string(
+                materializer["name"],
+                path="data artifact manifest.materializer.name",
+            )
             source_digest = _sha256(
                 source["digest"], path="data artifact source.digest"
             )
@@ -1658,15 +1700,40 @@ class DataArtifactStore:
                 manifest["content_digest"],
                 path="data artifact manifest.content_digest",
             )
-            stored_digest, stored_paths, shard_paths = _read_inventory(
+            stored_digest, records, shard_digests = _read_inventory(
                 root,
                 manifest["stored_files"],
-                verification=verification,
             )
+            manifest_sha256 = _sha256_bytes(manifest_bytes)
+            snapshot = scan_regular_files(
+                root,
+                hash_contents=verification == "full",
+                label="data artifact validation input",
+                on_progress=self._verification_progress(
+                    artifact_type=artifact_type,
+                    source_name=source_name,
+                    materializer_name=materializer_name,
+                    phase="validate",
+                    verification=verification,
+                ),
+                workers=self.context.verification_workers,
+            )
+            stored_paths = tuple(
+                cast(str, record["path"]) for record in records
+            )
+            shard_paths = tuple(path for path, _ in shard_digests)
             _validate_object_layout(
                 root,
                 stored_paths=stored_paths,
                 shard_paths=shard_paths,
+                snapshot=snapshot,
+            )
+            _validate_inventory_snapshot(
+                snapshot,
+                records=records,
+                shard_digests=shard_digests,
+                manifest_sha256=manifest_sha256,
+                verification=verification,
             )
             if kind == "managed" and content_digest != stored_digest:
                 raise ValueError(
@@ -1710,34 +1777,47 @@ class DataArtifactStore:
                 materialization_digest=materialization_digest,
                 content_digest=content_digest,
                 artifact_digest=artifact_digest,
-                manifest_sha256=_sha256_bytes(manifest_bytes),
+                manifest_sha256=manifest_sha256,
             )
             if expected is not None and identity != expected:
                 raise ValueError(
                     "data artifact identity does not match expected identity"
                 )
+            return ValidatedArtifactObject(
+                identity=identity,
+                domain=domain,
+                snapshot=snapshot,
+            )
+        except ArtifactVerificationObserverFailure:
+            raise
+        except FileNotFoundError:
+            raise
         except DataArtifactValidationError:
             raise
         except (OSError, TypeError, ValueError) as exc:
             raise DataArtifactValidationError(str(exc)) from exc
+
+    def _load_validated_object[PayloadT](
+        self,
+        root: Path,
+        *,
+        validated: ValidatedArtifactObject,
+        verification: Literal["manifest", "full"],
+        load: Callable[[DataArtifactLoadContext], PayloadT],
+    ) -> DataArtifact[PayloadT]:
         try:
             artifact_without_payload: DataArtifact[None] = DataArtifact(
                 root=root,
-                identity=identity,
+                identity=validated.identity,
                 payload=None,
-            )
-            before_load = scan_regular_files(
-                artifact_without_payload.root,
-                hash_contents=verification == "full",
-                label="data artifact load input",
             )
         except (OSError, TypeError, ValueError) as exc:
             raise DataArtifactValidationError(str(exc)) from exc
         payload = load(
             DataArtifactLoadContext(
                 data_root=artifact_without_payload.root / "data",
-                identity=identity,
-                domain=domain,
+                identity=validated.identity,
+                domain=validated.domain,
                 verification=verification,
             )
         )
@@ -1746,23 +1826,63 @@ class DataArtifactStore:
                 artifact_without_payload.root,
                 hash_contents=verification == "full",
                 label="data artifact load input",
+                on_progress=self._verification_progress(
+                    artifact_type=validated.identity.artifact_type,
+                    source_name=validated.identity.source_name,
+                    materializer_name=validated.identity.materializer_name,
+                    phase="post_load",
+                    verification=verification,
+                ),
+                workers=self.context.verification_workers,
             )
+        except ArtifactVerificationObserverFailure:
+            raise
         except (OSError, TypeError, ValueError) as exc:
             raise RuntimeError(
                 "data artifact load callback mutated its artifact"
             ) from exc
-        if before_load != after_load:
+        if validated.snapshot != after_load:
             raise RuntimeError("data artifact load callback mutated its artifact")
         try:
             return DataArtifact(
                 root=artifact_without_payload.root,
-                identity=identity,
+                identity=validated.identity,
                 payload=payload,
             )
         except (OSError, TypeError, ValueError) as exc:
             raise RuntimeError(
                 "data artifact load callback mutated its artifact"
             ) from exc
+
+    def _verification_progress(
+        self,
+        *,
+        artifact_type: str,
+        source_name: str,
+        materializer_name: str,
+        phase: ArtifactVerificationPhase,
+        verification: Literal["manifest", "full"],
+    ) -> Callable[[int, int], None] | None:
+        observer = self.context.verification_observer
+        if observer is None or verification != "full":
+            return None
+
+        def notify(completed: int, total: int) -> None:
+            try:
+                observer(
+                    ArtifactVerificationEvent(
+                        artifact_type=artifact_type,
+                        source_name=source_name,
+                        materializer_name=materializer_name,
+                        phase=phase,
+                        completed=completed,
+                        total=total,
+                    )
+                )
+            except Exception as exc:
+                raise ArtifactVerificationObserverFailure(exc) from exc
+
+        return notify
 
 
 __all__ = [

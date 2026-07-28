@@ -160,6 +160,20 @@ batch 约定见[数据构建](configuration/data-pipeline.md)。
 locking、atomic publication、quarantine 和 strict-resume expected-identity 校验；
 built-in 与 extension 使用同一公共路径。
 
+对已有对象执行 `full` 加载时，store 在 payload loader 前进行一次完整内容验证，
+并复用这次结果作为 loader 输入快照；loader 返回后再进行一次完整扫描，确认 callback
+没有修改 artifact。独立的 identity/winner 验证只需要第一轮。各轮文件哈希由通用
+artifact I/O 层使用有界线程池并行完成，结果与错误仍按路径确定性排序。哈希以 1 MiB
+buffer 调用 `hashlib`，CPython 在该调用和文件读取期间释放 GIL，因此独立文件可以同时
+利用多个核心；这里不需要多进程及其额外的启动、IPC 和安全重开成本。
+`DataSourceContext.verification_observer` 可以接收这两轮的运行时进度；它不进入
+manifest、identity、配置摘要或 checkpoint。
+
+`source.materialization.verification_workers` 控制每个 artifact 的哈希线程数；`null`
+默认选择 `min(8, logical CPUs)`，显式值必须在 `1..8` 范围内。`stochaflow train
+--artifact-verification-workers N` 可以仅对本次启动覆盖全部 source，适用于 strict
+resume。该并行度属于运行时 I/O policy，不进入 artifact identity 或 digest。
+
 `managed` 与 `referenced` 只是 ownership strategy：
 
 - managed artifact 的实际内容位于 framework cache，可以从固定来源和 materialization

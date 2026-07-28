@@ -13,6 +13,9 @@ from stochaflow.utils import config, logging, plugins, registry
 
 def test_public_extension_contracts_reexport_runtime_types() -> None:
     expected = {
+        "ArtifactVerificationEvent": data.ArtifactVerificationEvent,
+        "ArtifactVerificationObserver": data.ArtifactVerificationObserver,
+        "ArtifactVerificationPhase": data.ArtifactVerificationPhase,
         "ComponentConfig": config.ComponentConfig,
         "ConfigError": config.ConfigError,
         "ClassLabeledImageFileRecord": data.ClassLabeledImageFileRecord,

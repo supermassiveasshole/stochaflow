@@ -12,6 +12,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+import stochaflow.data.artifact_store as artifact_store_module
 from stochaflow.data import build_data_loaders, torchvision_source
 from stochaflow.data import datasets as dataset_module
 from stochaflow.data.artifacts import DataSourceContext
@@ -119,6 +120,57 @@ def test_image_folder_is_stable_and_emits_standard_batch(
     assert [record.path for record in records] == ["nested/a.jpg", "z.png"]
     assert loaders.artifact_bindings is not None
     assert loaders.artifact_bindings.ids == ("source",)
+
+
+def test_image_builder_propagates_artifact_verification_observer(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "images"
+    write_image(root / "sample.png")
+    component = image_component(root)
+    build_data_loaders(component, seed=3)
+    events: list[Any] = []
+
+    build_data_loaders(
+        component,
+        seed=3,
+        verification_observer=events.append,
+    )
+
+    assert {event.phase for event in events} == {"validate", "post_load"}
+    assert events[0].completed == 0
+    assert events[-1].completed == events[-1].total
+
+
+def test_image_builder_allows_runtime_verification_workers_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "images"
+    write_image(root / "sample.png")
+    component = image_component(root)
+    component.params["source"]["materialization"]["verification_workers"] = 5
+    observed: list[int | None] = []
+    original_scan = artifact_store_module.scan_regular_files
+
+    def tracked_scan(*args: Any, **kwargs: Any) -> Any:
+        observed.append(cast(int | None, kwargs.get("workers")))
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(
+        artifact_store_module,
+        "scan_regular_files",
+        tracked_scan,
+    )
+
+    build_data_loaders(
+        component,
+        seed=3,
+        verification_workers=2,
+    )
+
+    assert observed
+    assert set(observed) == {2}
 
 
 def test_image_holdout_and_kfold_are_deterministic(tmp_path: Path) -> None:

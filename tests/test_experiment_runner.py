@@ -164,6 +164,7 @@ def _args() -> Namespace:
         deterministic=False,
         progress=False,
         no_progress=True,
+        artifact_verification_workers=None,
         resume=None,
         observability_config=None,
         device=None,
@@ -1465,6 +1466,7 @@ def test_runner_builds_registered_data_builder(monkeypatch, tmp_path, config_pat
     config.experiment.output_dir = str(tmp_path / "outputs")
     args = _args()
     args.config = Path("unused.yaml")
+    args.artifact_verification_workers = 3
     observed = {}
 
     def stub_builder(
@@ -1473,11 +1475,15 @@ def test_runner_builds_registered_data_builder(monkeypatch, tmp_path, config_pat
         seed,
         strict_resume,
         expected_artifacts,
+        verification_observer,
+        verification_workers,
     ):
         observed["builder_config"] = data_config
         observed["seed"] = seed
         observed["strict_resume"] = strict_resume
         observed["expected_artifacts"] = expected_artifacts
+        observed["verification_observer"] = verification_observer
+        observed["verification_workers"] = verification_workers
         return _loaders()
 
     monkeypatch.setattr(experiment_runner, "load_config", lambda path: config)
@@ -1495,6 +1501,8 @@ def test_runner_builds_registered_data_builder(monkeypatch, tmp_path, config_pat
         "seed": config.experiment.seed,
         "strict_resume": False,
         "expected_artifacts": None,
+        "verification_observer": None,
+        "verification_workers": 3,
     }
 
 
@@ -1640,7 +1648,13 @@ def test_strict_resume_rejects_data_artifact_mismatch_before_run_creation(
     monkeypatch.setattr(
         experiment_runner,
         "build_data_loaders",
-        lambda config, *, seed, strict_resume, expected_artifacts: DataLoaders(
+        lambda config,
+        *,
+        seed,
+        strict_resume,
+        expected_artifacts,
+        verification_observer,
+        verification_workers: DataLoaders(
             train=_loader(),
             artifact_bindings=DataArtifactBindings((current_binding,)),
         ),
@@ -1932,6 +1946,52 @@ def test_train_cli_accepts_observability_config_with_resume() -> None:
     assert args.observability_config == Path("observability.yaml")
 
 
+def test_train_cli_accepts_artifact_verification_workers() -> None:
+    parser = build_argument_parser()
+
+    args = parser.parse_args(
+        [
+            "train",
+            "--resume",
+            "checkpoint.pt",
+            "--artifact-verification-workers",
+            "6",
+        ]
+    )
+
+    assert args.artifact_verification_workers == 6
+
+
+def test_run_options_reject_non_positive_artifact_verification_workers() -> None:
+    args = _args()
+    args.artifact_verification_workers = 0
+
+    with pytest.raises(
+        ValueError,
+        match="--artifact-verification-workers must be positive",
+    ):
+        experiment_runner.ExperimentRunOptions.from_namespace(
+            args,
+            configured_num_epochs=2,
+            configured_show_progress=False,
+        )
+
+
+def test_run_options_reject_excessive_artifact_verification_workers() -> None:
+    args = _args()
+    args.artifact_verification_workers = 9
+
+    with pytest.raises(
+        ValueError,
+        match="--artifact-verification-workers must not exceed 8",
+    ):
+        experiment_runner.ExperimentRunOptions.from_namespace(
+            args,
+            configured_num_epochs=2,
+            configured_show_progress=False,
+        )
+
+
 def test_train_cli_progress_overrides_are_mutually_exclusive() -> None:
     parser = build_argument_parser()
 
@@ -1973,10 +2033,41 @@ def test_progress_flag_reenables_checkpoint_disabled_progress(
     args.progress = True
     args.no_progress = False
     observed: dict[str, Any] = {}
+
+    class FakeArtifactReporter:
+        def __init__(self) -> None:
+            observed["artifact_reporter"] = self
+            self.closed = False
+
+        def observe(self, event: object) -> None:
+            observed["artifact_event"] = event
+
+        def close(self) -> None:
+            self.closed = True
+
+    def build_with_observer(
+        config,
+        *,
+        seed,
+        strict_resume,
+        expected_artifacts,
+        verification_observer,
+        verification_workers,
+    ):
+        del config, seed, strict_resume, expected_artifacts
+        observed["verification_observer"] = verification_observer
+        observed["verification_workers"] = verification_workers
+        return _loaders()
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "RichArtifactVerificationReporter",
+        FakeArtifactReporter,
+    )
     monkeypatch.setattr(
         experiment_runner,
         "build_data_loaders",
-        lambda config, *, seed, strict_resume, expected_artifacts: _loaders(),
+        build_with_observer,
     )
     monkeypatch.setattr(
         experiment_runner,
@@ -1996,6 +2087,10 @@ def test_progress_flag_reenables_checkpoint_disabled_progress(
 
     assert observed["config"].trainer.show_progress is False
     assert observed["options"].show_progress is True
+    reporter = observed["artifact_reporter"]
+    assert observed["verification_observer"].__self__ is reporter
+    assert observed["verification_workers"] is None
+    assert reporter.closed
     assert observed["runtime_options"]["progress"] is True
     assert observed["runtime_options"]["no_progress"] is False
 
@@ -2479,7 +2574,13 @@ def test_run_experiment_passes_overlay_audit_and_absolute_runtime_path(
     monkeypatch.setattr(
         experiment_runner,
         "build_data_loaders",
-        lambda config, *, seed, strict_resume, expected_artifacts: _loaders(),
+        lambda config,
+        *,
+        seed,
+        strict_resume,
+        expected_artifacts,
+        verification_observer,
+        verification_workers: _loaders(),
     )
     monkeypatch.setattr(
         experiment_runner,

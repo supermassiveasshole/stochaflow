@@ -366,6 +366,8 @@ def test_prepare_tool_uses_the_registered_source(
         return PreparedSource()
 
     monkeypatch.setattr(tool.IMAGE_DATA_SOURCES, "create", create)
+    verification_events: list[Any] = []
+    observer = verification_events.append
     summary = tool.prepare_artifact(
         cache_root=tmp_path / "cache",
         archive=tmp_path / "afhq_v2.zip",
@@ -374,14 +376,61 @@ def test_prepare_tool_uses_the_registered_source(
         downloader="python",
         policy="require",
         verification="full",
+        verification_observer=observer,
+        verification_workers=3,
     )
 
     assert observed["name"] == "afhq-v2.official"
     assert observed["config_path"] == "prepare"
     assert observed["params"]["archive"] == str(tmp_path / "afhq_v2.zip")
     assert observed["context"].policy == "require"
+    assert observed["context"].verification_observer is observer
+    assert observed["context"].verification_workers == 3
     assert summary["root"] == str(tmp_path / "artifact")
     assert summary["counts"] == {"train": 1, "test": 1}
+
+
+def test_prepare_cli_progress_is_optional_and_json_stays_on_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tool = importlib.import_module("stochaflow_afhq_v2.tools.prepare")
+    observed: dict[str, Any] = {}
+
+    class FakeReporter:
+        def __init__(self) -> None:
+            observed["reporter"] = self
+            self.closed = False
+
+        def observe(self, event: Any) -> None:
+            observed["event"] = event
+
+        def close(self) -> None:
+            self.closed = True
+
+    def fake_prepare_artifact(**kwargs: Any) -> dict[str, Any]:
+        observed.update(kwargs)
+        return {"root": "artifact", "counts": {"train": 1, "test": 1}}
+
+    monkeypatch.setattr(
+        tool,
+        "RichArtifactVerificationReporter",
+        FakeReporter,
+    )
+    monkeypatch.setattr(tool, "prepare_artifact", fake_prepare_artifact)
+
+    tool.main(["--progress", "--artifact-verification-workers", "4"])
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["root"] == "artifact"
+    assert captured.err == ""
+    reporter = observed["reporter"]
+    assert observed["verification_observer"].__self__ is reporter
+    assert observed["verification_workers"] == 4
+    assert reporter.closed
+
+    parsed = tool.build_argument_parser().parse_args(["--no-progress"])
+    assert parsed.progress is False
 
 
 def test_managed_source_cache_hit_and_builder_do_not_need_raw_archive(

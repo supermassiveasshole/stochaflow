@@ -31,6 +31,9 @@ from stochaflow.extensions import ...
 | `IMAGE_DATA_SOURCES` | 复用内置 image recipe 时注册 `ImageDataSource` 的受限 Registry |
 | `DataSource` | 只负责物化一个带 identity 的 `DataArtifact`，不构造训练数据栈 |
 | `DataSourceContext` | cache root、ensure/require、verification 与 strict-resume expected identity |
+| `ArtifactVerificationEvent` | `full` 验证的 producer、phase、completed 与 total 进度值 |
+| `ArtifactVerificationObserver` | 接收有序验证事件的可选窄 callback contract |
+| `ArtifactVerificationPhase` | `validate` 或 `post_load` 验证阶段 |
 | `DataSourceMaterializationConfig` | `source.materialization` 的通用 typed config，可构造 `DataSourceContext` |
 | `ImageDataSource` | 内置 image recipe 可消费的 source-adapter 基类 |
 | `DataArtifact` | managed/referenced 内容共用的已验证 runtime handle |
@@ -111,6 +114,24 @@ verified staging root 以 `full` 调用，并在发布后对 final object root �
 最终返回的 `DataArtifact` 只保留 final-root payload。持久化内容错误应抛
 `DataArtifactValidationError`，普通 `TypeError`/`ValueError` 会被视为 producer bug。
 
+cache hit 或 strict resume 的 `full` 加载执行两轮完整内容扫描：第一轮同时验证
+manifest、inventory、object layout、identity 和 stored files，并作为 loader 前快照；
+第二轮在 loader 后验证不可变性。identity-only 校验只执行第一轮。文件 SHA-256 在
+artifact I/O 层有界并行，但快照和异常始终按路径确定性排序。默认线程数为
+`min(8, logical CPUs)`；`DataSourceContext.verification_workers` 可以提供 `1..8`
+范围内的整数覆盖。
+底层以 1 MiB `hashlib` 更新执行哈希，CPython 会在哈希与文件读取期间释放 GIL。
+
+CLI 或自定义 Builder 可以向 `DataSourceContext.verification_observer` 注入
+`ArtifactVerificationObserver`。每轮从 `completed=0` 开始，仅在 `full` 模式产生事件，
+callback 在调用线程执行。observer 是临时运行时能力，不应序列化到 source config、
+artifact identity 或 checkpoint；observer 自身的异常会直接传播，不会把有效 artifact
+归类为损坏。
+
+`DataSourceMaterializationConfig.verification_workers` 是可序列化的运行配置，
+`DataBuilderContext.verification_workers` 是可选的本次运行覆盖。两者都不会进入
+artifact identity、locator 或 digest。
+
 `DataArtifactIdentity` 固定包含 `schema_version=2`、`kind`、artifact/source/materializer
 名称与 digest、content/artifact digest 及 `manifest_sha256`。`DataArtifactBindings`
 同样只接受 schema v2。旧 manifest、locator、cache layout、identity 或 checkpoint
@@ -125,6 +146,8 @@ class DataBuilderContext:
     seed: int
     strict_resume: bool = False
     expected_artifacts: DataArtifactBindings | None = None
+    verification_observer: ArtifactVerificationObserver | None = None
+    verification_workers: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

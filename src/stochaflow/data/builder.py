@@ -11,7 +11,11 @@ from typing import Any, cast
 
 from torch.utils.data import DataLoader, Dataset
 
-from stochaflow.data.artifacts import DataArtifactBindings
+from stochaflow.data.artifact_io import MAX_ARTIFACT_VERIFICATION_WORKERS
+from stochaflow.data.artifacts import (
+    ArtifactVerificationObserver,
+    DataArtifactBindings,
+)
 from stochaflow.data.dataloaders import (
     DataLoaders,
     build_class_labeled_image_data_loader,
@@ -68,6 +72,8 @@ class DataBuilderContext:
     seed: int
     strict_resume: bool = False
     expected_artifacts: DataArtifactBindings | None = None
+    verification_observer: ArtifactVerificationObserver | None = None
+    verification_workers: int | None = None
 
     def __post_init__(self) -> None:
         params = cast(object, self.params)
@@ -82,6 +88,22 @@ class DataBuilderContext:
         ):
             raise TypeError(
                 "expected_artifacts must be DataArtifactBindings or None"
+            )
+        observer = cast(object, self.verification_observer)
+        if observer is not None and not callable(observer):
+            raise TypeError(
+                "verification_observer must be callable or None"
+            )
+        verification_workers = cast(object, self.verification_workers)
+        if verification_workers is not None and (
+            not isinstance(verification_workers, int)
+            or isinstance(verification_workers, bool)
+            or verification_workers <= 0
+            or verification_workers > MAX_ARTIFACT_VERIFICATION_WORKERS
+        ):
+            raise TypeError(
+                "verification_workers must be an integer between 1 and "
+                f"{MAX_ARTIFACT_VERIFICATION_WORKERS}, or None"
             )
         object.__setattr__(self, "params", deepcopy(self.params))
 
@@ -124,6 +146,8 @@ def build_data_loaders(
     seed: int,
     strict_resume: bool = False,
     expected_artifacts: DataArtifactBindings | None = None,
+    verification_observer: ArtifactVerificationObserver | None = None,
+    verification_workers: int | None = None,
     registries: RegistryCatalog = REGISTRIES,
 ) -> DataLoaders:
     """Construct and validate one registered DataBuilder."""
@@ -138,6 +162,8 @@ def build_data_loaders(
                 seed=seed,
                 strict_resume=strict_resume,
                 expected_artifacts=expected_artifacts,
+                verification_observer=verification_observer,
+                verification_workers=verification_workers,
             ),
         ),
     )

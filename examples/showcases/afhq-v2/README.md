@@ -8,7 +8,7 @@
   -> 带类别语义和 official train/test 的确定性 128×128 managed artifact
   -> 内置 class_labeled_image Builder：分层划分、Dataset、Sampler、DataLoader
   -> 带 class_label 的 train/validation/test loaders
-  -> ADM-UNet 或 DiT-S/8 类条件 Gaussian 训练
+  -> ADM-UNet 或 DiT-B/8 类条件 Gaussian 训练
   -> validation、best checkpoint 与 official test
   -> EMA + classifier-free guidance DDIM sampling
   -> tensor、PNG、trajectory 与可追溯 manifest
@@ -212,7 +212,7 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
   --config examples/showcases/afhq-v2/experiments/production/train-adm-128.yaml
 ```
 
-DiT-S/8 使用相同 data、Process、Objective、effective batch、scheduler、diagnostic 和
+DiT-B/8 使用相同 data、Process、Objective、effective batch、scheduler、diagnostic 和
 sampling protocol：
 
 ```bash
@@ -220,16 +220,18 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
   --config examples/showcases/afhq-v2/experiments/production/train-dit-128.yaml
 ```
 
-两个 production 配置均固定：
+两个 production 配置均固定 effective batch 32，其中：
 
-- 200 epochs、micro batch 8、gradient accumulation 4，即 effective batch 32；
+- ADM 使用 micro batch 8、gradient accumulation 4；
+- DiT 使用 micro batch 32、gradient accumulation 1；
+- 两者均训练 200 epochs；
 - `bf16-mixed`、AdamW、EMA 和 step-level warmup cosine；
 - class-condition dropout 0.1 和 `v` prediction；
 - 每 5 epochs 保存周期 checkpoint；
 - 每个 epoch 运行 validation，恢复 best checkpoint 后运行一次 official test；
 - 每 5 epochs 产出固定 seed 的 balanced class diagnostic 和 DDIM-50 CFG 2.0 artifact。
 
-在 `drop_last: true` 下：
+在 `drop_last: true` 下，ADM 的更新计划为：
 
 ```text
 micro-batches/epoch = floor(13,436 / 8) = 1,679
@@ -238,7 +240,16 @@ total updates = 200 × 420 = 84,000
 warmup updates = round(0.02 × 84,000) = 1,680
 ```
 
-最后不足 4 个 micro-batches 的 accumulation window 会按实际长度 flush。scheduler、
+DiT 的更新计划为：
+
+```text
+micro-batches/epoch = floor(13,436 / 32) = 419
+optimizer updates/epoch = ceil(419 / 1) = 419
+total updates = 200 × 419 = 83,800
+warmup updates = round(0.02 × 83,800) = 1,676
+```
+
+ADM 最后不足 4 个 micro-batches 的 accumulation window 会按实际长度 flush。scheduler、
 EMA、global step 和 diagnostics 只在 optimizer update 成功后推进。production 默认
 使用 `device: auto`；当它选中 CUDA 时要求 CUDA BF16 capability，框架不会静默降级。
 CPU BF16 autocast 可用但不代表适合 production 吞吐。如果目标 CUDA 不支持 BF16，
@@ -258,7 +269,8 @@ uv run --project examples/showcases/afhq-v2 tensorboard --logdir outputs
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow train \
   --resume outputs/afhq-v2/adm-128/<run-id> \
-  --epochs 200
+  --epochs 200 \
+  --artifact-verification-workers 8
 ```
 
 checkpoint v10 严格恢复 model、Process、Objective、optimizer、scheduler、EMA、
@@ -266,7 +278,9 @@ precision/scaler topology、global step、epoch-boundary RNG、训练循环状�
 artifact identity。恢复前会用 `require/full` 重新验证同一个 prepared artifact；source、
 materialization、manifest 或内容 identity 不一致时，在恢复训练资产前失败。运行时
 validation policy 不进入 artifact identity，而由 checkpoint 的 resolved config 与 seed
-固定。
+固定。artifact 哈希默认使用 `min(8, logical CPUs)` 个线程；可以在 YAML 的
+`source.materialization.verification_workers` 配置 `1..8` 范围内的整数，或用
+`--artifact-verification-workers` 仅覆盖本次启动。
 
 resume 创建新的 sibling run，不续写旧日志。它不能通过 config 替换 model、optimizer、
 precision 或 accumulation。`--observability-config` 只用于允许的 diagnostics/logging

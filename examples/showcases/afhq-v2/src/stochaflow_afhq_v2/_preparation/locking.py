@@ -40,9 +40,7 @@ class SourceAcquisitionLock(AbstractContextManager["SourceAcquisitionLock"]):
         acquired = False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            flags = os.O_RDWR | os.O_CREAT
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
+            flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(self.path, flags, 0o600)
             deadline = time.monotonic() + self.timeout_seconds
             while not _try_lock(descriptor):

@@ -253,6 +253,9 @@ def test_builder_errors_report_registry_and_return_contract() -> None:
 
 def test_only_new_data_contract_is_public() -> None:
     assert set(data.__all__) == {
+        "ArtifactVerificationEvent",
+        "ArtifactVerificationObserver",
+        "ArtifactVerificationPhase",
         "ClassLabeledImageDataBuilder",
         "ClassLabeledImageFileRecord",
         "ClassLabeledImageFolderArtifactPayload",

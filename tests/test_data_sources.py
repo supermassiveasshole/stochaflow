@@ -287,9 +287,10 @@ def test_reference_rejects_special_files_and_path_collisions(
     fifo_root = tmp_path / "fifo"
     fifo_root.mkdir()
     fifo = fifo_root / "sample.png"
-    if not hasattr(os, "mkfifo"):
+    mkfifo = getattr(os, "mkfifo", None)
+    if mkfifo is None:
         pytest.skip("FIFO creation is unavailable")
-    os.mkfifo(fifo)
+    mkfifo(fifo)
     with pytest.raises(
         ValueError,
         match=r"regular file|unsupported filesystem entry",
@@ -457,6 +458,32 @@ def test_source_factory_checks_binding_before_materialization(
             path="data.params.source",
         )
     assert not (tmp_path / "cache").exists()
+
+
+def test_materialization_verification_workers_support_config_and_override(
+    tmp_path: Path,
+) -> None:
+    config = DataSourceMaterializationConfig(
+        cache_root=str(tmp_path / "cache"),
+        verification_workers=5,
+    )
+
+    assert config.context().verification_workers == 5
+    assert config.context(verification_workers=2).verification_workers == 2
+
+
+@pytest.mark.parametrize("workers", [0, -1, True, 9, 10_000])
+def test_materialization_rejects_invalid_verification_workers(
+    tmp_path: Path,
+    workers: object,
+) -> None:
+    config = DataSourceMaterializationConfig(
+        cache_root=str(tmp_path / "cache"),
+        verification_workers=workers,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="verification_workers"):
+        config.validate(path="data.params.source.materialization")
 
 
 def test_torchvision_managed_cache_hit_require_and_repair(

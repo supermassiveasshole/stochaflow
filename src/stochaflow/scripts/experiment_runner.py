@@ -19,7 +19,11 @@ from stochaflow.data import (
     DataLoaders,
     build_data_loaders,
 )
+from stochaflow.data.artifact_io import MAX_ARTIFACT_VERIFICATION_WORKERS
 from stochaflow.sampling.runtime import run_sampling
+from stochaflow.scripts.artifact_reporting import (
+    RichArtifactVerificationReporter,
+)
 from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
 from stochaflow.training.precision import validate_precision_support
 from stochaflow.training.reporting import (
@@ -81,6 +85,22 @@ def _positive_optional(value: int | None, *, option: str) -> int | None:
     return value
 
 
+def _artifact_verification_workers(value: int | None) -> int | None:
+    workers = _positive_optional(
+        value,
+        option="--artifact-verification-workers",
+    )
+    if (
+        workers is not None
+        and workers > MAX_ARTIFACT_VERIFICATION_WORKERS
+    ):
+        raise ValueError(
+            "--artifact-verification-workers must not exceed "
+            f"{MAX_ARTIFACT_VERIFICATION_WORKERS}"
+        )
+    return workers
+
+
 @dataclass(frozen=True, slots=True)
 class ExperimentRunOptions:
     """Validated runtime options for one config-driven invocation."""
@@ -91,6 +111,7 @@ class ExperimentRunOptions:
     max_test_batches: int | None
     deterministic: bool
     show_progress: bool
+    artifact_verification_workers: int | None
     resume_checkpoint: Path | None
     device: str | None
     sample_after_training: bool
@@ -128,6 +149,9 @@ class ExperimentRunOptions:
             show_progress=(
                 force_progress
                 or (configured_show_progress and not suppress_progress)
+            ),
+            artifact_verification_workers=_artifact_verification_workers(
+                getattr(args, "artifact_verification_workers", None),
             ),
             resume_checkpoint=args.resume,
             device=args.device,
@@ -242,6 +266,16 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.Argument
         help=(
             "Disable Rich progress bars, overriding the saved config when "
             "resuming."
+        ),
+    )
+    parser.add_argument(
+        "--artifact-verification-workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Override source.materialization.verification_workers for artifact "
+            "hashing (1-8); defaults to the config or min(8, logical CPUs)."
         ),
     )
     parser.add_argument(
@@ -1385,12 +1419,27 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
         else None
     )
     set_seed(config.experiment.seed, deterministic=options.deterministic)
-    loaders = build_data_loaders(
-        config.data,
-        seed=config.experiment.seed,
-        strict_resume=strict_resume,
-        expected_artifacts=expected_artifacts,
+    artifact_reporter = (
+        RichArtifactVerificationReporter()
+        if options.show_progress
+        else None
     )
+    try:
+        loaders = build_data_loaders(
+            config.data,
+            seed=config.experiment.seed,
+            strict_resume=strict_resume,
+            expected_artifacts=expected_artifacts,
+            verification_observer=(
+                artifact_reporter.observe
+                if artifact_reporter is not None
+                else None
+            ),
+            verification_workers=options.artifact_verification_workers,
+        )
+    finally:
+        if artifact_reporter is not None:
+            artifact_reporter.close()
     data_artifacts = loaders.artifact_bindings
     _validate_resume_data_artifacts(
         expected_artifacts,
@@ -1420,6 +1469,9 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
         "deterministic": args.deterministic,
         "progress": args.progress,
         "no_progress": args.no_progress,
+        "artifact_verification_workers": (
+            options.artifact_verification_workers
+        ),
         "skip_final_sample": args.skip_final_sample,
         "force_extension_version_mismatch": (
             getattr(args, "force_extension_version_mismatch", False)
