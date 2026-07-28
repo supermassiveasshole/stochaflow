@@ -133,7 +133,7 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
     assert not (_SHOWCASE / "experiments" / "ddpm_128.yaml").exists()
 
 
-def test_afhq_production_configs_parse_and_share_one_pipeline_contract() -> None:
+def test_afhq_production_configs_parse_and_follow_pipeline_contract() -> None:
     adm = _raw(_ADM_CONFIG)
     dit = _raw(_DIT_CONFIG)
     adm_config = load_config(_ADM_CONFIG)
@@ -147,7 +147,10 @@ def test_afhq_production_configs_parse_and_share_one_pipeline_contract() -> None
     assert dit["experiment"]["output_dir"] == "outputs/afhq-v2/dit-b8-128"
     assert adm["extensions"]["plugins"] == ["stochaflow-afhq-v2"]
     assert dit["extensions"] == adm["extensions"]
-    for raw, config in ((adm, adm_config), (dit, dit_config)):
+    for raw, config, verification in (
+        (adm, adm_config, "manifest"),
+        (dit, dit_config, "full"),
+    ):
         assert config.data.name == "class_labeled_image"
         source = raw["data"]["params"]["source"]
         assert source["name"] == "afhq-v2.official"
@@ -155,7 +158,7 @@ def test_afhq_production_configs_parse_and_share_one_pipeline_contract() -> None
         assert source["materialization"] == {
             "cache_root": "./data",
             "policy": "require",
-            "verification": "full",
+            "verification": verification,
         }
         assert set(raw["data"]["params"]) == {
             "source",
@@ -228,6 +231,9 @@ def test_afhq_production_configs_parse_and_share_one_pipeline_contract() -> None
         config["experiment"].pop("name")
         config["experiment"].pop("output_dir")
         config["data"]["params"]["loader"].pop("batch_size")
+        config["data"]["params"]["source"]["materialization"].pop(
+            "verification"
+        )
         config["trainer"].pop("accumulate_grad_batches")
         config["lr_scheduler"]["params"].pop("warmup_steps")
         config["lr_scheduler"]["params"].pop("total_steps")

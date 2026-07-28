@@ -14,7 +14,7 @@ data:
       materialization:
         cache_root: ./data
         policy: require
-        verification: full
+        verification: manifest
       params:
         resolution: 128
     partition:
