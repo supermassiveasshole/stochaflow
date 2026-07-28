@@ -127,6 +127,36 @@ class CleanupFailingReferenceMetricProvider(FakeReferenceMetricProvider):
         raise RuntimeError(f"{self.name} reset failure")
 
 
+class ShutdownTrackingBatchIterator:
+    """Batch iterator exposing PyTorch's multiprocessing shutdown capability."""
+
+    def __init__(self, batches: list[object]) -> None:
+        self._iterator = iter(batches)
+        self.shutdown_count = 0
+
+    def __iter__(self) -> ShutdownTrackingBatchIterator:
+        return self
+
+    def __next__(self) -> object:
+        return next(self._iterator)
+
+    def _shutdown_workers(self) -> None:
+        self.shutdown_count += 1
+
+
+class ShutdownTrackingBatches:
+    """Re-iterable test loader that retains its most recent iterator."""
+
+    def __init__(self, batches: list[object]) -> None:
+        self.batches = batches
+        self.last_iterator: ShutdownTrackingBatchIterator | None = None
+
+    def __iter__(self) -> ShutdownTrackingBatchIterator:
+        iterator = ShutdownTrackingBatchIterator(self.batches)
+        self.last_iterator = iterator
+        return iterator
+
+
 @dataclass
 class FakeDistribution:
     """Installed distribution metadata used by plugin discovery."""
@@ -603,7 +633,7 @@ def test_checkpoint_progress_uses_memory_mapping_and_requires_positive_epoch(
     calls: dict[str, object] = {}
 
     def fake_load(
-        path: Path,
+        path: str,
         *,
         map_location: str,
         weights_only: bool,
@@ -630,11 +660,30 @@ def test_checkpoint_progress_uses_memory_mapping_and_requires_positive_epoch(
         evaluation_inputs.checkpoint_progress(checkpoint)
 
     assert calls == {
-        "path": checkpoint,
+        "path": str(checkpoint),
         "map_location": "cpu",
         "weights_only": True,
         "mmap": True,
     }
+
+
+def test_real_image_collection_shuts_down_workers_after_batch_failure(
+    tmp_path: Path,
+) -> None:
+    document = evaluation.load_evaluation_document(
+        _small_evaluation_config(tmp_path / "evaluation.yaml")
+    )
+    test_batches = ShutdownTrackingBatches([object()])
+    loaders = DataLoaders(train=[0], test=test_batches)
+
+    with pytest.raises(TypeError, match="test batches must be"):
+        evaluation_metrics.collect_real_test_images(
+            loaders,
+            document.protocol,
+        )
+
+    assert test_batches.last_iterator is not None
+    assert test_batches.last_iterator.shutdown_count == 1
 
 
 def test_result_checkpoint_header_drops_tensor_state(tmp_path: Path) -> None:

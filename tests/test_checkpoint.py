@@ -187,10 +187,18 @@ def _legacy_v8_payload(
 
 
 def _cuda_grad_scaler(*, initial_scale: float = 65_536.0) -> torch.cuda.amp.GradScaler:
+    # PyTorch <= 2.2 imports this probe into grad_scaler; newer releases look it
+    # up through common. Patch both call sites so CPU-only CI exercises enabled
+    # scaler checkpoint semantics instead of PyTorch's CUDA availability policy.
     with (
         patch(
             "torch.cuda.amp.common.amp_definitely_not_available",
             return_value=False,
+        ),
+        patch(
+            "torch.cuda.amp.grad_scaler.amp_definitely_not_available",
+            return_value=False,
+            create=True,
         ),
         warnings.catch_warnings(),
     ):

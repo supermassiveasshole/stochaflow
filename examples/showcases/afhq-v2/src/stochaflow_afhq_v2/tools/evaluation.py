@@ -137,11 +137,13 @@ def evaluate_checkpoint(
             extensions,
             expected_bindings,
         )
-        real_images, real_counts = collect_real_test_images(
-            loaders,
-            document.protocol,
-        )
-        del loaders
+        try:
+            real_images, real_counts = collect_real_test_images(
+                loaders,
+                document.protocol,
+            )
+        finally:
+            del loaders
         sampling = run_resolved_sampling(
             inputs,
             extensions,

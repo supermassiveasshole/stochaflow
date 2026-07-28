@@ -143,20 +143,29 @@ def collect_real_test_images(
     label_to_name = {
         label: name for name, label in protocol.class_mapping.items()
     }
-    for batch in loaders.test:
-        images, labels = _labeled_batch(batch)
-        for label, class_name in label_to_name.items():
-            remaining = protocol.real_per_class - counts[class_name]
-            if remaining <= 0:
-                continue
-            indices = torch.nonzero(labels == label, as_tuple=False).flatten()
-            if indices.numel() == 0:
-                continue
-            selected = images.index_select(0, indices[:remaining])
-            parts[class_name].append(selected.detach().cpu().clone())
-            counts[class_name] += selected.shape[0]
-        if all(count == protocol.real_per_class for count in counts.values()):
-            break
+    iterator = iter(loaders.test)
+    try:
+        for batch in iterator:
+            images, labels = _labeled_batch(batch)
+            for label, class_name in label_to_name.items():
+                remaining = protocol.real_per_class - counts[class_name]
+                if remaining <= 0:
+                    continue
+                indices = torch.nonzero(labels == label, as_tuple=False).flatten()
+                if indices.numel() == 0:
+                    continue
+                selected = images.index_select(0, indices[:remaining])
+                parts[class_name].append(selected.detach().cpu().clone())
+                counts[class_name] += selected.shape[0]
+            if all(count == protocol.real_per_class for count in counts.values()):
+                break
+    finally:
+        # PyTorch has no public iterator-close API. Its multiprocessing iterator
+        # exposes this hook, which prevents persistent workers from surviving an
+        # early break or a malformed-batch failure until garbage collection.
+        shutdown_workers = getattr(iterator, "_shutdown_workers", None)
+        if callable(shutdown_workers):
+            shutdown_workers()
     missing = {
         name: protocol.real_per_class - count
         for name, count in counts.items()

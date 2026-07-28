@@ -76,4 +76,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Run tests
-        run: uv run --frozen pytest
+        timeout-minutes: 10
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: uv run --frozen pytest -vv --durations=25

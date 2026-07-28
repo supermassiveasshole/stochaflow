@@ -95,7 +95,7 @@ def checkpoint_progress(checkpoint_path: Path) -> dict[str, int]:
     """Read only scalar training progress through a memory-mapped payload."""
 
     payload = torch.load(
-        checkpoint_path,
+        str(checkpoint_path),
         map_location="cpu",
         weights_only=True,
         mmap=True,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gc
 import hashlib
 import random
 from pathlib import Path
@@ -101,6 +100,15 @@ def collect_epoch(
         torch.cat([batch[0] for batch in batches]),
         torch.cat([batch[1]["class_label"] for batch in batches]),
     )
+
+
+def shutdown_persistent_loader(loader: DataLoader[Any]) -> None:
+    """Stop workers retained by a persistent PyTorch DataLoader."""
+
+    iterator = getattr(loader, "_iterator", None)
+    shutdown_workers = getattr(iterator, "_shutdown_workers", None)
+    if callable(shutdown_workers):
+        shutdown_workers()
 
 
 def test_seeded_image_transform_is_stateless_and_domain_separated() -> None:
@@ -205,6 +213,7 @@ def test_epoch_tagged_sampler_always_propagates_epoch() -> None:
 
 def test_class_labeled_loader_is_worker_count_independent(
     tmp_path: Path,
+    request: pytest.FixtureRequest,
 ) -> None:
     records = write_labeled_records(tmp_path, count=8)
     single_dataset = ClassLabeledImageDataset(
@@ -249,6 +258,7 @@ def test_class_labeled_loader_is_worker_count_independent(
     )
     assert single_loader is not None
     assert worker_loader is not None
+    request.addfinalizer(lambda: shutdown_persistent_loader(worker_loader))
 
     for epoch in (2, 3):
         single_images, single_labels = collect_epoch(
@@ -278,6 +288,3 @@ def test_class_labeled_loader_is_worker_count_independent(
     assert conditions["class_label"].dtype == torch.long
     with pytest.raises(ValueError, match="must not be empty"):
         collate_class_labeled_image_batch([])
-
-    del worker_loader
-    gc.collect()
