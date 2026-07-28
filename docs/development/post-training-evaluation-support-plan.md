@@ -8,7 +8,8 @@
   与 canonical result contract
 - 关联计划：
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
-  [Latent Diffusion、DiT 与 Stable Diffusion 支持计划](latent-diffusion-and-stable-diffusion-support-plan.md)、
+  [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)、
+  [Stable Diffusion Component-Native 支持计划](stable-diffusion-component-native-support-plan.md)、
   [自动化模型调优开发计划](automated-model-tuning-plan.md)、
   [Consistency Distillation 支持计划](consistency-distillation-support-plan.md)
 - 首版范围：独立 checkpoint evaluation、validation/test 治理、live inference、
@@ -1220,7 +1221,7 @@ alignment 或 human evaluation 通过 extension BenchmarkSuite 接入。
 ### 13.4 Class-conditional latent image generation profile
 
 完整 contract 见
-[Latent Diffusion、DiT 与 Stable Diffusion 计划](latent-diffusion-and-stable-diffusion-support-plan.md)。
+[Latent Diffusion 计划](latent-diffusion-support-plan.md)。
 正式生成评估前必须先产生独立 codec reconstruction EvaluationResult，冻结：
 
 - codec model ID、immutable revision、config/weights digest 与 license；
@@ -1252,40 +1253,42 @@ generation case 再冻结：
 - precision/recall provider 与参数；
 - distribution、class fidelity、coverage、memorization 与 performance measurements。
 
-Flowers102 必须使用不同 protocol identity 区分：
+不同 dataset role 必须使用不同 protocol identity：
 
-- `flowers102-full-showcase-v1`：允许全部 8,189 张参与训练，必须记录
-  `uses_official_test_for_training=true`，不产生 held-out claim；发布的 seed、class
-  ordering、sample count 与失败样本保留规则必须预先固定；
-- `flowers102-heldout-transfer-v1`：official validation 用于选择，official test
-  只消费唯一冻结 subject；pretrained codec 使其属于 transfer benchmark。它必须再
-  显式选择一个 `finalization` variant：
-  - `selected-checkpoint`：直接冻结 validation 选出的 checkpoint；
-  - `retrain-trainval`：按预注册的 step budget、seed 与 checkpoint rule 在
-    train+validation 上重训，不再使用 validation early stopping。
-  两个 variant 使用不同 subject、protocol 与 result identity，不能互相覆盖。
+- `afhq-v2-latent-correctness-v1`：只验证 codec reconstruction、class/CFG、
+  resume、decode 和 writer；不发布规模、SOTA 或 architecture ranking；
+- `met-open-curated-latent-generation-v1`：首个开放正式 protocol；冻结
+  curated snapshot、coarse condition mapping、split、final subject、sample
+  allocation、codec 和完整 metric provider；
+- `imagenet-100-latent-generation-v1`：原始分辨率 source 冻结后的标准
+  class benchmark；160-pixel mirror 不得进入 256 profile；
+- `domainnet-class-domain-generation-v1`：只有 class + domain condition gate
+  通过后启用；冻结 class/domain joint vocabulary、domain-balanced/empirical
+  allocation 与 domain-sliced reconstruction/generation report；
+- Flowers102 若保留，只作为小数据 tutorial/research profile，并继续区分
+  full-data showcase 与 held-out transfer；它不再是 latent capability 的正式
+  promotion target。
 
-小数据默认建议：
+默认建议：
 
-- 按 reference label histogram 生成相同数量样本；KID 是固定 estimator 的 primary，
-  FID 是 pinned Clean-FID `clean` protocol 的 secondary；
-- 每个 seed 生成完整 replicate；heldout profile 默认每个 replicate 对齐 6,149 张
-  official test reference，并报告逐 seed、arithmetic mean 与
+- empirical-prior case 按 reference label histogram 生成固定数量样本；
+- uniform-class case 使用独立 quantitative plan 测 class coverage，不只生成 gallery；
+- KID/FID provider、sample count、reference statistics 和 preprocessing 全部固定；
+- 每个 seed 生成完整 replicate，并报告逐 seed、arithmetic mean 与
   `between_seed_std`；v1 不产生尚未冻结 estimator 的置信区间；
 - 单个 replicate 的 KID subset resampling 使用
   `kid_within_subset_mean/std`，跨 generation seed 使用
   `kid_between_seed_mean/std`；固定同一 real reference 时，后者只表征给定数据集下
   generator seed 与 metric RNG 的条件变异，不代表完整 dataset uncertainty；
-- 另有 uniform-class fixed quantitative plan 测 class coverage，不只生成 gallery；
 - frozen classifier 的 intended-class macro accuracy/confusion；classifier artifact
   manifest 必须冻结 model/weights digest、training dataset/split IDs、preprocessing
-  与 HPO/selection history，official test/generated images 不得参与 classifier
+  与 HPO/selection history，held-out/generated images 不得参与 classifier
   fit、HPO 或 selection；
 - 同时报告 classifier 在真实 test 上的 reliability/reference baseline；低于预注册
   reliability gate 时，该 classifier 结果不得作为 class-fidelity 主证据；无法审计
   training lineage 的外部 classifier 只能标为 non-independent supporting evidence；
 - precision/recall；
-- 对实际训练 corpus 做 nearest-neighbor 与 duplicate audit；official test neighbor
+- 对实际训练 corpus 做 nearest-neighbor 与 duplicate audit；held-out neighbor
   只能作为 leakage/reference evidence，不能替代 training-corpus memorization audit；
 - 不把每类样本很少的 per-class FID 作为主指标。
 
@@ -1294,7 +1297,41 @@ latent shape、condition、CFG、Dynamics/Sampler 或 codec decode，而是消�
 层已经验证的 inference capability。UNet/DiT comparison 只有在 codec、data、budget、
 prediction、EMA、CFG、Sampler 与 sample plan 全部 compatible 时才可进入 comparison。
 
-### 13.5 Consistency quality-speed profile
+### 13.5 Stable Diffusion text-to-image profile
+
+完整 contract 见
+[Stable Diffusion Component-Native 计划](stable-diffusion-component-native-support-plan.md)。
+除共享 codec reconstruction result 外，必须冻结：
+
+- black-box 或 component-native backend ownership；
+- component bundle、immutable revisions 和 digests；
+- tokenizer/text encoder identity、maximum length 和 truncation policy；
+- caption artifact、normalization/template 和 train/evaluation prompt split；
+- denoiser initialization profile：pretrained fine-tuning 或 random-init；
+- prediction type、schedule/timesteps 与 parity level；
+- positive/negative prompt、CFG、seed bank 和 resolution；
+- 256 bring-up 或 512 formal profile identity；
+- prompt-image alignment provider；
+- prompt/category coverage；
+- distribution、memorization、safety/manual review 和 performance measurements。
+
+协议至少区分：
+
+- `met-open-sd1-finetune-512-v1`：开放 curated image-text formal profile；
+- `met-open-sd1-random-init-512-v1`：同数据上的 from-scratch UNet profile，
+  不与 fine-tuning 混合声明；
+- `coco2017-sd1-reference-v1`：多对象人工 caption reference，不自动继承
+  Met 的许可或 taxonomy 结论。
+
+component parity、schedule parity、trajectory parity 和 distribution-level
+compatibility 分开报告。black-box Diffusers Pipeline 的结果不能证明
+Stochaflow-native training/sampling compatibility。
+
+fixed prompt suite 必须包含 in-distribution、held-out composition、empty、
+negative、truncated 和 rare-combination prompts。正式报告不得只使用人工挑选
+gallery。
+
+### 13.6 Consistency quality-speed profile
 
 一致性模型不能只报告“一步可生成”。建议把以下内容建成三个预先声明的 case：
 
@@ -1326,7 +1363,7 @@ NFE 4 with exact timestep list
 cond/uncond 合并为一个 batch forward 时，同时记录 forward call 与 effective model
 evaluation，避免 NFE 语义模糊。
 
-### 13.6 Performance profile
+### 13.7 Performance profile
 
 性能是独立 profile/case，不把随手测到的 wall time 混入质量指标：
 

@@ -4,17 +4,20 @@
 - 状态：提案，尚未进入实现
 - 制定日期：2026-07-25
 - 架构复核：2026-07-26；增加独立 Evaluation operation/recipe entry；
-  补充 class-conditional latent generation 与 Stable Diffusion 分层互操作
+  2026-07-28 将 Latent Diffusion 与 Stable Diffusion 分为两个关联能力计划
 - 关联计划：
   [Metrics 支持](metrics-support-plan.md)、
   [训练后 Evaluation 与 Benchmark](post-training-evaluation-support-plan.md)、
-  [Latent Diffusion、DiT 与 Stable Diffusion](latent-diffusion-and-stable-diffusion-support-plan.md)、
+  [Latent Diffusion](latent-diffusion-support-plan.md)、
+  [Stable Diffusion Component-Native](stable-diffusion-component-native-support-plan.md)、
   [Consistency Distillation](consistency-distillation-support-plan.md)、
   [自动化模型调优](automated-model-tuning-plan.md)
 - 首版候选：
   Gaussian 无条件图像生成、确定性图像超分辨率、Gaussian 条件超分辨率；
   consistency image generation 在 target lifecycle gate 通过后晋升；
-  class-conditional latent generation 在 AFHQ 条件生成前置与 codec gate 通过后晋升
+  conditional latent generation 在 AFHQ 条件生成前置与 codec gate 通过后晋升；
+  Stable Diffusion 1.x component-native text-to-image 在共享 latent 前置和
+  family parity gate 通过后晋升
 
 ## 1. 目标与核心结论
 
@@ -88,8 +91,8 @@
 | --- | --- | --- | --- |
 | unconditional image generation | Gaussian denoising | DDPM/DDIM | 当前已有，先封装为 Recipe |
 | unconditional image generation | consistency distillation | direct one-step / CM few-step | extension 验证后晋升 |
-| class-conditional image generation | latent Gaussian denoising | CFG + DDPM/DDIM + codec decode | AFHQ 前置与 codec gate 后晋升 |
-| text-to-image generation | imported SD family components | family-specific CFG/scheduler | 后续 optional interop |
+| conditional image generation | latent Gaussian denoising | condition adapter + DDPM/DDIM + codec decode | AFHQ 前置与 codec gate 后晋升 |
+| text-to-image generation | Stable Diffusion 1.x component-native training/import | family-specific CFG + validated Gaussian schedule | 共享 latent 与 parity gate 后晋升 |
 | super resolution | supervised pixel regression | direct forward | 新增确定性基线 |
 | super resolution | conditional Gaussian denoising | DDPM/DDIM | 从现有教程晋升 |
 | super resolution | conditional consistency distillation | one/few-step conditional CM | 后续独立提案 |
@@ -908,23 +911,28 @@ README 和 typed exporter contract 暴露；只有未来 core 明确定义 expor
 - inference EMA 与 loss target EMA 是两套不同状态；
 - target lifecycle gate 未完成前，recipe maturity 只能是 `reference/experimental`。
 
-### 10.5 `class-conditional-latent-image-generation`
+### 10.5 `latent-image-generation`
 
-定位：在 frozen image codec 的 diffusion-normalized latent 上训练类条件 denoiser，
-并通过 CFG、原生 DDPM/DDIM 和同一 codec decode 生成图像。完整设计服从
-[Latent Diffusion、DiT 与 Stable Diffusion 支持计划](latent-diffusion-and-stable-diffusion-support-plan.md)。
+定位：在 frozen image codec 的 diffusion-normalized latent 上训练 concrete
+conditional denoiser，并通过 condition adapter、原生 DDPM/DDIM 和同一 codec
+decode 生成图像。class-conditioned DiT 是首个 reference variant，不是 recipe
+family 的 abstraction boundary。完整设计服从
+[Latent Diffusion 支持计划](latent-diffusion-support-plan.md)。
 
-首个候选是 Flowers102 256×256，但 recipe family 不绑定 Flowers、VAE 品牌或 DiT：
+首个开放正式候选是冻结的 The Met Open Access curated snapshot；AFHQ-v2
+只承担 correctness/smoke，原始分辨率 ImageNet-100 是 class benchmark，
+DomainNet 在 class + domain condition gate 后作为规模扩展。recipe family
+不绑定具体 dataset、VAE 品牌或 denoiser topology：
 
 | entry | 类型 | 输入 | 输出 |
 | --- | --- | --- | --- |
 | `evaluate-codec` | evaluation | frozen codec、profile-declared images | reconstruction EvaluationResult、gate artifacts |
-| `train-conditional` | training | class image/latent data、codec | denoiser checkpoint、metrics |
-| `sample-cfg` | sampling | checkpoint、class plan、seed | decoded images、latent/sampling manifest |
+| `train-conditional` | training | recipe-declared conditioned image/latent data、codec | denoiser checkpoint、metrics |
+| `sample-conditional` | sampling | checkpoint、condition plan、seed | decoded images、latent/sampling manifest |
 | `evaluate-quality` | evaluation | frozen checkpoint、reference/sample plan | distribution/class-fidelity/memorization report |
 
 `prepare-latents` 与 `export-teacher` 一样，是首版 catalog 之外的显式 prerequisite
-utility：它产生带 manifest 的 versioned normalized-latent artifact，但在 core 尚未定义
+utility：它产生带 manifest 的 versioned posterior-moments artifact，但在 core 尚未定义
 窄的 `DataPreparationRequest`、`DataPreparationOutcome` 与
 `DataPreparationRecipeEntry` 前，不能伪装成现有 Training/Sampling/Evaluation
 `RecipeEntry`。在线 encode 与直接读取该 artifact 仍由同一个具体 DataBuilder/
@@ -933,12 +941,17 @@ TrainingBuilder 组合验证。
 边界：
 
 - codec 是 frozen managed auxiliary，primary model 仍是 denoiser；
+- VAE architecture、public weights 和 Diffusers-format export 由 Diffusers/外部
+  training workflow 负责；Stochaflow 不提供 VAE Trainer；
 - pixel/latent 不产生两个 Process 根；
 - UNet 与 DiT 是可替换 model，不是 recipe dispatch key；
-- prepared latent 是内容寻址数据 artifact，不是 loader 的隐式 cache；
+- prepared posterior moments 是内容寻址数据 artifact，不是 loader 的隐式 cache；
 - SamplingBuilder 拥有 condition、CFG、latent shape 和 decode；
-- Flowers full-data showcase 与 held-out transfer 使用不同 protocol/result identity；
-- text encoder、prompt 与 Stable Diffusion LoRA 不进入首版 family。
+- sampling 从 checkpoint 解析 codec，不要求用户重复 VAE declaration；
+- AFHQ smoke、Met formal protocol、ImageNet-100 benchmark 与 DomainNet extension 使用不同
+  protocol/result identity；
+- independent non-DiT denoiser 必须复用同一 lifecycle；
+- text encoder、prompt 与 Stable Diffusion component graph 不进入该 family。
 
 Promotion gate：
 
@@ -947,12 +960,46 @@ Promotion gate：
 - sampling runtime 能恢复被明确请求的 frozen codec；
 - latent training checkpoint 可 strict resume；
 - fixed sample plan 的 KID/FID、class fidelity 与 nearest-neighbor audit 完整；
-- conditional UNet 纵向切片先通过，DiT 再以等预算 ablation 决定是否成为默认 variant。
+- DiT-S/2 在开放数据 profile 完成 bring-up，DiT-B/2 在 production asset
+  persistence 与 step-based resume gate 通过后进入正式长训练。
 
-完整 Diffusers pipeline inference 是 optional backend，不是本 recipe 的数值 Sampler；
-SD 1.x、SDXL、SD3 和 LoRA 也分别使用 family-specific compatibility declaration。
+Stable Diffusion text-to-image 使用下面的独立 recipe；完整 Diffusers pipeline
+inference 也不是本 recipe 的数值 Sampler。
 
-### 10.6 明确不自动组合
+### 10.6 `stable-diffusion-text-to-image`
+
+定位：复用 Latent Diffusion 的 codec、posterior artifact 和 Gaussian lifecycle，
+组合 pinned tokenizer、frozen text encoder 与 conditional UNet，提供 Stable
+Diffusion 1.x-compatible component-native training/sampling。完整设计服从
+[Stable Diffusion Component-Native 支持计划](stable-diffusion-component-native-support-plan.md)。
+
+| entry | 类型 | 输入 | 输出 |
+| --- | --- | --- | --- |
+| `evaluate-components` | evaluation | pinned SD component bundle、fixed prompts | component/schedule/parity report |
+| `train-text-to-image` | training | image-text/latent-text data、component bundle | UNet checkpoint、metrics |
+| `sample-text-cfg` | sampling | checkpoint、prompt suite、seed | decoded images、sampling manifest |
+| `evaluate-text-quality` | evaluation | frozen checkpoint、reference/prompt protocol | alignment/distribution/memorization report |
+
+边界：
+
+- black-box Diffusers Pipeline 和 component-native Stochaflow path 分开声明；
+- first training slice 是 frozen VAE + frozen text encoder + full-parameter UNet；
+- pretrained fine-tuning 与 random-init training 使用不同 profile identity；
+- caption/tokenizer/text encoder 是具体 recipe contract，不进入 universal batch；
+- 256 只做 bring-up，SD 1.x formal profile 是 512；
+- SDXL、SD3、LoRA、ControlNet 不通过 nullable fields 进入 SD 1.x Builder；
+- The Met curated deterministic captions 是首个开放候选，COCO 是 reference profile。
+
+Promotion gate：
+
+- Latent Diffusion Phase 1–4 完成；
+- pinned black-box pipeline 可作为 parity reference；
+- component、schedule 和 trajectory compatibility 分层报告；
+- 512 full UNet fine-tuning 可 strict resume；
+- checkpoint/run bundle 可离线 sampling；
+- fixed prompt suite 与非挑选式 evaluation 完整。
+
+### 10.7 明确不自动组合
 
 以下不是首版 Recipe：
 
@@ -1484,26 +1531,52 @@ slice：
 - 不支持的 scale/range/tiling fail fast；
 - 达到 `baseline` promotion gate 后再进入公开 docs。
 
-### Stage LG0：Class-conditional latent generation
+### Stage LG0：Latent Diffusion
 
 该阶段不在本计划复制完整实现清单，按
-[Latent Diffusion 计划](latent-diffusion-and-stable-diffusion-support-plan.md)
-的 L0–L5 顺序推进：
+[Latent Diffusion 计划](latent-diffusion-support-plan.md)
+的 Phase 1–9 顺序推进：
 
-- 先完成 AFHQ 的 class condition/CFG 前置；
-- 再实现 codec capability 与 reconstruction gate；
-- 补齐 inference auxiliary asset projection；
-- 先以 conditional latent UNet 完成 Flowers 纵向切片；
-- 再加入 DiT substitution 与等预算 ablation；
-- 将 `class-conditional-latent-image-generation` 晋升为 first-party recipe。
+- 先闭合 inference auxiliary asset projection；
+- 再实现 Diffusers `AutoencoderKL` provider 与 reconstruction gate；
+- 用 AFHQ 完成 image-backed end-to-end correctness；
+- 物化 versioned posterior-moments artifact；
+- 用开放 curated data 完成 DiT-S/2 bring-up；
+- 在 production asset bundle 完成后训练 DiT-B/2；
+- 用 independent non-DiT denoiser 验证 substitution；
+- 将 `latent-image-generation` 晋升为 first-party recipe。
 
 退出条件：
 
 - frozen codec 不进入 optimizer/EMA，且可被独立 sampling 恢复；
 - Process/Sampler root 无 latent、codec、class 特例；
-- Flowers showcase/heldout profile 不混名；
+- sampling config 不重复 codec source/normalization；
+- AFHQ smoke 不冒充开放正式 profile 的规模或质量结果；
 - recipe 的正式 Evaluation 不依赖挑选过的 sample grid；
 - Stable Diffusion 支持只按明确 family/interop level 宣称。
+
+### Stage SD0：Stable Diffusion 1.x component-native
+
+按
+[Stable Diffusion Component-Native 计划](stable-diffusion-component-native-support-plan.md)
+的 SD0–SD8 顺序推进：
+
+- 先建立 pinned black-box reference backend；
+- 再闭合 tokenizer/text encoder assets；
+- 完成 component-native sampling parity；
+- 物化 The Met curated image-text/caption artifacts；
+- 完成 256 full fine-tuning bring-up；
+- 完成 512 formal full fine-tuning；
+- 将 random-init UNet 与 pretrained fine-tuning 分开验收；
+- profiling 后再启用 prepared text embeddings/compile 等优化。
+
+退出条件：
+
+- 不用“可加载 Diffusers”冒充 component parity；
+- black-box pipeline 不伪装成 Stochaflow Sampler；
+- sampling config 不重复 checkpoint-owned components；
+- 512 training 可 pause/resume/offline sample；
+- SDXL、SD3 和 LoRA 没有被 SD 1.x 声明隐式覆盖。
 
 ### Stage CM0：修订 consistency 计划
 

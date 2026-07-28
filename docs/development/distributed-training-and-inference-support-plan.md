@@ -10,7 +10,8 @@
   [Metrics 支持](metrics-support-plan.md)、
   [训练后 Evaluation 与 Benchmark](post-training-evaluation-support-plan.md)、
   [默认工作流与推理 Pipeline](default-workflow-pipeline-support-plan.md)、
-  [Latent Diffusion、DiT 与 Stable Diffusion](latent-diffusion-and-stable-diffusion-support-plan.md)
+  [Latent Diffusion](latent-diffusion-support-plan.md)、
+  [Stable Diffusion Component-Native](stable-diffusion-component-native-support-plan.md)
 - 首版目标：`torchrun` 启动、单机/多机 DDP、rank-aware data、全局指标、
   rank-zero side effects、distributed checkpoint、replicated sampling；
   FSDP2 以 Linux CUDA 上的 ADM/DiT 为首批受控能力
