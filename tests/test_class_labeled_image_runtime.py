@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import platform
 import random
+import signal
+import subprocess
+import sys
+import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +31,13 @@ from stochaflow.data.image_contracts import (
 from stochaflow.data.recipe_config import LoaderRecipeConfig
 from stochaflow.data.samplers import EpochTaggedIndexSampler
 from stochaflow.data.transforms import ImageTransform
+
+LEGACY_INTEL_MACOS_TORCH_22 = (
+    sys.platform == "darwin"
+    and platform.machine() == "x86_64"
+    and torch.__version__.startswith("2.2.")
+)
+LEGACY_WORKER_CHILD_ENV = "STOCHAFLOW_TEST_LEGACY_WORKER_CHILD"
 
 
 def patterned_image(*, offset: int = 0) -> Image.Image:
@@ -102,32 +116,54 @@ def collect_epoch(
     )
 
 
-def shutdown_persistent_loader(loader: DataLoader[Any]) -> None:
-    """Stop and reap workers retained by a persistent PyTorch DataLoader."""
+def process_group_exists(process_group_id: int) -> bool:
+    """Return whether a POSIX process group still has a live member."""
 
-    iterator = getattr(loader, "_iterator", None)
-    shutdown_workers = getattr(iterator, "_shutdown_workers", None)
-    workers = tuple(getattr(iterator, "_workers", ()))
     try:
-        if callable(shutdown_workers):
-            shutdown_workers()
-    finally:
-        # PyTorch 2.2 terminates workers that miss its shutdown timeout without
-        # joining them afterward. Explicitly reap every process so neither the
-        # worker nor its torch_shm_manager can keep pytest alive at interpreter
-        # shutdown. This also covers exceptions raised by _shutdown_workers().
-        for worker in workers:
-            if worker.is_alive():
-                worker.terminate()
-            worker.join(timeout=5.0)
-            if worker.is_alive():
-                worker.kill()
-                worker.join(timeout=5.0)
-            if worker.is_alive():
-                raise RuntimeError(
-                    "persistent DataLoader worker remained alive after kill: "
-                    f"name={worker.name!r}, pid={worker.pid}"
-                )
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_for_process_group_exit(
+    process_group_id: int,
+    *,
+    timeout_seconds: float,
+) -> bool:
+    """Wait boundedly for a POSIX process group to disappear."""
+
+    deadline = time.monotonic() + timeout_seconds
+    while process_group_exists(process_group_id):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def cleanup_process_group(
+    process_group_id: int,
+    *,
+    natural_exit_seconds: float,
+) -> str:
+    """Boundedly reap an isolated test process group."""
+
+    if wait_for_process_group_exit(
+        process_group_id,
+        timeout_seconds=natural_exit_seconds,
+    ):
+        return "exited"
+    with suppress(ProcessLookupError):
+        os.killpg(process_group_id, signal.SIGTERM)
+    if wait_for_process_group_exit(process_group_id, timeout_seconds=5.0):
+        return "terminated"
+    with suppress(ProcessLookupError):
+        os.killpg(process_group_id, signal.SIGKILL)
+    if wait_for_process_group_exit(process_group_id, timeout_seconds=5.0):
+        return "killed"
+    return "survived-sigkill"
 
 
 def test_seeded_image_transform_is_stateless_and_domain_separated() -> None:
@@ -230,9 +266,13 @@ def test_epoch_tagged_sampler_always_propagates_epoch() -> None:
         shuffled.set_epoch(True)
 
 
+@pytest.mark.skipif(
+    LEGACY_INTEL_MACOS_TORCH_22
+    and os.environ.get(LEGACY_WORKER_CHILD_ENV) != "1",
+    reason="runs in the bounded fresh-interpreter regression on this platform",
+)
 def test_class_labeled_loader_is_worker_count_independent(
     tmp_path: Path,
-    request: pytest.FixtureRequest,
 ) -> None:
     records = write_labeled_records(tmp_path, count=8)
     single_dataset = ClassLabeledImageDataset(
@@ -261,7 +301,10 @@ def test_class_labeled_loader_is_worker_count_independent(
         shuffle=True,
         drop_last=False,
         pin_memory=False,
-        persistent_workers=True,
+        # Recreate and synchronously reap workers at each epoch. PyTorch 2.2 on
+        # Intel macOS can retain a persistent worker during interpreter exit;
+        # policy forwarding is covered without starting workers below.
+        persistent_workers=False,
     )
     single_loader = build_class_labeled_image_data_loader(
         single_dataset,
@@ -277,7 +320,6 @@ def test_class_labeled_loader_is_worker_count_independent(
     )
     assert single_loader is not None
     assert worker_loader is not None
-    request.addfinalizer(lambda: shutdown_persistent_loader(worker_loader))
 
     for epoch in (2, 3):
         single_images, single_labels = collect_epoch(
@@ -307,3 +349,93 @@ def test_class_labeled_loader_is_worker_count_independent(
     assert conditions["class_label"].dtype == torch.long
     with pytest.raises(ValueError, match="must not be empty"):
         collate_class_labeled_image_batch([])
+
+
+def test_class_labeled_loader_preserves_persistent_worker_policy(
+    tmp_path: Path,
+) -> None:
+    dataset = ClassLabeledImageDataset(
+        roots={"train": tmp_path},
+        records=write_labeled_records(tmp_path, count=1),
+        transform=training_transform(),
+        seed=29,
+    )
+    loader = build_class_labeled_image_data_loader(
+        dataset,
+        LoaderRecipeConfig(
+            batch_size=1,
+            num_workers=1,
+            shuffle=False,
+            drop_last=False,
+            pin_memory=False,
+            persistent_workers=True,
+        ),
+        training=True,
+        seed=29,
+    )
+
+    assert loader is not None
+    assert loader.num_workers == 1
+    assert loader.persistent_workers is True
+
+
+@pytest.mark.skipif(
+    not LEGACY_INTEL_MACOS_TORCH_22,
+    reason="targets the legacy Intel macOS PyTorch worker lifecycle",
+)
+def test_legacy_macos_worker_loader_exits_in_fresh_interpreter(
+    tmp_path: Path,
+) -> None:
+    """Bound the PyTorch 2.2 worker-lifecycle regression in its own process."""
+
+    target = (
+        f"{Path(__file__).resolve()}::"
+        "test_class_labeled_loader_is_worker_count_independent"
+    )
+    output_path = tmp_path / "worker-exit-regression.log"
+    timed_out = False
+    leader_survived = False
+    with output_path.open("w", encoding="utf-8") as output_stream:
+        process = subprocess.Popen(
+            [sys.executable, "-u", "-m", "pytest", "-q", target],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, LEGACY_WORKER_CHILD_ENV: "1"},
+            stdout=output_stream,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            try:
+                process.wait(timeout=60.0)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        finally:
+            group_cleanup = cleanup_process_group(
+                process.pid,
+                natural_exit_seconds=0.0 if timed_out else 5.0,
+            )
+            if process.poll() is None:
+                with suppress(ProcessLookupError):
+                    process.kill()
+                try:
+                    process.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    leader_survived = True
+
+    output = output_path.read_text(encoding="utf-8")
+    if timed_out:
+        pytest.fail(
+            "Intel macOS PyTorch worker test did not exit within 60 seconds; "
+            f"the isolated process group was terminated.\n{output}",
+            pytrace=False,
+        )
+
+    assert not leader_survived, (
+        "isolated Intel macOS pytest leader survived SIGKILL\n" + output
+    )
+    assert group_cleanup == "exited", (
+        "Intel macOS PyTorch worker test leaked its isolated process group; "
+        f"cleanup={group_cleanup!r}\n{output}"
+    )
+    assert process.returncode == 0, output
