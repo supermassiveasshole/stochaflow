@@ -222,6 +222,20 @@ transform、sampler、loader、resume 与 batch 语义时，才只需实现 Imag
 先用 `num_workers: 0` 让真实 Dataset 异常出现在主进程，再检查 Dataset 是否可
 pickle、文件句柄是否按 worker 打开、路径是否有效。确认后逐步恢复 worker 数量。
 
+Intel macOS 当前固定使用 PyTorch 2.2.2 / Torchvision 0.17.2 wheels；该版本的
+`resource_tracker` / `torch_shm_manager` 退出路径可能在 multi-worker DataLoader 已经
+完成迭代后仍卡住解释器。这一精确平台组合应保持：
+
+```yaml
+loader:
+  num_workers: 0
+  persistent_workers: false
+  prefetch_factor: null
+```
+
+这是上游 legacy wheel 的 lifecycle 限制，不表示 Dataset assertion 或 Stochaflow
+训练循环失败。Ubuntu、Windows 和 ARM macOS 不受这一兼容性例外约束。
+
 ### MPS 出现 pinned-memory 警告
 
 内置 recipe 的 `loader.pin_memory` 默认是 `false`，这是 CPU、CUDA 与 MPS 间的可移植

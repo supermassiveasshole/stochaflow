@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import platform
 import random
-import signal
-import subprocess
 import sys
-import time
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +32,6 @@ LEGACY_INTEL_MACOS_TORCH_22 = (
     and platform.machine() == "x86_64"
     and torch.__version__.startswith("2.2.")
 )
-LEGACY_WORKER_CHILD_ENV = "STOCHAFLOW_TEST_LEGACY_WORKER_CHILD"
 
 
 def patterned_image(*, offset: int = 0) -> Image.Image:
@@ -114,56 +108,6 @@ def collect_epoch(
         torch.cat([batch[0] for batch in batches]),
         torch.cat([batch[1]["class_label"] for batch in batches]),
     )
-
-
-def process_group_exists(process_group_id: int) -> bool:
-    """Return whether a POSIX process group still has a live member."""
-
-    try:
-        os.killpg(process_group_id, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def wait_for_process_group_exit(
-    process_group_id: int,
-    *,
-    timeout_seconds: float,
-) -> bool:
-    """Wait boundedly for a POSIX process group to disappear."""
-
-    deadline = time.monotonic() + timeout_seconds
-    while process_group_exists(process_group_id):
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.05)
-    return True
-
-
-def cleanup_process_group(
-    process_group_id: int,
-    *,
-    natural_exit_seconds: float,
-) -> str:
-    """Boundedly reap an isolated test process group."""
-
-    if wait_for_process_group_exit(
-        process_group_id,
-        timeout_seconds=natural_exit_seconds,
-    ):
-        return "exited"
-    with suppress(ProcessLookupError):
-        os.killpg(process_group_id, signal.SIGTERM)
-    if wait_for_process_group_exit(process_group_id, timeout_seconds=5.0):
-        return "terminated"
-    with suppress(ProcessLookupError):
-        os.killpg(process_group_id, signal.SIGKILL)
-    if wait_for_process_group_exit(process_group_id, timeout_seconds=5.0):
-        return "killed"
-    return "survived-sigkill"
 
 
 def test_seeded_image_transform_is_stateless_and_domain_separated() -> None:
@@ -267,9 +211,11 @@ def test_epoch_tagged_sampler_always_propagates_epoch() -> None:
 
 
 @pytest.mark.skipif(
-    LEGACY_INTEL_MACOS_TORCH_22
-    and os.environ.get(LEGACY_WORKER_CHILD_ENV) != "1",
-    reason="runs in the bounded fresh-interpreter regression on this platform",
+    LEGACY_INTEL_MACOS_TORCH_22,
+    reason=(
+        "PyTorch 2.2 multi-worker DataLoader shutdown can hang the "
+        "Intel macOS interpreter"
+    ),
 )
 def test_class_labeled_loader_is_worker_count_independent(
     tmp_path: Path,
@@ -301,9 +247,9 @@ def test_class_labeled_loader_is_worker_count_independent(
         shuffle=True,
         drop_last=False,
         pin_memory=False,
-        # Recreate and synchronously reap workers at each epoch. PyTorch 2.2 on
-        # Intel macOS can retain a persistent worker during interpreter exit;
-        # policy forwarding is covered without starting workers below.
+        # Worker-count determinism does not require persistence. Recreate
+        # workers per epoch; policy forwarding is covered without starting
+        # workers below.
         persistent_workers=False,
     )
     single_loader = build_class_labeled_image_data_loader(
@@ -377,65 +323,3 @@ def test_class_labeled_loader_preserves_persistent_worker_policy(
     assert loader is not None
     assert loader.num_workers == 1
     assert loader.persistent_workers is True
-
-
-@pytest.mark.skipif(
-    not LEGACY_INTEL_MACOS_TORCH_22,
-    reason="targets the legacy Intel macOS PyTorch worker lifecycle",
-)
-def test_legacy_macos_worker_loader_exits_in_fresh_interpreter(
-    tmp_path: Path,
-) -> None:
-    """Bound the PyTorch 2.2 worker-lifecycle regression in its own process."""
-
-    target = (
-        f"{Path(__file__).resolve()}::"
-        "test_class_labeled_loader_is_worker_count_independent"
-    )
-    output_path = tmp_path / "worker-exit-regression.log"
-    timed_out = False
-    leader_survived = False
-    with output_path.open("w", encoding="utf-8") as output_stream:
-        process = subprocess.Popen(
-            [sys.executable, "-u", "-m", "pytest", "-q", target],
-            cwd=Path(__file__).resolve().parents[1],
-            env={**os.environ, LEGACY_WORKER_CHILD_ENV: "1"},
-            stdout=output_stream,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-        )
-        try:
-            try:
-                process.wait(timeout=60.0)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-        finally:
-            group_cleanup = cleanup_process_group(
-                process.pid,
-                natural_exit_seconds=0.0 if timed_out else 5.0,
-            )
-            if process.poll() is None:
-                with suppress(ProcessLookupError):
-                    process.kill()
-                try:
-                    process.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    leader_survived = True
-
-    output = output_path.read_text(encoding="utf-8")
-    if timed_out:
-        pytest.fail(
-            "Intel macOS PyTorch worker test did not exit within 60 seconds; "
-            f"the isolated process group was terminated.\n{output}",
-            pytrace=False,
-        )
-
-    assert not leader_survived, (
-        "isolated Intel macOS pytest leader survived SIGKILL\n" + output
-    )
-    assert group_cleanup == "exited", (
-        "Intel macOS PyTorch worker test leaked its isolated process group; "
-        f"cleanup={group_cleanup!r}\n{output}"
-    )
-    assert process.returncode == 0, output
