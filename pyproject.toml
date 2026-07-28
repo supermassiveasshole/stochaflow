@@ -7,12 +7,13 @@ name = "stochaflow"
 version = "0.1.0"
 description = "A research project scaffold for stochastic flows and diffusion-family methods."
 readme = "README.md"
-# Project minimum stays at 3.12 for Intel Mac.
-# Other environments can use newer interpreters such as Python 3.14.
+# Python 3.12 remains the package-wide minimum. Intel macOS is a deprecated,
+# best-effort target; its transitional dependency pins do not define the
+# support baseline for other environments.
 requires-python = ">=3.12"
 dependencies = [
     # Current PyPI releases no longer publish macOS x86_64 wheels for Intel Macs.
-    # Keep Intel Macs on the latest known wheel-backed trio for CPython 3.12 x86_64.
+    # Retain the last wheel-backed trio temporarily for best-effort installation.
     "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "torchvision==0.17.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     # Other platforms can follow the current release line. Windows CUDA wheels are
@@ -66,6 +67,7 @@ where = ["src"]
 
 [tool.uv]
 required-environments = [
+    # Deprecated/best-effort compatibility lane retained during phase-out.
     "sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "sys_platform == 'win32' and platform_machine == 'AMD64' and python_version == '3.14'",
 ]

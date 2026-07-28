@@ -214,7 +214,7 @@ def test_epoch_tagged_sampler_always_propagates_epoch() -> None:
     LEGACY_INTEL_MACOS_TORCH_22,
     reason=(
         "PyTorch 2.2 multi-worker DataLoader shutdown can hang the "
-        "Intel macOS interpreter"
+        "deprecated/best-effort Intel macOS interpreter"
     ),
 )
 def test_class_labeled_loader_is_worker_count_independent(

@@ -3,9 +3,9 @@
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
 - 状态：提案，尚未进入实现
 - 制定日期：2026-07-27
-- PyTorch 兼容基线：除 Intel macOS 外以 `torch>=2.11,<3` 为设计下限；
-  Intel macOS 的 `torch==2.2.2` 保持 single-process，不承诺本提案中的 distributed
-  能力
+- PyTorch 兼容基线：Supported 平台以 `torch>=2.11,<3` 为设计下限；Intel macOS 已是
+  Deprecated / best effort，其 `torch==2.2.2` compatibility lane 保持
+  single-process，不承诺本提案中的 distributed 能力，也不作为设计下限
 - 关联计划：
   [Metrics 支持](metrics-support-plan.md)、
   [训练后 Evaluation 与 Benchmark](post-training-evaluation-support-plan.md)、
@@ -233,9 +233,9 @@ DTensor，按每参数 dim-0 分片；每次调用形成一个通信组，因此
 
 ### 4.2 首版平台支持
 
-| 能力 | Linux CUDA/NCCL | CPU/Gloo | Windows | MPS | Intel macOS Torch 2.2 |
+| 能力 | Linux CUDA/NCCL | CPU/Gloo | Windows | MPS | Intel macOS Torch 2.2（Deprecated / best effort） |
 | --- | --- | --- | --- | --- | --- |
-| single | 支持 | 支持 | 支持 | 支持 | 支持 |
+| single | 支持 | 支持 | 支持 | 支持 | best effort（非设计或验收目标） |
 | DDP 单机 | production target | correctness/CI | 探测后决定，不预先承诺 NCCL | 不支持 | 不支持 |
 | DDP 多机 | acceptance target | 测试/调试 | 后置 | 不支持 | 不支持 |
 | replicated sampling | production target | correctness/CI | backend gate 后 | 不支持 | 不支持 |

@@ -10,6 +10,7 @@ Gaussian diffusion、DDPM/DDIM、图像数据 recipe 和自动训练生命周期
 
 design/scope
 framework
+platform-support
 configuration/index
 tutorials/tensorboard
 tutorials/afhq-v2
@@ -34,6 +35,8 @@ research-notes/part-3-ddim
 - [架构范围与非目标](design/scope.md)：长期职责边界、明确拒绝的复杂度和新公共抽象的
   准入门槛。
 - [框架特性与架构](framework.md)：稳定职责边界、当前内置能力和 extension 心智模型。
+- [平台支持政策](platform-support.md)：Supported、Deprecated / best effort 等级和
+  当前 CI 验证矩阵。
 - [配置手册](configuration/index.md)：从最小 YAML 到多源数据、K-fold、自定义组件、
   训练恢复与排错。
 - [完整字段参考](configuration/reference.md)：由 dataclass、Registry 和 CLI 自动生成。

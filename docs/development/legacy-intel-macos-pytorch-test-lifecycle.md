@@ -3,7 +3,13 @@
 - 文档性质：已实施的开发决策记录；不属于公开 API
 - 状态：Implemented
 - 日期：2026-07-28
-- 适用范围：`macos-15-intel`、Python 3.12、PyTorch 2.2.2 CI compatibility lane
+- 平台支持等级：Deprecated / best effort
+- 适用范围：`macos-15-intel`、Python 3.12、PyTorch 2.2.2 transitional
+  best-effort CI lane
+
+Intel macOS 已进入逐步退出支持的迁移期。当前 dependency pins 和 CI lane 仅用于
+best-effort 兼容性观察，不再表示完整支持，也不要求未来 framework capability 为该
+平台增加专用适配。公开定义以[平台支持政策](../platform-support.md)为准。
 
 ## 1. 触发问题
 
@@ -67,7 +73,7 @@ CI 继续保留：
 guard 的自测只使用 deterministic process doubles。它不再为了测试 cleanup state
 machine 而创建真实 `spawn`/resource tracker。
 
-### 2.3 明确 legacy 平台例外
+### 2.3 明确 deprecated legacy 平台例外
 
 曾实现过一项只在 Intel macOS + PyTorch 2.2.x 运行的 fresh-interpreter regression：
 它在独立 POSIX session 中执行 `num_workers=1, persistent_workers=False` 的同一
@@ -95,18 +101,24 @@ Ubuntu、Windows 和 ARM macOS 继续执行完整 `num_workers=1`、双 epoch de
 contract。Intel macOS 仍执行 loader construction 和
 `persistent_workers=True` 参数透传测试，但不启动 DataLoader worker。
 
+保留 Intel CI job 是迁移期观测手段，而不是 Supported 等级承诺。该 job 可以继续暴露
+不涉及已知上游缺口的 framework 回归；它不要求把缺失的 multi-worker lifecycle
+重新实现到 Stochaflow 内，也不阻止未来通过独立变更移除整个 compatibility lane。
+
 ## 3. 边界与取舍
 
-- 这是 legacy dependency compatibility lane 的测试策略，不改变 DataLoader public
-  config，也不在 framework runtime 中调用 PyTorch 私有 `_shutdown_workers()`。
+- 这是 deprecated / best-effort dependency compatibility lane 的测试策略，不改变
+  DataLoader public config，也不在 framework runtime 中调用 PyTorch 私有
+  `_shutdown_workers()`。
 - production config 仍可选择 `persistent_workers: true`；该选项的具体 worker lifecycle
   属于所安装 PyTorch 的行为。Intel macOS + PyTorch 2.2.x 上的 `num_workers>0`
   interpreter shutdown 是明确的上游已知限制，不由 Stochaflow 声称修复。
 - session guard 只承诺管理 `multiprocessing.active_children()` 返回的普通 child；
   resource tracker 和 PyTorch native manager 不在该保证内，不能假装 guard 能观察或
   可移植地终止它们。
-- 精确 platform/version skip 比全局禁用 multi-worker 测试更窄；依赖升级后条件自然失效，
-  新版本必须重新通过真实 runtime contract。
+- 精确 platform/version skip 比全局禁用 multi-worker 测试更窄；依赖升级后条件自然
+  失效。若该 transitional lane 届时仍保留，新版本会重新执行真实 runtime case 以提供
+  回归信号，但这不会恢复 Supported 等级。
 - hard timeout 是未知退出问题的最后 failure bound，不是通过条件。
 
 ## 4. 验收
@@ -124,6 +136,7 @@ uv run ruff check \
 uv run pyright
 ```
 
-最终验收以完整 GitHub Actions matrix 为准。Intel macOS job 必须明确报告这一项
-platform/version skip，并在打印 pytest summary 后自然完成；session guard cleanup 仍
-必须使 job 失败。
+本次 lifecycle 修复的验收以当时的完整 GitHub Actions matrix 为准：Intel macOS job
+明确报告该 platform/version skip，并在打印 pytest summary 后自然完成；session guard
+cleanup 仍会使 job 失败。这是该修复的历史验收记录，不承诺未来版本继续保留 Intel
+lane 或把它作为发布门禁。

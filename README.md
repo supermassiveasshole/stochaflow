@@ -139,16 +139,21 @@ python -m pip install -e ".[dev]"
 Platform notes:
 
 - Python `>=3.12` is required.
-- Intel macOS uses CPython 3.12 with pinned PyTorch/Torchvision wheels. Its
-  legacy PyTorch 2.2 DataLoader helper processes can hang during interpreter
-  shutdown, so use `num_workers: 0`, `persistent_workers: false`, and
-  `prefetch_factor: null` on that platform.
+- **Deprecated / best effort:** Intel macOS uses CPython 3.12 with pinned
+  PyTorch/Torchvision wheels. It is no longer a fully supported target; the
+  transitional install path and CI lane do not guarantee complete features,
+  performance, or fixes. Its legacy PyTorch 2.2 DataLoader helper processes can
+  hang during interpreter shutdown, so use `num_workers: 0`,
+  `persistent_workers: false`, and `prefetch_factor: null` on that platform.
 - The source checkout's `uv` configuration routes Windows GPU dependencies
   through the PyTorch CUDA 12.8 wheel index and can use Python 3.14.
 - `trainer.device: auto` selects CUDA first, then Apple MPS when available,
   and otherwise falls back to CPU.
 - Apple MPS does not support `float64` module parameters or Process buffers.
   Use `float32`, or select a CPU/CUDA device when double precision is required.
+
+See the [platform support policy](docs/platform-support.md) for the current
+validation matrix and the exact meaning of Deprecated / best effort.
 
 Windows GPU setup example:
 
