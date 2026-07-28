@@ -141,6 +141,11 @@ provenance 会写入新兄弟 run 及其 checkpoint，旧 logger/event 文件不
 resume 不接受任意模型、训练资产或 optimizer 替换；需要改变它们时应启动新的训练
 workflow。
 
+终端进度显示不属于训练状态。strict resume 可用互斥的 `--progress` 与
+`--no-progress` 覆盖 checkpoint 保存的 `trainer.show_progress`；两者都不指定时继承
+checkpoint。最终生效值和 CLI 覆盖意图分别记录在新 run 的 config 与 runtime options
+中，不改变模型、optimizer、RNG 或数据 artifact 恢复语义。
+
 ## `selected_components` 的含义
 
 训练 manifest、checkpoint metadata 和 sampling manifest 使用同一

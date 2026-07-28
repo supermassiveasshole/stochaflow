@@ -328,6 +328,7 @@ Useful training options:
 --output-dir PATH             Use PATH as the training output root for this run.
 --deterministic               Enable PyTorch deterministic algorithms for this process.
 --skip-final-sample           Skip this run's configured post-training inference.
+--progress                    Enable Rich progress bars, including on strict resume.
 --no-progress                 Disable Rich terminal progress bars.
 --force-extension-version-mismatch
                               Accept a plugin version mismatch after identity checks.

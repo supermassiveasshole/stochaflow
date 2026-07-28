@@ -61,7 +61,7 @@ fields:
   trainer.precision: {description: 自动单 optimizer 循环的 forward/evaluation precision；支持 fp32、bf16-mixed、fp16-mixed，且不进行静默 fallback。, interactions: CUDA BF16 要求硬件 capability；FP16 仅支持 CUDA 并持久化 GradScaler state。}
   trainer.accumulate_grad_batches: {description: 每个 optimizer update 累积的 micro-batch 数；epoch 尾部不足一个窗口时按实际长度归一化并 flush。, constraints: 正整数。}
   trainer.max_grad_norm: {description: 梯度范数裁剪阈值；null 禁用裁剪。, constraints: 非 null 时为正数。}
-  trainer.show_progress: {description: 是否显示 Rich 进度条。, cli: "train --no-progress"}
+  trainer.show_progress: {description: 是否显示 Rich 进度条。, cli: "train --progress / --no-progress"}
   trainer.early_stopping: {description: 基于 epoch 指标的提前停止策略。}
   trainer.early_stopping.enabled: {description: 是否启用提前停止。}
   trainer.early_stopping.monitor: {description: 需要监控的 epoch 指标名，例如 valid_loss 或 train_loss。}
@@ -484,7 +484,8 @@ cli:
   "train.--limit-validation-batches": {description: 每个 epoch 最多执行的验证 batch 数。}
   "train.--limit-test-batches": {description: 最终测试最多执行的 batch 数。}
   "train.--deterministic": {description: 启用 PyTorch 严格确定性算法；没有确定性实现的算子会报错。}
-  "train.--no-progress": {description: 禁用 Rich 进度条。}
+  "train.--progress": {description: 启用 Rich 进度条；strict resume 时覆盖 checkpoint 保存的关闭状态。}
+  "train.--no-progress": {description: 禁用 Rich 进度条；strict resume 时覆盖 checkpoint 保存的开启状态。}
   "train.--resume": {description: 从显式 checkpoint 文件或运行目录执行严格完整恢复；使用 checkpoint 保存的配置和训练状态，并与 --config 互斥。}
   "train.--observability-config": {description: 仅在 strict resume 启动时原子替换 diagnostics，并逐字段覆盖显式 logging 字段；顶层只允许 diagnostics 与 logging。}
   "train.--skip-final-sample": {description: 即使 sampling.run_after_training 为 true，也跳过本次训练完成后的 selected-best checkpoint inference。}

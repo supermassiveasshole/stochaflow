@@ -560,7 +560,7 @@ Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。
 - 类型：`bool`
 - 必填：否
 - 默认值：`true`
-- CLI 覆盖：`train --no-progress`
+- CLI 覆盖：`train --progress / --no-progress`
 
 (config-field-path-trainer-early-stopping)=
 ### `trainer.early_stopping`
@@ -1288,7 +1288,8 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | `--limit-validation-batches` | 否 | `—` | 每个 epoch 最多执行的验证 batch 数。 |
 | `--limit-test-batches` | 否 | `—` | 最终测试最多执行的 batch 数。 |
 | `--deterministic` | 否 | `false` | 启用 PyTorch 严格确定性算法；没有确定性实现的算子会报错。 |
-| `--no-progress` | 否 | `false` | 禁用 Rich 进度条。 |
+| `--progress` | 否 | `false` | 启用 Rich 进度条；strict resume 时覆盖 checkpoint 保存的关闭状态。 |
+| `--no-progress` | 否 | `false` | 禁用 Rich 进度条；strict resume 时覆盖 checkpoint 保存的开启状态。 |
 | `--force-extension-version-mismatch` | 否 | `false` | 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。 |
 | `--skip-final-sample` | 否 | `false` | 即使 sampling.run_after_training 为 true，也跳过本次训练完成后的 selected-best checkpoint inference。 |
 

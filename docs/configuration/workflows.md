@@ -69,7 +69,9 @@ selected best checkpoint 后执行其固化 inference recipe。配置保持默�
 3. `--device`、`--output-dir`、`--epochs` 等 CLI 覆盖；
 4. runner 为本次 run 生成的 `experiment.exp_id` 和时间戳输出目录。
 
-`--no-progress` 会关闭本次运行的进度条；`--deterministic` 启用 PyTorch 的严格
+`--progress` 与 `--no-progress` 互斥，并显式开启或关闭本次运行的进度条；都不指定时
+继承 YAML 或 checkpoint 中的值。最终生效值写入新 run 及其 checkpoint，因此后续
+resume 默认继承最近一次选择。`--deterministic` 启用 PyTorch 的严格
 deterministic-algorithm 模式，遇到没有确定性实现的算子会报错，而不是静默使用非确定性
 kernel。配置随机 seed 仍应固定，但跨设备、PyTorch 版本和第三方算子不保证逐位一致。
 同理，`--epochs` 和 `--limit-batches` 不会按参数名猜测并改写 optimizer/scheduler

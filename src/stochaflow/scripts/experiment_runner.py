@@ -106,6 +106,10 @@ class ExperimentRunOptions:
         num_epochs = configured_num_epochs if args.epochs is None else args.epochs
         if num_epochs <= 0:
             raise ValueError("--epochs must be positive when provided")
+        force_progress = bool(getattr(args, "progress", False))
+        suppress_progress = bool(args.no_progress)
+        if force_progress and suppress_progress:
+            raise ValueError("--progress and --no-progress are mutually exclusive")
         return cls(
             num_epochs=num_epochs,
             max_train_batches=_positive_optional(
@@ -121,7 +125,10 @@ class ExperimentRunOptions:
                 option="--limit-test-batches",
             ),
             deterministic=args.deterministic,
-            show_progress=configured_show_progress and not args.no_progress,
+            show_progress=(
+                force_progress
+                or (configured_show_progress and not suppress_progress)
+            ),
             resume_checkpoint=args.resume,
             device=args.device,
             sample_after_training=not args.skip_final_sample,
@@ -220,10 +227,22 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.Argument
         action="store_true",
         help="Enable deterministic Torch behavior where supported.",
     )
-    parser.add_argument(
+    progress_group = parser.add_mutually_exclusive_group()
+    progress_group.add_argument(
+        "--progress",
+        action="store_true",
+        help=(
+            "Enable Rich progress bars, overriding the saved config when "
+            "resuming."
+        ),
+    )
+    progress_group.add_argument(
         "--no-progress",
         action="store_true",
-        help="Disable Rich progress bars.",
+        help=(
+            "Disable Rich progress bars, overriding the saved config when "
+            "resuming."
+        ),
     )
     parser.add_argument(
         "--force-extension-version-mismatch",
@@ -1399,6 +1418,7 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
         "limit_validation_batches": args.limit_validation_batches,
         "limit_test_batches": args.limit_test_batches,
         "deterministic": args.deterministic,
+        "progress": args.progress,
         "no_progress": args.no_progress,
         "skip_final_sample": args.skip_final_sample,
         "force_extension_version_mismatch": (

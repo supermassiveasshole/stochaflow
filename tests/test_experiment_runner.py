@@ -162,6 +162,7 @@ def _args() -> Namespace:
         limit_validation_batches=None,
         limit_test_batches=None,
         deterministic=False,
+        progress=False,
         no_progress=True,
         resume=None,
         observability_config=None,
@@ -439,6 +440,38 @@ def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
     assert selected["sampling_artifact_writers"] == [
         writer.name for writer in config.sampling.writers
     ]
+
+
+def test_runner_persists_effective_enabled_progress_override(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "progress-override"
+    config.trainer.show_progress = False
+    trainer = RecordingTrainer()
+    logger = RecordingLogger()
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+    args = _args()
+    args.progress = True
+    args.no_progress = False
+
+    _run_single(
+        config,
+        _loaders(),
+        _options(config, args),
+    )
+
+    resolved = yaml.safe_load((tmp_path / "resolved_config.yaml").read_text())
+    manifest = yaml.safe_load((tmp_path / "run_manifest.yaml").read_text())
+    assert trainer.fit_kwargs["show_progress"] is True
+    assert resolved["trainer"]["show_progress"] is True
+    assert manifest["config"]["trainer"]["show_progress"] is True
 
 
 def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):
@@ -1375,6 +1408,52 @@ def test_run_options_reject_non_positive_limits(
 
 
 @pytest.mark.parametrize(
+    (
+        "configured_show_progress",
+        "force_progress",
+        "suppress_progress",
+        "expected",
+    ),
+    [
+        pytest.param(True, False, False, True, id="inherit-enabled"),
+        pytest.param(False, False, False, False, id="inherit-disabled"),
+        pytest.param(True, False, True, False, id="force-disabled"),
+        pytest.param(False, True, False, True, id="force-enabled"),
+    ],
+)
+def test_run_options_resolve_progress_override(
+    configured_show_progress: bool,
+    force_progress: bool,
+    suppress_progress: bool,
+    expected: bool,
+) -> None:
+    args = _args()
+    args.progress = force_progress
+    args.no_progress = suppress_progress
+
+    options = experiment_runner.ExperimentRunOptions.from_namespace(
+        args,
+        configured_num_epochs=2,
+        configured_show_progress=configured_show_progress,
+    )
+
+    assert options.show_progress is expected
+
+
+def test_run_options_reject_conflicting_progress_overrides() -> None:
+    args = _args()
+    args.progress = True
+    args.no_progress = True
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        experiment_runner.ExperimentRunOptions.from_namespace(
+            args,
+            configured_num_epochs=2,
+            configured_show_progress=False,
+        )
+
+
+@pytest.mark.parametrize(
     "config_path",
     [
         BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml",
@@ -1851,6 +1930,74 @@ def test_train_cli_accepts_observability_config_with_resume() -> None:
 
     assert args.resume == Path("checkpoint.pt")
     assert args.observability_config == Path("observability.yaml")
+
+
+def test_train_cli_progress_overrides_are_mutually_exclusive() -> None:
+    parser = build_argument_parser()
+
+    inherited = parser.parse_args(["train", "--resume", "checkpoint.pt"])
+    enabled = parser.parse_args(
+        ["train", "--resume", "checkpoint.pt", "--progress"]
+    )
+    disabled = parser.parse_args(
+        ["train", "--resume", "checkpoint.pt", "--no-progress"]
+    )
+
+    assert inherited.progress is False
+    assert inherited.no_progress is False
+    assert enabled.progress is True
+    assert enabled.no_progress is False
+    assert disabled.progress is False
+    assert disabled.no_progress is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "train",
+                "--resume",
+                "checkpoint.pt",
+                "--progress",
+                "--no-progress",
+            ]
+        )
+
+
+def test_progress_flag_reenables_checkpoint_disabled_progress(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config.trainer.show_progress = False
+    config.experiment.output_dir = str(tmp_path / "runs" / "original")
+    checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
+    args = _resume_args(checkpoint)
+    args.progress = True
+    args.no_progress = False
+    observed: dict[str, Any] = {}
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_data_loaders",
+        lambda config, *, seed, strict_resume, expected_artifacts: _loaders(),
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "_make_timestamped_output_dir",
+        lambda output_dir: ("new-run", tmp_path / "runs" / "new-run"),
+    )
+
+    def record_run(config, loaders, options, **kwargs):
+        del loaders
+        observed["config"] = config
+        observed["options"] = options
+        observed.update(kwargs)
+
+    monkeypatch.setattr(experiment_runner, "_run_single_run", record_run)
+
+    experiment_runner.run_experiment_from_args(args)
+
+    assert observed["config"].trainer.show_progress is False
+    assert observed["options"].show_progress is True
+    assert observed["runtime_options"]["progress"] is True
+    assert observed["runtime_options"]["no_progress"] is False
 
 
 def test_repository_mnist_observability_profile_is_valid() -> None:
