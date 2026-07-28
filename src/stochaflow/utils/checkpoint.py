@@ -322,13 +322,20 @@ class CheckpointManager:
             name: _clone_module_state(module)
             for name, module in self.auxiliary_modules.items()
         }
+        ema_state: EMAStateDict | None = None
         if self.ema is not None:
-            self.ema.store(self.model)
-            try:
-                self.ema.copy_to(self.model)
-                state["ema_model_state_dict"] = _clone_module_state(self.model)
-            finally:
-                self.ema.restore(self.model)
+            ema_state = cast(
+                EMAStateDict,
+                _clone_checkpoint_data(
+                    self.ema.state_dict(),
+                    tensors_to_cpu=False,
+                ),
+            )
+            state["ema_model_state_dict"] = _project_ema_module_state(
+                self.model,
+                state["model_state_dict"],
+                ema_state,
+            )
         if self.optimizer is not None:
             state["optimizer_class"] = _type_identity(self.optimizer)
             state["optimizer_state_dict"] = cast(
@@ -347,14 +354,8 @@ class CheckpointManager:
                     tensors_to_cpu=False,
                 ),
             )
-        if self.ema is not None:
-            state["ema_state_dict"] = cast(
-                EMAStateDict,
-                _clone_checkpoint_data(
-                    self.ema.state_dict(),
-                    tensors_to_cpu=False,
-                ),
-            )
+        if ema_state is not None:
+            state["ema_state_dict"] = ema_state
         if self.grad_scaler is not None:
             state["grad_scaler_class"] = _type_identity(self.grad_scaler)
             state["grad_scaler_state_dict"] = cast(
@@ -2142,6 +2143,52 @@ def _clone_module_state(
     if metadata is not None:
         cast(StateDictWithMetadata, cloned)._metadata = deepcopy(metadata)
     return cloned
+
+
+def _project_ema_module_state(
+    module: nn.Module,
+    model_state: Mapping[str, object],
+    ema_state: EMAStateDict,
+) -> OrderedDict[str, Any]:
+    """Derive one inference projection from the serialized EMA snapshot."""
+
+    shadow_params = ema_state["shadow_params"]
+    shadow_buffers = ema_state["shadow_buffers"]
+    shadow_values: dict[str, torch.Tensor] = {
+        **shadow_params,
+        **shadow_buffers,
+    }
+    canonical_shadow_names = {
+        id(value): name
+        for name, value in (
+            *module.named_parameters(),
+            *module.named_buffers(),
+        )
+        if name in shadow_values
+    }
+    runtime_state = module.state_dict(keep_vars=True)
+    tensor_clones: dict[int, torch.Tensor] = {}
+    projected: OrderedDict[str, Any] = OrderedDict()
+    for name, raw_value in model_state.items():
+        runtime_value = runtime_state[name]
+        shadow_name = canonical_shadow_names.get(id(runtime_value))
+        source_value: object = (
+            shadow_values[shadow_name]
+            if shadow_name is not None
+            else raw_value
+        )
+        if isinstance(source_value, torch.Tensor):
+            tensor = tensor_clones.get(id(source_value))
+            if tensor is None:
+                tensor = source_value.detach().clone()
+                tensor_clones[id(source_value)] = tensor
+            projected[name] = tensor
+        else:
+            projected[name] = deepcopy(source_value)
+    metadata = getattr(model_state, "_metadata", None)
+    if metadata is not None:
+        cast(StateDictWithMetadata, projected)._metadata = deepcopy(metadata)
+    return projected
 
 
 def _find_named_checkpoint(root: str | Path, filename: str) -> Path:

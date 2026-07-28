@@ -18,7 +18,7 @@ from torch import nn
 from torch.optim.lr_scheduler import LRScheduler, StepLR
 
 from stochaflow.sampling import SamplingRecipe
-from stochaflow.training.ema import ExponentialMovingAverage
+from stochaflow.training.ema import EMAStateDict, ExponentialMovingAverage
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     CheckpointManager,
@@ -1202,6 +1202,38 @@ def test_ema_projection_must_match_canonical_shadow_state() -> None:
 
     with pytest.raises(ValueError, match="does not match EMA state"):
         manager.restore_payload(state, path="inconsistent-ema.pt")
+
+
+def test_ema_projection_is_derived_from_one_canonical_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = nn.Linear(1, 1)
+    raw_weight = model.weight.detach().clone()
+    ema = ExponentialMovingAverage(model)
+    ema.shadow_params["weight"].fill_(2.0)
+    original_state_dict = ema.state_dict
+
+    def advanced_state_dict() -> EMAStateDict:
+        ema.shadow_params["weight"].add_(1.0)
+        return original_state_dict()
+
+    monkeypatch.setattr(ema, "state_dict", advanced_state_dict)
+
+    state = CheckpointManager(model, ema=ema).build_state()
+    ema_model_state = state.get("ema_model_state_dict")
+    ema_state = state.get("ema_state_dict")
+
+    assert ema_model_state is not None
+    assert ema_state is not None
+    assert torch.equal(model.weight, raw_weight)
+    assert torch.equal(
+        ema_model_state["weight"],
+        ema_state["shadow_params"]["weight"],
+    )
+    assert torch.equal(
+        ema_model_state["weight"],
+        torch.full_like(model.weight, 3.0),
+    )
 
 
 def test_matching_nan_ema_projection_remains_structurally_restorable() -> None:
