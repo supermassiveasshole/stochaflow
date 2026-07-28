@@ -170,8 +170,9 @@ def validate_data_config(inputs: ResolvedSamplingInputs) -> None:
         )
     if materialization.get("policy") != "require":
         raise ValueError("AFHQ-v2 evaluation requires artifact policy: require")
-    if materialization.get("verification") != "full":
-        raise ValueError("AFHQ-v2 evaluation requires artifact verification: full")
+    # Formal evaluation binds the checkpoint's exact artifact identity below.
+    # ``strict_resume=True`` plus ``expected_artifacts`` upgrades materialization
+    # to full content verification even when training used manifest verification.
     source_params = cast(object, source.get("params"))
     if not isinstance(source_params, dict):
         raise TypeError("checkpoint data source params must be a mapping")
