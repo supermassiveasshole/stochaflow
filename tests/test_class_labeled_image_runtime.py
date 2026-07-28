@@ -103,12 +103,31 @@ def collect_epoch(
 
 
 def shutdown_persistent_loader(loader: DataLoader[Any]) -> None:
-    """Stop workers retained by a persistent PyTorch DataLoader."""
+    """Stop and reap workers retained by a persistent PyTorch DataLoader."""
 
     iterator = getattr(loader, "_iterator", None)
     shutdown_workers = getattr(iterator, "_shutdown_workers", None)
-    if callable(shutdown_workers):
-        shutdown_workers()
+    workers = tuple(getattr(iterator, "_workers", ()))
+    try:
+        if callable(shutdown_workers):
+            shutdown_workers()
+    finally:
+        # PyTorch 2.2 terminates workers that miss its shutdown timeout without
+        # joining them afterward. Explicitly reap every process so neither the
+        # worker nor its torch_shm_manager can keep pytest alive at interpreter
+        # shutdown. This also covers exceptions raised by _shutdown_workers().
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+            worker.join(timeout=5.0)
+            if worker.is_alive():
+                worker.kill()
+                worker.join(timeout=5.0)
+            if worker.is_alive():
+                raise RuntimeError(
+                    "persistent DataLoader worker remained alive after kill: "
+                    f"name={worker.name!r}, pid={worker.pid}"
+                )
 
 
 def test_seeded_image_transform_is_stateless_and_domain_separated() -> None:
