@@ -389,6 +389,43 @@ def test_cuda_fp16_epoch_logs_current_loss_scale() -> None:
     not torch.cuda.is_available(),
     reason="CUDA is unavailable",
 )
+def test_cuda_ema_checkpoint_uses_one_synchronized_host_snapshot() -> None:
+    model = nn.Sequential(
+        nn.Linear(8, 8),
+        nn.BatchNorm1d(8),
+    ).cuda()
+    ema = ExponentialMovingAverage(model, decay=0.9)
+    ema.update(model)
+
+    payload = CheckpointManager(model=model, ema=ema).build_state()
+    ema_state = payload.get("ema_state_dict")
+    ema_projection = payload.get("ema_model_state_dict")
+
+    assert ema_state is not None
+    assert ema_projection is not None
+    shadow_values = {
+        **ema_state["shadow_params"],
+        **ema_state["shadow_buffers"],
+    }
+    assert all(tensor.device.type == "cpu" for tensor in shadow_values.values())
+    assert all(
+        tensor.device.type == "cpu"
+        for tensor in ema_projection.values()
+        if isinstance(tensor, torch.Tensor)
+    )
+    for name, shadow in shadow_values.items():
+        torch.testing.assert_close(
+            ema_projection[name],
+            shadow,
+            rtol=0.0,
+            atol=0.0,
+        )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA is unavailable",
+)
 def test_cuda_fp16_overflow_checkpoint_resume_matches_next_success(
     tmp_path: Path,
 ) -> None:

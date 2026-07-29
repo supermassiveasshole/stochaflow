@@ -328,7 +328,7 @@ class CheckpointManager:
                 EMAStateDict,
                 _clone_checkpoint_data(
                     self.ema.state_dict(),
-                    tensors_to_cpu=False,
+                    tensors_to_cpu=True,
                 ),
             )
             state["ema_model_state_dict"] = _project_ema_module_state(
@@ -2150,7 +2150,7 @@ def _project_ema_module_state(
     model_state: Mapping[str, object],
     ema_state: EMAStateDict,
 ) -> OrderedDict[str, Any]:
-    """Derive one inference projection from the serialized EMA snapshot."""
+    """Derive one host-resident projection from the serialized EMA snapshot."""
 
     shadow_params = ema_state["shadow_params"]
     shadow_buffers = ema_state["shadow_buffers"]
@@ -2180,7 +2180,7 @@ def _project_ema_module_state(
         if isinstance(source_value, torch.Tensor):
             tensor = tensor_clones.get(id(source_value))
             if tensor is None:
-                tensor = source_value.detach().clone()
+                tensor = source_value.detach().to(device="cpu", copy=True)
                 tensor_clones[id(source_value)] = tensor
             projected[name] = tensor
         else:
