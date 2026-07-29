@@ -44,17 +44,20 @@ Writer，以及 frozen-teacher 资产如何严格 resume。它们是普通示例
 
 ```bash
 uv run stochaflow train \
-  --config examples/built-in/image-generation/experiments/ddpm_flowers102.yaml \
+  --config examples/built-in/image-generation/configs/train/mnist.yaml \
   --epochs 1 \
   --limit-batches 2 \
-  --limit-validation-batches 1 \
-  --skip-final-sample
+  --limit-validation-batches 1
 ```
 
-`--limit-*` 只截断本次运行，不修改 YAML。若配置把
-`sampling.run_after_training` 设为 `true`，移除 `--skip-final-sample` 才会在恢复
-selected best checkpoint 后执行其固化 inference recipe。配置保持默认 `false` 时，
-移除该 flag 也不会隐式启动 inference。`shape` 是否必需由 checkpoint recipe 决定。
+这是仓库当前唯一维护的 built-in 完整训练配置。DDPM 与 DDIM-50 位于
+`configs/sample/`，是复用训练 checkpoint 的请求 profile，不是另外两份训练 recipe。
+仓库不再维护 CIFAR-10、Flowers102 或 multi-source runnable YAML；这一收敛不改变
+DataSource/DataBuilder 的通用扩展能力。
+
+`--limit-*` 只截断本次运行，不修改 YAML。该 train 文件没有顶层 `sampling`，
+当前默认也不会在训练结束后隐式启动 inference；DDPM/DDIM 结果通过后续显式
+`stochaflow sample` 产生。`shape` 是否必需由 checkpoint recipe 决定。
 
 这些 smoke 覆盖也不会重写 LR scheduler 的 `T_max`、`total_steps` 或其他构造参数。
 它们是具体 PyTorch scheduler 的显式配置，而不是框架可推断的通用 run length。若要运行
@@ -156,7 +159,7 @@ invocation 实际构建了训练或数据组件。完整 config 仍是重建权�
 
 ```bash
 stochaflow train \
-  --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt
+  --resume outputs/mnist/<run>/checkpoints/latest.pt
 ```
 
 ### Strict Resume Observability Overlay
@@ -165,9 +168,9 @@ stochaflow train \
 
 ```bash
 stochaflow train \
-  --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt \
+  --resume outputs/mnist/<run>/checkpoints/latest.pt \
   --observability-config \
-    examples/built-in/image-generation/experiments/overlays/mnist_observability.yaml
+    examples/built-in/image-generation/configs/overlays/mnist-observability.yaml
 ```
 
 `--observability-config` 只限 strict resume，与 fresh `--config` training 同用会失败。
@@ -303,6 +306,7 @@ diagnostics:
         step_every: 100
         artifact_every_epochs: 5
       sampling:
+        shape: [1, 32, 32]
         sample_num: 16
         batch_size: 16
         seed: 123
@@ -363,6 +367,10 @@ diagnostics:
 使用内置组合，显式写成 `[]` 时禁用该分类。provider 名称、构造参数、重复项和输出
 冲突都会严格校验。
 
+这里的 `diagnostics[].params.sampling.shape` 由训练期 diagnostic 自己拥有，用于构造
+它的固定监控样本；它不会读取或借用顶层 `sampling.shape`。同理，checkpoint-backed
+sample profile 只配置独立 inference request，不会改变训练 diagnostics。
+
 Local logger 记录 artifact 路径，TensorBoard 和 W&B 同时显示 PNG。启用 KID/FID
 前需要 `uv sync --extra quality`，并且本次训练必须有 validation DataLoader。参考指标
 只用于监控，不参与 best checkpoint 或 early stopping。MPS 运行中，FID 会把 feature
@@ -374,6 +382,10 @@ KID 仍使用配置的 runtime device。
 和 epoch manifest。未知 sampler/provider、重复名称、缺少 trajectory 接口等配置错误
 始终在训练开始前失败。
 
+每个 epoch manifest 的 `profiles[].metrics` 保存对应 sampler profile 的独立结果；
+顶层 `combined_metrics` 保存所有 profile 指标的扁平合并结果，便于一次读取完整的
+epoch diagnostic 汇总。
+
 ## Checkpoint-backed inference
 
 `sample` 是统一的 checkpoint-backed inference 命令：AFHQ 等生成任务产生图像，
@@ -382,11 +394,15 @@ Physics 任务执行重建，direct-transform 任务也可以产生 prediction�
 
 v10 checkpoint 除模型、可选 EMA/Process state 和训练配置外，还保存
 `inference_recipe`。它固定内部 `SamplingBuilder` identity 与不可覆盖的 contract；
-`null` 表示该 checkpoint 不支持 `sample`。因此最小调用只需要显式 checkpoint：
+`null` 表示该 checkpoint 不支持 `sample`。CLI 仍允许完整 sampling defaults 已保存在
+checkpoint 时省略 request 文件，但维护中的 MNIST authoring 文件刻意不声明 sampler、
+shape 或 writers，其 resolved v10 defaults 不足以形成完整调用，因此应显式提供
+sample profile：
 
 ```bash
 stochaflow sample \
-  --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml
 ```
 
 要修改允许变化的 request 字段，可提供 partial sample request：
@@ -411,8 +427,20 @@ sampling:
 
 ```bash
 stochaflow sample \
-  --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt \
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
   --config path/to/sample-request.yaml
+```
+
+仓库提供两份可直接使用的 MNIST request profile：
+
+```bash
+stochaflow sample \
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml
+
+stochaflow sample \
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddim-50.yaml
 ```
 
 request 顶层只允许 `sampling` 与可选 `extensions`。其中不允许
@@ -426,6 +454,9 @@ workflow，内部 Builder 则由 checkpoint recipe 决定。字段应用规则�
 - `options` 不能含 `sampler`，也不能覆盖 recipe fixed contract 中的字段；
 - `extensions.plugins` 只能追加插件，不能删除 checkpoint-required plugins，也不能写
   `null` 来选择整个环境。
+
+当前 sample request contract 是包含顶层 `sampling:` 的 mapping；sampler、options、
+shape/batching、seed 和 writers 都位于该 section 内，而不是直接放在文档根。
 
 例如只改变输出数量时，不需要复制 sampler、options 或 writers：
 

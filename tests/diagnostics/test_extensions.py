@@ -105,10 +105,14 @@ def test_external_module_registers_every_provider_type_without_orchestrator_chan
     diagnostic = DiffusionQualityDiagnostic(
         logger=logger,
         output_dir=tmp_path,
-        sample_shape=(1, 4, 4),
         modules=[module_name],
         cadence={"step_every": 1, "artifact_every_epochs": 1},
-        sampling={"sample_num": 2, "batch_size": 1, "seed": 123},
+        sampling={
+            "shape": [1, 4, 4],
+            "sample_num": 2,
+            "batch_size": 1,
+            "seed": 123,
+        },
         samplers=[{"id": "ddpm", "name": "ddpm"}],
         providers={
             "step_metrics": [{"name": "ocp_custom_step"}],
@@ -151,9 +155,9 @@ def test_provider_metric_collision_isolated_by_warn_policy(monkeypatch, tmp_path
     diagnostic = DiffusionQualityDiagnostic(
         logger=logger,
         output_dir=tmp_path,
-        sample_shape=(1, 4, 4),
         modules=[module_name],
         cadence={"step_every": 1},
+        sampling={"shape": [1, 4, 4]},
         samplers=[{"id": "ddpm", "name": "ddpm"}],
         providers={
             "step_metrics": [

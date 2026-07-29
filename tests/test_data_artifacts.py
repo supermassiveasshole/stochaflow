@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from stochaflow.data.artifacts import (
+    ArtifactVerificationEvent,
     DataArtifact,
     DataArtifactBinding,
     DataArtifactBindings,
@@ -171,6 +172,28 @@ def test_data_source_context_accepts_only_callable_verification_observer(
             policy="require",
             verification="full",
             verification_observer=object(),  # type: ignore[arg-type]
+        )
+
+
+def test_artifact_verification_event_accepts_only_validate_phase() -> None:
+    event = ArtifactVerificationEvent(
+        artifact_type="tests.payload.v1",
+        source_name="tests-source",
+        materializer_name="tests-materializer",
+        phase="validate",
+        completed=0,
+        total=1,
+    )
+
+    assert event.phase == "validate"
+    with pytest.raises(ValueError, match="phase must be validate"):
+        ArtifactVerificationEvent(
+            artifact_type="tests.payload.v1",
+            source_name="tests-source",
+            materializer_name="tests-materializer",
+            phase="post_load",  # type: ignore[arg-type]
+            completed=1,
+            total=1,
         )
 
 

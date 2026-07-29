@@ -136,6 +136,7 @@ diagnostics:
         step_every: 1
         artifact_every_epochs: 1
       sampling:
+        shape: [3, 128, 128]
         sample_num: 3
         batch_size: 3
         seed: 20260726

@@ -113,8 +113,9 @@ SamplingBuilder 组合了不兼容的算法 family。内置 DDPM/DDIM 只消费
 
 ### `config cannot override runtime parameter(s)`
 
-从组件 `params` 删除运行时注入参数，例如 diagnostic 的 `logger`、`output_dir`、
-`sample_shape`。完整列表见[扩展手册](extensions.md#其他构造约定)。
+从组件 `params` 删除运行时注入参数，例如 diagnostic 的 `logger`、`output_dir`。
+需要采样的 diagnostic 应在自己的私有参数中声明 shape；完整构造约定见
+[扩展手册](extensions.md#其他构造约定)。
 
 optimizer 的 trainable parameter iterable 和 LR scheduler 的 optimizer 也由核心注入。
 不要在 `optimizer.params` 中再次写 `params`，也不要在 `lr_scheduler.params` 中写

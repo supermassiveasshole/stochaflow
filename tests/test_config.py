@@ -2,8 +2,10 @@
 
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 from stochaflow.data import build_data_loaders
 from stochaflow.utils.config import (
@@ -11,26 +13,67 @@ from stochaflow.utils.config import (
     StochaflowConfig,
     load_config,
     load_config_dict,
+    parse_sample_request,
 )
 
-BUILTIN_EXPERIMENTS = Path(
-    "examples/built-in/image-generation/experiments"
-)
+BUILTIN_CONFIGS = Path("examples/built-in/image-generation/configs")
+BUILTIN_TRAIN_CONFIG = BUILTIN_CONFIGS / "train/mnist.yaml"
+
+
+def _multi_resolution_config_raw() -> dict[str, Any]:
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    source = deepcopy(raw["data"]["params"]["source"])
+    raw["data"] = {
+        "name": "multi_resolution_image",
+        "params": {
+            "sources": [
+                {
+                    "id": "first",
+                    "sampling_weight": 0.4,
+                    "source": deepcopy(source),
+                },
+                {
+                    "id": "second",
+                    "sampling_weight": 0.6,
+                    "source": deepcopy(source),
+                },
+            ],
+            "image": {
+                "channels": 1,
+                "normalize": True,
+                "random_horizontal_flip": False,
+            },
+            "batching": {
+                "buckets": [
+                    {"name": "square_32", "height": 32, "width": 32},
+                    {"name": "square_64", "height": 64, "width": 64},
+                ],
+                "base_bucket": "square_64",
+                "dynamic_batch_size": True,
+            },
+            "loader": deepcopy(raw["data"]["params"]["loader"]),
+            "partition": {
+                "mode": "holdout",
+                "validation_size": 0.1,
+            },
+        },
+    }
+    return raw
 
 
 @pytest.mark.parametrize(
     "config_path",
-    sorted(BUILTIN_EXPERIMENTS.glob("*.yaml")),
+    sorted((BUILTIN_CONFIGS / "train").glob("*.yaml")),
     ids=lambda path: path.name,
 )
-def test_all_builtin_configs_use_200_epochs(config_path: Path) -> None:
+def test_all_builtin_train_configs_use_200_epochs(config_path: Path) -> None:
     config = load_config(config_path)
 
     assert config.trainer.num_epochs == 200
 
 
-def test_load_ddpm_mnist_config() -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+def test_load_mnist_train_config() -> None:
+    config = load_config(BUILTIN_TRAIN_CONFIG)
     assert isinstance(config, StochaflowConfig)
     assert config.process is not None
     assert config.model.name == "unet"
@@ -87,27 +130,18 @@ def test_load_ddpm_mnist_config() -> None:
         "total_steps": 78000,
         "min_lr_ratio": 0.05,
     }
-    assert config.sampling.run_after_training
-    assert config.sampling.sampler is not None
-    assert config.sampling.sampler.name == "ddpm"
-    assert config.sampling.sampler.params == {}
+    assert not config.sampling.run_after_training
+    assert config.sampling.sampler is None
     assert "prediction_type" not in config.sampling.options
     assert config.ema.enabled
     assert config.ema.decay == 0.9995
     assert config.ema.update_after_step == 100
     assert config.ema.update_every == 1
     assert config.ema.use_for_sampling
-    assert config.sampling.num_samples == 64
-    assert config.sampling.batch_size == 64
-    assert config.sampling.shape == [1, 32, 32]
-    assert [writer.name for writer in config.sampling.writers] == [
-        "tensor",
-        "image",
-    ]
-    assert config.sampling.options["trajectory"] == {
-        "enabled": True,
-        "every_steps": 50,
-    }
+    assert config.sampling.num_samples == 16
+    assert config.sampling.batch_size == 16
+    assert config.sampling.shape is None
+    assert [writer.name for writer in config.sampling.writers] == ["tensor"]
     assert config.trainer.num_epochs == 200
     assert not config.trainer.early_stopping.enabled
     assert config.trainer.early_stopping.patience == 7
@@ -121,6 +155,7 @@ def test_load_ddpm_mnist_config() -> None:
         "artifact_every_epochs": 10,
     }
     assert diagnostic_params["sampling"] == {
+        "shape": [1, 32, 32],
         "sample_num": 32,
         "batch_size": 32,
         "seed": 123,
@@ -163,34 +198,36 @@ def test_load_ddpm_mnist_config() -> None:
     assert config.artifacts.checkpoint_every == 50
 
 
-def test_load_ddim_mnist_config() -> None:
-    ddpm = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
-    ddim = load_config(BUILTIN_EXPERIMENTS / "ddim_mnist.yaml")
+def test_builtin_config_tree_separates_train_sample_and_overlays() -> None:
+    train_paths = sorted((BUILTIN_CONFIGS / "train").glob("*.yaml"))
+    sample_paths = sorted((BUILTIN_CONFIGS / "sample").glob("*.yaml"))
+    overlay_paths = sorted((BUILTIN_CONFIGS / "overlays").glob("*.yaml"))
 
-    assert ddim.experiment.name == "ddim_mnist"
-    assert ddim.experiment.output_dir == "outputs/ddim_mnist"
-    assert ddim.data == ddpm.data
-    assert ddim.model == ddpm.model
-    assert ddim.process == ddpm.process
-    assert ddim.training == ddpm.training
-    assert ddim.objective == ddpm.objective
-    assert ddim.optimizer == ddpm.optimizer
-    assert ddim.lr_scheduler == ddpm.lr_scheduler
-    assert ddim.ema == ddpm.ema
-    assert ddim.diagnostics == ddpm.diagnostics
-    assert ddim.logging == ddpm.logging
-    assert ddim.sampling.run_after_training
-    assert ddim.sampling.sampler is not None
-    assert ddim.sampling.sampler.name == "ddim"
-    assert ddim.sampling.sampler.params == {
-        "num_inference_steps": 100,
-        "eta": 0.0,
-    }
-    assert "prediction_type" not in ddim.sampling.options
-    assert ddim.sampling.options["trajectory"] == {
-        "enabled": True,
-        "every_steps": 5,
-    }
+    assert [path.name for path in train_paths] == ["mnist.yaml"]
+    assert [path.name for path in sample_paths] == [
+        "mnist-ddim-50.yaml",
+        "mnist-ddpm.yaml",
+    ]
+    assert [path.name for path in overlay_paths] == [
+        "mnist-observability.yaml"
+    ]
+
+    train_document = yaml.safe_load(BUILTIN_TRAIN_CONFIG.read_text(encoding="utf-8"))
+    assert "sampling" not in train_document
+
+    for sample_path in sample_paths:
+        document = yaml.safe_load(sample_path.read_text(encoding="utf-8"))
+        assert set(document) == {"sampling"}
+        parsed = parse_sample_request(document["sampling"])
+        assert parsed.provided_fields == {
+            "sampler",
+            "options",
+            "shape",
+            "num_samples",
+            "batch_size",
+            "seed",
+            "writers",
+        }
 
 
 def test_config_parsing_does_not_import_declared_plugins(
@@ -204,7 +241,7 @@ def test_config_parsing_does_not_import_declared_plugins(
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["extensions"] = {"plugins": ["config_extension"]}
     original = deepcopy(raw)
 
@@ -216,7 +253,7 @@ def test_config_parsing_does_not_import_declared_plugins(
 
 
 def test_config_rejects_removed_data_modules_without_mutating_input() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["data"]["modules"] = ["math"]
     original = deepcopy(raw)
 
@@ -228,7 +265,7 @@ def test_config_rejects_removed_data_modules_without_mutating_input() -> None:
 
 @pytest.mark.parametrize("plugin", ["", "   ", " padded", 7])
 def test_config_rejects_invalid_extension_plugin_declarations(plugin) -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["extensions"] = {"plugins": [plugin]}
 
     with pytest.raises(ConfigError, match=r"extensions\.plugins\[0\]"):
@@ -236,7 +273,7 @@ def test_config_rejects_invalid_extension_plugin_declarations(plugin) -> None:
 
 
 def test_config_rejects_duplicate_extension_plugins() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["extensions"] = {"plugins": ["example", "example"]}
 
     with pytest.raises(ConfigError, match="duplicate entry-point name 'example'"):
@@ -244,7 +281,7 @@ def test_config_rejects_duplicate_extension_plugins() -> None:
 
 
 def test_config_rejects_removed_extension_modules_schema() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["extensions"] = {"modules": ["example.extension"]}
 
     with pytest.raises(ConfigError, match=r"config\.extensions\.modules"):
@@ -259,7 +296,7 @@ def test_config_preserves_extension_plugin_selection_semantics(
     raw_extensions: dict[str, object],
     expected: list[str] | None,
 ) -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["extensions"] = raw_extensions
 
     config = load_config_dict(raw)
@@ -268,62 +305,15 @@ def test_config_preserves_extension_plugin_selection_semantics(
 
 
 def test_config_rejects_empty_data_builder_name() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["data"]["name"] = ""
 
     with pytest.raises(ConfigError, match="non-empty registry name"):
         load_config_dict(raw)
 
 
-def test_load_ddpm_flowers102_config() -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_flowers102.yaml")
-    assert isinstance(config, StochaflowConfig)
-    assert config.process is not None
-    assert config.model.name == "unet"
-    assert config.data.params["source"]["name"] == "torchvision"
-    assert config.data.params["source"]["params"]["dataset"] == "Flowers102"
-    assert config.data.params["image"]["size"] == [64, 64]
-    assert config.data.params["partition"]["mode"] == "official"
-    assert config.data.params["loader"]["batch_size"] == 64
-    assert config.process.name == "discrete_gaussian"
-    assert config.process.params["schedule"]["name"] == "linear_beta"
-    assert config.process.params["schedule"]["params"]["num_timesteps"] == 1000
-    assert config.optimizer.params["lr"] == 0.0001
-    assert config.lr_scheduler is not None
-    assert config.lr_scheduler.name == "warmup_cosine"
-    assert config.lr_scheduler.interval == "step"
-    assert config.lr_scheduler.params["warmup_steps"] == 150
-    assert config.lr_scheduler.params["total_steps"] == 3000
-    assert config.ema.enabled
-    assert config.ema.use_for_sampling
-    assert len(config.diagnostics) == 1
-    assert config.diagnostics[0].name == "diffusion_quality"
-    sampler_profiles = config.diagnostics[0].params["samplers"]
-    assert [profile["id"] for profile in sampler_profiles] == [
-        "ddpm_full",
-        "ddim_50",
-    ]
-    assert config.trainer.num_epochs == 200
-    assert config.trainer.early_stopping.monitor == "train_loss"
-    assert not config.trainer.early_stopping.enabled
-
-
-def test_load_ddim_cifar10_config() -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddim_cifar10.yaml")
-
-    assert config.process is not None
-    assert config.process.name == "discrete_gaussian"
-    assert config.process.params["schedule"]["name"] == "linear_beta"
-    assert config.sampling.sampler is not None
-    assert config.sampling.sampler.name == "ddim"
-    assert config.sampling.sampler.params["eta"] == 0.0
-    assert config.training.name == "gaussian_denoising"
-    assert config.objective is not None
-    assert config.objective.name == "mse"
-
-
 def test_legacy_diffusion_config_is_rejected() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["diffusion"] = raw.pop("process")
 
     with pytest.raises(ConfigError, match=r"config\.diffusion"):
@@ -332,7 +322,7 @@ def test_legacy_diffusion_config_is_rejected() -> None:
 
 @pytest.mark.parametrize("declaration", [None, "missing"])
 def test_process_is_optional_and_resolves_to_null(declaration: object) -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     if declaration == "missing":
         raw.pop("process")
     else:
@@ -348,7 +338,7 @@ def test_process_is_optional_and_resolves_to_null(declaration: object) -> None:
 def test_optional_process_rejects_non_mapping_declarations(
     declaration: object,
 ) -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["process"] = declaration
 
     with pytest.raises(ConfigError, match=r"config\.process must be a mapping"):
@@ -356,7 +346,7 @@ def test_optional_process_rejects_non_mapping_declarations(
 
 
 def test_config_rejects_empty_process_name_when_present() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["process"]["name"] = ""
 
     with pytest.raises(ConfigError, match=r"process\.name"):
@@ -364,7 +354,7 @@ def test_config_rejects_empty_process_name_when_present() -> None:
 
 
 def test_config_to_dict_preserves_top_level_sections() -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_cifar10.yaml")
+    config = load_config(BUILTIN_TRAIN_CONFIG)
     data = config.to_dict()
     assert "experiment" in data
     assert data["extensions"] == {"plugins": []}
@@ -372,14 +362,14 @@ def test_config_to_dict_preserves_top_level_sections() -> None:
     assert "training" in data
     assert "ema" in data
     assert "sampling" in data
-    assert data["lr_scheduler"] is None
+    assert data["lr_scheduler"] is not None
     assert "diagnostics" in data
     assert "trainer" in data
 
 
 @pytest.mark.parametrize("declaration", [None, "missing"])
 def test_objective_is_optional_and_resolves_to_null(declaration: object) -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     if declaration == "missing":
         raw.pop("objective")
     else:
@@ -392,7 +382,7 @@ def test_objective_is_optional_and_resolves_to_null(declaration: object) -> None
 
 
 def test_config_requires_training_declaration() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw.pop("training")
 
     with pytest.raises(ConfigError, match="training"):
@@ -400,7 +390,7 @@ def test_config_requires_training_declaration() -> None:
 
 
 def test_config_rejects_empty_training_name() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["training"]["name"] = ""
 
     with pytest.raises(ConfigError, match=r"training\.name"):
@@ -408,10 +398,10 @@ def test_config_rejects_empty_training_name() -> None:
 
 
 def test_load_multi_source_weighted_config() -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist_flowers102.yaml")
+    config = load_config_dict(_multi_resolution_config_raw())
 
     sources = config.data.params["sources"]
-    assert [source["id"] for source in sources] == ["digits", "flowers"]
+    assert [source["id"] for source in sources] == ["first", "second"]
     assert [source["sampling_weight"] for source in sources] == [0.4, 0.6]
     assert [
         bucket["name"] for bucket in config.data.params["batching"]["buckets"]
@@ -422,7 +412,7 @@ def test_load_multi_source_weighted_config() -> None:
 
 
 def test_config_rejects_removed_single_dataset_schema() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["data"] = {
         "dataset": {"name": "mnist", "params": {}},
         "dataloader": {},
@@ -434,9 +424,7 @@ def test_config_rejects_removed_single_dataset_schema() -> None:
 
 
 def test_config_requires_all_or_no_source_weights() -> None:
-    raw = load_config(
-        BUILTIN_EXPERIMENTS / "ddpm_mnist_flowers102.yaml"
-    ).to_dict()
+    raw = _multi_resolution_config_raw()
     raw["data"]["params"]["sources"][0]["sampling_weight"] = None
 
     config = load_config_dict(raw)
@@ -444,23 +432,13 @@ def test_config_requires_all_or_no_source_weights() -> None:
         build_data_loaders(config.data, seed=config.experiment.seed)
 
 
-@pytest.mark.parametrize("yaml_value", [".nan", ".inf", "-.inf"])
-def test_yaml_config_rejects_non_finite_source_sampling_weight(
-    tmp_path: Path,
-    yaml_value: str,
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_config_rejects_non_finite_source_sampling_weight(
+    value: float,
 ) -> None:
-    source = (BUILTIN_EXPERIMENTS / "ddpm_mnist_flowers102.yaml").read_text(
-        encoding="utf-8"
-    )
-    source = source.replace(
-        "sampling_weight: 0.4",
-        f"sampling_weight: {yaml_value}",
-        1,
-    )
-    config_path = tmp_path / "non_finite_weight.yaml"
-    config_path.write_text(source, encoding="utf-8")
-
-    config = load_config(config_path)
+    raw = _multi_resolution_config_raw()
+    raw["data"]["params"]["sources"][0]["sampling_weight"] = value
+    config = load_config_dict(raw)
     with pytest.raises(
         ConfigError,
         match=r"sources\[0\]\.sampling_weight.*finite positive number",
@@ -469,9 +447,7 @@ def test_yaml_config_rejects_non_finite_source_sampling_weight(
 
 
 def test_config_rejects_bucket_incompatible_with_unet_depth() -> None:
-    raw = load_config(
-        BUILTIN_EXPERIMENTS / "ddpm_mnist_flowers102.yaml"
-    ).to_dict()
+    raw = _multi_resolution_config_raw()
     raw["data"]["params"]["batching"]["buckets"][0]["height"] = 0
 
     config = load_config_dict(raw)
@@ -480,7 +456,7 @@ def test_config_rejects_bucket_incompatible_with_unet_depth() -> None:
 
 
 def test_optimizer_defaults_to_native_adam_with_minimal_explicit_params() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw.pop("optimizer")
 
     config = load_config_dict(raw)
@@ -490,7 +466,7 @@ def test_optimizer_defaults_to_native_adam_with_minimal_explicit_params() -> Non
 
 
 def test_lr_scheduler_config_rejects_invalid_interval() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["lr_scheduler"] = {
         "name": "torch.optim.lr_scheduler.StepLR",
         "interval": "batch",
@@ -503,7 +479,7 @@ def test_lr_scheduler_config_rejects_invalid_interval() -> None:
 
 @pytest.mark.parametrize("declaration", [None, "missing"])
 def test_lr_scheduler_null_or_missing_disables_it(declaration: object) -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     if declaration == "missing":
         raw.pop("lr_scheduler")
     else:
@@ -516,7 +492,7 @@ def test_lr_scheduler_null_or_missing_disables_it(declaration: object) -> None:
 
 
 def test_lr_scheduler_rejects_legacy_null_name_form() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["lr_scheduler"] = {
         "name": None,
         "interval": "step",
@@ -535,7 +511,7 @@ def test_optimization_config_rejects_runtime_injection_keys(
     section: str,
     reserved_name: str,
 ) -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw[section]["params"][reserved_name] = "invalid"
 
     with pytest.raises(ConfigError, match=f"cannot override.*'{reserved_name}'"):
@@ -550,7 +526,7 @@ def test_optimization_config_rejects_invalid_names(
     section: str,
     value: object,
 ) -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw[section]["name"] = value
 
     with pytest.raises(ConfigError, match=rf"{section}\.name"):
@@ -558,7 +534,7 @@ def test_optimization_config_rejects_invalid_names(
 
 
 def test_ema_config_rejects_invalid_decay() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["ema"] = {"enabled": True, "decay": 1.0}
 
     with pytest.raises(ConfigError, match=r"ema\.decay"):
@@ -566,7 +542,7 @@ def test_ema_config_rejects_invalid_decay() -> None:
 
 
 def test_sampling_section_is_optional() -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw.pop("sampling")
 
     config = load_config_dict(raw)
@@ -591,7 +567,7 @@ def test_sampling_section_is_optional() -> None:
     ],
 )
 def test_sampling_config_rejects_non_positive_values(path, value) -> None:
-    raw = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml").to_dict()
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     target = raw["sampling"]
     for key in path[:-1]:
         target = target[key]

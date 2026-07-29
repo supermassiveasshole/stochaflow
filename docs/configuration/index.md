@@ -76,34 +76,40 @@ python -m pip install ./dist/stochaflow-0.1.0-py3-none-any.whl
 ```bash
 uv sync --extra dev
 uv run stochaflow train \
-  --config examples/built-in/image-generation/experiments/ddpm_mnist.yaml \
+  --config examples/built-in/image-generation/configs/train/mnist.yaml \
   --epochs 1 \
-  --limit-batches 2 \
-  --skip-final-sample
+  --limit-batches 2
 ```
 
 确认 smoke run 后，移除 CLI limit 运行 YAML 声明的完整实验：
 
 ```bash
 uv run stochaflow train \
-  --config examples/built-in/image-generation/experiments/ddpm_mnist.yaml
+  --config examples/built-in/image-generation/configs/train/mnist.yaml
 ```
 
-也可以直接选择完整的 DDIM 版本：
+仓库只维护这一份 MNIST 训练配置。DDPM 与 DDIM-50 是复用同一 checkpoint 的采样
+profile，而不是两份重复训练配置：
 
 ```bash
-uv run stochaflow train \
-  --config examples/built-in/image-generation/experiments/ddim_mnist.yaml
+uv run stochaflow sample \
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml
+
+uv run stochaflow sample \
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddim-50.yaml
 ```
 
-两份配置共享数据、模型、训练目标和高级特性；`ddpm_mnist.yaml` 的主采样器是
-DDPM，`ddim_mnist.yaml` 的主采样器是 100 步确定性 DDIM。两者都启用逐 step
-warmup-cosine LR scheduler、EMA、TensorBoard 和固定 seed 的 DDIM-50
-`diffusion_quality` 对照。该对照每 100 step 记录 timestep 分桶损失、噪声对齐统计，
+两个 sample profile 都保留当前顶层 `sampling:` request envelope，只选择 sampler、
+request options 和 writers；checkpoint 继续提供固化的 inference recipe。训练配置启用
+逐 step warmup-cosine LR scheduler、EMA、TensorBoard 和固定 seed 的 DDIM-50
+`diffusion_quality` 对照。diagnostics 属于训练配置，不会由 sample profile 改写。
+该对照每 100 step 记录 timestep 分桶损失、噪声对齐统计，
 并在 5 个固定噪声时刻记录 `x0` 重建 MSE/PSNR；每 10 轮用 EMA 生成固定的 32 张
 样本网格。轨迹动画默认关闭，以减少 I/O 和视觉噪声。reference KID/FID 也默认关闭：
 其 ImageNet 特征不适合直接衡量 MNIST 数字语义，因此不需要 `quality` extra。查看
-DDPM 训练与 diagnostic 指标：
+训练与 diagnostic 指标：
 
 当前 MNIST quality profile 使用 41.7M 参数的 attention UNet、cosine alpha-bar
 噪声计划、v-prediction、batch 128 和 2 个 DataLoader worker。训练集每轮 390 个
@@ -112,29 +118,28 @@ warmup；使用 `--epochs` 或 `--limit-batches` 做 smoke run 时，这条完�
 组件验证，不代表缩短实验已经完成一次等比例 LR 周期。
 
 ```bash
-tensorboard --logdir outputs/ddpm_mnist/<run>/tensorboard
+tensorboard --logdir outputs/mnist/<run>/tensorboard
 ```
-
-查看 DDIM 运行时，将路径根替换为 `outputs/ddim_mnist`。
 
 若已有 strict-resume checkpoint，只想启用同一套固定 DDIM-50、32 样本、seed 123
 的 `x0` 重建监控和 local/TensorBoard 输出，可使用仓库提供的 observation-only 配置：
 
 ```bash
 uv run stochaflow train \
-  --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt \
+  --resume outputs/mnist/<run>/checkpoints/latest.pt \
   --observability-config \
-    examples/built-in/image-generation/experiments/overlays/mnist_observability.yaml
+    examples/built-in/image-generation/configs/overlays/mnist-observability.yaml
 ```
 
 该文件只允许 `diagnostics` 与 `logging`，不会放宽模型、数据、optimizer、scheduler、
 EMA 或训练进度的严格恢复。详细替换、继承和审计语义见[恢复训练](workflows.md#恢复训练)。
 
-从最佳 checkpoint 运行其固化 inference recipe：
+从最佳 checkpoint 运行固化 inference recipe，并显式选择本次 DDPM profile：
 
 ```bash
 uv run stochaflow sample \
-  --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml
 ```
 
 ## 最小完整配置
@@ -282,6 +287,17 @@ plugin selection
 
 ## 内置示例
 
-仓库提供七份可直接加载的配置：MNIST DDPM/DDIM、CIFAR-10 DDPM/DDIM、
-Flowers102 DDPM/DDIM，以及 MNIST + Flowers102 多源 DDPM。它们位于
-`examples/built-in/image-generation/experiments/`，并在 CI 中逐一执行 schema 加载。
+仓库维护四份职责明确的内置配置：
+
+```text
+examples/built-in/image-generation/configs/
+├── train/mnist.yaml
+├── sample/mnist-ddpm.yaml
+├── sample/mnist-ddim-50.yaml
+└── overlays/mnist-observability.yaml
+```
+
+其中只有 `train/mnist.yaml` 是完整训练配置；两个 `sample/` 文件是 checkpoint-bound
+partial request，overlay 只用于 strict resume 的 diagnostics/logging。仓库不再维护
+独立的 CIFAR-10、Flowers102 或 multi-source runnable YAML；这是示例收敛，不是对底层
+数据来源或 recipe 能力的否定。

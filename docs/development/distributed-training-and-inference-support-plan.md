@@ -1,8 +1,12 @@
 # Distributed Training 与 Inference 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：提案，尚未进入实现
+- 状态：P4 conditional proposal，尚未进入实现；只在 DiT/Stable Diffusion
+  单设备 profiling 证明需要后启动
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-27
+- 本次排期修订日期：2026-07-29
 - PyTorch 兼容基线：Supported 平台以 `torch>=2.11,<3` 为设计下限；Intel macOS 已是
   Deprecated / best effort，其 `torch==2.2.2` compatibility lane 保持
   single-process，不承诺本提案中的 distributed 能力，也不作为设计下限
@@ -104,7 +108,7 @@ checkpoint、日志和 artifact 全部塞进一个万能 `DistributedManager`。
 | DataBuilder composition root | `data/builder.py` | 可以直接构建 rank-aware loader，不需要 core 重写 batch |
 | deterministic loader helpers | `data/dataloaders.py` | 已有 generator、worker seed、epoch sampler |
 | precision runtime | `training/precision.py` | autocast、GradScaler、step success 已集中 |
-| checkpoint v10 | `utils/checkpoint.py` | portable full-state、固定 inference recipe、严格验证与事务式 restore |
+| C1 后 checkpoint schema | `utils/checkpoint.py` | portable full-state、固定 inference recipe/inference assets、严格验证与事务式 restore |
 | sampling builder/runtime | `sampling/builder.py`、`sampling/runtime.py` | task composition 与 artifact writing 已分离 |
 | data artifact locks | `data/artifact_store.py`、`data/artifact_io.py` | 多进程 materialization 可复用已有锁与 publish 语义 |
 
@@ -392,8 +396,12 @@ trainer:
       find_unused_parameters: false
       static_graph: false
       gradient_as_bucket_view: true
+```
 
-sampling:
+独立 sample invocation 的 future extension：
+
+```yaml
+sample:
   parallelism:
     name: replicated
     params:
@@ -410,8 +418,12 @@ trainer:
     name: fsdp2
     params:
       offload: none
+```
 
-sampling:
+独立 sample invocation：
+
+```yaml
+sample:
   parallelism:
     name: fsdp2
     params:
@@ -423,7 +435,7 @@ sampling:
 | 字段 | 所有者 | strict resume |
 | --- | --- | --- |
 | `trainer.parallelism.name/params` | 训练算法 topology | 默认冻结 |
-| `sampling.parallelism` | future sampling-only runtime field | 若本计划加入该字段，可由 strict partial sample request 覆盖 |
+| `sample.parallelism` | future sampling-only invocation field | 若本计划加入该字段，由完整 `SampleConfig` 显式声明 |
 | `distributed.backend` | invocation runtime | 可覆盖，但必须兼容设备 |
 | `distributed.timeout_seconds` | invocation runtime | 可覆盖 |
 | `WORLD_SIZE/RANK/LOCAL_RANK` | launcher environment | 不进入 config |
@@ -431,9 +443,8 @@ sampling:
 
 规则：
 
-- `sampling.parallelism` 是本提案的未来 schema 扩展，当前 v10
-  `SamplingConfig`/sample request 尚不接受该字段；实施前必须同步严格 parser、
-  checkpoint defaults 和 request merge contract；
+- `sample.parallelism` 是本提案的未来 schema 扩展；实施前必须同步 C1 后完整
+  `SampleConfig` 的严格 parser，不进入 checkpoint defaults 或 partial merge；
 - 在 `world_size>1` 下选择 `trainer.parallelism.name: single` 时 fail，避免每 rank
   各自开始一个独立实验；
 - distributed strategy 在没有 torchrun 环境时允许 `world_size=1` smoke，但 manifest
@@ -826,8 +837,9 @@ outputs/<run>/
     └── index.yaml
 ```
 
-`latest.yaml`/`index.yaml` 是小型原子 pointer；不覆盖已经完成的 bundle。旧 v9
-single-process `latest.pt`/`best.pt` 继续读取，迁移工具明确区分 resume 与 portable。
+`latest.yaml`/`index.yaml` 是小型原子 pointer；不覆盖已经完成的 bundle。本计划在
+Train/Sample C1 后重新基线化，不承诺读取旧 checkpoint；resume 与 portable 仍使用
+不同 schema/用途。
 
 ### 12.2 `CheckpointBackend`
 
@@ -907,7 +919,8 @@ FSDP2：
 - 全 rank 调用 DCP state-dict API；
 - `full_state_dict=True, cpu_offload=True`；
 - rank zero 获得 full raw/EMA state；
-- 复用 v9 projection validator，或在必要时引入 v10；
+- 复用 C1 后的唯一 inference projection validator；
+- 保留所需 inference asset descriptors、frozen codec state 或 run-bundle reference；
 - 不保存 optimizer/RNG，明确标为 inference-only。
 
 为了控制 all-gather/CPU 峰值，FSDP portable export 默认只在：
@@ -1396,7 +1409,7 @@ FSDP2 release gate 必须在真实多 GPU CI 或记录完整环境的 acceptance
 - train/eval data contract 不重复或遗漏未声明样本；
 - best/early-stop 全 rank一致；
 - 只有 rank zero 写共享日志、manifest 和 portable artifact；
-- distributed resume 不破坏现有 v9 portable checkpoint；
+- distributed resume 不破坏 C1 后 portable inference projection；
 - extension 可通过 public capability 获得 DDP 支持，无需修改 runner。
 
 ### Replicated inference stable

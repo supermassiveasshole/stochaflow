@@ -38,6 +38,10 @@ from stochaflow.utils.factory import (
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
 from stochaflow.utils.registry import REGISTRIES, RegistryError
 
+BUILTIN_MNIST_TRAIN_CONFIG = Path(
+    "examples/built-in/image-generation/configs/train/mnist.yaml"
+)
+
 
 class MinimalDiagnostic(TrainingDiagnostic):
     """Custom diagnostic that only accepts the generic constructor contract."""
@@ -187,10 +191,8 @@ def test_resolve_device_auto_falls_back_to_cpu(
     assert resolve_device("auto") == torch.device("cpu")
 
 
-def test_build_training_components_from_ddpm_mnist_config() -> None:
-    config = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
-    )
+def test_build_training_components_from_mnist_config() -> None:
+    config = load_config(BUILTIN_MNIST_TRAIN_CONFIG)
     components = build_training_components(config)
 
     assert isinstance(components.model, UNet)
@@ -221,33 +223,8 @@ def test_build_training_components_from_ddpm_mnist_config() -> None:
     assert isinstance(components.trainer, Trainer)
 
 
-def test_build_training_components_from_ddpm_flowers102_config() -> None:
-    config = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_flowers102.yaml")
-    )
-    components = build_training_components(config)
-
-    assert isinstance(components.model, UNet)
-    assert isinstance(components.process, DiscreteGaussianProcess)
-    assert not hasattr(components.process, "schedule")
-    assert components.process.num_timesteps == 1000
-    assert isinstance(components.plan.strategy, GaussianDenoisingTrainingStrategy)
-    assert isinstance(components.objective, MSEObjective)
-    assert isinstance(components.optimizer, Optimizer)
-    assert isinstance(components.lr_scheduler, WarmupCosineLR)
-    assert components.lr_scheduler.warmup_steps == 150
-    assert components.lr_scheduler.total_steps == 3000
-    assert components.ema is not None
-    assert len(components.diagnostics) == 1
-    assert isinstance(components.logger, ExperimentLogger)
-    assert isinstance(components.checkpoint_manager, CheckpointManager)
-    assert isinstance(components.trainer, Trainer)
-
-
 def test_factory_injects_bf16_runtime_into_trainer_and_checkpoint_manager() -> None:
-    raw = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
-    ).to_dict()
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["trainer"].update({"device": "cpu", "precision": "bf16-mixed"})
     components = build_training_components(load_config_dict(raw))
@@ -259,9 +236,7 @@ def test_factory_injects_bf16_runtime_into_trainer_and_checkpoint_manager() -> N
 
 
 def test_gaussian_training_requires_a_configured_process() -> None:
-    raw = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
-    ).to_dict()
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["process"] = None
     config = load_config_dict(raw)
@@ -294,9 +269,7 @@ def test_mse_objective_owns_scalar_and_per_sample_loss_semantics() -> None:
 
 
 def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> None:
-    raw = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
-    ).to_dict()
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["process"]["name"] = "test_learnable_gaussian"
     raw["experiment"]["output_dir"] = str(tmp_path)
@@ -338,9 +311,7 @@ def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> 
 def test_sampling_defaults_cannot_override_inference_recipe_contract(
     tmp_path: Path,
 ) -> None:
-    raw = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
-    ).to_dict()
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["experiment"]["output_dir"] = str(tmp_path)
     raw["sampling"]["options"]["prediction_type"] = "epsilon"
@@ -498,7 +469,6 @@ def test_custom_diagnostic_receives_only_generic_runtime_parameters(tmp_path) ->
         [ComponentConfig(name="test_minimal", params={"marker": "ready"})],
         logger=logger,
         output_dir=str(tmp_path),
-        sample_shape=(3, 32, 32),
     )
 
     assert len(diagnostics) == 1
@@ -892,9 +862,7 @@ def test_removed_native_aliases_are_not_compatibility_names() -> None:
 
 
 def test_disabled_lr_scheduler_uses_safe_trainer_interval() -> None:
-    raw = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
-    ).to_dict()
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["lr_scheduler"] = None
     config = load_config_dict(raw)
@@ -906,9 +874,7 @@ def test_disabled_lr_scheduler_uses_safe_trainer_interval() -> None:
 
 
 def test_unknown_diagnostic_raises_registry_error() -> None:
-    raw = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
-    ).to_dict()
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["diagnostics"] = [{"name": "missing", "params": {}}]
     config = load_config_dict(raw)

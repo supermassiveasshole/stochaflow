@@ -2,7 +2,14 @@
 
 - 文档性质：已实施的开发决策记录；不属于公开 API
 - 状态：Implemented
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)；作为 prepared
+  posterior artifact 基座，不重开 producer lifecycle
+- Example retirement：本文 Physics/KD 矩阵记录实施时的验收证据；retained-example
+  cleanup 后由最小 referenced/no-artifact fixtures 保留 contract coverage，不代表继续
+  维护两个 project
 - 日期：2026-07-27
+- 最近更新：2026-07-29
 - 兼容性：breaking；不保留旧 artifact 格式或 API
 
 ## 1. 决策
@@ -52,8 +59,10 @@ Producer callback 边界：
   external roots，但不能执行 acquisition、写入或重新物化；
 - persisted candidate 或 represented content 不满足契约时抛
   `DataArtifactValidationError`；包括普通 `OSError` 在内的配置/编程错误不会被当成
-  可修复 cache corruption。framework 还会比较 callback 前后的文件状态，在
-  `manifest` verification 下也拒绝同尺寸 mutation。
+  可修复 cache corruption。每个加载边界在 callback 前执行一次所需强度的验证；
+  `full` 对 framework-owned stored files 只做一次完整 hash。callback 返回后只做
+  link-safe 元数据复查，严格比较路径、数量、size、device/inode、mode、mtime 与
+  ctime；`manifest` verification 同样拒绝可观察到的同尺寸 mutation。
 
 `DataSource` 仍负责 acquire、validate、transform、materialize；`DataBuilder` 仍是 runtime
 recipe composition root，拥有 binding、partition、Dataset、transform、sampler、collate
@@ -108,6 +117,15 @@ Cache layout：
 `DataArtifactValidationError` 执行隔离和重建。expected identity 绕过当前 locator，
 强制 full verification，且不改写 locator。publication 采用 no-replace 语义，并验证
 concurrent winner 与最终路径 payload。
+
+Fresh materialization 的 verified staging 与 published final object 是两个独立验证
+边界，各自执行一次内容认证和一次 loader 后元数据复查。cache hit 与 strict resume
+只对 final object 执行这一流程。`ArtifactVerificationObserver` 只报告一次
+`phase="validate"` 的内容 hash；元数据复查不产生进度事件。referenced artifact 的
+external represented content 仍由 producer 在 `load(full)` 中认证，framework 的后置
+复查只覆盖 manifest、inventory 与 sidecar。该复查用于约束无副作用 callback，不构成
+恶意同机写入的安全边界；缺少稳定 inode/ctime 时，能够恢复 size/mtime 的极端
+same-size mutation 可能无法检测。
 
 最终状态机还固定了以下 fail-closed 规则：
 
@@ -182,6 +200,16 @@ pyright:                                0 errors, 0 warnings
 config reference generator --check:     passed
 Sphinx -W:                              passed
 uv build:                               passed
+```
+
+2026-07-29 将每个加载边界的第二次完整 hash 收敛为严格元数据复查：
+
+```text
+focused artifact/store/recipe suite:   277 passed
+repository pytest:                     1121 passed, 14 skipped (CUDA/BF16)
+ruff:                                  passed
+pyright:                               0 errors, 0 warnings
+Sphinx -W:                             passed
 ```
 
 metadata/provenance/capacity 提案保持 Deferred，直到出现满足其 decision gates 的真实

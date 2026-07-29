@@ -37,7 +37,7 @@ from stochaflow.utils.checkpoint import (
     CheckpointState,
     capture_rng_state,
 )
-from stochaflow.utils.config import ConfigError, load_config
+from stochaflow.utils.config import ConfigError, load_config, load_config_dict
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.plugins import ResolvedExtensions
 from stochaflow.utils.sampling_recipe import (
@@ -45,8 +45,12 @@ from stochaflow.utils.sampling_recipe import (
     sampling_recipe_to_dict,
 )
 
-BUILTIN_EXPERIMENTS = Path(
-    "examples/built-in/image-generation/experiments"
+BUILTIN_CONFIGS = Path(
+    "examples/built-in/image-generation/configs"
+)
+MNIST_TRAIN_CONFIG = BUILTIN_CONFIGS / "train/mnist.yaml"
+MNIST_OBSERVABILITY_CONFIG = (
+    BUILTIN_CONFIGS / "overlays/mnist-observability.yaml"
 )
 
 
@@ -297,6 +301,36 @@ def _write_observability_config(path: Path, value: Any) -> Path:
     return path
 
 
+def _load_mnist_config_with_final_sampling():
+    raw = yaml.safe_load(MNIST_TRAIN_CONFIG.read_text(encoding="utf-8"))
+    assert isinstance(raw, dict)
+    raw["sampling"] = {
+        "run_after_training": True,
+        "sampler": {"name": "ddpm", "params": {}},
+        "options": {
+            "weights": "auto",
+            "clip_denoised": True,
+            "trajectory": {"enabled": False, "every_steps": 1},
+        },
+        "shape": [1, 32, 32],
+        "num_samples": 64,
+        "batch_size": 64,
+        "seed": None,
+        "writers": [
+            {"name": "tensor", "params": {}},
+            {
+                "name": "image",
+                "params": {
+                    "grid_nrow": 8,
+                    "gif_fps": 8,
+                    "denormalize": True,
+                },
+            },
+        ],
+    }
+    return load_config_dict(raw)
+
+
 def _resume_args(
     checkpoint: Path,
     *,
@@ -328,7 +362,7 @@ def _run_single(
 
 
 def test_runner_uses_valid_loss_when_validation_is_available(monkeypatch, tmp_path):
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
@@ -360,7 +394,7 @@ def test_runner_uses_valid_loss_when_validation_is_available(monkeypatch, tmp_pa
 
 
 def test_runner_uses_train_loss_and_skips_test_without_validation(monkeypatch, tmp_path):
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_flowers102.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
@@ -384,7 +418,7 @@ def test_runner_uses_train_loss_and_skips_test_without_validation(monkeypatch, t
 
 
 def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_flowers102.yaml")
+    config = _load_mnist_config_with_final_sampling()
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
@@ -447,7 +481,7 @@ def test_runner_persists_effective_enabled_progress_override(
     monkeypatch,
     tmp_path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "progress-override"
     config.trainer.show_progress = False
@@ -476,7 +510,7 @@ def test_runner_persists_effective_enabled_progress_override(
 
 
 def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = _load_mnist_config_with_final_sampling()
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
@@ -510,7 +544,7 @@ def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):
 
 
 def test_runner_skips_disabled_final_sample(monkeypatch, tmp_path):
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     config.sampling.run_after_training = False
@@ -541,7 +575,7 @@ def test_runner_skips_disabled_final_sample(monkeypatch, tmp_path):
 
 
 def test_runner_closes_logger_when_resume_loading_fails(monkeypatch, tmp_path):
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
@@ -576,7 +610,7 @@ def test_runner_closes_logger_when_resume_loading_fails(monkeypatch, tmp_path):
 
 
 def test_runner_rejects_checkpoint_at_target_epoch(monkeypatch, tmp_path):
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
@@ -1454,15 +1488,8 @@ def test_run_options_reject_conflicting_progress_overrides() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "config_path",
-    [
-        BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml",
-        BUILTIN_EXPERIMENTS / "ddim_cifar10.yaml",
-    ],
-)
-def test_runner_builds_registered_data_builder(monkeypatch, tmp_path, config_path):
-    config = load_config(config_path)
+def test_runner_builds_registered_data_builder(monkeypatch, tmp_path):
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path / "outputs")
     args = _args()
     args.config = Path("unused.yaml")
@@ -1510,7 +1537,7 @@ def test_runner_rejects_unsupported_precision_before_data_or_run_side_effects(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.trainer.precision = "fp16-mixed"
     args = _args()
     args.config = Path("unused.yaml")
@@ -1562,7 +1589,7 @@ def test_runner_rejects_unavailable_execution_device_before_side_effects(
     device_name: str,
     expected_error: str,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.trainer.precision = "fp32"
     args = _args()
     args.config = Path("unused.yaml")
@@ -1630,7 +1657,7 @@ def test_strict_resume_rejects_data_artifact_mismatch_before_run_creation(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path / "runs" / "original")
     checkpoint = _write_training_checkpoint(
         tmp_path / "resume.pt",
@@ -1688,7 +1715,7 @@ def test_strict_resume_preflights_sibling_best_before_any_run_side_effect(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path / "runs" / "original")
     loop_state = {
         "best_epoch": 1,
@@ -1788,7 +1815,7 @@ def test_strict_resume_preflights_complete_loop_state_before_plugin_activation(
     error_type: type[Exception],
     message: str,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
     payload = CheckpointManager.load_payload(checkpoint, map_location="cpu")
     metadata = _checkpoint_metadata(payload)
@@ -1839,7 +1866,7 @@ def test_resolve_resume_checkpoint_accepts_run_directory(tmp_path):
 def test_resolve_training_inputs_uses_checkpoint_config_for_strict_resume(
     tmp_path,
 ):
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.name = "saved-name"
     config.experiment.output_dir = str(tmp_path / "runs" / "original")
     checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
@@ -1863,7 +1890,7 @@ def test_strict_resume_rejects_old_source_schema_before_runtime_side_effects(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.data.params["source"] = {
         "kind": "torchvision",
         "dataset": "MNIST",
@@ -2025,7 +2052,7 @@ def test_progress_flag_reenables_checkpoint_disabled_progress(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.trainer.show_progress = False
     config.experiment.output_dir = str(tmp_path / "runs" / "original")
     checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
@@ -2096,8 +2123,8 @@ def test_progress_flag_reenables_checkpoint_disabled_progress(
 
 
 def test_repository_mnist_observability_profile_is_valid() -> None:
-    checkpoint_config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
-    overlay_path = BUILTIN_EXPERIMENTS / "overlays/mnist_observability.yaml"
+    checkpoint_config = load_config(MNIST_TRAIN_CONFIG)
+    overlay_path = MNIST_OBSERVABILITY_CONFIG
 
     overlay, audit = experiment_runner._load_observability_overlay(overlay_path)
     effective = experiment_runner._apply_observability_overlay(
@@ -2111,6 +2138,7 @@ def test_repository_mnist_observability_profile_is_valid() -> None:
     ]
     assert effective.logging.log_every == checkpoint_config.logging.log_every
     assert effective.diagnostics[0].params["sampling"] == {
+        "shape": [1, 32, 32],
         "sample_num": 32,
         "batch_size": 32,
         "seed": 123,
@@ -2138,7 +2166,7 @@ def test_observability_config_requires_strict_resume(tmp_path: Path) -> None:
 
 
 def test_observability_config_requires_an_existing_file(tmp_path: Path) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
 
     with pytest.raises(FileNotFoundError, match="observability config"):
@@ -2154,7 +2182,7 @@ def test_observability_overlay_replaces_diagnostics_and_shallow_merges_logging(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    source = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    source = load_config(MNIST_TRAIN_CONFIG)
     source.diagnostics[0].params["modules"] = ["trusted.providers"]
     source.logging.log_every = 41
     source.logging.torch_logs = {
@@ -2227,7 +2255,7 @@ def test_observability_overlay_uses_atomic_collection_replacement(
     torch_logs: dict[str, bool],
     expected_torch_logs: dict[str, bool],
 ) -> None:
-    source = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    source = load_config(MNIST_TRAIN_CONFIG)
     source.logging.log_every = 37
     source.logging.torch_logs = {
         "graph_breaks": True,
@@ -2374,7 +2402,7 @@ def test_invalid_observability_overlay_fails_before_run_creation(
     tmp_path: Path,
     raw_overlay: Any,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path / "runs" / "original")
     checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
     overlay_path = _write_observability_config(
@@ -2409,7 +2437,7 @@ def test_malformed_observability_yaml_fails_before_run_creation(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
     overlay_path = tmp_path / "observability.yaml"
     overlay_path.write_text("logging: [unterminated", encoding="utf-8")
@@ -2437,7 +2465,7 @@ def test_malformed_observability_yaml_fails_before_run_creation(
 def test_observability_overlay_audit_accumulates_and_plain_resume_inherits(
     tmp_path: Path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     prior_audit = {
         "kind": "observability",
         "source_path": str(tmp_path / "prior.yaml"),
@@ -2545,7 +2573,7 @@ def test_strict_resume_rejects_invalid_overlay_audit_history(
     tmp_path: Path,
     invalid_history: Any,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     checkpoint = _write_training_checkpoint(
         tmp_path / "resume.pt",
         config,
@@ -2560,7 +2588,7 @@ def test_run_experiment_passes_overlay_audit_and_absolute_runtime_path(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path / "runs" / "original")
     checkpoint = _write_training_checkpoint(tmp_path / "resume.pt", config)
     monkeypatch.chdir(tmp_path)
@@ -2620,7 +2648,7 @@ def test_run_manifest_and_checkpoint_metadata_record_overlay_audit(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    config = load_config(BUILTIN_EXPERIMENTS / "ddpm_mnist.yaml")
+    config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "overlay-audit"
     trainer = RecordingTrainer()

@@ -33,6 +33,10 @@ from stochaflow.utils.factory import (
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog, RegistryError
 from stochaflow.utils.sampling_recipe import sampling_recipe_to_dict
 
+BUILTIN_MNIST_TRAIN_CONFIG = Path(
+    "examples/built-in/image-generation/configs/train/mnist.yaml"
+)
+
 
 class ScalarStrategy(TrainingStrategy):
     def __init__(self, model: nn.Module) -> None:
@@ -500,9 +504,7 @@ def test_checkpoint_preserves_pytorch_state_dict_metadata(tmp_path: Path) -> Non
 
 
 def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> None:
-    raw = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
-    ).to_dict()
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
     raw["experiment"]["output_dir"] = str(tmp_path)
     raw["model"] = {"name": "stage4_student", "params": {}}
     raw["process"] = None
@@ -581,9 +583,7 @@ def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> N
 
 
 def test_custom_builder_trains_without_process_or_objective(tmp_path: Path) -> None:
-    raw = load_config(
-        Path("examples/built-in/image-generation/experiments/ddpm_mnist.yaml")
-    ).to_dict()
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
     raw["experiment"]["output_dir"] = str(tmp_path)
     raw["model"] = {"name": "stage4_student", "params": {}}
     raw["process"] = None

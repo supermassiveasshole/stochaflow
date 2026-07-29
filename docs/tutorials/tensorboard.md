@@ -31,9 +31,9 @@ strict resume 启动时加载 observation-only 配置：
 
 ```powershell
 uv run stochaflow train `
-  --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt `
+  --resume outputs/mnist/<run>/checkpoints/latest.pt `
   --observability-config `
-  examples/built-in/image-generation/experiments/overlays/mnist_observability.yaml
+  examples/built-in/image-generation/configs/overlays/mnist-observability.yaml
 ```
 
 该示例完整替换 diagnostic 列表，使用 EMA、固定 `seed: 123`、32 个样本和确定性
@@ -41,6 +41,8 @@ DDIM-50，并记录固定 timestep 的 `x0` 重建指标与面板。它把 loggi
 local 与 TensorBoard，但没有声明 `log_every`，所以继续使用 checkpoint 中的间隔。
 observability config 顶层只允许 `diagnostics` 和 `logging`，不能改变模型、数据、
 optimizer、scheduler、EMA、训练进度或 extension selection。
+这仍是训练侧监控配置；`configs/sample/` 下的 DDPM/DDIM profile 只影响独立的
+checkpoint-backed inference，不拥有或覆盖训练 diagnostics。
 
 diagnostic 与 logger 不恢复运行时状态：resume 会创建新的兄弟 run、新的 logger 和新的
 TensorBoard event 文件。旧 run/event 不会被热加载、重开或续写。把 TensorBoard
@@ -54,14 +56,14 @@ manifest 与 checkpoint metadata，便于确认曲线使用的监控协议。
 
 ```powershell
 uv run stochaflow train `
-  --config examples/built-in/image-generation/experiments/ddpm_mnist.yaml
+  --config examples/built-in/image-generation/configs/train/mnist.yaml
 ```
 
 终端表格中的 `Output` 是本次运行目录，例如
-`outputs/ddpm_mnist/20260725_203859`。在另一个 PowerShell 窗口中查看这一组实验：
+`outputs/mnist/20260725_203859`。在另一个 PowerShell 窗口中查看这一组实验：
 
 ```powershell
-uv run tensorboard --logdir outputs/ddpm_mnist --port 6006
+uv run tensorboard --logdir outputs/mnist --port 6006
 ```
 
 浏览器打开 <http://localhost:6006>。TensorBoard 可以在训练仍在进行时读取新数据。
@@ -69,13 +71,13 @@ uv run tensorboard --logdir outputs/ddpm_mnist --port 6006
 
 ```powershell
 uv run tensorboard `
-  --logdir outputs/ddpm_mnist/20260725_203859/tensorboard `
+  --logdir outputs/mnist/20260725_203859/tensorboard `
   --port 6006
 ```
 
 一次运行的 event 文件实际位于
 `<output>/<timestamp>/tensorboard/<experiment-name>/`。将 `--logdir` 指向更高一层
-的 `outputs/ddpm_mnist`，可以在同一页面勾选和比较多个时间戳运行。
+的 `outputs/mnist`，可以在同一页面勾选和比较多个时间戳运行。
 
 ## 重点查看哪些面板
 
@@ -122,7 +124,7 @@ MNIST 默认监控协议使用 EMA 权重、固定 seed 和确定性 DDIM-50，�
 先确认 event 文件存在：
 
 ```powershell
-Get-ChildItem outputs/ddpm_mnist -Recurse -Filter "events.out.tfevents.*"
+Get-ChildItem outputs/mnist -Recurse -Filter "events.out.tfevents.*"
 ```
 
 如果没有文件，检查运行所用 YAML 的 `logging.backends` 是否包含
@@ -133,7 +135,7 @@ Get-ChildItem outputs/ddpm_mnist -Recurse -Filter "events.out.tfevents.*"
 换一个端口即可：
 
 ```powershell
-uv run tensorboard --logdir outputs/ddpm_mnist --port 6007
+uv run tensorboard --logdir outputs/mnist --port 6007
 ```
 
 ### 曲线更新不及时
@@ -145,6 +147,6 @@ uv run tensorboard --logdir outputs/ddpm_mnist --port 6007
 ### 多次实验名称看起来相同
 
 TensorBoard 的 run 名来自 event 文件所在目录。把 `--logdir` 指向
-`outputs/ddpm_mnist` 时，时间戳目录仍能区分各次运行；可在左侧 run 选择器中只勾选
+`outputs/mnist` 时，时间戳目录仍能区分各次运行；可在左侧 run 选择器中只勾选
 需要比较的实验。为关键实验保留配置、checkpoint 和对应时间戳，避免只按曲线颜色
 识别运行。

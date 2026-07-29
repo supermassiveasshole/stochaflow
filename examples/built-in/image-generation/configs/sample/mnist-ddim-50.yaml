@@ -1,5 +1,5 @@
-# DDIM-50 sampling profile for the 200-epoch MNIST checkpoint.
-# Both sampling profiles use the same EMA weights, seed, and 6x6 sample grid.
+# Complete DDIM-50 sampling profile for the MNIST checkpoint.
+# Both sample profiles use the same EMA weights, seed, and 6x6 sample grid.
 sampling:
   sampler:
     name: ddim

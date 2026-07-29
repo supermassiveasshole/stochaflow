@@ -484,7 +484,7 @@ diagnostics Registry 名称。
 (config-field-path-diagnostics-item-params)=
 ### `diagnostics[].params`
 
-diagnostic 构造参数；logger、output_dir 与 sample_shape 由运行时注入。
+diagnostic 构造参数；logger 与 output_dir 由运行时注入；需要采样的 diagnostic 必须在自己的参数中声明 shape。
 
 - 类型：`mapping[str, any]`
 - 必填：否
@@ -1242,7 +1242,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 
 使用原始 batch labels 做对齐重建，并按显式 class allocation 与 CFG 比较 Gaussian sampler profile。
 
-运行时注入（不得在 YAML 中覆盖）：`logger`, `output_dir`, `sample_shape`。
+运行时注入（不得在 YAML 中覆盖）：`logger`, `output_dir`。
 
 | 参数 | 含义与约束 |
 | --- | --- |
@@ -1251,7 +1251,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | `samplers` | sampler profile 列表；每项声明唯一 id、Registry name、构造 params 和可选 trajectory。 |
 | `modules` | 按声明顺序导入并注册第三方 diagnostic provider 的 Python module。 |
 | `cadence` | step metric 与 epoch artifact 的执行周期。 |
-| `sampling` | 多 profile 共用的样本数、batch size 和基础 seed。 |
+| `sampling` | 多 profile 共用的 C/H/W shape、样本数、batch size 和基础 seed；shape 必须显式声明。 |
 | `providers` | step metric、sampler metric、denoiser artifact 与 sampler artifact provider 列表。 |
 | `reference` | 必须保持 disabled；class-aware reference metrics 属于独立 post-training evaluator。 |
 | `use_ema` | diagnostic 推理是否优先使用 EMA 权重。 |
@@ -1262,14 +1262,14 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 
 通过可插拔 provider 记录 denoiser 指标，并在固定噪声下比较多个 sampler profile。
 
-运行时注入（不得在 YAML 中覆盖）：`logger`, `output_dir`, `sample_shape`。
+运行时注入（不得在 YAML 中覆盖）：`logger`, `output_dir`。
 
 | 参数 | 含义与约束 |
 | --- | --- |
 | `samplers` | sampler profile 列表；每项声明唯一 id、Registry name、构造 params 和可选 trajectory。 |
 | `modules` | 按声明顺序导入并注册第三方 diagnostic provider 的 Python module。 |
 | `cadence` | step metric 与 epoch artifact 的执行周期。 |
-| `sampling` | 多 profile 共用的样本数、batch size 和基础 seed。 |
+| `sampling` | 多 profile 共用的 C/H/W shape、样本数、batch size 和基础 seed；shape 必须显式声明。 |
 | `providers` | step metric、sampler metric、denoiser artifact 与 sampler artifact provider 列表。 |
 | `reference` | 可选参考指标 provider、周期、真实/生成样本数和 batch size。 |
 | `use_ema` | diagnostic 推理是否优先使用 EMA 权重。 |

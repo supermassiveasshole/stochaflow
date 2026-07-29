@@ -36,6 +36,7 @@ class DiagnosticCadenceConfig:
 class DiagnosticSamplingConfig:
     """Shared fixed-noise sampling controls."""
 
+    shape: tuple[int, int, int]
     sample_num: int = 16
     batch_size: int = 16
     seed: int = 123
@@ -190,13 +191,31 @@ def _parse_sampling(raw: Any) -> DiagnosticSamplingConfig:
     )
     _check_fields(
         value,
-        {"sample_num", "batch_size", "seed"},
+        {"shape", "sample_num", "batch_size", "seed"},
         path="diffusion_quality sampling",
     )
+    shape = value.get("shape")
+    if shape is None:
+        raise ValueError(
+            "diffusion_quality sampling.shape is required with [C, H, W]"
+        )
+    if not isinstance(shape, Sequence) or isinstance(shape, (str, bytes)):
+        raise TypeError(
+            "diffusion_quality sampling.shape must be a sequence [C, H, W]"
+        )
+    if len(shape) != 3 or any(
+        isinstance(item, bool) or not isinstance(item, int) or item <= 0
+        for item in shape
+    ):
+        raise ValueError(
+            "diffusion_quality sampling.shape must contain three positive "
+            "integers [C, H, W]"
+        )
     seed = value.get("seed", 123)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise TypeError("diffusion_quality sampling.seed must be an integer")
     return DiagnosticSamplingConfig(
+        shape=(shape[0], shape[1], shape[2]),
         sample_num=_positive_int(
             value.get("sample_num", 16),
             path="diffusion_quality sampling.sample_num",

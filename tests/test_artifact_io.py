@@ -9,6 +9,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -217,6 +218,72 @@ def test_parallel_hash_failure_is_reported_in_path_order() -> None:
             hash_candidate=fail,
             on_progress=None,
         )
+
+
+def test_complete_snapshot_metadata_ignores_only_content_digest() -> None:
+    snapshot = artifact_io.ArtifactFileSnapshot(
+        relative_path="data/payload.bin",
+        size_bytes=16,
+        sha256="a" * 64,
+        device=1,
+        inode=2,
+        mode=0o100644,
+        modified_ns=3,
+        changed_ns=4,
+    )
+
+    assert artifact_io._same_complete_snapshot_metadata(
+        (snapshot,),
+        (replace(snapshot, sha256="b" * 64),),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("relative_path", "data/replaced.bin"),
+        ("size_bytes", 17),
+        ("device", 5),
+        ("inode", 6),
+        ("mode", 0o100600),
+        ("modified_ns", 7),
+        ("changed_ns", 8),
+    ],
+)
+def test_complete_snapshot_metadata_detects_every_metadata_change(
+    field: str,
+    value: object,
+) -> None:
+    snapshot = artifact_io.ArtifactFileSnapshot(
+        relative_path="data/payload.bin",
+        size_bytes=16,
+        sha256="a" * 64,
+        device=1,
+        inode=2,
+        mode=0o100644,
+        modified_ns=3,
+        changed_ns=4,
+    )
+
+    assert not artifact_io._same_complete_snapshot_metadata(
+        (snapshot,),
+        (replace(snapshot, **{field: value}),),  # type: ignore[arg-type]
+    )
+
+
+def test_complete_snapshot_metadata_detects_file_count_change() -> None:
+    snapshot = artifact_io.ArtifactFileSnapshot(
+        relative_path="data/payload.bin",
+        size_bytes=16,
+        sha256="a" * 64,
+        device=1,
+        inode=2,
+        mode=0o100644,
+        modified_ns=3,
+        changed_ns=4,
+    )
+
+    assert not artifact_io._same_complete_snapshot_metadata((snapshot,), ())
 
 
 def test_hash_progress_completes_after_consistency_enumeration(

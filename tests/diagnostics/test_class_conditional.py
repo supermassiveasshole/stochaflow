@@ -187,7 +187,6 @@ def _diagnostic(
     params: dict[str, Any] = {
         "logger": logger,
         "output_dir": tmp_path,
-        "sample_shape": (1, 4, 4),
         "conditions": [
             {"class_label": 0, "count": 1},
             {"class_label": 1, "count": 1},
@@ -206,7 +205,12 @@ def _diagnostic(
             }
         ],
         "cadence": {"step_every": 1, "artifact_every_epochs": 1},
-        "sampling": {"sample_num": 2, "batch_size": 1, "seed": 123},
+        "sampling": {
+            "shape": [1, 4, 4],
+            "sample_num": 2,
+            "batch_size": 1,
+            "seed": 123,
+        },
         "providers": provider_config(),
         "use_ema": False,
         "failure_policy": "raise",

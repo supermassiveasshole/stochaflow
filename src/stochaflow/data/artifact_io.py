@@ -1071,6 +1071,24 @@ def _same_snapshot_metadata(
     )
 
 
+def _same_complete_snapshot_metadata(
+    before: tuple[ArtifactFileSnapshot, ...],
+    after: tuple[ArtifactFileSnapshot, ...],
+) -> bool:
+    """Compare complete file metadata while deliberately ignoring digests."""
+
+    return len(before) == len(after) and all(
+        first.relative_path == second.relative_path
+        and first.size_bytes == second.size_bytes
+        and first.device == second.device
+        and first.inode == second.inode
+        and first.mode == second.mode
+        and first.modified_ns == second.modified_ns
+        and first.changed_ns == second.changed_ns
+        for first, second in zip(before, after, strict=True)
+    )
+
+
 def _same_artifact_snapshot_state(
     first: ArtifactFileSnapshot,
     second: ArtifactFileSnapshot,

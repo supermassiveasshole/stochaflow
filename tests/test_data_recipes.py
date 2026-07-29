@@ -137,7 +137,7 @@ def test_image_builder_propagates_artifact_verification_observer(
         verification_observer=events.append,
     )
 
-    assert {event.phase for event in events} == {"validate", "post_load"}
+    assert {event.phase for event in events} == {"validate"}
     assert events[0].completed == 0
     assert events[-1].completed == events[-1].total
 
@@ -150,11 +150,16 @@ def test_image_builder_allows_runtime_verification_workers_override(
     write_image(root / "sample.png")
     component = image_component(root)
     component.params["source"]["materialization"]["verification_workers"] = 5
-    observed: list[int | None] = []
+    observed: list[tuple[bool, int | None]] = []
     original_scan = artifact_store_module.scan_regular_files
 
     def tracked_scan(*args: Any, **kwargs: Any) -> Any:
-        observed.append(cast(int | None, kwargs.get("workers")))
+        observed.append(
+            (
+                bool(kwargs["hash_contents"]),
+                cast(int | None, kwargs.get("workers")),
+            )
+        )
         return original_scan(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -170,7 +175,7 @@ def test_image_builder_allows_runtime_verification_workers_override(
     )
 
     assert observed
-    assert set(observed) == {2}
+    assert set(observed) == {(True, 2), (False, None)}
 
 
 def test_image_holdout_and_kfold_are_deterministic(tmp_path: Path) -> None:

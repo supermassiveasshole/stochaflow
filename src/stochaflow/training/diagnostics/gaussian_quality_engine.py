@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Protocol, TypeVar, cast
+from typing import Any, Protocol, TypeVar
 
 import torch
 
@@ -154,7 +154,6 @@ class GaussianQualityEngine[
         *,
         logger: ExperimentLogger,
         output_dir: str | Path,
-        sample_shape: Sequence[int] | None,
         samplers: Sequence[Mapping[str, Any]],
         modules: Sequence[str] = (),
         cadence: Mapping[str, Any] | None = None,
@@ -166,25 +165,6 @@ class GaussianQualityEngine[
         diagnostic_name: str,
         family: GaussianQualityFamily[RuntimeT, BoundSamplerT],
     ) -> None:
-        if sample_shape is None:
-            raise ValueError(
-                f"{diagnostic_name} requires sampling.shape with C, H, W"
-            )
-        raw_shape = cast(tuple[object, ...], sample_shape)
-        if len(raw_shape) != 3 or any(
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or value <= 0
-            for value in raw_shape
-        ):
-            raise ValueError(
-                f"{diagnostic_name} sample_shape must contain positive C, H, W"
-            )
-        self.sample_shape = (
-            int(sample_shape[0]),
-            int(sample_shape[1]),
-            int(sample_shape[2]),
-        )
         self.config = parse_diffusion_quality_config(
             modules=modules,
             cadence=cadence,
@@ -195,6 +175,7 @@ class GaussianQualityEngine[
             use_ema=use_ema,
             failure_policy=failure_policy,
         )
+        self.sample_shape = self.config.sampling.shape
         self.logger = logger
         self.output_dir = Path(output_dir) / "diagnostics" / diagnostic_name
         self.family = family
@@ -374,7 +355,7 @@ class GaussianQualityEngine[
         if not artifact_due and not reference_due:
             return
         store = EpochArtifactStore(self.output_dir, event.epoch_index)
-        epoch_metrics: dict[str, float] = {}
+        combined_metrics: dict[str, float] = {}
         profile_manifest: list[dict[str, Any]] = []
         if artifact_due:
             for spec, provider in zip(
@@ -410,7 +391,7 @@ class GaussianQualityEngine[
                     reference_due=reference_due,
                 )
                 self._merge_metrics(
-                    epoch_metrics,
+                    combined_metrics,
                     profile_metrics,
                     provider=f"profile:{profile.id}",
                 )
@@ -431,8 +412,11 @@ class GaussianQualityEngine[
                 }
             )
 
-        if epoch_metrics:
-            self.logger.log_metrics(epoch_metrics, step=event.trainer.global_step)
+        if combined_metrics:
+            self.logger.log_metrics(
+                combined_metrics,
+                step=event.trainer.global_step,
+            )
         store.write_manifest(
             {
                 "epoch": event.epoch_index,
@@ -448,7 +432,7 @@ class GaussianQualityEngine[
                 "reference_metrics_due": reference_due,
                 "providers": asdict(self.config.providers),
                 "profiles": profile_manifest,
-                "metrics": epoch_metrics,
+                "combined_metrics": combined_metrics,
                 **self.family.manifest_metadata(event),
             }
         )

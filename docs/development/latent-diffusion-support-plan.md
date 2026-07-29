@@ -1,9 +1,13 @@
 # Latent Diffusion 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：提案，尚未进入实现
+- 状态：当前产品主线，尚未进入实现；Phase 1–4C 为 P1，开放数据与正式
+  Evaluation 为 P2
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)；本文拥有 latent
+  capability contract，统一排期拥有跨计划执行顺序
 - 初始制定日期：2026-07-26
-- 本次修订日期：2026-07-28
+- 本次修订日期：2026-07-29
 - 当前主线：冻结的预训练图像 codec + conditional latent Gaussian diffusion
 - 首个 reference denoiser：DiT-S/2 → DiT-B/2；它是验收实现，不是该计划的
   abstraction boundary
@@ -113,8 +117,10 @@ image data
 
 把后者提前纳入会让第一条 Latent Diffusion vertical slice 同时承担两种不同
 training-loop family，延迟真正需要验证的框架边界。DiT-S/2 是首个
-reference denoiser，因为仓库已有实现且 geometry 清楚；公共 contract 仍必须
-由 independent non-DiT denoiser substitution test 证明不依赖 DiT topology。
+reference denoiser，因为仓库已有实现且 geometry 清楚。首个 vertical slice 通过
+independent fake codec/asset capability test 保护公共边界；independent non-DiT
+denoiser substitution 是后续 framework-generalization promotion gate，不阻塞
+experimental support。
 
 ### 2.2 Diffusers 适合作为 codec provider，不适合作为隐式 framework owner
 
@@ -203,7 +209,7 @@ codec 可以来自：
 | C2 | prepared posterior artifact training | 首版 production path |
 | C3 | DiT-S/2、DiT-B/2 reference denoiser substitution | 首版 |
 | C4 | 外部训练的 Diffusers-format VAE 作为 source | 首版 |
-| C5 | independent non-DiT denoiser 复用同一 latent workflow | 首版 LSP gate |
+| C5 | independent non-DiT denoiser 复用同一 latent workflow | 后续 framework-generalization gate |
 | C6 | 完整 Diffusers Pipeline black-box inference | 独立 Stable Diffusion 计划 |
 | C7 | Stable Diffusion 1.x component-native interop/parity | 独立 Stable Diffusion 计划 |
 | C8 | Stable Diffusion text-conditioned UNet fine-tuning/training | 独立 Stable Diffusion 计划 |
@@ -1172,7 +1178,7 @@ normalization、VLM recaption、prompt split 和 text evaluation 不属于本计
 
 ### 12.7 暂不选择
 
-- Flowers102：保留 tutorial/smoke，不作为正式质量 target；
+- Flowers102：退出 active example/recipe 维护，不作为 latent target；
 - full ImageNet-1K：首轮成本过高；只允许固定原图子集作为 benchmark；
 - DiT-XL/2：不作为 4090/Spark 首个规模；
 - 无明确 redistribution/license 的 scraped dataset：不进入正式 showcase。
@@ -1229,21 +1235,24 @@ Sampler 只处理 latent tensor 和 narrow Gaussian Dynamics。
 checkpoint-backed sampling 的用户输入不出现 VAE declaration：
 
 ```yaml
-sampling:
+sample:
   sampler:
     name: ddim
     params:
       num_inference_steps: 50
       eta: 0.0
   options:
-    num_samples: 100
-    seed: 42
+    weights: ema
     guidance_scale: 4.0
     label_policy: balanced
-  writer:
-    name: image_grid
-    params:
-      format: png
+  num_samples: 100
+  batch_size: 25
+  seed: 42
+  writers:
+    - name: image
+      params:
+        grid_nrow: 5
+        denormalize: true
 ```
 
 实际 SamplingBuilder/recipe 从 checkpoint 固定；用户不需要理解或选择
@@ -1409,6 +1418,8 @@ training:
 
 交付：
 
+- 先完成 Hydra 迁移计划 C0/C1 的 plain Train/Sample authority cutover；不等待
+  Hydra H0–H4；
 - 本文档冻结；
 - public docs 不宣称 VAE training support；
 - development docs 区分 pretrained codec、external training、
@@ -1436,6 +1447,8 @@ training:
 - slot/capability validation；
 - requested-only asset loading；
 - diagnostics 使用显式 latent capability。
+- embedded asset descriptor 区分 acquisition identity、self-contained reconstruction
+  declaration 和 state；reconstruction 不依赖 Hub cache 或原 local directory。
 
 验收：
 
@@ -1443,7 +1456,8 @@ training:
 - descriptor round-trip；
 - missing/wrong slot fail closed；
 - training-only teacher 不被 sampling 自动加载；
-- current pixel recipes descriptor 为空且行为不变。
+- current pixel recipes descriptor 为空且行为不变；
+- 删除原始 provider path 并断网后，fake embedded asset 仍可从 checkpoint 构造。
 
 ### Phase 2：Diffusers codec provider
 
@@ -1492,7 +1506,7 @@ training:
 - pixel clipping 明确关闭；
 - AFHQ 文档明确是 correctness showcase。
 
-### Phase 4：prepared posterior artifact
+### Phase 4A：prepared posterior artifact
 
 实现：
 
@@ -1515,31 +1529,28 @@ training:
 - Builder 在 Dataset 构造前验证 binding；
 - changing codec revision cannot hit old locator。
 
-### Phase 5：开放数据 profiling 与 DiT-S/2 bring-up
+### Phase 4B：optimizer-step production lifecycle
 
-实现：
+在任何正式长训练前完成：
 
-- The Met Open Access profiling report；
-- frozen curated snapshot/coarse condition mapping；
-- LHQ private quality probe 仅在 license gate 允许时运行；
-- smoke/production configs；
-- step-based training；
-- fixed diagnostics；
-- reconstruction gate；
-- uniform/empirical sampling plans；
-- initial generation metrics。
+- `max_train_steps`；
+- optimizer-step checkpoint、log 和 diagnostic cadence；
+- mid-epoch resume policy；
+- controlled stop/SIGTERM；
+- completion marker；
+- epoch 与 optimizer-step budget 的明确 precedence。
 
 验收：
 
-- 1k-step 4090/Spark throughput report；
-- no VAE encoder cost in prepared training loop；
-- checkpoint/resume/local logging；
-- 每个冻结 condition bucket 有固定 sample allocation；
-- result manifests bind dataset/codec/artifact/checkpoint。
+- interrupted/resumed optimizer-step sequence 与 documented policy 一致；
+- checkpoint cadence 不依赖 dataset epoch 长度；
+- `--no-progress` local log 显示 step、throughput、checkpoint 和 stop 状态；
+- 本 phase 若证明需要新的 training-loop family，先更新独立架构决策，不通过
+  nullable flags 扩大现有 loop。
 
-### Phase 6：production asset persistence
+### Phase 4C：production asset persistence
 
-在 DiT-B/2 长训练前完成：
+在第一次正式多 checkpoint 训练前完成：
 
 - embedded duplication measurement；
 - run-level asset bundle prototype；
@@ -1556,7 +1567,28 @@ training:
 - Hub latest revision cannot silently substitute；
 - no DataArtifact/model-asset type confusion。
 
-### Phase 7：开放正式 DiT-B/2
+### Phase 5：开放数据 profiling 与 DiT-S/2 bring-up
+
+实现：
+
+- The Met Open Access profiling report；
+- frozen curated snapshot/coarse condition mapping；
+- LHQ private quality probe 仅在 license gate 允许时运行；
+- smoke/production configs；
+- fixed diagnostics；
+- reconstruction gate；
+- uniform/empirical sampling plans；
+- initial generation metrics。
+
+验收：
+
+- 1k-step 4090/Spark throughput report；
+- no VAE encoder cost in prepared training loop；
+- checkpoint/resume/local logging；
+- 每个冻结 condition bucket 有固定 sample allocation；
+- result manifests bind dataset/codec/artifact/checkpoint。
+
+### Phase 6：开放正式 DiT-B/2
 
 实现：
 
@@ -1576,7 +1608,7 @@ training:
 - final report includes reconstruction ceiling and generation quality；
 - no claim extrapolates to ImageNet-1K or general web-scale generation。
 
-### Phase 8：ImageNet-100 与 DomainNet benchmark gates
+### Phase 7：ImageNet-100 与 DomainNet benchmark gates
 
 实现前冻结：
 
@@ -1596,7 +1628,7 @@ training:
 - ImageNet-100 160-pixel mirror 不进入 256 formal profile；
 - second/third real datasets validate DataSource/DataBuilder boundary。
 
-### Phase 9：independent non-DiT denoiser substitution
+### Phase 8：independent non-DiT denoiser substitution
 
 实现：
 
@@ -1662,7 +1694,7 @@ training:
 - wrong role/slot；
 - asset state mismatch；
 - training-only auxiliary exclusion；
-- bundle relocation and corruption（Phase 6）。
+- bundle relocation and corruption（Phase 4C）。
 
 ### 16.4 prepared artifact
 
@@ -1880,7 +1912,7 @@ lifecycle 后，才提炼公共 `PretrainedModuleReference`。
 | standalone VAE 忽略 `force_upcast` | fp16 NaN/颜色异常 | adapter precision contract |
 | encoder/decoder revision 不同 | latent 无法正确 decode | 单一 codec asset |
 | sampling 重复配置 codec | checkpoint 与 overlay 漂移 | checkpoint-owned asset |
-| 每个 checkpoint embedding VAE | 磁盘膨胀 | Phase A 限于 correctness；Phase 6 bundle |
+| 每个 checkpoint embedding VAE | 磁盘膨胀 | Phase A 限于 correctness；Phase 4C bundle |
 | Hub `main` 漂移 | resume/sample 不可重放 | immutable commit + digest |
 | prepared locator 缺 codec digest | 命中旧 latent | 完整 locator/materialization identity |
 | 只保存一次 latent sample | posterior 随机性永久冻结 | moments artifact + stable runtime RNG |
@@ -1888,7 +1920,7 @@ lifecycle 后，才提炼公共 `PretrainedModuleReference`。
 | VAE reconstruction 差 | denoiser 无法补救系统性损失 | reconstruction promotion gate |
 | AFHQ 太小 | 视觉结果不能代表规模 | Met formal target + LHQ quality probe |
 | ImageNet-1K 太早 | 训练成本和调试时间失控 | 仅构造原图 ImageNet-100 对照 |
-| reference path 依赖 DiT fields | Latent Diffusion 退化为 DiT feature | independent non-DiT LSP gate |
+| reference path 依赖 DiT fields | Latent Diffusion 退化为 DiT feature | fake capability contract 先保护边界；independent non-DiT 作为后续 promotion gate |
 | Spark 容量被当吞吐 | 训练计划错误 | 1k-step cross-device benchmark |
 | Diffusers 类型泄漏到 core | extension boundary 被锁死 | optional adapter + fake codec LSP test |
 | joint training 通过 flag 偷渡 | loop/asset/artifact 语义失真 | 独立 decision gate |

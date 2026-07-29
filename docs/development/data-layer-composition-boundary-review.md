@@ -2,6 +2,12 @@
 
 - 文档性质：开发草案；不属于当前公开 API 或正式用户文档
 - 状态：Implemented；数据组合边界与统一 schema-v2 artifact producer lifecycle 已闭环
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)；latent
+  image-backed 与 prepared-backed 以两个 recipe-level Builder 遵循本文边界
+- Example retirement：本文 Physics/KD 段落保留发现边界时的历史证据；后续删除
+  maintained project 不改变 DataSource/DataArtifact/DataBuilder 决策，contract 由
+  独立 fixture 继续验证
 - 制定日期：2026-07-27
 - 审查基线：当前共享工作区中的 data core、AFHQ-v2 showcase、Physics 与
   Knowledge Distillation extension

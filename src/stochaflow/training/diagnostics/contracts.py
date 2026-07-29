@@ -21,7 +21,6 @@ class DiagnosticBuildContext:
 
     logger: ExperimentLogger
     output_dir: str | Path
-    sample_shape: tuple[int, ...] | None
 
 
 class ContextAwareDiagnostic(Protocol):

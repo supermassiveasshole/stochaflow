@@ -54,7 +54,7 @@ fields:
   "sampling.writers[].params": {description: writer 构造参数；图像网格与 GIF 参数属于 image writer。}
   diagnostics: {description: 训练期间按声明顺序实例化的 diagnostics Registry 组件列表。}
   "diagnostics[].name": {description: diagnostics Registry 名称。}
-  "diagnostics[].params": {description: diagnostic 构造参数；logger、output_dir 与 sample_shape 由运行时注入。}
+  "diagnostics[].params": {description: diagnostic 构造参数；logger 与 output_dir 由运行时注入；需要采样的 diagnostic 必须在自己的参数中声明 shape。}
   trainer: {description: 训练循环、设备、梯度和早停配置。}
   trainer.num_epochs: {description: 每个独立 run 的最大训练 epoch 数。, constraints: 正整数。, cli: "train --epochs"}
   trainer.device: {description: Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。, cli: "train --device"}
@@ -454,26 +454,26 @@ registries:
     entries:
       class_conditional_diffusion_quality:
         description: 使用原始 batch labels 做对齐重建，并按显式 class allocation 与 CFG 比较 Gaussian sampler profile。
-        runtime_parameters: [logger, output_dir, sample_shape]
+        runtime_parameters: [logger, output_dir]
         parameters:
           conditions: {description: "有序 `{class_label, count}` 列表；总数必须等于 sampling.sample_num。"}
           guidance_scale: {description: diagnostic sampler 使用的有限非负 CFG scale。}
           samplers: {description: sampler profile 列表；每项声明唯一 id、Registry name、构造 params 和可选 trajectory。}
           modules: {description: 按声明顺序导入并注册第三方 diagnostic provider 的 Python module。}
           cadence: {description: step metric 与 epoch artifact 的执行周期。}
-          sampling: {description: 多 profile 共用的样本数、batch size 和基础 seed。}
+          sampling: {description: 多 profile 共用的 C/H/W shape、样本数、batch size 和基础 seed；shape 必须显式声明。}
           providers: {description: step metric、sampler metric、denoiser artifact 与 sampler artifact provider 列表。}
           reference: {description: 必须保持 disabled；class-aware reference metrics 属于独立 post-training evaluator。}
           use_ema: {description: diagnostic 推理是否优先使用 EMA 权重。}
           failure_policy: {description: 运行期错误采用 raise 或 warn；配置错误始终失败。}
       diffusion_quality:
         description: 通过可插拔 provider 记录 denoiser 指标，并在固定噪声下比较多个 sampler profile。
-        runtime_parameters: [logger, output_dir, sample_shape]
+        runtime_parameters: [logger, output_dir]
         parameters:
           samplers: {description: sampler profile 列表；每项声明唯一 id、Registry name、构造 params 和可选 trajectory。}
           modules: {description: 按声明顺序导入并注册第三方 diagnostic provider 的 Python module。}
           cadence: {description: step metric 与 epoch artifact 的执行周期。}
-          sampling: {description: 多 profile 共用的样本数、batch size 和基础 seed。}
+          sampling: {description: 多 profile 共用的 C/H/W shape、样本数、batch size 和基础 seed；shape 必须显式声明。}
           providers: {description: step metric、sampler metric、denoiser artifact 与 sampler artifact provider 列表。}
           reference: {description: 可选参考指标 provider、周期、真实/生成样本数和 batch size。}
           use_ema: {description: diagnostic 推理是否优先使用 EMA 权重。}

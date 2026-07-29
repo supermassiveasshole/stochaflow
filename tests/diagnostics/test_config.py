@@ -22,7 +22,7 @@ def _params(tmp_path) -> dict[str, Any]:
     return {
         "logger": RecordingLogger(),
         "output_dir": tmp_path,
-        "sample_shape": (1, 4, 4),
+        "sampling": {"shape": [1, 4, 4]},
         "samplers": profiles()[:1],
         "providers": provider_config(),
     }
@@ -37,7 +37,11 @@ def _params(tmp_path) -> dict[str, Any]:
             ValueError,
             "artifact_every_epochs",
         ),
-        ({"sampling": {"sample_num": 0}}, ValueError, "sample_num"),
+        (
+            {"sampling": {"shape": [1, 4, 4], "sample_num": 0}},
+            ValueError,
+            "sample_num",
+        ),
         ({"failure_policy": "ignore"}, ValueError, "failure_policy"),
         (
             {
@@ -106,6 +110,30 @@ def test_diffusion_quality_rejects_invalid_configuration(
         DiffusionQualityDiagnostic(**params)
 
 
+@pytest.mark.parametrize(
+    ("sampling", "exception", "match"),
+    [
+        ({}, ValueError, r"sampling\.shape is required"),
+        ({"shape": None}, ValueError, r"sampling\.shape is required"),
+        ({"shape": "1,4,4"}, TypeError, r"sampling\.shape must be a sequence"),
+        ({"shape": [1, 4]}, ValueError, r"three positive integers"),
+        ({"shape": [1, 0, 4]}, ValueError, r"three positive integers"),
+        ({"shape": [True, 4, 4]}, ValueError, r"three positive integers"),
+    ],
+)
+def test_diffusion_quality_requires_valid_diagnostic_sampling_shape(
+    tmp_path,
+    sampling,
+    exception,
+    match,
+) -> None:
+    params = _params(tmp_path)
+    params["sampling"] = sampling
+
+    with pytest.raises(exception, match=match):
+        DiffusionQualityDiagnostic(**params)
+
+
 def test_explicit_empty_provider_categories_disable_defaults(tmp_path) -> None:
     diagnostic = DiffusionQualityDiagnostic(
         **{
@@ -123,6 +151,7 @@ def test_explicit_empty_provider_categories_disable_defaults(tmp_path) -> None:
     assert diagnostic.sampler_metrics == ()
     assert diagnostic.denoiser_artifacts == ()
     assert diagnostic.sampler_artifacts == ()
+    assert diagnostic.config.sampling.shape == (1, 4, 4)
 
 
 def test_unknown_sampler_fails_at_fit_start(tmp_path) -> None:

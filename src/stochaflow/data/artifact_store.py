@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from stochaflow.data.artifact_io import (
     ArtifactFileSnapshot,
+    _same_complete_snapshot_metadata,
     cache_entry_exists,
     canonical_directory,
     create_cache_directory,
@@ -35,7 +36,6 @@ from stochaflow.data.artifact_io import (
 )
 from stochaflow.data.artifacts import (
     ArtifactVerificationEvent,
-    ArtifactVerificationPhase,
     DataArtifact,
     DataArtifactIdentity,
     DataSourceContext,
@@ -1713,7 +1713,6 @@ class DataArtifactStore:
                     artifact_type=artifact_type,
                     source_name=source_name,
                     materializer_name=materializer_name,
-                    phase="validate",
                     verification=verification,
                 ),
                 workers=self.context.verification_workers,
@@ -1824,16 +1823,8 @@ class DataArtifactStore:
         try:
             after_load = scan_regular_files(
                 artifact_without_payload.root,
-                hash_contents=verification == "full",
+                hash_contents=False,
                 label="data artifact load input",
-                on_progress=self._verification_progress(
-                    artifact_type=validated.identity.artifact_type,
-                    source_name=validated.identity.source_name,
-                    materializer_name=validated.identity.materializer_name,
-                    phase="post_load",
-                    verification=verification,
-                ),
-                workers=self.context.verification_workers,
             )
         except ArtifactVerificationObserverFailure:
             raise
@@ -1841,7 +1832,10 @@ class DataArtifactStore:
             raise RuntimeError(
                 "data artifact load callback mutated its artifact"
             ) from exc
-        if validated.snapshot != after_load:
+        if not _same_complete_snapshot_metadata(
+            validated.snapshot,
+            after_load,
+        ):
             raise RuntimeError("data artifact load callback mutated its artifact")
         try:
             return DataArtifact(
@@ -1860,7 +1854,6 @@ class DataArtifactStore:
         artifact_type: str,
         source_name: str,
         materializer_name: str,
-        phase: ArtifactVerificationPhase,
         verification: Literal["manifest", "full"],
     ) -> Callable[[int, int], None] | None:
         observer = self.context.verification_observer
@@ -1874,7 +1867,7 @@ class DataArtifactStore:
                         artifact_type=artifact_type,
                         source_name=source_name,
                         materializer_name=materializer_name,
-                        phase=phase,
+                        phase="validate",
                         completed=completed,
                         total=total,
                     )

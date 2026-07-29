@@ -10,7 +10,6 @@ import torch
 
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
-    DiagnosticBuildContext,
     FitStartEvent,
     ReconstructionCallable,
     TrainBatchEndEvent,
@@ -106,21 +105,11 @@ class UnconditionalGaussianQualityFamily:
 class DiffusionQualityDiagnostic(TrainingDiagnostic):
     """Coordinate unconditional Gaussian quality providers."""
 
-    @classmethod
-    def context_parameters(
-        cls,
-        context: DiagnosticBuildContext,
-    ) -> Mapping[str, Any]:
-        """Request the configured image shape from the runtime context."""
-
-        return {"sample_shape": context.sample_shape}
-
     def __init__(
         self,
         *,
         logger: ExperimentLogger,
         output_dir: str | Path,
-        sample_shape: Sequence[int] | None,
         samplers: Sequence[Mapping[str, Any]],
         modules: Sequence[str] = (),
         cadence: Mapping[str, Any] | None = None,
@@ -133,7 +122,6 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
         self._engine = GaussianQualityEngine(
             logger=logger,
             output_dir=output_dir,
-            sample_shape=sample_shape,
             samplers=samplers,
             modules=modules,
             cadence=cadence,

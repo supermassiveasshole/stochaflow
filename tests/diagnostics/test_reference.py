@@ -47,7 +47,6 @@ def _diagnostic(tmp_path, logger, *, reference=None):
     return DiffusionQualityDiagnostic(
         logger=logger,
         output_dir=tmp_path,
-        sample_shape=(1, 4, 4),
         samplers=[
             {
                 "id": "first",
@@ -61,7 +60,12 @@ def _diagnostic(tmp_path, logger, *, reference=None):
             },
         ],
         cadence={"step_every": 1, "artifact_every_epochs": 5},
-        sampling={"sample_num": 2, "batch_size": 1, "seed": 123},
+        sampling={
+            "shape": [1, 4, 4],
+            "sample_num": 2,
+            "batch_size": 1,
+            "seed": 123,
+        },
         providers=provider_config(),
         reference=reference,
     )

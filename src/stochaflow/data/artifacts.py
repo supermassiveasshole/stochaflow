@@ -35,7 +35,7 @@ _BINDING_FIELDS = frozenset({"id", "identity"})
 _COLLECTION_FIELDS = frozenset({"schema_version", "bindings"})
 _SHA256_LENGTH = 64
 
-type ArtifactVerificationPhase = Literal["validate", "post_load"]
+type ArtifactVerificationPhase = Literal["validate"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,9 +55,9 @@ class ArtifactVerificationEvent:
                 getattr(self, name),
                 path=f"artifact verification event.{name}",
             )
-        if self.phase not in {"validate", "post_load"}:
+        if self.phase != "validate":
             raise ValueError(
-                "artifact verification event.phase must be validate or post_load"
+                "artifact verification event.phase must be validate"
             )
         for name in ("completed", "total"):
             value = getattr(self, name)

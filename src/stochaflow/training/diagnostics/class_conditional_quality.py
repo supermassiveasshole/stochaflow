@@ -12,7 +12,6 @@ import torch
 
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
-    DiagnosticBuildContext,
     FitStartEvent,
     ReconstructionCallable,
     TrainBatchEndEvent,
@@ -251,21 +250,11 @@ class ClassConditionalGaussianQualityFamily:
 class ClassConditionalDiffusionQualityDiagnostic(TrainingDiagnostic):
     """Run label-aligned reconstruction and CFG sampler diagnostics."""
 
-    @classmethod
-    def context_parameters(
-        cls,
-        context: DiagnosticBuildContext,
-    ) -> Mapping[str, Any]:
-        """Request the configured image shape from the runtime context."""
-
-        return {"sample_shape": context.sample_shape}
-
     def __init__(
         self,
         *,
         logger: ExperimentLogger,
         output_dir: str | Path,
-        sample_shape: Sequence[int] | None,
         conditions: Sequence[Mapping[str, Any]],
         guidance_scale: float,
         samplers: Sequence[Mapping[str, Any]],
@@ -286,7 +275,6 @@ class ClassConditionalDiffusionQualityDiagnostic(TrainingDiagnostic):
         self._engine = GaussianQualityEngine(
             logger=logger,
             output_dir=output_dir,
-            sample_shape=sample_shape,
             samplers=samplers,
             modules=modules,
             cadence=cadence,

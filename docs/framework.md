@@ -161,13 +161,18 @@ locking、atomic publication、quarantine 和 strict-resume expected-identity �
 built-in 与 extension 使用同一公共路径。
 
 对已有对象执行 `full` 加载时，store 在 payload loader 前进行一次完整内容验证，
-并复用这次结果作为 loader 输入快照；loader 返回后再进行一次完整扫描，确认 callback
-没有修改 artifact。独立的 identity/winner 验证只需要第一轮。各轮文件哈希由通用
+并复用这次结果作为 loader 输入快照；loader 返回后只执行 link-safe 元数据复查，严格
+比较路径、数量、size、device/inode、mode、mtime 与 ctime，确认 callback 没有修改
+framework-owned artifact。独立的 identity/winner 验证只需要第一轮。文件哈希由通用
 artifact I/O 层使用有界线程池并行完成，结果与错误仍按路径确定性排序。哈希以 1 MiB
 buffer 调用 `hashlib`，CPython 在该调用和文件读取期间释放 GIL，因此独立文件可以同时
 利用多个核心；这里不需要多进程及其额外的启动、IPC 和安全重开成本。
-`DataSourceContext.verification_observer` 可以接收这两轮的运行时进度；它不进入
-manifest、identity、配置摘要或 checkpoint。
+`DataSourceContext.verification_observer` 只接收这一次内容验证的运行时进度；它不进入
+manifest、identity、配置摘要或 checkpoint。元数据复查不是抵御恶意同机写入的安全
+边界；在缺少稳定 inode/ctime 的文件系统上，能够同时恢复 size/mtime 的极端
+same-size mutation 可能无法由第二轮发现。
+Fresh materialization 的 staging 与 published final object 是两个独立验证边界，
+各自执行上述一次内容认证和一次加载后元数据复查。
 
 `source.materialization.verification_workers` 控制每个 artifact 的哈希线程数；`null`
 默认选择 `min(8, logical CPUs)`，显式值必须在 `1..8` 范围内。`stochaflow train

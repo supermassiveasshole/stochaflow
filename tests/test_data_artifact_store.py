@@ -211,7 +211,7 @@ def test_verification_workers_do_not_change_artifact_identity(
     assert first.identity == second.identity
 
 
-def test_full_cache_hit_reuses_validation_snapshot(
+def test_full_cache_hit_hashes_once_then_rechecks_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -225,7 +225,7 @@ def test_full_cache_hit_reuses_validation_snapshot(
             (
                 Path(root),
                 bool(kwargs["hash_contents"]),
-                kwargs["workers"],
+                kwargs.get("workers"),
             )
         )
         return original_scan(root, **kwargs)  # type: ignore[arg-type]
@@ -248,11 +248,11 @@ def test_full_cache_hit_reuses_validation_snapshot(
 
     assert scans == [
         (artifact.root, True, 3),
-        (artifact.root, True, 3),
+        (artifact.root, False, None),
     ]
 
 
-def test_strict_resume_reuses_validation_snapshot(
+def test_strict_resume_hashes_once_then_rechecks_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -281,7 +281,7 @@ def test_strict_resume_reuses_validation_snapshot(
         [],
     )
 
-    assert scans == [(artifact.root, True), (artifact.root, True)]
+    assert scans == [(artifact.root, True), (artifact.root, False)]
 
 
 def test_framework_identity_validation_scans_once(
@@ -315,7 +315,7 @@ def test_framework_identity_validation_scans_once(
     assert scans == [artifact.root]
 
 
-def test_full_verification_reports_two_ordered_phases(tmp_path: Path) -> None:
+def test_full_verification_reports_one_content_hash_phase(tmp_path: Path) -> None:
     cache_root = tmp_path / "cache"
     artifact = materialize_managed(context(cache_root), [])
     events: list[ArtifactVerificationEvent] = []
@@ -335,8 +335,10 @@ def test_full_verification_reports_two_ordered_phases(tmp_path: Path) -> None:
         (event.phase, event.completed, event.total)
         for event in events
     ] == [
-        *[("validate", completed, total) for completed in range(total + 1)],
-        *[("post_load", completed, total) for completed in range(total + 1)],
+        ("validate", 0, total),
+        ("validate", 1, total),
+        ("validate", 2, total),
+        ("validate", 3, total),
     ]
     assert {event.artifact_type for event in events} == {
         artifact.identity.artifact_type
@@ -926,6 +928,51 @@ def test_manifest_load_detects_same_size_callback_mutation(
         )
 
     assert payload_path.read_bytes() == b"MANAGED-CONTENT"
+    quarantine = artifact.root.parents[1] / "quarantine" / "objects"
+    assert not tuple(quarantine.iterdir())
+
+
+@pytest.mark.parametrize("mutation", ["add", "remove", "replace"])
+def test_post_load_metadata_recheck_detects_callback_tree_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    cache_root = tmp_path / "cache"
+    artifact = materialize_managed(context(cache_root), [])
+
+    def mutating_load(load_context: DataArtifactLoadContext) -> bytes:
+        path = load_context.data_root / "payload.bin"
+        encoded = path.read_bytes()
+        if mutation == "add":
+            (load_context.data_root / "added.bin").write_bytes(b"added")
+        elif mutation == "remove":
+            path.unlink()
+        else:
+            replacement = load_context.data_root / "replacement.bin"
+            replacement.write_bytes(encoded)
+            replacement.replace(path)
+        return encoded
+
+    build, _ = managed_callbacks([])
+    with pytest.raises(
+        RuntimeError,
+        match="load callback mutated its artifact",
+    ):
+        DataArtifactStore(
+            context(
+                cache_root,
+                policy="require",
+                verification="manifest",
+            )
+        ).materialize_managed(
+            artifact_type="tests.bytes.v1",
+            source_name="tests-source",
+            materializer_name="tests-writer",
+            locator_key={"edition": 1},
+            build=build,
+            load=mutating_load,
+        )
+
     quarantine = artifact.root.parents[1] / "quarantine" / "objects"
     assert not tuple(quarantine.iterdir())
 

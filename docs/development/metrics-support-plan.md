@@ -1,12 +1,15 @@
 # Metrics 支持开发计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：提案，尚未进入实现
+- 状态：P2 parallel enabler，尚未进入实现；M0–M1 在 AFHQ latent vertical
+  slice 后、开放正式 baseline 前完成
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25
 - 架构复核：2026-07-26；明确为 Training/Diagnostic/Evaluation/AutoML 共用的
-  task-neutral 统计子系统
+  task-neutral 统计子系统；2026-07-29 排为 latent formal baseline 的并行前置
 - 前置范围：现有单 optimizer 自动训练循环、validation/test iterable、训练期
-  diagnostic、checkpoint v10 与 extension registry
+  diagnostic、C1 后 checkpoint schema 与 extension registry
 - 目标范围：内置与第三方 epoch metrics、train/validation/test 聚合、diagnostic
   指标参与统一监控、best checkpoint、early stopping 与未来 HPO
 - 关联计划：
@@ -54,6 +57,10 @@
   拥有 checkpoint/权重、数据协议、任务推理、prediction artifact、result manifest
   与 gate；完整设计见
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)。
+- **metric 名称必须携带表示空间语义。** latent prediction/reconstruction error 不能
+  命名为 image reconstruction PSNR；PSNR、SSIM、LPIPS、rFID 等 image-space
+  指标必须先经过 checkpoint-owned codec decode，并由 latent diagnostic 或
+  Evaluation task method 提供正确 channel。
 
 ### 1.1 Metrics 与 Evaluation 的包含关系
 
@@ -344,16 +351,19 @@ metrics:
 
 ### 5.3 构造与 registry
 
-新增 `REGISTRIES.metrics`，注册项必须继承 `torchmetrics.Metric`。构造策略与
-optimizer/scheduler 的成熟依赖边界保持一致：
+新增 `REGISTRIES.metrics`，注册项必须继承 `torchmetrics.Metric`。M0–M1 先使用
+Stochaflow registry、少量 built-in wrapper 和 extension contract：
 
 1. Stochaflow 自有的少量高层 built-in 使用 registry name；
-2. `torchmetrics.*` 通过受限 native-provider resolver 构造，并验证最终对象是
-   `torchmetrics.Metric`；
-3. 不为 TorchMetrics 的每个类注册别名，不复制其全部 constructor 参数和默认值；
-4. 第三方 metric 通过 extension entry point 注册到 `REGISTRIES.metrics`；
-5. 不允许 config 导入任意 Python target；native resolver 只接受明确 allowlist 的
-   TorchMetrics public namespaces。
+2. 不为 TorchMetrics 的每个类注册别名，不复制其全部 constructor 参数和默认值；
+3. 第三方 metric 通过 extension entry point 注册到 `REGISTRIES.metrics`；
+4. 不允许 config 导入任意 Python target。
+
+是否增加 `torchmetrics.*` role-scoped native provider 是 M1 的独立 decision gate，
+不能仅因为 optimizer/scheduler 已有 native provider 就默认采用。只有直接使用多个
+TorchMetrics 类的真实配置重复、constructor/lifecycle contract 和可读错误模型都已
+证明稳定时，才增加受限 public namespace resolver；否则继续用少量 wrapper 与
+extension registry。这一 gate 必须与 Hydra 配置计划的 native-family 原则一致。
 
 首批 Stochaflow built-in 建议保持小而稳定：
 
@@ -364,7 +374,8 @@ optimizer/scheduler 的成熟依赖边界保持一致：
 | `mae` | `torchmetrics.regression.MeanAbsoluteError` | prediction-target 回归 |
 | `cosine_similarity` | 受测 wrapper | denoising/representation 对齐 |
 
-classification accuracy/F1 等可直接使用 allowlisted `torchmetrics.*` target。只有当
+classification accuracy/F1 等先由明确 wrapper 或 extension 提供；若上述 native
+provider gate 通过，才允许直接使用受限的 `torchmetrics.*` identifier。只有当
 Stochaflow 需要固定额外语义或跨版本兼容时，才增加自己的 wrapper。
 
 ### 5.4 MetricEngine
@@ -705,7 +716,8 @@ strict resume 必须：
 ### 阶段 M1：Validation MetricEngine
 
 1. 确定 TorchMetrics 的依赖层级和跨 Python/Torch 平台兼容性；
-2. 增加 `MetricConfig`、registry/native resolver 与 MetricEngine；
+2. 增加 `MetricConfig`、registry 与 MetricEngine；native resolver 只有在独立 gate
+   通过后进入；
 3. 在 built-in supervised/Gaussian Strategy 中产生 channel；
 4. 支持 validation/test，随后支持 train epoch metrics；
 5. 增加 `mse`、`mae`、`mean` 最小 built-in；

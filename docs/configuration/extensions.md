@@ -754,7 +754,8 @@ writer 返回的 mapping 不能为空；artifact key 在全部 writer 间必须�
 - SamplingBuilder：`SamplingBuilderContext`；
 - optimizer / LR scheduler：模型参数或 optimizer；
 - logger：`output_dir`、`run_name`；
-- diagnostic：`logger`、`output_dir`、可选 `sample_shape`。
+- diagnostic：`logger`、`output_dir`。需要采样的 diagnostic 在自己的私有配置中声明
+  shape，framework 不从独立 sample workflow 或 DataBuilder 猜测。
 
 optimizer 的配置 `params` 不得包含其运行时 `params` iterable；LR scheduler 的配置
 `params` 不得包含 `optimizer`。`T_max`、`total_steps` 等具体构造参数必须显式写成确定值，

@@ -1,12 +1,16 @@
 # Consistency Distillation 支持计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：提案，尚未进入实现
+- 状态：Later / rebase required，尚未进入实现；不再以退出维护的 extension
+  reference project 作为实施入口
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-23
 - 架构复核：2026-07-25；标准 distillation 首版改为独立 target student EMA；
   2026-07-26；质量/性能验收接入独立 Evaluation cases
 - 首版范围：离散 VP Gaussian、无条件图像、冻结 diffusion teacher、端点一致性算子
-- 实施位置：先作为独立 extension reference project 验证；不直接扩大核心算法接口
+- 实施位置：未来先作为临时、可安装的 extension prototype 与 contract fixture 验证；
+  不恢复长期维护的 reference project，也不直接扩大核心算法接口
 - 关联决策：
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)
@@ -433,18 +437,28 @@ training:
 ema:
   enabled: true
   decay: 0.9999
-  use_for_sampling: true
+```
 
-sampling:
-  run_after_training: true
-  shape: [1, 28, 28]
+训练配置不再内嵌 sampling。独立完整 sample invocation：
+
+```yaml
+sample:
   sampler:
     name: stochaflow-consistency-distillation.consistency
     params:
       schedule: [1000, 0]
   options:
-    weights: auto
+    weights: ema
     clip_output: true
+  shape: [1, 28, 28]
+  num_samples: 36
+  batch_size: 36
+  seed: 42
+  writers:
+    - name: image
+      params:
+        grid_nrow: 6
+        denormalize: true
 ```
 
 对应 TrainingBuilder 必须把内部
@@ -473,7 +487,8 @@ sample request 不能选择 Builder 或覆盖 prediction type。最终 recipe op
 
 交付：
 
-- 新建独立、可安装的 extension reference project；
+- 新建临时、可安装的 extension prototype 与独立 contract fixtures；只有能力达到
+  promotion gate 后才决定是否成为 maintained example；
 - 注册 namespaced Objective、TrainingBuilder、Sampler、SamplingBuilder；
 - 实现 teacher bundle exporter/loader 与 process fingerprint 验证；
 - 提供 tiny config 和不含权重的 README 流程。
@@ -572,7 +587,7 @@ sample request 不能选择 Builder 或覆盖 prediction type。最终 recipe op
 
 1. tiny synthetic/tiny image overfit；
 2. MNIST teacher 与 student；
-3. CIFAR-10 作为有意义的生成质量评估；
+3. AFHQ-v2 作为质量/性能 showcase，但不冒充规模结果；
 4. 条件生成、CFG 或高分辨率留到后续提案。
 
 对每个数据集报告：

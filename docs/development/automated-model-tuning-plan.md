@@ -1,7 +1,10 @@
 # 自动化模型调优开发计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：提案，尚未进入实现
+- 状态：Later，尚未进入实现；等待 stable latent baseline、Metrics、
+  Evaluation 与 reusable single-run seam
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25
 - 架构复核：2026-07-26；final test 改由独立 Evaluation Operation 执行
 - 前置工作：[Metrics 支持开发计划](metrics-support-plan.md)的 canonical epoch
@@ -722,7 +725,9 @@ Builder 在 Python 中组合。core runner 不按 builder name 分支。
 
 ### 6.4 可复用 SingleRunExecutor
 
-从 `scripts/experiment_runner.py` 抽取库级入口：
+本能力复用 Hydra H1 为 plain/Hydra CLI 抽取的 `TrainingInvocation` 和
+`run_training_invocation()` lifecycle，不再从 runner 平行抽取第二套执行路径。
+在该共享 seam 上补齐结构化 request/outcome：
 
 ```python
 def run_training(
@@ -735,7 +740,7 @@ def run_training(
 ```
 
 `TrainingRunRequest` 统一封装 config、options、resolved extensions 与 run source，
-与 Pipeline/Evaluation 计划使用同一签名。AutoML 的 `TrialObserver` 是
+并适配到唯一 `TrainingInvocation`。AutoML 的 `TrialObserver` 是
 `TrainingRunObserver` 的 engine adapter，不改变 library entry point。
 
 `TrainingRunOutcome` 至少含：
@@ -1053,12 +1058,14 @@ checkpoint 恢复一个候选的训练状态。不能拿另一个 trial 的 best
 ### 阶段 T0：Metrics 与 single-run seam
 
 1. 完成 Metrics 计划的 canonical epoch snapshot；
-2. 增加 epoch observer/control contract；
-3. 抽取 `run_training()` 与 `TrainingRunOutcome`；
-4. 让 CLI train 仅做参数解析和 reporter adapter；
-5. 可配置 trial 中跳过 phase test/final sampling；trial 不触发 formal
+2. 确认 latent codec、posterior artifact、dataset split、sample/evaluation protocol
+   与正式 baseline 已冻结；
+3. 复用 Hydra H1 的 `TrainingInvocation`/`run_training_invocation()`；
+4. 增加 epoch observer/control contract 与 `TrainingRunOutcome`；
+5. 让 CLI train 仅做参数解析和 reporter adapter；
+6. 可配置 trial 中跳过 phase test/final sampling；trial 不触发 formal
    final-test Evaluation；
-6. 不改变普通 `stochaflow train` 默认行为。
+7. 不改变普通 `stochaflow train` 默认行为。
 
 ### 阶段 T1：Study config 与顺序 Grid/Random 搜索
 

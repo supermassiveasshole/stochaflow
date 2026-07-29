@@ -33,7 +33,7 @@ from stochaflow.extensions import ...
 | `DataSourceContext` | cache root、ensure/require、verification 与 strict-resume expected identity |
 | `ArtifactVerificationEvent` | `full` 验证的 producer、phase、completed 与 total 进度值 |
 | `ArtifactVerificationObserver` | 接收有序验证事件的可选窄 callback contract |
-| `ArtifactVerificationPhase` | `validate` 或 `post_load` 验证阶段 |
+| `ArtifactVerificationPhase` | 当前固定为 `validate` 的内容验证阶段 |
 | `DataSourceMaterializationConfig` | `source.materialization` 的通用 typed config，可构造 `DataSourceContext` |
 | `ImageDataSource` | 内置 image recipe 可消费的 source-adapter 基类 |
 | `DataArtifact` | managed/referenced 内容共用的已验证 runtime handle |
@@ -114,19 +114,24 @@ verified staging root 以 `full` 调用，并在发布后对 final object root �
 最终返回的 `DataArtifact` 只保留 final-root payload。持久化内容错误应抛
 `DataArtifactValidationError`，普通 `TypeError`/`ValueError` 会被视为 producer bug。
 
-cache hit 或 strict resume 的 `full` 加载执行两轮完整内容扫描：第一轮同时验证
-manifest、inventory、object layout、identity 和 stored files，并作为 loader 前快照；
-第二轮在 loader 后验证不可变性。identity-only 校验只执行第一轮。文件 SHA-256 在
-artifact I/O 层有界并行，但快照和异常始终按路径确定性排序。默认线程数为
+cache hit 或 strict resume 的 `full` 加载先执行一次完整内容扫描，同时验证 manifest、
+inventory、object layout、identity 和 stored files，并作为 loader 前快照；loader
+返回后只执行 link-safe 元数据扫描，严格比较路径、数量、size、device/inode、mode、
+mtime 与 ctime。identity-only 校验只执行第一轮。fresh materialization 的 staging 与
+final object 是两个独立验证边界，各自执行一次内容验证和一次加载后元数据复查。文件
+SHA-256 在 artifact I/O 层有界并行，但快照和异常始终按路径确定性排序。默认线程数为
 `min(8, logical CPUs)`；`DataSourceContext.verification_workers` 可以提供 `1..8`
 范围内的整数覆盖。
 底层以 1 MiB `hashlib` 更新执行哈希，CPython 会在哈希与文件读取期间释放 GIL。
+referenced producer 仍负责在 `load(full)` 中认证 external represented content；
+framework 的加载后元数据复查只覆盖其拥有的 manifest、inventory 与 sidecar。该复查
+用于检测无副作用 loader 的意外写入，不是对恶意同机修改的安全隔离。
 
 CLI 或自定义 Builder 可以向 `DataSourceContext.verification_observer` 注入
-`ArtifactVerificationObserver`。每轮从 `completed=0` 开始，仅在 `full` 模式产生事件，
-callback 在调用线程执行。observer 是临时运行时能力，不应序列化到 source config、
-artifact identity 或 checkpoint；observer 自身的异常会直接传播，不会把有效 artifact
-归类为损坏。
+`ArtifactVerificationObserver`。唯一的内容验证从 `completed=0` 开始，仅在 `full`
+模式产生 `phase="validate"` 事件；加载后元数据复查不产生进度。callback 在调用线程
+执行。observer 是临时运行时能力，不应序列化到 source config、artifact identity 或
+checkpoint；observer 自身的异常会直接传播，不会把有效 artifact 归类为损坏。
 
 `DataSourceMaterializationConfig.verification_workers` 是可序列化的运行配置，
 `DataBuilderContext.verification_workers` 是可选的本次运行覆盖。两者都不会进入
@@ -186,7 +191,7 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 | `PerSampleObjective` | 可选的逐样本 loss capability |
 | `compute_objective` | 校验并执行 scalar Objective，同时读取可选逐样本 capability |
 | `TrainingDiagnostic` | training diagnostic 生命周期根契约 |
-| `DiagnosticBuildContext` | diagnostic 构建期 logger、输出目录和可选 sample shape |
+| `DiagnosticBuildContext` | diagnostic 构建期 logger 和输出目录；采样 shape 由 diagnostic 私有配置拥有 |
 | `FitStartEvent` | fit 开始事件 |
 | `TrainBatchEndEvent` | 成功 optimizer step 后的事件 |
 | `TrainEpochEndEvent` | 一个 epoch 完成后的事件 |

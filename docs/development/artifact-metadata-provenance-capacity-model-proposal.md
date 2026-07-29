@@ -2,6 +2,9 @@
 
 - 文档性质：延期的开发决策记录；不属于公开 API
 - 状态：Deferred
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)；当前 latent codec
+  identity 只记录加载与验证所必需的事实，不重新开启通用 descriptor
 - 更新日期：2026-07-27
 - 延期原因：当前优先完成 data artifact producer lifecycle 与数据组合边界；尚没有足够的
   跨领域重复模式支持统一 metadata/provenance/capacity API
@@ -16,8 +19,9 @@
 - `artifact.metadata`、`artifact.provenance` 或 `artifact.capacity`；
 - artifact catalog、descriptor registry、CLI 查询或 runner integration。
 
-AFHQ capacity/evaluation、Physics capacity 工具、sampling capacity 与 extension plugin
-provenance 继续保留各自已有且边界明确的语义。本轮不因名称相似而合并它们。
+AFHQ capacity/evaluation、sampling capacity 与 extension plugin provenance 继续保留
+各自已有且边界明确的语义。本轮不因名称相似而合并它们。Physics capacity 只作为
+历史重复模式证据；retained-example cleanup 后不再是 maintained capability。
 
 ## 2. 已解决的 artifact 基础问题
 
@@ -80,7 +84,8 @@ binding 不读取、不适配、不迁移。
 5. 新能力可以作为相邻 immutable evidence，不改变 schema-v2 artifact identity 与
    DataSource/DataBuilder 责任边界。
 
-重新开启时应先做跨 AFHQ、Physics、LLM/streaming 或其他真实案例的 semantic inventory，
+重新开启时应先做跨 AFHQ、第二个真实 trajectory/physics producer、
+LLM/streaming 或其他真实案例的 semantic inventory，
 再提出最小 capability。不得从一个 example 反推宇宙级 descriptor。
 
 ## 5. 保留的设计原则

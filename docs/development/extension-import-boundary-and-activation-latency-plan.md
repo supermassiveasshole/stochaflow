@@ -1,17 +1,25 @@
 # Extension 导入边界与激活延迟优化计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：提案，尚未进入实现
+- 状态：需要在 Train/Sample C1 与 retained-example cleanup 后重新基线化；当前不按
+  原 DoD 实施
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-27
-- 最近复核：2026-07-28
-- 审查基线：当前共享工作区中的 extension 公共 API、Registry、CLI、
-  schema-v2 DataArtifact producer lifecycle、checkpoint v10 sampling recipe、
-  Physics Reconstruction、Knowledge Distillation 与 AFHQ-v2
+- 最近复核：2026-07-29；确认旧基线需要在 C1/C2 后重建
+- 旧审查基线：checkpoint v10 partial sampling recipe、Physics Reconstruction、
+  Knowledge Distillation 与 AFHQ-v2；该基线将被 Train/Sample C1 和
+  retained-example cleanup 明确打破，实施前必须重新测量
 - 关联文档：
   [扩展公共 API](../api/extensions.md)、
   [扩展与 Registry](../configuration/extensions.md)、
   [参考扩展项目](../configuration/reference-projects.md)、
   [框架架构](../framework.md)
+
+> **Rebase notice:** 下文关于 checkpoint v10、partial sample request、98-name export
+> surface、Physics/KD installed-wheel acceptance 的“必须保持”表述只保留为旧测量证据，
+> 不是未来实施要求。C1/C2 完成后必须重写对应 invariant、test matrix 和 DoD，不能从
+> 本文当前正文直接开工。
 
 ## 1. 目标与核心结论
 
@@ -888,9 +896,11 @@ uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 
 ### Phase 0：冻结证据与契约
 
+- 只能在 Train/Sample C1 与 retained-example cleanup 后启动；
 - 增加 fresh-process JSON import probe；
 - 记录 empty/facade/contract/prepare/activate baseline；
-- 将当前 public exports（初始基线为 98 个）固化为 machine-checked manifest；
+- 重新测量 public exports，不沿用旧的 98-name baseline，再固化为 machine-checked
+  manifest；
 - 增加 representative import-closure snapshot tests，但暂不启用目标 absence assertions；
 - 不改变 runtime behavior。
 
@@ -954,7 +964,7 @@ uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 ### Phase 4：迁移 examples、scaffold 与 CLI dispatch
 
 - core import 改 owner contracts；
-- extension scaffold 和三个 reference/showcase projects 改用窄 facade；
+- extension scaffold、AFHQ showcase 与独立最小 contract fixtures 改用窄 facade；
 - CLI 按 subcommand 延迟 execution runtime；
 - 同步公开 extension 文档与教程；
 - 运行 installed-wheel acceptance。
@@ -964,7 +974,8 @@ uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 - AFHQ managed-Source-only activation 可以加载其明确使用的 Pillow/materialization 和
   `DataArtifactStore` 依赖，但不加载 Torch、Torchvision、training/sampling
   implementations；
-- Physics 的 referenced artifact binding 与 KD 的 `artifact_bindings is None` 行为不变；
+- referenced artifact binding 与 `artifact_bindings is None` 分别由独立最小
+  fixture 验证，不恢复已退出维护的 Physics/KD project；
 - `init`/help 不支付 train/sample runtime import；
 - CLI 与 installed-wheel probes 加入后，完整 hard structural gate matrix 通过；
 - source checkout isolation 与 wheel entry points 通过。
@@ -1041,10 +1052,12 @@ runner/factory 依赖 contract 与显式 activation/bootstrap，不依赖某个 
 6. built-in bootstrap 显式、幂等、并发安全，inventory 稳定，失败后
    failure-terminal 且不宣称 Registry rollback；
 7. plugin prepare 仍无 target import，activation 仍 eager、确定且 failure-terminal；
-8. AFHQ、Physics、Knowledge Distillation installed-wheel acceptance 全部通过；
+8. AFHQ installed-wheel acceptance 以及 referenced/no-artifact 独立 contract
+   fixtures 全部通过；
 9. CLI `init`/help 不再隐式加载 train/sample execution runtime；
-10. schema-v2 artifact manifest/cache/identity、checkpoint v10 `inference_recipe`、
-    partial sample request、provenance、YAML 与 entry-point schema 无变化；
+10. schema-v2 artifact manifest/cache/identity、C1 后 checkpoint
+    `inference_recipe`/完整 sample invocation、provenance 与 entry-point schema
+    无意外变化；
 11. focused tests、repository pytest、Ruff、Pyright、config reference check 与 Sphinx `-W`
     全部通过；
 12. benchmark 报告区分 empty、facade、contract、first-party bootstrap、plugin-only

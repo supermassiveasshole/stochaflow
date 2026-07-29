@@ -1,8 +1,12 @@
 # 训练后 Evaluation 与 Benchmark 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：提案，尚未进入实现
+- 状态：P2 formal-release gate，尚未进入实现；不阻塞 AFHQ correctness，
+  E0–E1 与 latent quality profile 阻塞开放正式 baseline
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-26
+- 本次排期修订日期：2026-07-29
 - 前置工作：
   [Metrics 支持开发计划](metrics-support-plan.md)的 `MetricUpdate`、`MetricEngine`
   与 canonical result contract
@@ -141,7 +145,7 @@ validation split 混淆。
 | --- | --- |
 | `DataSource -> DataArtifact`、`DataBuilder -> DataLoaders` | source 负责可验证 artifact，Builder 负责 runtime data composition，batch 保持 `Any` |
 | `TrainingStrategy.evaluation_step()` | 现成的训练 phase batch/model 解释边界 |
-| checkpoint v10 与 safe loading | config、资产 state、inference recipe、epoch/global step、extension provenance |
+| C1 后 checkpoint 与 safe loading | config、资产 state、inference recipe、epoch/global step、extension provenance |
 | best/latest checkpoint 选择 | 可解析默认候选，但 formal run 仍需冻结具体文件/hash |
 | `InferenceModelProvider` | sampling 已有 raw/EMA 只读权重投影经验 |
 | `SamplingBuilder` 与 `run_sampling()` | 独立 operation、overlay、manifest、structured result 的先例 |
@@ -554,20 +558,19 @@ data:
   split: test
 
 evaluation:
-  builder:
-    name: super_resolution_paired
-    params:
-      inference:
-        scale: 4
-        tile: null
-        precision: fp32
-      sample_plan:
-        seed: 20260726
-        replicates_per_input: 1
-      protocol:
-        id: sr-x4-rgb-v1
-        expected_examples: 100
-        strict_complete: true
+  name: super_resolution_paired
+  params:
+    inference:
+      scale: 4
+      tile: null
+      precision: fp32
+    sample_plan:
+      seed: 20260726
+      replicates_per_input: 1
+    protocol:
+      id: sr-x4-rgb-v1
+      expected_examples: 100
+      strict_complete: true
 
 metrics:
   - id: psnr_rgb
@@ -689,6 +692,8 @@ checkpoint resolver 负责：
 不能直接调用要求 optimizer/scheduler topology 完全匹配的
 `CheckpointManager.restore_payload()`。应提炼与 sampling 共用的只读
 `InferenceStateProjection`/resolver；Training restore 继续使用严格完整 restore。
+该 projection 由 Latent Diffusion Phase 1 的 checkpoint/sampling 层唯一实现，
+Evaluation E1 只消费它，不再建立第二套 checkpoint asset resolver。
 
 ### 8.3 PredictionArtifactSubject
 
@@ -1265,9 +1270,6 @@ generation case 再冻结：
 - `domainnet-class-domain-generation-v1`：只有 class + domain condition gate
   通过后启用；冻结 class/domain joint vocabulary、domain-balanced/empirical
   allocation 与 domain-sliced reconstruction/generation report；
-- Flowers102 若保留，只作为小数据 tutorial/research profile，并继续区分
-  full-data showcase 与 held-out transfer；它不再是 latent capability 的正式
-  promotion target。
 
 默认建议：
 
@@ -1524,6 +1526,9 @@ outputs/evaluations/<evaluation-id>/
 
 依赖 Metrics 计划的前置 contract。
 
+排期：在 AFHQ latent correctness 后启动，与 prepared posterior/production
+lifecycle 并行；不阻塞 experimental functional support。
+
 交付：
 
 - 本计划评审通过；
@@ -1547,6 +1552,7 @@ outputs/evaluations/<evaluation-id>/
 
 - standalone `EvaluationConfig`；
 - checkpoint subject resolver 与只读 inference state projection；
+- 消费 Latent Phase 1 已实现的 projection，而不是重新实现 resolver；
 - sampling/task composition 提供的窄 inference capability seam；
 - `EvaluationBuilder -> EvaluationPlan` registry path；
 - `EvaluationRunner`；
@@ -1595,6 +1601,8 @@ outputs/evaluations/<evaluation-id>/
 - FID/KID distribution binding；
 - content-addressed reference cache；
 - Gaussian generation profile；
+- codec reconstruction profile；
+- decoded latent generation、class fidelity 和 memorization profile；
 - consistency NFE 1/2/4 cases；
 - performance measurement profile；
 - quality-speed curve reporter。

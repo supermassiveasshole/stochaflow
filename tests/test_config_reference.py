@@ -104,18 +104,10 @@ def test_context_built_component_private_parameters_are_documented() -> None:
     assert "`params` 必须是空 mapping（默认 `{}`）" in supervised
 
 
-def test_all_builtin_yaml_configs_load() -> None:
+def test_all_builtin_train_configs_load() -> None:
     paths = sorted(
-        Path("examples/built-in/image-generation/experiments").glob("*.yaml")
+        Path("examples/built-in/image-generation/configs/train").glob("*.yaml")
     )
 
-    assert [path.name for path in paths] == [
-        "ddim_cifar10.yaml",
-        "ddim_flowers102.yaml",
-        "ddim_mnist.yaml",
-        "ddpm_cifar10.yaml",
-        "ddpm_flowers102.yaml",
-        "ddpm_mnist.yaml",
-        "ddpm_mnist_flowers102.yaml",
-    ]
+    assert [path.name for path in paths] == ["mnist.yaml"]
     assert all(isinstance(load_config(path), StochaflowConfig) for path in paths)

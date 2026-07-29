@@ -150,14 +150,12 @@ def build_diagnostics(
     *,
     logger: ExperimentLogger,
     output_dir: str,
-    sample_shape: tuple[int, ...] | None,
 ) -> list[TrainingDiagnostic]:
     """Instantiate training diagnostic plugins from configuration."""
 
     context = DiagnosticBuildContext(
         logger=logger,
         output_dir=output_dir,
-        sample_shape=sample_shape,
     )
     diagnostics: list[TrainingDiagnostic] = []
     for diagnostic_config in configs:
@@ -297,11 +295,6 @@ def build_training_components(
         config.diagnostics,
         logger=logger,
         output_dir=config.experiment.output_dir,
-        sample_shape=(
-            tuple(config.sampling.shape)
-            if config.sampling.shape is not None
-            else None
-        ),
     )
     trainer = Trainer(
         plan=plan,

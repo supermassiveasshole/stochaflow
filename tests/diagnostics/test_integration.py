@@ -26,10 +26,14 @@ def _diagnostic(tmp_path, logger, **overrides) -> DiffusionQualityDiagnostic:
     params = {
         "logger": logger,
         "output_dir": tmp_path,
-        "sample_shape": (1, 4, 4),
         "samplers": profiles(),
         "cadence": {"step_every": 1, "artifact_every_epochs": 1},
-        "sampling": {"sample_num": 2, "batch_size": 1, "seed": 123},
+        "sampling": {
+            "shape": [1, 4, 4],
+            "sample_num": 2,
+            "batch_size": 1,
+            "seed": 123,
+        },
         "providers": provider_config(),
         "use_ema": False,
         "failure_policy": "raise",
@@ -74,7 +78,8 @@ def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
     diagnostic.on_train_epoch_end(epoch_event(runtime))
 
     epoch_dir = tmp_path / "diagnostics" / "diffusion_quality" / "epoch_0001"
-    assert (epoch_dir / "manifest.yaml").is_file()
+    manifest_path = epoch_dir / "manifest.yaml"
+    assert manifest_path.is_file()
     assert (epoch_dir / "denoiser" / "reconstruction.png").is_file()
     for profile_id in ("ddpm_full", "ddim_2"):
         target = epoch_dir / profile_id
@@ -92,6 +97,14 @@ def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
     combined = {name for _, payload in logger.metrics for name in payload}
     assert "diagnostics/samplers/ddpm_full/sampling_seconds" in combined
     assert "diagnostics/samplers/ddim_2/batch_diversity" in combined
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    expected_combined_metrics = {
+        name: value
+        for profile in manifest["profiles"]
+        for name, value in profile["metrics"].items()
+    }
+    assert manifest["combined_metrics"] == expected_combined_metrics
+    assert "metrics" not in manifest
 
 
 def test_profiles_share_noise_and_restore_ema_model_and_rng(tmp_path) -> None:

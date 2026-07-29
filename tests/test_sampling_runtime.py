@@ -37,11 +37,15 @@ from stochaflow.utils.checkpoint import (
 )
 from stochaflow.utils.config import (
     ConfigError,
+    load_config,
     load_config_dict,
     parse_sample_request,
 )
 from stochaflow.utils.plugins import ExtensionIdentityError
 from stochaflow.utils.registry import REGISTRIES
+
+BUILTIN_CONFIGS = Path("examples/built-in/image-generation/configs")
+BUILTIN_MNIST_TRAIN_CONFIG = BUILTIN_CONFIGS / "train/mnist.yaml"
 
 
 class TinyDenoiser(nn.Module):
@@ -432,6 +436,44 @@ def _checkpoint(
         payload["process_state_dict"] = process.state_dict()
     torch.save(payload, path)
     return path
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "sampler_name"),
+    [
+        ("mnist-ddpm.yaml", "ddpm"),
+        ("mnist-ddim-50.yaml", "ddim"),
+    ],
+)
+def test_builtin_mnist_sample_profiles_complete_the_train_checkpoint_request(
+    tmp_path: Path,
+    profile_name: str,
+    sampler_name: str,
+) -> None:
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
+    assert raw["sampling"]["sampler"] is None
+    assert raw["sampling"]["shape"] is None
+    raw["_recipe"] = {
+        "schema_version": 1,
+        "name": "standard_denoising",
+        "contract": {"prediction_type": "v"},
+    }
+    checkpoint = _checkpoint(tmp_path / "mnist.pt", raw)
+
+    inputs = resolve_sampling_inputs(
+        config_path=BUILTIN_CONFIGS / "sample" / profile_name,
+        checkpoint=checkpoint,
+    )
+
+    assert inputs.config_source == "sample-request"
+    assert inputs.recipe.name == "standard_denoising"
+    assert inputs.config.sampling.shape == [1, 32, 32]
+    assert inputs.config.sampling.sampler is not None
+    assert inputs.config.sampling.sampler.name == sampler_name
+    assert [writer.name for writer in inputs.config.sampling.writers] == [
+        "tensor",
+        "image",
+    ]
 
 
 def test_custom_builder_runs_once_without_shape(tmp_path: Path) -> None:

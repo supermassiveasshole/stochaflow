@@ -3,8 +3,9 @@
 Stochaflow is a research-oriented Python framework for generative modeling
 through probability paths, generative dynamics, and numerical samplers. The
 current built-in implementation focuses on config-driven discrete-Gaussian
-denoising training and DDPM/DDIM sampling for MNIST, CIFAR-10, and Oxford
-Flowers 102.
+denoising training and DDPM/DDIM sampling. The maintained built-in runnable
+configuration uses MNIST; the image data sources and recipes remain reusable by
+projects targeting other compatible datasets.
 
 The codebase is organized around registries and config-driven components. Thin
 data builders, models, optional probability processes, complete samplers, task
@@ -237,57 +238,33 @@ MNIST smoke run:
 
 ```bash
 uv run stochaflow train \
-  --config examples/built-in/image-generation/experiments/ddpm_mnist.yaml \
+  --config examples/built-in/image-generation/configs/train/mnist.yaml \
   --epochs 1 \
   --limit-batches 10 \
   --limit-validation-batches 2 \
-  --limit-test-batches 2 \
-  --skip-final-sample
+  --limit-test-batches 2
 ```
 
-Use
-`examples/built-in/image-generation/experiments/ddim_mnist.yaml`
-for the equivalent experiment with DDIM as the primary sampler.
-
-CIFAR-10 smoke run:
+The repository maintains one MNIST training config. DDPM and DDIM-50 are
+checkpoint-backed sampling profiles, not duplicate training recipes:
 
 ```bash
-uv run stochaflow train \
-  --config examples/built-in/image-generation/experiments/ddpm_cifar10.yaml \
-  --epochs 1 \
-  --limit-batches 10 \
-  --limit-validation-batches 2 \
-  --limit-test-batches 2 \
-  --skip-final-sample
+uv run stochaflow sample \
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml
+
+uv run stochaflow sample \
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddim-50.yaml
 ```
 
-Oxford Flowers 102 smoke run:
+The sample files retain the current top-level `sampling:` request envelope.
+Training diagnostics remain part of `configs/train/mnist.yaml`; choosing a
+sampling profile does not change the training or checkpoint.
 
-```bash
-uv run stochaflow train \
-  --config examples/built-in/image-generation/experiments/ddpm_flowers102.yaml \
-  --epochs 1 \
-  --limit-batches 2 \
-  --limit-validation-batches 2 \
-  --limit-test-batches 2 \
-  --skip-final-sample
-```
-
-Oxford Flowers 102 baseline run:
-
-```bash
-uv run stochaflow train \
-  --config examples/built-in/image-generation/experiments/ddpm_flowers102.yaml
-```
-
-Multi-source MNIST + Flowers102 run:
-
-```bash
-uv run stochaflow train \
-  --config examples/built-in/image-generation/experiments/ddpm_mnist_flowers102.yaml \
-  --epochs 1 \
-  --limit-batches 10
-```
+Separate CIFAR-10, Flowers102, and multi-source YAMLs are no longer maintained
+as runnable built-in examples. This keeps the example surface focused and does
+not remove the underlying reusable data-source or recipe capabilities.
 
 Custom data builders are registered as classes and exposed through an installed
 `stochaflow.extensions` entry point. A config activates them by plugin name; see
@@ -356,9 +333,9 @@ keeps the checkpoint `log_every` while enabling local and TensorBoard output:
 
 ```bash
 uv run stochaflow train \
-  --resume outputs/ddpm_mnist/<run>/checkpoints/latest.pt \
+  --resume outputs/mnist/<run>/checkpoints/latest.pt \
   --observability-config \
-    examples/built-in/image-generation/experiments/overlays/mnist_observability.yaml
+    examples/built-in/image-generation/configs/overlays/mnist-observability.yaml
 ```
 
 Diagnostics and logger resources are observation-only and have no restored
@@ -451,32 +428,32 @@ terminal noise to the complete sample batch:
 | <img src="assets/readme/mnist_ddpm_epoch_0183_trajectory.gif" width="300" alt="Animated MNIST DDPM reverse-process trajectory"> | <img src="assets/readme/mnist_ddim50_epoch_0183_trajectory.gif" width="300" alt="Animated MNIST DDIM-50 reverse-process trajectory"> |
 
 The exact sampling profiles are
-[`mnist_ddpm.yaml`](examples/built-in/image-generation/experiments/sampling/mnist_ddpm.yaml)
+[`mnist-ddpm.yaml`](examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml)
 and
-[`mnist_ddim50.yaml`](examples/built-in/image-generation/experiments/sampling/mnist_ddim50.yaml):
+[`mnist-ddim-50.yaml`](examples/built-in/image-generation/configs/sample/mnist-ddim-50.yaml):
 
 ```bash
 uv run stochaflow sample \
-  --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt \
-  --config examples/built-in/image-generation/experiments/sampling/mnist_ddpm.yaml \
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml \
   --device cuda \
-  --output-dir outputs/readme_showcase/mnist_ddpm_epoch_0183
+  --output-dir outputs/mnist/showcase/ddpm-epoch-0183
 
 uv run stochaflow sample \
-  --checkpoint outputs/ddpm_mnist/<run>/checkpoints/best.pt \
-  --config examples/built-in/image-generation/experiments/sampling/mnist_ddim50.yaml \
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddim-50.yaml \
   --device cuda \
-  --output-dir outputs/readme_showcase/mnist_ddim50_epoch_0183
+  --output-dir outputs/mnist/showcase/ddim-50-epoch-0183
 ```
 
 Each panel is the complete output of its fixed-seed command rather than a
 post-generation selection.
 
-### Oxford Flowers 102 example
+### Historical Oxford Flowers 102 artifact
 
 These images are illustrative artifacts from an earlier long-running
-experiment; the selected epoch is recorded in each filename and need not match
-the current example config defaults.
+experiment; the selected epoch is recorded in each filename. The repository no
+longer maintains a corresponding runnable Flowers102 config.
 
 DDPM samples:
 
@@ -508,17 +485,16 @@ requires the `quality` extra, an enabled reference-metric provider, a validation
 loader, and locally available or downloadable Inception weights. On MPS, FID
 feature accumulation and distance computation run on CPU because the required
 double-precision linear algebra is not available on MPS; KID keeps the configured
-runtime device. The two MNIST configs are base-installation examples with DDPM
-and DDIM as their respective primary samplers. They share a 41.7M-parameter
+runtime device. The maintained MNIST training config uses a 41.7M-parameter
 attention UNet, cosine alpha-bar noise schedule, v-prediction target, step-wise
-warmup-cosine learning rate, and EMA. Both retain a lightweight
-DDIM diagnostic profile and disable reference metrics; see the Flowers102
-configs for a complete DDPM/DDIM comparison.
+warmup-cosine learning rate, and EMA. It owns a lightweight DDIM-50 diagnostic
+profile and disables reference metrics. The standalone DDPM/DDIM YAMLs are
+sampling profiles and do not configure training diagnostics.
 
 Launch TensorBoard against one experiment's output root:
 
 ```bash
-tensorboard --logdir outputs/ddpm_mnist/<run>/tensorboard
+tensorboard --logdir outputs/mnist/<run>/tensorboard
 ```
 
 For run comparison, metric interpretation, diagnostic images, and troubleshooting,
@@ -530,14 +506,19 @@ see the [TensorBoard guide](docs/tutorials/tensorboard.md).
 generation, reconstruction, and prediction. A v10 checkpoint contains model
 state, resolved experiment config, and an `inference_recipe` that fixes the
 internal SamplingBuilder identity and its non-overridable training contract.
-An extra YAML request is optional, but `--checkpoint` is always required.
-Extension-backed checkpoints also require their recorded distributions to be
-installed in the CLI environment. A checkpoint file is used exactly; a directory
-selects the most recently modified `best.pt` below it:
+A YAML request is optional only when the checkpoint already contains complete
+request defaults. The maintained MNIST authoring file intentionally does not
+declare a sampler, shape, or writers; its resolved v10 defaults are not a
+complete invocation, so select one of its sample profiles explicitly.
+`--checkpoint` is always required. Extension-backed checkpoints also
+require their recorded distributions to be installed in the CLI environment. A
+checkpoint file is used exactly; a directory selects the most recently modified
+`best.pt` below it:
 
 ```bash
 uv run stochaflow sample \
-  --checkpoint outputs/<run>/checkpoints/best.pt
+  --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
+  --config examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml
 ```
 
 Adjust request-level settings such as output count or a replaceable Sampler with
@@ -545,6 +526,7 @@ a partial request:
 
 ```yaml
 sampling:
+  shape: [1, 32, 32]
   num_samples: 36
   batch_size: 12
   seed: 123
@@ -609,21 +591,21 @@ RSS measurements.
 ## Configuration
 
 The source repository's built-in image-generation example configurations live
-under `examples/built-in/image-generation/experiments/`; the CLI accepts a
+under `examples/built-in/image-generation/configs/`; the CLI accepts a
 config path from any location.
 
 ```text
-examples/built-in/image-generation/experiments/
-├── ddpm_mnist.yaml
-├── ddim_mnist.yaml
-├── ddpm_cifar10.yaml
-├── ddim_cifar10.yaml
-├── ddpm_flowers102.yaml
-├── ddim_flowers102.yaml
-├── ddpm_mnist_flowers102.yaml
-├── overlays/mnist_observability.yaml
-└── sampling/{mnist_ddpm.yaml,mnist_ddim50.yaml}
+examples/built-in/image-generation/configs/
+├── train/mnist.yaml
+├── sample/mnist-ddpm.yaml
+├── sample/mnist-ddim-50.yaml
+└── overlays/mnist-observability.yaml
 ```
+
+`train/mnist.yaml` is the only maintained built-in training run. The two
+`sample/` files are alternative partial requests for one compatible checkpoint,
+and therefore keep the current top-level `sampling:` envelope. The
+observability overlay remains train-owned and is valid only for strict resume.
 
 Important sections:
 
@@ -659,12 +641,6 @@ K-fold requires both `num_folds` and `fold_index`; running all folds is left to
 a project script or sweep. The portable `loader.pin_memory` default is `false`;
 CUDA users may opt in after measuring their input pipeline, while MPS users
 should normally leave it disabled.
-
-The Flowers102 config trains on the official `train` split, validates on `val`,
-and reserves `test` for final evaluation. It uses train-time random crops,
-evaluation center crops, EMA sampling, a linear DDPM beta schedule, clipped
-denoised predictions in DDPM posterior sampling, and a project-owned
-warmup-cosine LR scheduler with an explicit total step count.
 
 Native optimizer and LR-scheduler targets must be direct classes in their
 respective PyTorch namespaces and preserve Stochaflow's automatic-loop

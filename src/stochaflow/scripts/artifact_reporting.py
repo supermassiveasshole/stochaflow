@@ -25,7 +25,7 @@ class RichArtifactVerificationReporter:
         self.console = console or Console(stderr=True)
         self._progress: Progress | None = None
         self._task_id: TaskID | None = None
-        self._operation: tuple[str, str, str] | None = None
+        self._operation: tuple[str, str] | None = None
 
     def observe(self, event: ArtifactVerificationEvent) -> None:
         """Render one verification event."""
@@ -33,15 +33,9 @@ class RichArtifactVerificationReporter:
         operation = (
             event.source_name,
             event.materializer_name,
-            event.phase,
         )
         if event.completed == 0 or operation != self._operation:
             self.close()
-            description = (
-                "Verifying artifact files"
-                if event.phase == "validate"
-                else "Checking artifact after loader"
-            )
             self._progress = Progress(
                 SpinnerColumn(),
                 TextColumn("[bold blue]{task.description}"),
@@ -54,7 +48,7 @@ class RichArtifactVerificationReporter:
             )
             self._progress.start()
             self._task_id = self._progress.add_task(
-                f"{description} ({escape(event.source_name)})",
+                f"Verifying artifact files ({escape(event.source_name)})",
                 total=event.total,
             )
             self._operation = operation

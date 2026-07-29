@@ -8,6 +8,7 @@ diagnostics:
         step_every: 100
         artifact_every_epochs: 10
       sampling:
+        shape: [1, 32, 32]
         sample_num: 32
         batch_size: 32
         seed: 123

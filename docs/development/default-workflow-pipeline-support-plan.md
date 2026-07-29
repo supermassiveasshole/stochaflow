@@ -1,10 +1,14 @@
 # 默认工作流与推理 Pipeline 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：提案，尚未进入实现
+- 状态：Umbrella / promotion plan，尚未进入实现；不阻塞 concrete latent
+  capability，真实 recipe 稳定后再晋升
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25
 - 架构复核：2026-07-26；增加独立 Evaluation operation/recipe entry；
-  2026-07-28 将 Latent Diffusion 与 Stable Diffusion 分为两个关联能力计划
+  2026-07-28 将 Latent Diffusion 与 Stable Diffusion 分为两个关联能力计划；
+  2026-07-29 作为非阻塞 umbrella/promotion plan 重新排期
 - 关联计划：
   [Metrics 支持](metrics-support-plan.md)、
   [训练后 Evaluation 与 Benchmark](post-training-evaluation-support-plan.md)、
@@ -195,8 +199,16 @@ time domain、prediction semantics 和预处理严格对齐，不能由两个 re
 | 内置 writer 只理解 tensor/image grid | SR 的 input/bicubic/output/reference 对比需要 task writer |
 | 没有 stage lineage | teacher bundle 到 student checkpoint 的交接靠手工约定 |
 
-因此实现顺序应是：先提炼库级 run API、Metrics/Evaluation contract 与 Recipe 层，
-再实现/晋升具体任务；不应先写万能 Pipeline 类。
+因此必须区分“实现 capability”和“晋升为默认 workflow”：
+
+- concrete capability 的 correctness vertical slice 不依赖 Recipe/catalog，也不等待
+  完整 Metrics/Evaluation；
+- reusable run seam 由 Hydra 迁移计划的 `TrainingInvocation`/H1 统一拥有，本计划
+  不再并行实现第二套 `run_training()`；
+- 正式 baseline promotion 依赖 Metrics/Evaluation 和稳定 recipe；
+- inference bundle/Pipeline 在 checkpoint-backed sampling 已闭环后再实现。
+
+共同原则仍是不先写万能 Pipeline 类。
 
 ## 4. 成熟方案调研结论
 
@@ -357,7 +369,7 @@ Recipe entry 必须按 tagged entry type 物化为对应 operation 的严格配�
 | entry type | 配置 authority |
 | --- | --- |
 | Training | 完整 `StochaflowConfig` |
-| Sampling | 当前合法 strict partial sample request，经 checkpoint recipe resolver 得到 resolved config |
+| Sampling | C1 后完整 `SampleConfig`，与 checkpoint immutable recipe 共同解析 |
 | Evaluation | 独立 `EvaluationConfig` |
 
 未来若新增 Export 等 core operation，再增加其窄 entry/config type；不能把所有字段塞回
@@ -790,7 +802,7 @@ Entries：
 
 | entry | 输入 | 输出 |
 | --- | --- | --- |
-| `train` | image dataset/config | training checkpoint、metrics、可选 final samples |
+| `train` | image dataset/config | training checkpoint、metrics |
 | `sample-ddpm` | checkpoint、seed | samples、manifest |
 | `sample-ddim` | checkpoint、seed | samples、manifest |
 | `evaluate-quality` | checkpoint、fixed reference/sample plan | EvaluationResult、predictions、quality/performance report |
@@ -798,8 +810,9 @@ Entries：
 实现原则：
 
 - 不新增算法代码；
-- 将现有 MNIST/CIFAR/Flowers config 中的稳定公共部分收敛为 recipe variant；
-- DDPM/DDIM 仍是 `standard_denoising` Builder 的私有 sampler declaration；
+- 将 retained MNIST config 中的稳定公共部分收敛为 recipe variant；
+- DDPM/DDIM 是两个完整 sample entry，共同消费 checkpoint 的
+  `standard_denoising` immutable recipe；
 - recipe manifest 记录数据范围、shape、prediction type 与基线；
 - 作为 Recipe/catalog/run API 的首个 contract 测试。
 
@@ -992,7 +1005,7 @@ Diffusion 1.x-compatible component-native training/sampling。完整设计服从
 
 Promotion gate：
 
-- Latent Diffusion Phase 1–4 完成；
+- Latent Diffusion Phase 1–4C 完成；
 - pinned black-box pipeline 可作为 parity reference；
 - component、schedule 和 trajectory compatibility 分层报告；
 - 512 full UNet fine-tuning 可 strict resume；
@@ -1092,7 +1105,7 @@ TrainingBuilder/SamplingBuilder 共同复用；不能在两处各写一份 resiz
 SR SamplingBuilder 的输入 source 是任务私有参数，不增加顶层通用 `input_image`：
 
 ```yaml
-sampling:
+sample:
   sampler:
     name: ddim
     params: {num_inference_steps: 50, eta: 0.0}
@@ -1107,7 +1120,14 @@ sampling:
         policy: ensure
         verification: full
     native_scale: 4
-    weights: auto
+    weights: ema
+  num_samples: 8
+  batch_size: 4
+  seed: 42
+  writers:
+    - name: super_resolution_comparison
+      params:
+        format: png
 ```
 
 `gaussian_super_resolution` 是 TrainingBuilder 写入 checkpoint 的内部
@@ -1398,12 +1418,12 @@ entries:
     inputs:
       - {name: dataset, media_type: image-pairs}
     outputs:
-      - {name: checkpoint, media_type: stochaflow-checkpoint-v8}
+      - {name: checkpoint, media_type: stochaflow-checkpoint}
   - name: restore-ddim-x4
     kind: sampling
     config: restore-ddim-x4.yaml
     inputs:
-      - {name: checkpoint, media_type: stochaflow-checkpoint-v8}
+      - {name: checkpoint, media_type: stochaflow-checkpoint}
       - {name: low-resolution-images, media_type: image-directory}
     outputs:
       - {name: restored-images, media_type: image-directory}
@@ -1411,7 +1431,7 @@ entries:
     kind: evaluation
     config: evaluate-x4.yaml
     inputs:
-      - {name: checkpoint, media_type: stochaflow-checkpoint-v8}
+      - {name: checkpoint, media_type: stochaflow-checkpoint}
       - {name: fixed-paired-test-data, media_type: image-pairs}
     outputs:
       - {name: evaluation-result, media_type: stochaflow-evaluation-v1}
@@ -1432,10 +1452,12 @@ strict dataclass parser 和 round-trip tests 冻结。
 交付：
 
 - 本计划评审通过；
-- 抽取 `run_training(...) -> TrainingRunOutcome`；
-- CLI train 变成 adapter；
+- 复用 Hydra H1 已抽取的 `TrainingInvocation` 与
+  `run_training_invocation()`，不实现第二套 runner；
+- 在同一 seam 上补齐 `TrainingRunOutcome`；
+- CLI train 保持唯一 adapter；
 - 与 AutoML 计划共用 epoch observer/outcome；
-- 当前 train/resume/final-sample 行为不变。
+- C1 后 train/resume 行为不变；训练不再拥有 implicit final sample。
 
 测试：
 
@@ -1465,13 +1487,14 @@ strict dataclass parser 和 round-trip tests 冻结。
 - unknown fields、duplicate entry/id、invalid media type 失败；
 - 每个 materialized training config 通过 `load_config_dict()`；
 - 每个 evaluation entry 通过独立 EvaluationConfig strict parser；
-- strict partial sample request 通过 checkpoint recipe resolver；
+- 完整 sample config 通过严格 parser 和 checkpoint recipe resolver；
 - materialization 不修改现有文件；
 - recipe 名称不影响 runtime dispatch。
 
 ### Stage SR0：确定性 SR extension baseline
 
-先在独立 first-party extension/reference project 完成：
+先在临时、可安装的 extension prototype/contract fixture 完成，不立即恢复 maintained
+reference project：
 
 - 复用 `super_resolution` DataBuilder；
 - feed-forward model；
@@ -1535,14 +1558,17 @@ slice：
 
 该阶段不在本计划复制完整实现清单，按
 [Latent Diffusion 计划](latent-diffusion-support-plan.md)
-的 Phase 1–9 顺序推进：
+和
+[统一优先级排期](development-priority-roadmap.md)
+推进。Phase 7–8 是后续 benchmark/generalization gate，不阻塞首个 recipe：
 
 - 先闭合 inference auxiliary asset projection；
 - 再实现 Diffusers `AutoencoderKL` provider 与 reconstruction gate；
 - 用 AFHQ 完成 image-backed end-to-end correctness；
-- 物化 versioned posterior-moments artifact；
-- 用开放 curated data 完成 DiT-S/2 bring-up；
-- 在 production asset bundle 完成后训练 DiT-B/2；
+- 物化 versioned posterior-moments artifact，并补齐 optimizer-step production
+  lifecycle；
+- 在任何正式多 checkpoint 训练前完成 production asset bundle；
+- 用开放 curated data 完成 DiT-S/2 bring-up，再训练 DiT-B/2；
 - 用 independent non-DiT denoiser 验证 substitution；
 - 将 `latent-image-generation` 晋升为 first-party recipe。
 
@@ -1603,7 +1629,7 @@ slice：
 - distillation Strategy；
 - student-only one-step direct inference；
 - few-step sampler；
-- fixed MNIST/CIFAR baseline。
+- fixed MNIST baseline 与 AFHQ-v2 quality/performance showcase。
 
 退出条件：
 

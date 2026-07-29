@@ -2,6 +2,9 @@
 
 - 文档性质：已实施的开发决策记录；不属于公开 API
 - 状态：Implemented
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)；仅维护
+  Deprecated / best-effort lane，不进入新能力设计关键路径
 - 日期：2026-07-28
 - 平台支持等级：Deprecated / best effort
 - 适用范围：`macos-15-intel`、Python 3.12、PyTorch 2.2.2 transitional

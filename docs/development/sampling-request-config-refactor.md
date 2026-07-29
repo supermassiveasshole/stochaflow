@@ -2,8 +2,18 @@
 
 - 文档性质：已实施的开发决策记录；不属于公开 API
 - 状态：Implemented
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)；Hydra 计划 C1
+  实施后本文转为被取代的历史决策记录
+- Historical scope：本文 checkpoint v10、partial request、Physics/KD 示例只描述
+  当时实现；C1 不保留兼容性，retained-example cleanup 也不继续维护这些案例
 - 日期：2026-07-28
 - 兼容性：breaking；只支持 checkpoint v10，不迁移旧 sampling config 或 checkpoint
+- 后续提案：`hydra-configuration-composition-migration-plan.md` 的 Phase C1 计划再次
+  breaking，将 train/sample 配置彻底分离；在该 phase 实施前，本文仍准确描述当前代码
+- 2026-07-29 authoring 整理：built-in profile 已移动到 `configs/sample/`，但文件仍
+  使用本文定义的 `sampling:` partial-request envelope；目录移动不等于 C1 schema
+  cutover
 
 ## 1. 背景与问题
 

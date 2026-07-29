@@ -27,7 +27,7 @@ intermediate plan without linking it from the public docs index.
 - `uv run ruff check .` checks formatting-independent style and common errors.
 - `uv run pyright` performs basic static type checking across `src/` and `tests/`.
 - `uv build` creates wheel and source distributions in `dist/`.
-- `uv run stochaflow train --config examples/built-in/image-generation/experiments/ddpm_mnist.yaml --epochs 1 --limit-batches 10` performs a short end-to-end smoke run.
+- `uv run stochaflow train --config examples/built-in/image-generation/configs/train/mnist.yaml --epochs 1 --limit-batches 10` performs a short end-to-end smoke run.
 
 ## Coding Style & Naming Conventions
 

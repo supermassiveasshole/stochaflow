@@ -1,8 +1,12 @@
 # Stable Diffusion Component-Native 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：提案，尚未进入实现
+- 状态：下一条产品主线，尚未进入实现；共享 latent production substrate 稳定后启动
+- 统一排期：
+  [Development Priority Roadmap](development-priority-roadmap.md)；本文拥有 Stable
+  Diffusion family contract，统一排期拥有跨计划执行顺序
 - 初始制定日期：2026-07-28
+- 本次排期修订日期：2026-07-29
 - 当前主线：Stable Diffusion 1.x-compatible component import、text
   conditioning、UNet training/fine-tuning 与 512×512 sampling
 - 共享前置：
@@ -146,12 +150,21 @@ StableDiffusionTrainingBuilder
 
 - Builder 解析并验证 component bundle；
 - Builder 加载、冻结和声明 codec/text encoder；
-- Builder 构造 primary UNet；
+- registered model provider 在进入 Builder 前构造 primary UNet；Builder 验证注入的
+  primary 与 bundle、condition、prediction 和 geometry contract，不替换它；
 - Strategy 只解释 batch、执行 encode/text conditioning/model/objective；
 - Strategy 不下载或构造模型资产；
 - core 只管理声明的 modules、optimizer、EMA、checkpoint 和 device/mode；
 - tokenizer 是 immutable preprocessing asset，不伪装成 `nn.Module`；
 - Process 不解释 prompt 或 cross-attention states。
+
+component source 只在 `model` declaration 中出现一次。registered SD 1.x model
+provider 解析 source、构造 UNet，并让注入的 primary 暴露一个 family-private、
+immutable bundle descriptor capability；TrainingBuilder 从该 capability 取得同一
+resolved identity，再加载 codec/text encoder/tokenizer roles。这样既保持
+“primary 在 Builder 前构造”的 framework invariant，也不要求用户在 model/training
+两个 section 重复 Hub repo/revision。该 capability 不提升为通用 pretrained asset
+registry。
 
 ### 4.2 Sampling composition
 
@@ -237,11 +250,15 @@ codec
 tokenizer
 text_encoder
 denoiser
-noise_schedule
 ```
 
 这些 role 是 SD 1.x family 的私有 composition schema，不提升为 universal
 framework model graph。
+
+native component path 的 noise schedule 由 Stochaflow Gaussian Process 配置和
+checkpoint state 拥有，不作为与 codec/text encoder 相同的 module asset。
+black-box Pipeline path 的 scheduler 则由 Diffusers Pipeline 自己拥有。两者不能在
+同一个 bundle role 中形成双重 authority。
 
 ### 5.3 Pretrained 和 random-init profile
 
@@ -503,38 +520,50 @@ prompt suite 必须版本化，不能只展示人工挑选图片。
 以下仅表示 concrete recipe 私有参数，不是最终公共 schema：
 
 ```yaml
+model:
+  name: stable_diffusion_1x_unet
+  params:
+    components:
+      provider: diffusers
+      source: <pinned-hub-or-local-bundle>
+      revision: <immutable-revision>
+    initialization: pretrained
+
 training:
-  builder:
-    name: stable_diffusion_text_to_image
-    params:
-      components:
-        provider: diffusers
-        source: <pinned-hub-or-local-bundle>
-        revision: <immutable-revision>
-      initialization:
-        denoiser: pretrained
-      text:
-        max_length: 77
-        empty_probability: 0.1
-        truncation: report
-      latent:
-        source: prepared_posterior
-      prediction:
-        type: epsilon
+  name: stable_diffusion_text_to_image
+  params:
+    text:
+      max_length: 77
+      empty_probability: 0.1
+      truncation: report
+    latent:
+      source: prepared_posterior
+    prediction:
+      type: epsilon
 ```
 
 sampling config 不重复 component source：
 
 ```yaml
-sampling:
-  builder:
-    name: stable_diffusion_text_to_image
-    params:
-      prompts: prompts.yaml
-      negative_prompt: ""
-      guidance_scale: 7.5
-      height: 512
-      width: 512
+sample:
+  sampler:
+    name: ddpm
+    params: {}
+  options:
+    weights: ema
+    prompts: prompts.yaml
+    negative_prompt: ""
+    guidance_scale: 7.5
+    height: 512
+    width: 512
+  num_samples: 16
+  batch_size: 4
+  seed: 42
+  writers:
+    - name: image
+      params:
+        grid_nrow: 4
+        denormalize: true
 ```
 
 sampling 从 checkpoint/run bundle 恢复 component identity；用户 overlay 只能修改
@@ -544,13 +573,17 @@ sampling 从 checkpoint/run bundle 恢复 component identity；用户 overlay �
 
 ### Phase SD0：共享前置验收
 
-- Latent Diffusion 计划 Phase 1–4 完成；
+- Latent Diffusion 计划 Phase 1–4C 完成；
 - frozen codec 可以 checkpoint/sample 恢复；
 - prepared posterior artifact 已验证；
 - step-based resume 和本地日志可用；
+- run-level codec asset bundle 已通过 relocation/offline 验收；
 - 512 codec reconstruction profile 通过。
 
 退出条件：Stable Diffusion 不需要复制 latent lifecycle。
+
+SD1 black-box reference backend 可以在上述工作后半段做隔离 prototype，但它不是
+latent DiT 的前置，也不能提前触发 native support 声明。
 
 ### Phase SD1：black-box reference backend
 
