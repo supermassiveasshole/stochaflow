@@ -396,6 +396,66 @@ or writer configuration.
         <sampler-profile>/
 ```
 
+### AFHQ-v2 class-conditional ADM showcase
+
+The reference AFHQ-v2 ADM run completed 200 epochs and 84,000 optimizer
+steps. Periodic EMA snapshots were screened under one fixed sampling protocol,
+then the three finalists were evaluated with the checked-in class-aware
+KID/FID protocol. Aggregate FID was the primary selection metric and aggregate
+KID was the secondary metric. The selected epoch also happened to minimize the
+raw-model validation loss, although that loss was not used as a substitute for
+generation-quality evaluation.
+
+| Evaluation | Result |
+|---|---:|
+| Selected checkpoint | `epoch_0170.pt` EMA at epoch 170 / step 71,400 |
+| Best raw-model validation loss | **0.06446** |
+| Raw-model test loss after best-checkpoint restore | **0.06782** |
+| Aggregate FID | **30.240** |
+| Aggregate KID | **0.005310 ± 0.000701** |
+| Per-class FID (cat / dog / wild) | **37.965 / 58.565 / 24.352** |
+
+The generation metrics use 300 official-test real images and 300 generated
+images per class: 900 real and 900 fake images in aggregate. Sampling uses the
+checkpoint's EMA weights, deterministic DDIM-50 (`eta: 0`), CFG 2.0, and seed
+`20260726`; FID uses Inception features and KID uses 100 subsets of 300
+samples. These are fixed-protocol, 900-sample estimates rather than 50,000-image
+benchmark scores. The selected checkpoint SHA-256 is
+`ea43404395d884c03fd7b130f407e5ace6c35b2336d2c5bd073f630828c2e4ce`.
+
+The panel is the complete fixed-seed output of the README sampling profile,
+not a post-generation selection. Rows are cat, dog, and wild:
+
+<p align="center">
+  <img src="assets/readme/afhq_v2_adm_ddim50_epoch_0170_samples.png" width="522" alt="Twelve class-conditional AFHQ-v2 samples generated with EMA, DDIM-50, and CFG 2.0">
+</p>
+
+The corresponding six-frame reverse trajectory runs from terminal noise to the
+same sample batch:
+
+<p align="center">
+  <img src="assets/readme/afhq_v2_adm_ddim50_epoch_0170_trajectory.gif" width="522" alt="Animated AFHQ-v2 DDIM-50 reverse-process trajectory">
+</p>
+
+The exact sampling and evaluation profiles are
+[`ddim50-cfg2-readme.yaml`](examples/showcases/afhq-v2/experiments/sampling/ddim50-cfg2-readme.yaml)
+and
+[`ddim50-cfg2-kid-fid.yaml`](examples/showcases/afhq-v2/experiments/evaluation/ddim50-cfg2-kid-fid.yaml):
+
+```bash
+uv run --project examples/showcases/afhq-v2 stochaflow sample \
+  --checkpoint outputs/afhq-v2/adm-128/<run>/checkpoints/epoch_0170.pt \
+  --config examples/showcases/afhq-v2/experiments/sampling/ddim50-cfg2-readme.yaml \
+  --device cuda \
+  --output-dir outputs/afhq-v2/showcase/ddim50-cfg2-epoch-0170
+
+uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-evaluate \
+  --checkpoint outputs/afhq-v2/adm-128/<run>/checkpoints/epoch_0170.pt \
+  --config examples/showcases/afhq-v2/experiments/evaluation/ddim50-cfg2-kid-fid.yaml \
+  --device cuda \
+  --output-dir outputs/afhq-v2/evaluations/ddim50-cfg2-epoch-0170
+```
+
 ### MNIST checkpoint showcase
 
 The reference MNIST DDPM run completed 200 epochs and 78,000 optimizer steps.

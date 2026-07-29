@@ -31,6 +31,12 @@ _SMOKE_CONFIG = _SHOWCASE / "experiments" / "smoke" / "train-adm-128.yaml"
 _SAMPLING_CONFIG = (
     _SHOWCASE / "experiments" / "sampling" / "ddim50-cfg2.yaml"
 )
+_README_SAMPLING_CONFIG = (
+    _SHOWCASE
+    / "experiments"
+    / "sampling"
+    / "ddim50-cfg2-readme.yaml"
+)
 _LOCK = (
     _SHOWCASE
     / "src"
@@ -344,6 +350,39 @@ def test_afhq_sampling_request_is_minimal_and_checkpoint_driven() -> None:
         {"class_label": 2, "count": 12},
     ]
     assert resolved.writers[1].params["grid_nrow"] == 12
+
+
+def test_afhq_readme_sampling_request_is_explicit_and_reproducible() -> None:
+    raw = _raw(_README_SAMPLING_CONFIG)
+    resolved = apply_sample_request(
+        load_config(_ADM_CONFIG).sampling,
+        parse_sample_request(raw["sampling"]),
+    )
+
+    assert resolved.num_samples == 12
+    assert resolved.batch_size == 12
+    assert resolved.seed == 20260726
+    assert resolved.shape == [3, 128, 128]
+    assert resolved.options == {
+        "weights": "ema",
+        "clip_denoised": True,
+        "guidance_scale": 2.0,
+        "conditions": [
+            {"class_label": 0, "count": 4},
+            {"class_label": 1, "count": 4},
+            {"class_label": 2, "count": 4},
+        ],
+        "trajectory": {
+            "enabled": True,
+            "every_steps": 10,
+        },
+    }
+    assert resolved.writers[1].name == "image"
+    assert resolved.writers[1].params == {
+        "grid_nrow": 4,
+        "gif_fps": 8,
+        "denormalize": True,
+    }
 
 
 def test_afhq_capacity_tool_runs_real_comparable_training_trials(
