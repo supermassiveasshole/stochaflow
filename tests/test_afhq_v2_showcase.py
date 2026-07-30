@@ -25,6 +25,14 @@ from stochaflow.utils.registry import REGISTRIES
 _ROOT = Path(__file__).resolve().parents[1]
 _SHOWCASE = _ROOT / "examples" / "showcases" / "afhq-v2"
 _EXAMPLE_SRC = _SHOWCASE / "src"
+_PROJECT_VERSION = tomllib.loads(
+    (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
+_RELEASE_WHEEL_URL = (
+    "https://github.com/supermassiveasshole/stochaflow/releases/"
+    f"download/v{_PROJECT_VERSION}/"
+    f"stochaflow-{_PROJECT_VERSION}-py3-none-any.whl"
+)
 _ADM_CONFIG = _SHOWCASE / "experiments" / "production" / "train-adm-128.yaml"
 _DIT_CONFIG = _SHOWCASE / "experiments" / "production" / "train-dit-128.yaml"
 _SMOKE_CONFIG = _SHOWCASE / "experiments" / "smoke" / "train-adm-128.yaml"
@@ -104,7 +112,7 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
         "editable": True,
     }
     assert declaration["project"]["optional-dependencies"]["quality"] == [
-        "stochaflow[quality]==0.1.0"
+        f"stochaflow[quality] @ {_RELEASE_WHEEL_URL}"
     ]
     package = _SHOWCASE / "src" / "stochaflow_afhq_v2"
     assert (package / "resources" / "afhq-v2.lock.yaml").is_file()

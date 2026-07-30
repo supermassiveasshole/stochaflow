@@ -1,15 +1,32 @@
 # Stochaflow 文档
 
-Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。当前内置实现聚焦离散
-Gaussian diffusion、DDPM/DDIM、图像数据 recipe 和自动训练生命周期；项目可以通过
-普通 Python distribution 接入自己的数据、训练、生成算法和 artifact。
+<div class="sf-hero">
+  <p class="sf-eyebrow">Configuration-driven generative modeling</p>
+  <p class="sf-lead">
+    Stochaflow 把数据准备、组件组合、自动训练、严格恢复、checkpoint-backed
+    inference、诊断与结果 artifact 串成一条可扩展研究工作流。
+  </p>
+  <ul class="sf-pills" aria-label="当前核心能力">
+    <li class="sf-pill">Python 3.12+</li>
+    <li class="sf-pill">PyTorch</li>
+    <li class="sf-pill">DDPM / DDIM</li>
+    <li class="sf-pill">可安装扩展</li>
+    <li class="sf-pill">Checkpoint v10</li>
+  </ul>
+</div>
+
+当前内置实现聚焦 pixel-space 离散 Gaussian diffusion，包括无条件与类别条件训练、
+DDPM/DDIM、EMA、CFG 和结果 writers。项目可以通过普通 Python distribution 接入
+自己的数据、训练策略、生成算法与 artifact；latent diffusion、pretrained
+autoencoder 和 distributed training 尚未实现。
 
 ```{toctree}
 :maxdepth: 2
 :caption: 框架与使用
+:hidden:
 
-design/scope
 framework
+design/scope
 platform-support
 configuration/index
 tutorials/tensorboard
@@ -23,6 +40,7 @@ api/extensions
 ```{toctree}
 :maxdepth: 2
 :caption: 学习与研究
+:hidden:
 
 ddpm-notes
 research-notes/part-1-distribution-transport
@@ -30,7 +48,85 @@ research-notes/part-2-ddpm
 research-notes/part-3-ddim
 ```
 
-## 快速入口
+## 五分钟快速开始
+
+从源码 checkout 开始需要 Python 3.12 或更高版本：
+
+```bash
+uv sync --extra dev
+uv run stochaflow train \
+  --config examples/built-in/image-generation/configs/train/mnist.yaml \
+  --epochs 1 \
+  --limit-batches 10 \
+  --limit-validation-batches 2 \
+  --limit-test-batches 2
+```
+
+运行目录位于 `outputs/mnist/<run>/`。完整的包安装、Windows 环境、恢复与
+checkpoint sampling 步骤见[配置手册的五分钟快速开始](configuration/index.md#五分钟快速开始)。
+
+## 框架如何分工
+
+::::{container} sf-grid
+:::{container} sf-card
+<h3 class="sf-card-title">组合，而非硬编码</h3>
+
+TrainingBuilder 与 SamplingBuilder 在边界上组装任务；core runtime 不按模型名或
+算法名维护分支矩阵。
+:::
+
+:::{container} sf-card
+<h3 class="sf-card-title">严格、可追溯的运行</h3>
+
+resolved config、extension provenance、data identity、checkpoint 与 sampling
+manifest 共同固定一次运行的来源。
+:::
+
+:::{container} sf-card
+<h3 class="sf-card-title">普通 Python 扩展</h3>
+
+数据、模型、Objective、训练或采样 family 可以由独立安装的 distribution 注册，
+无需修改 core dispatch。
+:::
+::::
+
+先阅读[框架特性与架构](framework.md)了解稳定职责边界；长期非目标与新公共抽象的
+准入规则记录在[架构范围](design/scope.md)。
+
+## 结果一览
+
+以下结果来自仓库记录的固定协议，不代表未实现能力，也不把短 smoke run 当作质量
+benchmark。MNIST 最小工作流在前，AFHQ-v2 production showcase 在后。
+
+::::{container} sf-results
+:::{container} sf-result-card
+<h3 class="sf-card-title">MNIST · DDIM-50</h3>
+
+<img src="_static/mnist_ddim50_epoch_0183_samples.png" width="206" height="206" loading="lazy" decoding="async" alt="使用 epoch 183 EMA checkpoint 和 DDIM-50 生成的 36 张 MNIST 样本">
+
+同一份 EMA checkpoint 可由 DDPM-1000 或 deterministic DDIM-50 消费。选中
+checkpoint 的 validation v-prediction loss 为 **0.07189**。
+
+<p class="sf-result-meta">200 epochs · 78,000 optimizer updates · best epoch 183</p>
+
+[查看 MNIST 命令、DDPM/DDIM 面板与轨迹](https://github.com/supermassiveasshole/stochaflow/tree/main/examples/built-in/image-generation)
+:::
+
+:::{container} sf-result-card
+<h3 class="sf-card-title">AFHQ-v2 · class-conditional ADM</h3>
+
+<img src="_static/afhq_v2_adm_ddim50_epoch_0170_samples.png" width="782" height="782" loading="lazy" decoding="async" alt="使用 epoch 170 EMA checkpoint、DDIM-50 和 classifier-free guidance 2.0 生成的 36 张 AFHQ-v2 样本">
+
+固定 900 real / 900 generated 协议报告 aggregate FID **30.240**，
+aggregate KID **0.005310 ± 0.000701**。
+
+<p class="sf-result-meta">EMA · DDIM-50 · CFG 2.0 · seed 20260726</p>
+
+[查看 AFHQ-v2 协议、配置与追溯信息](tutorials/afhq-v2.md)
+:::
+::::
+
+## 按目标继续
 
 - [架构范围与非目标](design/scope.md)：长期职责边界、明确拒绝的复杂度和新公共抽象的
   准入门槛。

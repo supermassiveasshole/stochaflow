@@ -29,6 +29,10 @@ instead of a YAML object graph.
 
 ## Install, test, and train with pip
 
+The generated project pins its Stochaflow runtime to the matching universal
+wheel on GitHub Releases. A fresh environment therefore does not depend on a
+separate PyPI publication of `stochaflow`.
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -47,6 +51,20 @@ uv sync --extra test
 uv run pytest
 uv run stochaflow train --config experiments/example/train.yaml
 ```
+
+To develop this extension against a local Stochaflow source checkout instead
+of the pinned release, install the framework checkout first and then install
+this generated project without resolving its release dependency:
+
+```bash
+python -m pip install -e "/path/to/stochaflow[dev]"
+python -m pip install --no-deps -e .
+```
+
+The generated example's runtime and test dependencies are supplied by the
+Stochaflow `dev` installation in this source-development workflow. Keep the
+GitHub Release direct reference in `pyproject.toml` for ordinary installs and
+distribution builds that target this GitHub-Release-only framework.
 
 The generated configuration trains a tiny synthetic regression model for two
 epochs. A run is written below `outputs/example/`:

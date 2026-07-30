@@ -366,6 +366,28 @@ scale 0 只运行 null branch，scale 1 只运行 conditional branch；其他非
 conditional/null batch 拼接后单次 forward。DDIM 只消费组装好的 Gaussian dynamics，
 不认识 class label 或 guidance。
 
+## 已发布的 ADM reference result
+
+完成的 200-epoch / 84,000-update ADM-UNet run 在固定协议下选择 epoch 170 EMA
+checkpoint。协议使用 cat、dog、wild 各 300 张 official-test real images 与各 300 张
+generated images，并固定 DDIM-50、CFG 2.0 和 seed `20260726`：
+
+| Evaluation | Result |
+| --- | ---: |
+| Aggregate FID | **30.240** |
+| Aggregate KID | **0.005310 ± 0.000701** |
+| Per-class FID (cat / dog / wild) | **37.965 / 58.565 / 24.352** |
+
+<img src="../_static/afhq_v2_adm_ddim50_epoch_0170_samples.png" alt="使用 epoch 170 EMA checkpoint、DDIM-50 和 classifier-free guidance 2.0 生成的完整 36 张 AFHQ-v2 样本">
+
+图中第 1–2 行是 cat，第 3–4 行是 dog，第 5–6 行是 wild；它展示完整的 36-sample
+输出而非人工筛选子集。这是 900 real / 900 generated 的已记录协议，不是
+50,000-image benchmark；DiT-B/8 配置没有已完成的质量结果。checkpoint 不随仓库
+分发，因此复核该 published result 需要先完成兼容训练，并显式使用
+`checkpoints/epoch_0170.pt`。展示面板还使用专用
+`experiments/sampling/ddim50-cfg2-readme.yaml`（6×6 grid），不能由通用
+best-checkpoint 命令推断。
+
 ## 正式 class-aware KID/FID 评估
 
 训练期 loss、sample statistics 和 diagnostic artifacts 只用于监控。冻结 best

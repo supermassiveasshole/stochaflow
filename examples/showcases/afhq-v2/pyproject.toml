@@ -9,12 +9,12 @@ description = "End-to-end class-conditional AFHQ-v2 generation showcase."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "stochaflow==0.1.0",
+    "stochaflow @ https://github.com/supermassiveasshole/stochaflow/releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl",
 ]
 
 [project.optional-dependencies]
 quality = [
-    "stochaflow[quality]==0.1.0",
+    "stochaflow[quality] @ https://github.com/supermassiveasshole/stochaflow/releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl",
 ]
 
 [project.scripts]

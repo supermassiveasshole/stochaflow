@@ -284,6 +284,25 @@ packaging, provenance checks, and the generated project workflow.
 
 ## Installation and platforms
 
+The current GitHub Release provides a universal Python wheel, source
+distribution, SHA-256 checksums, and GitHub build-provenance attestations. To
+install the v0.1.0 wheel directly:
+
+```bash
+python -m pip install \
+  https://github.com/supermassiveasshole/stochaflow/releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl
+```
+
+The assets and generated release notes are on the
+[v0.1.0 release page](https://github.com/supermassiveasshole/stochaflow/releases/tag/v0.1.0).
+After downloading an asset, its provenance can be checked with GitHub CLI:
+
+```bash
+gh attestation verify \
+  stochaflow-0.1.0-py3-none-any.whl \
+  --repo supermassiveasshole/stochaflow
+```
+
 For source development, `uv sync --extra dev` installs Pytest, Ruff, and
 Pyright. Optional extras are independent:
 

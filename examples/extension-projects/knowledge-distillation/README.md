@@ -55,6 +55,21 @@ Sampling writes `samples.pt` containing calibrated student logits and a
 calibrator with zero scale and biases `0, 1, ..., num_classes - 1`, making the
 embedded state visibly authoritative: every output row equals that bias vector.
 
+## Accepted reference result
+
+The installed-wheel, checkpoint-only acceptance run produces a tensor with
+shape `[8, 4]`. Every row is exactly:
+
+```text
+[0.0, 1.0, 2.0, 3.0]
+```
+
+The run first resumes after replacing the local bootstrap, then deletes both
+bootstrap files and samples offline from a non-project working directory. This
+exact output proves that sampling consumed the checkpoint's embedded calibrator
+state rather than either acquisition path; the sampling view contains neither
+the teacher nor the distillation objective.
+
 The inference declaration contains only the registered calibrator name and
 `num_classes`; the bootstrap path is acquisition-only training configuration
 and is not part of reconstruction. Core retains only the descriptor-referenced

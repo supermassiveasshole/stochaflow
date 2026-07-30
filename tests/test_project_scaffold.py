@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tomllib
 import zipfile
+from email.parser import Parser
 from importlib import import_module, metadata, resources
 from pathlib import Path
 from runpy import run_path
@@ -17,6 +18,7 @@ from typing import Any, Self, TextIO, cast
 
 import pytest
 import yaml
+from packaging.requirements import Requirement
 from packaging.version import Version
 from torch import nn
 
@@ -46,6 +48,14 @@ EXPECTED_FILES = {
     "src/example_lab/stochaflow_ext/training.py",
     "tests/test_extensions.py",
 }
+
+
+def _release_wheel_requirement(version: str) -> str:
+    return (
+        "stochaflow @ https://github.com/supermassiveasshole/stochaflow/"
+        f"releases/download/v{version}/"
+        f"stochaflow-{version}-py3-none-any.whl"
+    )
 
 
 def _generated_files(root: Path) -> dict[str, bytes]:
@@ -140,10 +150,20 @@ def test_create_project_writes_deterministic_installable_distribution(
 
     project = tomllib.loads((first / "pyproject.toml").read_text(encoding="utf-8"))
     assert project["project"]["name"] == "example-lab"
+    stochaflow_version = str(Version(metadata.version("stochaflow")))
     assert project["project"]["dependencies"] == [
-        f"stochaflow=={Version(metadata.version('stochaflow'))}",
+        _release_wheel_requirement(stochaflow_version),
         "torch>=2.2,<3",
     ]
+    stochaflow_requirement = Requirement(project["project"]["dependencies"][0])
+    assert stochaflow_requirement.name == "stochaflow"
+    assert stochaflow_requirement.url == (
+        "https://github.com/supermassiveasshole/stochaflow/"
+        f"releases/download/v{stochaflow_version}/"
+        f"stochaflow-{stochaflow_version}-py3-none-any.whl"
+    )
+    assert not stochaflow_requirement.specifier
+    assert not stochaflow_requirement.extras
     assert project["project"]["entry-points"]["stochaflow.extensions"] == {
         "example-lab": "example_lab.stochaflow_ext"
     }
@@ -209,6 +229,8 @@ def test_generated_readme_documents_the_complete_user_path(tmp_path: Path) -> No
         assert generated_path in readme
     for command in (
         'python -m pip install -e ".[test]"',
+        'python -m pip install -e "/path/to/stochaflow[dev]"',
+        "python -m pip install --no-deps -e .",
         "python -m pytest",
         "stochaflow train --config experiments/example/train.yaml",
         "stochaflow train \\",
@@ -222,6 +244,44 @@ def test_generated_readme_documents_the_complete_user_path(tmp_path: Path) -> No
     assert "outputs/example/<run-id>/" in readme
     assert "samples.pt" in readme
     assert "resolved_sampling.yaml" in readme
+    normalized_readme = " ".join(readme.split())
+    assert "does not depend on a separate PyPI publication" in normalized_readme
+    assert "GitHub-Release-only framework" in normalized_readme
+
+
+def test_generated_wheel_retains_the_release_direct_reference(
+    tmp_path: Path,
+) -> None:
+    project = create_project("release-wheel-lab", cwd=tmp_path)
+    wheel, _ = _build_distribution(
+        project,
+        tmp_path / "extension-dist",
+        include_sdist=False,
+    )
+
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_names = tuple(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        assert len(metadata_names) == 1
+        distribution_metadata = Parser().parsestr(
+            archive.read(metadata_names[0]).decode("utf-8")
+        )
+
+    requirements = tuple(
+        Requirement(value)
+        for value in distribution_metadata.get_all("Requires-Dist", failobj=[])
+    )
+    stochaflow_requirement = next(
+        requirement
+        for requirement in requirements
+        if requirement.name == "stochaflow"
+    )
+    version = str(Version(metadata.version("stochaflow")))
+    assert stochaflow_requirement.url == _release_wheel_requirement(
+        version
+    ).partition(" @ ")[2]
+    assert not stochaflow_requirement.specifier
 
 
 def test_generated_training_recipe_owns_the_model_input_contract(

@@ -81,6 +81,23 @@ stochaflow sample --checkpoint outputs/tiny/<run> \
   --output-dir outputs/sample-guided-ddim
 ```
 
+## Tiny acceptance result
+
+The installed-wheel acceptance run exercises all three sampling policies after
+fresh training and strict resume:
+
+| Partial request | Resolved sampler | Published reconstruction |
+| --- | --- | --- |
+| `sample-baseline-ddim.yaml` | `ddim` | float32 `[4, 3, 8, 8]` |
+| `sample-baseline-ddpm.yaml` | `ddpm` | float32 `[4, 3, 8, 8]` |
+| `sample-guided-ddim.yaml` | `physics-reconstruction.guided-ddim` | float32 `[4, 3, 8, 8]` |
+
+Each output directory contains `reconstructions.npy`, `metrics.json`, and
+`resolved_sampling.yaml`; the metric records `num_samples: 4`, and the manifest
+records extension provenance plus the resolved sampler. This is a deterministic
+integration result for artifact shape, dtype, lineage, and policy selection—not
+a scientific reconstruction-quality claim.
+
 These files are partial sampling requests, not second training configurations.
 They contain only fields that select or differ from the checkpoint defaults:
 the baseline files select a `sampler`, while guided variants also override the

@@ -445,6 +445,11 @@ def test_reference_projects_are_independent_installable_distributions() -> None:
             "project"
         ]["version"]
     )
+    release_requirement = (
+        "stochaflow @ https://github.com/supermassiveasshole/stochaflow/"
+        f"releases/download/v{root_version}/"
+        f"stochaflow-{root_version}-py3-none-any.whl"
+    )
     for project in _PROJECTS:
         assert project.source.is_dir()
         declaration = tomllib.loads(
@@ -452,8 +457,8 @@ def test_reference_projects_are_independent_installable_distributions() -> None:
         )
         assert canonicalize_name(declaration["project"]["name"]) == project.distribution
         dependencies = declaration["project"]["dependencies"]
-        assert f"stochaflow=={root_version}" in dependencies
-        assert all("file:" not in item and " @ " not in item for item in dependencies)
+        assert release_requirement in dependencies
+        assert all("file:" not in item for item in dependencies)
         assert declaration["project"]["entry-points"]["stochaflow.extensions"] == {
             project.plugin: project.target
         }

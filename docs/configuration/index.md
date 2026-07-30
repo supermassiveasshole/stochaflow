@@ -41,7 +41,8 @@ troubleshooting
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install stochaflow
+python -m pip install \
+  https://github.com/supermassiveasshole/stochaflow/releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl
 stochaflow init my-research-project
 cd my-research-project
 python -m pip install -e ".[test]"
@@ -53,11 +54,14 @@ Windows PowerShell 使用 `.venv\Scripts\Activate.ps1` 激活环境。`stochaflo
 安装依赖或要求 `uv`。生成项目的 README 继续说明 resume 和 checkpoint sampling。
 
 扩展 package 与 `stochaflow` CLI 必须安装在同一个 Python environment。若从 wheel
-安装，可将第一条安装命令替换为：
+的本地副本安装，可将 URL 替换为下载路径：
 
 ```bash
 python -m pip install ./dist/stochaflow-0.1.0-py3-none-any.whl
 ```
+
+GitHub [v0.1.0 Release](https://github.com/supermassiveasshole/stochaflow/releases/tag/v0.1.0)
+同时提供 source distribution、`SHA256SUMS` 和 build-provenance attestation。
 
 可选依赖：
 
@@ -69,6 +73,16 @@ python -m pip install ./dist/stochaflow-0.1.0-py3-none-any.whl
 | `stochaflow[docs]` | 本地构建文档与研究图表 |
 | `stochaflow[dev]` | Pytest、Ruff 与 Pyright；面向源码贡献 |
 
+从 GitHub wheel 安装 extra 时，使用 PEP 508 direct reference；例如：
+
+```bash
+python -m pip install \
+  "stochaflow[quality] @ https://github.com/supermassiveasshole/stochaflow/releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl"
+```
+
+可将 `quality` 替换为上表中的其他 extra。源码贡献仍建议使用下一节的
+`uv sync --extra dev`，以锁文件固定完整开发环境。
+
 ### 从源码贡献
 
 源码 checkout 才包含仓库内的 `examples/`、tests 和文档：
@@ -78,7 +92,9 @@ uv sync --extra dev
 uv run stochaflow train \
   --config examples/built-in/image-generation/configs/train/mnist.yaml \
   --epochs 1 \
-  --limit-batches 2
+  --limit-batches 2 \
+  --limit-validation-batches 2 \
+  --limit-test-batches 2
 ```
 
 确认 smoke run 后，移除 CLI limit 运行 YAML 声明的完整实验：
@@ -100,6 +116,12 @@ uv run stochaflow sample \
   --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
   --config examples/built-in/image-generation/configs/sample/mnist-ddim-50.yaml
 ```
+
+仓库发布的 reference run 完成 200 epochs / 78,000 updates，在 epoch 183 以
+validation v-prediction loss **0.07189** 选中 checkpoint；恢复该 checkpoint 后的
+test loss 为 **0.07363**。DDPM-1000、DDIM-50 样本与完整轨迹见
+[MNIST example result](https://github.com/supermassiveasshole/stochaflow/tree/main/examples/built-in/image-generation)。
+上面的有界命令只验证工作流，不等价于这次收敛训练。
 
 两个 sample profile 都保留当前顶层 `sampling:` request envelope，只选择 sampler、
 request options 和 writers；checkpoint 继续提供固化的 inference recipe。训练配置启用

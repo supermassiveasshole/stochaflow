@@ -327,7 +327,7 @@ extensions:
 
 ## 下一步
 
-- [快速开始与配置](configuration/index.md)
+- [快速开始与配置](configuration/index.md#五分钟快速开始)
 - [扩展与 Registry](configuration/extensions.md)
 - [常用训练、恢复和采样工作流](configuration/workflows.md)
 - [Extension 公共 API](api/extensions.md)

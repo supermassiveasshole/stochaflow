@@ -42,7 +42,10 @@ build-backend = "setuptools.build_meta"
 name = "conditional-demo"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["stochaflow==0.1.0", "torch>=2.2,<3"]
+dependencies = [
+    "stochaflow @ https://github.com/supermassiveasshole/stochaflow/releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl",
+    "torch>=2.2,<3",
+]
 
 [project.entry-points."stochaflow.extensions"]
 conditional-demo = "conditional_demo.stochaflow_ext"

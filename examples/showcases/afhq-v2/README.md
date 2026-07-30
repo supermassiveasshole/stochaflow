@@ -306,7 +306,49 @@ checkpoint-required AFHQ extension 也不需要重复声明。class 顺序为 ca
 非平凡 CFG scale 将 conditional 和 null labels 拼成双 batch，只进行一次模型
 forward；DDIM 本身不解释 class 或 guidance。
 
-一次 production run 的主要结果如下：
+### 已发布的 reference result
+
+仓库记录的结果来自完成的 200-epoch、84,000-update ADM-UNet run。使用固定协议比较
+periodic EMA checkpoints 后，aggregate FID 选择了 epoch 170：
+
+| Evaluation | Result |
+| --- | ---: |
+| Selected checkpoint | EMA weights from `epoch_0170.pt`, epoch 170 / step 71,400 |
+| Aggregate FID | **30.240** |
+| Aggregate KID | **0.005310 ± 0.000701** |
+| Per-class FID (cat / dog / wild) | **37.965 / 58.565 / 24.352** |
+
+该协议使用每类 300 张 official-test real images 与 300 张 generated images，共
+900 real / 900 generated；sampling 固定为 EMA、deterministic DDIM-50、CFG 2.0 和
+seed `20260726`。这是 900-sample protocol，不是 50,000-image benchmark。
+
+展示面板与正式指标都绑定 epoch-170 checkpoint；不要用通用 `best.pt` 路径猜测该
+published result 的 subject：
+
+```bash
+uv run --project examples/showcases/afhq-v2 stochaflow sample \
+  --checkpoint outputs/afhq-v2/adm-128/<run-id>/checkpoints/epoch_0170.pt \
+  --config examples/showcases/afhq-v2/experiments/sampling/ddim50-cfg2-readme.yaml \
+  --output-dir outputs/afhq-v2/samples/adm-ddim50-cfg2-readme
+
+uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-evaluate \
+  --checkpoint outputs/afhq-v2/adm-128/<run-id>/checkpoints/epoch_0170.pt \
+  --config examples/showcases/afhq-v2/experiments/evaluation/ddim50-cfg2-kid-fid.yaml \
+  --output-dir outputs/afhq-v2/evaluations/adm-ddim50-cfg2
+```
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/supermassiveasshole/stochaflow/main/assets/readme/afhq_v2_adm_ddim50_epoch_0170_samples.png" width="720" alt="使用 epoch 170 EMA checkpoint、DDIM-50 和 classifier-free guidance 2.0 生成的完整 36 张 AFHQ-v2 class-conditional 样本">
+</p>
+
+图中第 1–2 行是 cat，第 3–4 行是 dog，第 5–6 行是 wild；这是完整 36-sample 输出，
+不是人工筛选的子集。checkpoint SHA-256 为
+`ea43404395d884c03fd7b130f407e5ace6c35b2336d2c5bd073f630828c2e4ce`，但 checkpoint
+本身不随仓库分发。
+
+### Production 输出布局
+
+一次 production run 的主要 artifact 如下：
 
 ```text
 outputs/afhq-v2/adm-128/<run-id>/
