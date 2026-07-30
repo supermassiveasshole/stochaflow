@@ -402,15 +402,11 @@ The reference AFHQ-v2 ADM run completed 200 epochs and 84,000 optimizer
 steps. Periodic EMA snapshots were screened under one fixed sampling protocol,
 then the three finalists were evaluated with the checked-in class-aware
 KID/FID protocol. Aggregate FID was the primary selection metric and aggregate
-KID was the secondary metric. The selected epoch also happened to minimize the
-raw-model validation loss, although that loss was not used as a substitute for
-generation-quality evaluation.
+KID was the secondary metric.
 
 | Evaluation | Result |
 |---|---:|
 | Selected checkpoint | `epoch_0170.pt` EMA at epoch 170 / step 71,400 |
-| Best raw-model validation loss | **0.06446** |
-| Raw-model test loss after best-checkpoint restore | **0.06782** |
 | Aggregate FID | **30.240** |
 | Aggregate KID | **0.005310 ± 0.000701** |
 | Per-class FID (cat / dog / wild) | **37.965 / 58.565 / 24.352** |
@@ -423,18 +419,13 @@ samples. These are fixed-protocol, 900-sample estimates rather than 50,000-image
 benchmark scores. The selected checkpoint SHA-256 is
 `ea43404395d884c03fd7b130f407e5ace6c35b2336d2c5bd073f630828c2e4ce`.
 
-The panel is the complete fixed-seed output of the README sampling profile,
-not a post-generation selection. Rows are cat, dog, and wild:
+The panel is the complete 36-sample output of the README sampling profile, not
+a post-generation selection. Every image starts from independently sampled
+Gaussian noise; no source image or reconstruction input is provided. The first
+two rows are cat, the middle two are dog, and the final two are wild:
 
 <p align="center">
-  <img src="assets/readme/afhq_v2_adm_ddim50_epoch_0170_samples.png" width="522" alt="Twelve class-conditional AFHQ-v2 samples generated with EMA, DDIM-50, and CFG 2.0">
-</p>
-
-The corresponding six-frame reverse trajectory runs from terminal noise to the
-same sample batch:
-
-<p align="center">
-  <img src="assets/readme/afhq_v2_adm_ddim50_epoch_0170_trajectory.gif" width="522" alt="Animated AFHQ-v2 DDIM-50 reverse-process trajectory">
+  <img src="assets/readme/afhq_v2_adm_ddim50_epoch_0170_samples.png" width="720" alt="Thirty-six independently generated class-conditional AFHQ-v2 samples using EMA, DDIM-50, and CFG 2.0">
 </p>
 
 The exact sampling and evaluation profiles are
@@ -508,20 +499,6 @@ uv run stochaflow sample \
 
 Each panel is the complete output of its fixed-seed command rather than a
 post-generation selection.
-
-### Historical Oxford Flowers 102 artifact
-
-These images are illustrative artifacts from an earlier long-running
-experiment; the selected epoch is recorded in each filename. The repository no
-longer maintains a corresponding runnable Flowers102 config.
-
-DDPM samples:
-
-![Oxford Flowers 102 DDPM generated samples](assets/readme/flowers102_ddpm_epoch_0681.png)
-
-Reverse-process trajectory:
-
-![Oxford Flowers 102 DDPM reverse trajectory](assets/readme/flowers102_ddpm_epoch_0681_trajectory.png)
 
 ## Training diagnostics
 
