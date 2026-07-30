@@ -69,6 +69,25 @@ def test_homepage_cards_override_furo_container_padding_reset() -> None:
         assert selector in stylesheet
 
 
+def test_wide_docs_layout_widens_content_and_preserves_centering() -> None:
+    """Keep the wide article width paired with Furo's drawer calculation."""
+
+    stylesheet = (DOCS_ROOT / "_static" / "custom.css").read_text(
+        encoding="utf-8"
+    )
+    wide_layout_contract = """@media (min-width: 108em) {
+  .content {
+    width: 56em;
+  }
+
+  .sidebar-drawer {
+    width: calc(50% - 31em);
+  }
+}"""
+
+    assert wide_layout_contract in stylesheet
+
+
 def test_platform_policy_documents_the_python_314_patch_baseline() -> None:
     """Keep the supported matrix aligned with the pinned training CI lanes."""
 

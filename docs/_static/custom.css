@@ -130,6 +130,22 @@
   line-height: 1.55;
 }
 
+/*
+ * Furo centers a 46em article between two 15em drawers. On very wide screens
+ * that leaves large symmetric outer gutters while technical notes stay narrow.
+ * Widen the article to 56em and recompute the left drawer from the content's
+ * 62em outer width (56em plus 3em padding on each side).
+ */
+@media (min-width: 108em) {
+  .content {
+    width: 56em;
+  }
+
+  .sidebar-drawer {
+    width: calc(50% - 31em);
+  }
+}
+
 @media (max-width: 52rem) {
   .sf-results {
     grid-template-columns: 1fr;
