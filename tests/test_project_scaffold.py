@@ -247,6 +247,8 @@ def test_generated_readme_documents_the_complete_user_path(tmp_path: Path) -> No
     normalized_readme = " ".join(readme.split())
     assert "does not depend on a separate PyPI publication" in normalized_readme
     assert "GitHub-Release-only framework" in normalized_readme
+    assert "https://github.com/supermassiveasshole/stochaflow" in readme
+    assert "star the project" in normalized_readme
 
 
 def test_generated_wheel_retains_the_release_direct_reference(

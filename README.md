@@ -23,7 +23,54 @@ long-term boundary.
 
 ## Quick start
 
-Stochaflow requires Python 3.12 or newer. From a source checkout:
+### Install the release wheel and run an example
+
+Stochaflow requires Python 3.12 or newer. The default user path installs the
+published wheel and does not require a Stochaflow source checkout or `uv`:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install \
+  https://github.com/supermassiveasshole/stochaflow/releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl
+stochaflow init my-research-project
+cd my-research-project
+python -m pip install -e .
+stochaflow train --config experiments/example/train.yaml
+```
+
+On Windows PowerShell, activate the environment with
+`.venv\Scripts\Activate.ps1`. The generated project is a normal installable
+extension with a tiny two-epoch example, tests, strict-resume support, and a
+checkpoint-backed sampling recipe. Its run is written below
+`my-research-project/outputs/example/<run>/`.
+
+To smoke-test the maintained MNIST example without cloning the repository,
+download the standalone config from the matching release tag and bound every
+data phase:
+
+```bash
+curl --fail --location --output mnist.yaml \
+  https://raw.githubusercontent.com/supermassiveasshole/stochaflow/v0.1.0/examples/built-in/image-generation/configs/train/mnist.yaml
+stochaflow train \
+  --config mnist.yaml \
+  --epochs 1 \
+  --limit-batches 10 \
+  --limit-validation-batches 2 \
+  --limit-test-batches 2
+```
+
+On Windows PowerShell, use `curl.exe` for the download command. The bounded
+MNIST run verifies the workflow; it is not a converged quality run.
+
+If the example works for you, visit the
+[Stochaflow repository on GitHub](https://github.com/supermassiveasshole/stochaflow)
+to explore the source, report issues, or star the project.
+
+### Run the built-in MNIST example from source
+
+Repository-owned example configs are intentionally not installed as package
+data. From a source checkout, install the locked development environment:
 
 ```bash
 uv sync --extra dev
@@ -268,7 +315,7 @@ rules.
 Generate a normal installable Python project:
 
 ```bash
-uv run stochaflow init my-research-project
+stochaflow init my-research-project
 ```
 
 The scaffold includes an extension entry point, a small custom data/training/

@@ -17,26 +17,81 @@ AFHQ_README = (
 )
 
 
-def test_homepage_has_a_copyable_bounded_quick_start() -> None:
-    """Keep the published first run bounded across every data phase."""
+def test_homepage_quick_start_installs_the_release_wheel() -> None:
+    """Keep the primary user path independent of a source checkout."""
 
     homepage = (DOCS_ROOT / "index.md").read_text(encoding="utf-8")
-    bash_blocks = re.findall(r"```bash\n(.*?)\n```", homepage, re.DOTALL)
+    quick_start = homepage.split("## 五分钟快速开始", 1)[1].split(
+        "\n## ", 1
+    )[0]
+    bash_blocks = re.findall(r"```bash\n(.*?)\n```", quick_start, re.DOTALL)
     expected_fragments = (
-        "uv run stochaflow train",
-        "examples/built-in/image-generation/configs/train/mnist.yaml",
+        "python -m venv .venv",
+        "releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl",
+        "stochaflow init my-research-project",
+        "python -m pip install -e .",
+        "stochaflow train --config experiments/example/train.yaml",
+    )
+    mnist_fragments = (
+        "raw.githubusercontent.com/supermassiveasshole/stochaflow/v0.1.0/",
+        "--config mnist.yaml",
         "--epochs 1",
         "--limit-batches 10",
         "--limit-validation-batches 2",
         "--limit-test-batches 2",
     )
 
-    assert "uv sync --extra dev" in "\n".join(bash_blocks)
+    assert all("uv sync" not in block for block in bash_blocks)
     assert any(
         all(fragment in block for fragment in expected_fragments)
         for block in bash_blocks
     )
-    assert "outputs/mnist/<run>/" in homepage
+    assert any(
+        all(fragment in block for fragment in mnist_fragments)
+        for block in bash_blocks
+    )
+    assert "my-research-project/outputs/example/<run>/" in quick_start
+    assert (
+        'href="https://github.com/supermassiveasshole/stochaflow"'
+        in quick_start
+    )
+    assert "点 Star" in quick_start
+    stylesheet = (DOCS_ROOT / "_static" / "custom.css").read_text(
+        encoding="utf-8"
+    )
+    assert ".sf-star-link a" in stylesheet
+
+
+def test_readme_quick_start_prefers_the_release_wheel() -> None:
+    """Keep source synchronization as an explicit contributor alternative."""
+
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    quick_start = readme.split("## Quick start", 1)[1].split(
+        "\n## ", 1
+    )[0]
+    release_section, source_section = quick_start.split(
+        "### Run the built-in MNIST example from source", 1
+    )
+
+    assert (
+        "releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl"
+        in release_section
+    )
+    assert "python -m pip install" in release_section
+    assert "stochaflow init my-research-project" in release_section
+    assert "python -m pip install -e ." in release_section
+    assert (
+        "raw.githubusercontent.com/supermassiveasshole/stochaflow/v0.1.0/"
+        in release_section
+    )
+    assert "--limit-test-batches 2" in release_section
+    assert (
+        "https://github.com/supermassiveasshole/stochaflow"
+        in release_section
+    )
+    assert "star the project" in release_section
+    assert "uv sync" not in release_section
+    assert "uv sync --extra dev" in source_section
 
 
 def test_homepage_presents_mnist_before_afhq() -> None:

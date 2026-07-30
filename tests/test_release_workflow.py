@@ -38,6 +38,10 @@ RELEASE_WHEEL_URL_PATTERN = re.compile(
     r"download/v(?P<tag_version>[^/]+)/"
     r"stochaflow-(?P<wheel_version>[^/]+)-py3-none-any\.whl"
 )
+TAGGED_EXAMPLE_URL_PATTERN = re.compile(
+    r"https://raw\.githubusercontent\.com/supermassiveasshole/stochaflow/"
+    r"v(?P<tag_version>[^/]+)/examples/"
+)
 PYPI_STYLE_REQUIREMENT_PATTERN = re.compile(
     r"stochaflow(?:\[quality\])?\s*==\s*[^\s,\"']+"
 )
@@ -212,6 +216,7 @@ def test_public_release_references_match_project_version() -> None:
         *REFERENCE_PROJECT_METADATA_PATHS,
     )
     referenced_paths: set[Path] = set()
+    tagged_example_paths: set[Path] = set()
     for path in public_paths:
         text = path.read_text(encoding="utf-8")
         matches = tuple(RELEASE_WHEEL_URL_PATTERN.finditer(text))
@@ -220,12 +225,23 @@ def test_public_release_references_match_project_version() -> None:
         for match in matches:
             assert match["tag_version"] == version, path
             assert match["wheel_version"] == version, path
+        example_matches = tuple(TAGGED_EXAMPLE_URL_PATTERN.finditer(text))
+        if example_matches:
+            tagged_example_paths.add(path)
+        for match in example_matches:
+            assert match["tag_version"] == version, path
         assert PYPI_STYLE_REQUIREMENT_PATTERN.search(text) is None, path
 
     assert PROJECT_ROOT / "README.md" in referenced_paths
     assert PROJECT_ROOT / "docs" / "configuration" / "index.md" in referenced_paths
     assert set(PUBLIC_TUTORIAL_PATHS).issubset(referenced_paths)
     assert set(REFERENCE_PROJECT_METADATA_PATHS).issubset(referenced_paths)
+    assert PROJECT_ROOT / "README.md" in tagged_example_paths
+    assert PROJECT_ROOT / "docs" / "index.md" in tagged_example_paths
+    assert (
+        PROJECT_ROOT / "docs" / "configuration" / "index.md"
+        in tagged_example_paths
+    )
     assert wheel_url in (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
 

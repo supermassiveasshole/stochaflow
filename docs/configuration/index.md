@@ -45,13 +45,34 @@ python -m pip install \
   https://github.com/supermassiveasshole/stochaflow/releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl
 stochaflow init my-research-project
 cd my-research-project
-python -m pip install -e ".[test]"
+python -m pip install -e .
 stochaflow train --config experiments/example/train.yaml
 ```
 
 Windows PowerShell 使用 `.venv\Scripts\Activate.ps1` 激活环境。`stochaflow init`
 生成普通 Python distribution、一个最小 extension、测试和可运行配置；它不创建环境、
-安装依赖或要求 `uv`。生成项目的 README 继续说明 resume 和 checkpoint sampling。
+安装依赖或要求 `uv`。需要运行生成项目的测试时，可改用
+`python -m pip install -e ".[test]"`。生成项目的 README 继续说明 resume 和
+checkpoint sampling。
+
+若要在 wheel 环境中快速试跑仓库维护的生成 example，而不 clone 源码，可下载
+与当前 wheel 相同 tag 的独立 MNIST 配置：
+
+```bash
+curl --fail --location --output mnist.yaml \
+  https://raw.githubusercontent.com/supermassiveasshole/stochaflow/v0.1.0/examples/built-in/image-generation/configs/train/mnist.yaml
+stochaflow train \
+  --config mnist.yaml \
+  --epochs 1 \
+  --limit-batches 10 \
+  --limit-validation-batches 2 \
+  --limit-test-batches 2
+```
+
+Windows PowerShell 请使用 `curl.exe`。这个命令只做 workflow smoke test；完整
+MNIST 结果和 DDPM/DDIM 采样协议见本页后文。Example 跑通后，可以回到
+[Stochaflow GitHub 仓库](https://github.com/supermassiveasshole/stochaflow)
+查看源码、提交 issue 或点 Star。
 
 扩展 package 与 `stochaflow` CLI 必须安装在同一个 Python environment。若从 wheel
 的本地副本安装，可将 URL 替换为下载路径：

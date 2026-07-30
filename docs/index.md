@@ -50,20 +50,46 @@ research-notes/part-3-ddim
 
 ## 五分钟快速开始
 
-从源码 checkout 开始需要 Python 3.12 或更高版本：
+默认用户路径直接安装已发布的 wheel，不需要 clone Stochaflow 源码，也不需要
+`uv sync`：
 
 ```bash
-uv sync --extra dev
-uv run stochaflow train \
-  --config examples/built-in/image-generation/configs/train/mnist.yaml \
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install \
+  https://github.com/supermassiveasshole/stochaflow/releases/download/v0.1.0/stochaflow-0.1.0-py3-none-any.whl
+stochaflow init my-research-project
+cd my-research-project
+python -m pip install -e .
+stochaflow train --config experiments/example/train.yaml
+```
+
+Windows PowerShell 使用 `.venv\Scripts\Activate.ps1` 激活环境。这个命令序列会
+生成并安装一个普通 Python extension project，运行其中的两轮微型示例；结果位于
+`my-research-project/outputs/example/<run>/`。源码贡献、完整 MNIST workflow、
+严格恢复与 checkpoint sampling 步骤见
+[配置手册的五分钟快速开始](configuration/index.md#五分钟快速开始)。
+
+如果想直接试跑内置的生成 example，也不需要 clone 仓库。下载与 wheel 同属
+`v0.1.0` tag 的独立 MNIST 配置，并限制所有数据阶段：
+
+```bash
+curl --fail --location --output mnist.yaml \
+  https://raw.githubusercontent.com/supermassiveasshole/stochaflow/v0.1.0/examples/built-in/image-generation/configs/train/mnist.yaml
+stochaflow train \
+  --config mnist.yaml \
   --epochs 1 \
   --limit-batches 10 \
   --limit-validation-batches 2 \
   --limit-test-batches 2
 ```
 
-运行目录位于 `outputs/mnist/<run>/`。完整的包安装、Windows 环境、恢复与
-checkpoint sampling 步骤见[配置手册的五分钟快速开始](configuration/index.md#五分钟快速开始)。
+Windows PowerShell 请将下载命令中的 `curl` 写成 `curl.exe`。这个有界运行只验证
+workflow，不等价于下方展示的收敛训练。
+
+<p class="sf-star-link">
+  <a href="https://github.com/supermassiveasshole/stochaflow">⭐ Example 跑通了？回到 GitHub 查看源码并为 Stochaflow 点 Star</a>
+</p>
 
 ## 框架如何分工
 
