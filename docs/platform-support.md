@@ -24,10 +24,16 @@ PyTorch 组合都作出支持承诺。
 
 | 环境 | 等级 | 当前验证基线 |
 | --- | --- | --- |
-| Linux x86_64 | Supported | Ubuntu CI，CPython 3.12 和 3.14 |
-| Windows x86_64 | Supported | Windows CI，CPython 3.14 |
-| macOS arm64 | Supported | macOS CI，CPython 3.14 |
+| Linux x86_64 | Supported | Ubuntu CI，CPython 3.12 和 3.14.6 |
+| Windows x86_64 | Supported | Windows CI，CPython 3.14.6 |
+| macOS arm64 | Supported | macOS CI，CPython 3.14.6 |
 | macOS x86_64（Intel） | **Deprecated / best effort** | 过渡期 CI，CPython 3.12、PyTorch 2.2.2、Torchvision 0.17.2 |
+
+Python 3.14 用户应以 **3.14.6 或更新的兼容 patch release** 作为基线。CPython
+3.14.0–3.14.4 使用 incremental garbage collector；上游因生产环境的显著内存压力，
+从 3.14.5 起恢复为此前的 generational garbage collector。3.14.6 继承了该回退并包含
+后续修复，因此当前 CI 明确固定到 3.14.6，而不是浮动的 `3.14`。背景见
+[Python 3.14 的 garbage collector 变更](https://docs.python.org/3/whatsnew/3.14.html#garbage-collection)。
 
 Intel macOS 的 PyPI wheel 供应已经停留在旧版 PyTorch 组合。该组合的
 multi-worker DataLoader helper process 可能在迭代完成后阻塞解释器退出，因此它不在

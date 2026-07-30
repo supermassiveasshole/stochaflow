@@ -54,6 +54,50 @@ def test_homepage_presents_mnist_before_afhq() -> None:
         assert (PROJECT_ROOT / "assets" / "readme" / filename).is_file()
 
 
+def test_homepage_cards_override_furo_container_padding_reset() -> None:
+    """Keep custom content containers from rendering flush against their borders."""
+
+    stylesheet = (DOCS_ROOT / "_static" / "custom.css").read_text(
+        encoding="utf-8"
+    )
+
+    for selector in (
+        '[role="main"] .sf-hero',
+        '[role="main"] .sf-card',
+        '[role="main"] .sf-result-card',
+    ):
+        assert selector in stylesheet
+
+
+def test_platform_policy_documents_the_python_314_patch_baseline() -> None:
+    """Keep the supported matrix aligned with the pinned training CI lanes."""
+
+    policy = (DOCS_ROOT / "platform-support.md").read_text(encoding="utf-8")
+    supported_rows = [
+        line for line in policy.splitlines() if "| Supported |" in line
+    ]
+    fullwidth_comma = "\N{FULLWIDTH COMMA}"
+
+    assert supported_rows == [
+        (
+            f"| Linux x86_64 | Supported | Ubuntu CI{fullwidth_comma}"
+            "CPython 3.12 和 3.14.6 |"
+        ),
+        (
+            f"| Windows x86_64 | Supported | Windows CI{fullwidth_comma}"
+            "CPython 3.14.6 |"
+        ),
+        (
+            f"| macOS arm64 | Supported | macOS CI{fullwidth_comma}"
+            "CPython 3.14.6 |"
+        ),
+    ]
+    assert "Python 3.14 用户应以 **3.14.6 或更新的兼容 patch release**" in policy
+    assert "3.14.0" in policy
+    assert "3.14.4" in policy
+    assert "从 3.14.5 起恢复" in policy
+
+
 def test_maintained_examples_publish_grounded_results() -> None:
     """Keep the example landing pages tied to existing result evidence."""
 

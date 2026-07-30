@@ -11,7 +11,11 @@
   background: var(--color-background-secondary);
 }
 
-.sf-hero {
+/*
+ * Furo resets horizontal padding on [role="main"] .container. Match that
+ * specificity for custom content containers so their intended inset wins.
+ */
+[role="main"] .sf-hero {
   margin: 0 0 2rem;
   padding: clamp(1.35rem, 4vw, 2.5rem);
   border-top: 0.28rem solid var(--color-brand-primary);
@@ -55,21 +59,43 @@
 }
 
 .sf-grid {
+  container-name: sf-card-grid;
+  container-type: inline-size;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.9rem;
-  margin: 1rem 0 2rem;
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(min(100%, 19rem), 1fr)
+  );
+  gap: 1.25rem;
+  margin: 1.15rem 0 2.25rem;
 }
 
-.sf-card,
-.sf-result-card {
-  padding: 1rem 1.1rem;
+/*
+ * Two 19rem cards plus the 1.25rem gap need 39.25rem; three need 59.5rem.
+ * Balance the odd final card only while the grid has exactly two columns.
+ */
+@container sf-card-grid (min-width: 39.25rem) and (max-width: 59.49rem) {
+  .sf-grid > .sf-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+[role="main"] .sf-card {
+  padding: clamp(1.25rem, 2.5vw, 1.55rem);
+}
+
+[role="main"] .sf-result-card {
+  padding: 1.2rem 1.3rem;
 }
 
 .sf-card-title {
-  margin: 0 0 0.65rem;
-  font-size: 1.05rem;
-  line-height: 1.35;
+  margin: 0 0 0.85rem;
+  font-size: 1.08rem;
+  line-height: 1.45;
+}
+
+.sf-card p {
+  line-height: 1.7;
 }
 
 .sf-card > :first-child,
@@ -105,7 +131,6 @@
 }
 
 @media (max-width: 52rem) {
-  .sf-grid,
   .sf-results {
     grid-template-columns: 1fr;
   }

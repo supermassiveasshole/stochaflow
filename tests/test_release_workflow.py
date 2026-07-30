@@ -9,6 +9,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS_ROOT = PROJECT_ROOT / ".github" / "workflows"
 WORKFLOW_PATH = PROJECT_ROOT / ".github" / "workflows" / "release.yml"
+TEST_WORKFLOW_PATH = PROJECT_ROOT / ".github" / "workflows" / "tests.yml"
 PROJECT_METADATA_PATH = PROJECT_ROOT / "pyproject.toml"
 PUBLIC_TUTORIAL_PATHS = (
     PROJECT_ROOT / "docs" / "tutorials" / "custom-generation-family.md",
@@ -156,6 +157,38 @@ def test_workflows_pin_the_uv_runtime_version() -> None:
             inputs = step["with"]
             assert isinstance(inputs, dict)
             assert inputs["version"] == "0.11.26"
+
+
+def test_supported_python_314_lanes_pin_the_stable_patch_baseline() -> None:
+    """Avoid the incremental-GC Python 3.14 patch releases in training CI."""
+
+    workflow = yaml.load(
+        TEST_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert isinstance(workflow, dict)
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    test_job = jobs["test"]
+    assert isinstance(test_job, dict)
+    strategy = test_job["strategy"]
+    assert isinstance(strategy, dict)
+    matrix = strategy["matrix"]
+    assert isinstance(matrix, dict)
+    entries = matrix["include"]
+    assert isinstance(entries, list)
+
+    python_314_lanes = {
+        (entry["os"], entry["python-version"])
+        for entry in entries
+        if isinstance(entry, dict)
+        and str(entry.get("python-version", "")).startswith("3.14")
+    }
+    assert python_314_lanes == {
+        ("ubuntu-latest", "3.14.6"),
+        ("windows-latest", "3.14.6"),
+        ("macos-latest", "3.14.6"),
+    }
 
 
 def test_public_release_references_match_project_version() -> None:
