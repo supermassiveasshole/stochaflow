@@ -389,13 +389,16 @@ Process/Objective、可选 EMA model、带 concrete class identity 的 optimizer
 不读取、不补写 recipe，也不能 strict resume 或用于 `sample`；请使用新 schema 启动
 fresh run。
 
-### 蒸馏 resume 找不到 teacher bootstrap state
+### 蒸馏 resume 找不到 teacher/calibrator bootstrap state
 
 TrainingBuilder 在核心加载 checkpoint 之前必须先构造结构兼容的完整 TrainingPlan。因此
-strict resume 仍要求项目配置中的 teacher bootstrap 文件可读取；它只是构造资源，文件中
-的值随后会被 checkpoint 的同名 `training_assets_state_dict` 覆盖。不要根据 output path
-或文件是否存在猜测 fresh/resume。checkpoint-only sampling 不构造 TrainingBuilder；若它
-仍读取 teacher 文件，说明项目 SamplingBuilder 错误地依赖了训练资产。
+strict resume 仍要求项目配置中的 teacher 与 calibrator bootstrap 文件可读取；它们只是
+acquisition/构造资源，文件中的值随后会被 checkpoint 的同名
+`training_assets_state_dict` 覆盖。不要根据 output path 或文件是否存在猜测
+fresh/resume。checkpoint-only sampling 不构造 TrainingBuilder，也不读取 bootstrap：
+它从 checkpoint declaration 重建并加载 embedded calibrator，teacher 与 distillation
+Objective 保持 training-only。若 sampling 仍读取任一 bootstrap，说明项目
+SamplingBuilder 错误地依赖了训练 acquisition 配置。
 
 ### Physics reconstruction 的 DDIM 首坐标不匹配
 

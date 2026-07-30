@@ -139,6 +139,8 @@ class TabulatedDiscreteVPSchedule(DiscreteVPSchedule):
         betas = torch.as_tensor(betas)
         if betas.ndim != 1 or betas.numel() == 0:
             raise ValueError("betas must be a non-empty 1D tensor")
+        if torch.is_complex(betas):
+            raise TypeError("betas must be a real-valued tensor")
         if not torch.is_floating_point(betas):
             betas = betas.to(dtype=torch.float32)
         if not torch.all(torch.isfinite(betas)):

@@ -129,6 +129,10 @@ def test_discrete_vp_schedule_snapshots_caller_owned_betas() -> None:
 def test_discrete_vp_schedule_rejects_invalid_transition_tables() -> None:
     with pytest.raises(ValueError, match="non-empty 1D"):
         TabulatedDiscreteVPSchedule(torch.empty(0))
+    with pytest.raises(TypeError, match="real-valued"):
+        TabulatedDiscreteVPSchedule(
+            torch.tensor([0.1 + 0.8j, 0.2 + 0.7j])
+        )
     with pytest.raises(ValueError, match=r"\(0, 1\)"):
         TabulatedDiscreteVPSchedule(torch.tensor([0.0, 0.1]))
     with pytest.raises(ValueError, match="finite"):

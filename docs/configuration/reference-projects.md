@@ -9,7 +9,7 @@ distribution。它们不是核心内置 recipe，也不规定用户必须采用�
 | 项目 | 主要展示 | 不代表 |
 | --- | --- | --- |
 | `physics-reconstruction/` | 条件 Gaussian 训练、partial-noise reconstruction、复用内置 DDPM/DDIM、组合 DDIM primitive 的 physics-guided sampler、领域 artifact | 预训练模型、完整数据分发或论文精度复现 |
-| `knowledge-distillation/` | frozen teacher、managed auxiliary assets、多个 Objective、student-only sampling | 通用蒸馏模式或效果 benchmark |
+| `knowledge-distillation/` | frozen teacher、managed auxiliary assets、多个 Objective、embedded logit calibrator、checkpoint-only calibrated sampling | 通用蒸馏模式或效果 benchmark |
 
 两个项目都必须先安装到 `stochaflow` CLI 所在的 Python environment，再由 YAML
 `extensions.plugins` 精确选择。配置中的 `data/`、`outputs/` 等相对路径按进程启动目录
@@ -106,15 +106,18 @@ production path 可以执行，不代表收敛训练、1272-sample 全量运行�
 
 - 无外部输入 artifact 的 synthetic DataBuilder；配置与 experiment seed 确定全部
   in-memory splits，不在 Builder 中隐藏 download/acquisition；
-- TrainingBuilder 构建 teacher 与 temperature-KL Objective，加载普通 PyTorch
-  bootstrap `state_dict`，冻结 teacher，并声明稳定命名的 managed assets；
+- TrainingBuilder 构建 teacher、logit calibrator 与 temperature-KL Objective，加载两个
+  普通 PyTorch bootstrap `state_dict`，冻结 teacher/calibrator，并声明稳定命名的
+  managed assets；
 - TrainingStrategy 只执行 student/teacher forward，并组合 task 与 distillation loss；
-- checkpoint 把 teacher 和额外 Objective 写入 `training_assets_state_dict`；
-- sampling-only Builder 只构建 primary student，不构建 teacher 或训练 Objective。
+- checkpoint 把 teacher、calibrator 和额外 Objective 写入
+  `training_assets_state_dict`，同时只把 calibrator 声明为 embedded inference asset；
+- sampling-only Builder 构建 primary student，并按 role 延迟请求 checkpoint 中的
+  calibrator；它不构建 teacher 或训练 Objective。
 
 该 synthetic recipe 明确返回 `artifact_bindings=None`，也不会创建
-`.stochaflow-cache`。teacher bootstrap 是 TrainingBuilder 的模型构造输入，不是 dataset
-artifact。
+`.stochaflow-cache`。teacher/calibrator bootstrap 是 TrainingBuilder 的 acquisition
+输入，不是 dataset artifact，也不进入 sampling reconstruction declaration。
 
 安装和首次训练：
 
@@ -123,19 +126,21 @@ cd examples/extension-projects/knowledge-distillation
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[test]"
-python tools/create_teacher_bootstrap.py --output data/teacher.pt
+python tools/create_teacher_bootstrap.py \
+  --teacher-output data/teacher.pt \
+  --calibrator-output data/calibrator.pt
 stochaflow train --config experiments/tiny/train.yaml
 ```
 
-strict resume 使用 checkpoint 保存的完整配置。bootstrap 文件仍用于构造结构兼容的
-teacher，随后 checkpoint state 覆盖它并成为 runtime 权威：
+strict resume 使用 checkpoint 保存的完整配置。两个 bootstrap 文件仍用于构造结构兼容的
+teacher 与 calibrator，随后 checkpoint state 覆盖它们并成为 runtime 权威：
 
 ```bash
 stochaflow train --resume outputs/tiny/<run-id> --epochs 3
 ```
 
-checkpoint-only sampling 不构建 TrainingBuilder，因此可以在删除 bootstrap 文件后只加载
-student：
+checkpoint-only sampling 不构建 TrainingBuilder，因此可以在删除两个 bootstrap 文件后
+构建 student，并只加载 descriptor 所引用的 embedded calibrator：
 
 ```bash
 stochaflow sample --checkpoint outputs/tiny/<run-id>
