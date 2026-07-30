@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -15,7 +15,6 @@ from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 from stochaflow.training.diagnostics.runtime import (
     BoundSampler,
     SeedPolicy,
-    first_tensor_from_batch,
     prepare_reference_images,
 )
 
@@ -149,12 +148,14 @@ class ReferenceMetricSuite:
         device: torch.device,
         seed_policy: SeedPolicy,
         handle_error: ReferenceErrorHandler,
+        extract_images: Callable[[Any], torch.Tensor],
     ) -> None:
         self.providers = tuple(providers)
         self.config = config
         self.device = device
         self.seed_policy = seed_policy
         self.handle_error = handle_error
+        self.extract_images = extract_images
         self._unavailable: set[str] = set()
 
     def cache_real(self, dataloader: Iterable[Any]) -> Mapping[str, float]:
@@ -164,11 +165,12 @@ class ReferenceMetricSuite:
         started_at = time.perf_counter()
         with torch.inference_mode(), self.seed_policy.fork_rng(self.device):
             for batch in dataloader:
-                images = first_tensor_from_batch(batch)
-                if images is None:
+                image_value = cast(object, self.extract_images(batch))
+                if not isinstance(image_value, torch.Tensor):
                     raise TypeError(
-                        "reference validation batches must contain an image tensor"
+                        "reference image extractor must return a Tensor"
                     )
+                images = image_value
                 remaining = self.config.num_real - seen
                 if remaining <= 0:
                     break

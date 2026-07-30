@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -201,6 +201,17 @@ class ClassConditionalGaussianQualityFamily:
         """Reject the unsupported unconditional reference protocol."""
 
         del sampler
+        raise RuntimeError(
+            "class-conditional reference metrics require a class-aware evaluator"
+        )
+
+    def reference_image_extractor(
+        self,
+        trainer: Any,
+    ) -> Callable[[Any], torch.Tensor]:
+        """Reject reference extraction for this unsupported evaluator."""
+
+        del trainer
         raise RuntimeError(
             "class-conditional reference metrics require a class-aware evaluator"
         )

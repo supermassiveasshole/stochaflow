@@ -7,6 +7,7 @@ import pickle
 import random
 import warnings
 from collections import OrderedDict
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -561,6 +562,8 @@ def test_inference_asset_descriptors_default_and_round_trip(
 ) -> None:
     descriptors = _inference_asset_descriptors()
     codec = nn.Linear(1, 1)
+    codec.weight.data.fill_(3.0)
+    codec.bias.data.fill_(4.0)
     manager = CheckpointManager(
         nn.Linear(1, 1),
         auxiliary_modules={"codec": codec},
@@ -574,11 +577,16 @@ def test_inference_asset_descriptors_default_and_round_trip(
     assert state.get("inference_asset_descriptors") == (
         _inference_asset_descriptors()
     )
+    restored_codec = nn.Linear(1, 1)
+    restored_codec.weight.data.fill_(-1.0)
+    restored_codec.bias.data.fill_(-2.0)
     CheckpointManager(
         nn.Linear(1, 1),
-        auxiliary_modules={"codec": nn.Linear(1, 1)},
+        auxiliary_modules={"codec": restored_codec},
         inference_asset_descriptors=_inference_asset_descriptors(),
     ).load(checkpoint)
+    assert torch.equal(restored_codec.weight, codec.weight)
+    assert torch.equal(restored_codec.bias, codec.bias)
 
 
 @pytest.mark.parametrize(
@@ -629,6 +637,125 @@ def test_inference_asset_descriptor_validator_rejects_malformed_schema(
 ) -> None:
     with pytest.raises(error, match=message):
         validate_inference_asset_descriptors(value)
+
+
+def test_inference_asset_descriptor_rejects_duplicate_training_asset() -> None:
+    descriptors = _inference_asset_descriptors()
+    descriptors["decoder"] = deepcopy(descriptors["codec"])
+
+    with pytest.raises(ValueError, match="more than one slot"):
+        validate_inference_asset_descriptors(descriptors)
+
+
+@pytest.mark.parametrize(
+    ("malformation", "error", "message"),
+    [
+        (
+            "missing-state",
+            ValueError,
+            "references missing training asset",
+        ),
+        (
+            "non-dict-state",
+            TypeError,
+            "must be a state dictionary",
+        ),
+        (
+            "duplicate-reference",
+            ValueError,
+            "more than one slot",
+        ),
+    ],
+)
+def test_load_payload_rejects_invalid_inference_asset_topology_before_activation(
+    tmp_path: Path,
+    malformation: str,
+    error: type[Exception],
+    message: str,
+) -> None:
+    state = CheckpointManager(
+        nn.Linear(1, 1),
+        auxiliary_modules={"codec": nn.Linear(1, 1)},
+        inference_asset_descriptors=_inference_asset_descriptors(),
+    ).build_state()
+    assets = state.get("training_assets_state_dict")
+    descriptors = state.get("inference_asset_descriptors")
+    assert isinstance(assets, dict)
+    assert isinstance(descriptors, dict)
+    if malformation == "missing-state":
+        assets.pop("codec")
+    elif malformation == "non-dict-state":
+        assets["codec"] = cast(Any, [])
+    else:
+        descriptors["decoder"] = deepcopy(descriptors["codec"])
+    checkpoint = tmp_path / f"{malformation}.pt"
+    torch.save(state, checkpoint)
+
+    with pytest.raises(error, match=message):
+        CheckpointManager.load_payload(checkpoint)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("slot", " codec ", "slot names must not contain surrounding whitespace"),
+        (
+            "training_asset_name",
+            " codec ",
+            r"training_asset_name.*surrounding whitespace",
+        ),
+        (
+            "declaration_name",
+            " test_codec",
+            r"declaration\.name.*surrounding whitespace",
+        ),
+        (
+            "capability_role",
+            "image_codec ",
+            r"capability_role.*surrounding whitespace",
+        ),
+    ],
+)
+def test_inference_asset_descriptor_rejects_surrounding_whitespace(
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    descriptors = _inference_asset_descriptors()
+    if field == "slot":
+        descriptors[value] = descriptors.pop("codec")
+    elif field == "declaration_name":
+        descriptors["codec"]["declaration"]["name"] = value
+    else:
+        descriptors["codec"][cast(Any, field)] = value
+
+    with pytest.raises(ValueError, match=message):
+        validate_inference_asset_descriptors(descriptors)
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("slot", "slot names must be exact strings"),
+        ("training_asset_name", r"training_asset_name must be an exact string"),
+        ("declaration_name", r"declaration\.name must be an exact string"),
+        ("capability_role", r"capability_role must be an exact string"),
+    ],
+)
+def test_inference_asset_descriptor_rejects_non_string_identity(
+    field: str,
+    message: str,
+) -> None:
+    descriptors = _inference_asset_descriptors()
+    if field == "slot":
+        descriptors[cast(Any, 1)] = descriptors.pop("codec")
+    elif field == "declaration_name":
+        descriptors["codec"]["declaration"]["name"] = cast(Any, 1)
+    else:
+        descriptors["codec"][cast(Any, field)] = 1
+
+    with pytest.raises(TypeError, match=message):
+        validate_inference_asset_descriptors(descriptors)
 
 
 def test_inference_asset_descriptor_requires_managed_training_asset() -> None:

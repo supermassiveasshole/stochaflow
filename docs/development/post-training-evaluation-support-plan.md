@@ -1,8 +1,9 @@
 # 训练后 Evaluation 与 Benchmark 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：P2 formal-release gate，尚未进入实现；不阻塞 AFHQ correctness，
-  E0–E1 与 latent quality profile 阻塞开放正式 baseline
+- 状态：P2 formal-release gate，尚未进入实现；E0–E1 在 Metrics M0–M1 后前移
+  以支持 controlled pilot，formal P2 50k evidence 还依赖 E2 与 E3 的
+  prediction/FID/KID/Gaussian profile 子集
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-26
@@ -13,6 +14,7 @@
 - 关联计划：
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
   [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)、
+  [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)、
   [Stable Diffusion Component-Native 支持计划](stable-diffusion-component-native-support-plan.md)、
   [自动化模型调优开发计划](automated-model-tuning-plan.md)、
   [Consistency Distillation 支持计划](consistency-distillation-support-plan.md)
@@ -68,6 +70,10 @@
 9. **首版单机单设备、单 subject、fail closed。**
    在 exact sharding 与去重 contract 完成前，不开放正式分布式 benchmark；超预算、
    跳过样本或部分失败必须显式标为 incomplete，不能静默产生“完整”分数。
+10. **不同 AFHQ 协议不能只因都叫 FID/KID 就比较。**
+    当前三类 900-sample official-test DDIM-50、P2-compatible Dog 50k/full-train-reference
+    ancestral protocol，以及未来 latent decoded protocol必须具有不同 protocol
+    identity。Reporter 可以并列展示，但 Gate 不允许直接计算跨协议 delta。
 
 ## 2. 语义划分：Metrics、Validation、Diagnostic 与 Evaluation
 
@@ -297,6 +303,26 @@ T2I-CompBench 等完整协议。
 [GenEval](https://github.com/djghosh13/geneval)、
 [T2I-CompBench](https://github.com/Karine-Huang/T2I-CompBench)
 应通过 extension EvaluationBuilder 或 exporter 接入，不硬编码进 core。
+
+P2/ADM lane 提供一个直接的仓库内反例：
+
+```text
+current AFHQ showcase:
+    900 generated
+    900 official-test reference
+    class-conditional CFG
+    DDIM-50
+
+P2-compatible AFHQ-v2 Dog:
+    50,000 generated
+    complete training-set reference
+    unconditional
+    250/1000 respaced ancestral DDPM
+```
+
+两者的 FID/KID estimator、reference、sample count、condition allocation 和 solver
+均不同。前者不能作为后者的 baseline，也不能通过给结果字段都命名为 `fid` 绕过
+protocol comparison guard。
 
 ### 4.6 Super resolution：必须同时看 distortion 与 perception
 
@@ -1223,6 +1249,22 @@ PSNR/SSIM/LPIPS 需对 shape、range、crop、color 做 fail-fast 检查。paire
 FID/KID 是必要但不充分的 distribution evidence。更完整的 compositional、prompt
 alignment 或 human evaluation 通过 extension BenchmarkSuite 接入。
 
+P2-compatible AFHQ-v2 Dog profile在通用字段之上固定：
+
+- corrected ADM topology digest；
+- epsilon prediction 与 learned-range variance；
+- constant/P2 training policy只作为 subject identity，不由 evaluator重新计算；
+- EMA 0.9999；
+- 250/1000-step respaced ancestral DDPM；
+- `clip_denoised=true`；
+- exactly 50,000 complete generated samples；
+- complete authenticated train reference；
+- fixed final-budget checkpoint，而不是用同一 reference FID选择多个 subject；
+- dataset-version、KID implementation和seed uncertainty作为显式 limitation。
+
+三类 AFHQ-v2 product profile采用另一套治理：validation选择 checkpoint/CFG，
+official test只评估唯一 frozen subject一次。两种 profile不能共享 selection record。
+
 ### 13.4 Class-conditional latent image generation profile
 
 完整 contract 见
@@ -1526,8 +1568,9 @@ outputs/evaluations/<evaluation-id>/
 
 依赖 Metrics 计划的前置 contract。
 
-排期：在 AFHQ latent correctness 后启动，与 prepared posterior/production
-lifecycle 并行；不阻塞 experimental functional support。
+排期：Metrics M0–M1 与 P2/ADM A1 core 后启动。现有 inference asset projection
+已经可供 checkpoint subject resolver 复用；pretrained codec 接入后再增加
+codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
 
 交付：
 
@@ -1552,7 +1595,9 @@ lifecycle 并行；不阻塞 experimental functional support。
 
 - standalone `EvaluationConfig`；
 - checkpoint subject resolver 与只读 inference state projection；
-- 消费 Latent Phase 1 已实现的 projection，而不是重新实现 resolver；
+- 复用 checkpoint sampling 已有的只读 subject projection；Latent Phase 1 已验证
+  embedded auxiliary asset，后续 codec provider 只增加 concrete descriptor/state，
+  不重新实现第二套 resolver；
 - sampling/task composition 提供的窄 inference capability seam；
 - `EvaluationBuilder -> EvaluationPlan` registry path；
 - `EvaluationRunner`；

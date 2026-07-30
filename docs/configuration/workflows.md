@@ -388,7 +388,7 @@ epoch diagnostic 汇总。
 
 ## Checkpoint-backed inference
 
-`sample` 是统一的 checkpoint-backed inference 命令：AFHQ 等生成任务产生图像，
+`sample` 是统一的 checkpoint-backed inference 命令：MNIST、AFHQ 等生成任务产生图像，
 Physics 任务执行重建，direct-transform 任务也可以产生 prediction。数值 `Sampler`
 只是某些 recipe 的内部协作，不是运行该命令的前提。
 

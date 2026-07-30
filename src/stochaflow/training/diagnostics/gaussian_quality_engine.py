@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -126,6 +126,14 @@ class GaussianQualityFamily(Protocol[FamilyRuntimeT, FamilySamplerT]):
 
         ...
 
+    def reference_image_extractor(
+        self,
+        trainer: Any,
+    ) -> Callable[[Any], torch.Tensor]:
+        """Resolve the strategy-owned validation batch image extractor."""
+
+        ...
+
     def profile_manifest_metadata(
         self,
         profile: SamplerProfileConfig,
@@ -245,6 +253,9 @@ class GaussianQualityEngine[
                         "diffusion_quality reference metrics require a validation "
                         "dataloader"
                     )
+                extract_images = self.family.reference_image_extractor(
+                    event.trainer
+                )
                 reference_providers = self._build_reference_providers(
                     event.trainer.device
                 )
@@ -256,6 +267,7 @@ class GaussianQualityEngine[
                     device=event.trainer.device,
                     seed_policy=self.seed_policy,
                     handle_error=self._handle_reference_error,
+                    extract_images=extract_images,
                 )
                 cache_metrics = self._reference_suite.cache_real(
                     event.validation_dataloader

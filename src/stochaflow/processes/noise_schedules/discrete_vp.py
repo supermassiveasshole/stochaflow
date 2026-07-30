@@ -46,7 +46,11 @@ class DiscreteVPSchedule(GaussianNoiseSchedule):
 
         if state_times.ndim != 1:
             raise ValueError("state_times must be a 1D tensor")
-        if state_times.dtype == torch.bool or torch.is_floating_point(state_times):
+        if (
+            state_times.dtype == torch.bool
+            or torch.is_floating_point(state_times)
+            or torch.is_complex(state_times)
+        ):
             raise TypeError("state_times must contain integer mathematical states")
         normalized = state_times.to(dtype=torch.long)
         if torch.any(normalized < 0) or torch.any(normalized > self.num_timesteps):
@@ -141,7 +145,7 @@ class TabulatedDiscreteVPSchedule(DiscreteVPSchedule):
             raise ValueError("betas must contain only finite values")
         if torch.any(betas <= 0) or torch.any(betas >= 1):
             raise ValueError("every beta must lie in (0, 1)")
-        return betas
+        return betas.detach().clone()
 
     @staticmethod
     def _validate_num_timesteps(num_timesteps: object) -> None:

@@ -2,6 +2,7 @@
 
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
+from .assets import InferenceAssetProvider
 from .builder import (
     InferenceModelProvider,
     SamplingBuilder,
@@ -53,6 +54,7 @@ __all__ = [
     "GaussianTransition",
     "GenerativeDynamics",
     "ImageSamplingArtifactWriter",
+    "InferenceAssetProvider",
     "InferenceModelProvider",
     "PredictionType",
     "Sampler",

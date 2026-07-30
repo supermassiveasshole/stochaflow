@@ -98,7 +98,11 @@ class DDIMSampler(Sampler):
         target_times = target_times_value
         if target_times.ndim != 1:
             raise ValueError("DDIM target times must be a 1D tensor")
-        if target_times.dtype == torch.bool or torch.is_floating_point(target_times):
+        if (
+            target_times.dtype == torch.bool
+            or torch.is_floating_point(target_times)
+            or torch.is_complex(target_times)
+        ):
             raise TypeError("DDIM target times must contain integer states")
         target_times = target_times.to(dtype=torch.long)
         if target_times.shape != source_times.shape:

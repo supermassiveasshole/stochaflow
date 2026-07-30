@@ -16,6 +16,7 @@ from stochaflow.training.diagnostics.providers.reference import (
     ReferenceMetricSuite,
 )
 from stochaflow.training.diagnostics.runtime import BoundSampler, SeedPolicy
+from stochaflow.training.gaussian import GaussianDenoisingTrainingStrategy
 
 from .helpers import (
     RecordingLogger,
@@ -80,6 +81,7 @@ def _install_fake_torchmetrics(monkeypatch):
             self.device = torch.device("cpu")
             self.update_devices: list[torch.device] = []
             self.compute_device: torch.device | None = None
+            self.real_updates: list[torch.Tensor] = []
 
         def to(self, device):
             self.device = torch.device(device)
@@ -95,6 +97,7 @@ def _install_fake_torchmetrics(monkeypatch):
             assert 0.0 <= float(images.min()) <= float(images.max()) <= 1.0
             if real:
                 self.real_count += images.shape[0]
+                self.real_updates.append(images.detach().cpu().clone())
             else:
                 self.fake_count += images.shape[0]
 
@@ -253,6 +256,62 @@ def test_reference_providers_cache_multibatch_real_features_and_score_profiles(
         assert metric.fake_count == 0
 
 
+def test_reference_cache_uses_strategy_before_label_and_4d_condition(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_fake_torchmetrics(monkeypatch)
+
+    class MappingReferenceImageStrategy(GaussianDenoisingTrainingStrategy):
+        """Test strategy with an explicit mapping-batch image contract."""
+
+        def extract_reference_images(
+            self,
+            batch: object,
+        ) -> torch.Tensor:
+            if not isinstance(batch, dict):
+                raise TypeError("expected a mapping batch")
+            images = batch["image"]
+            if not isinstance(images, torch.Tensor):
+                raise TypeError("image must be a Tensor")
+            return images
+
+    diagnostic = _diagnostic(
+        tmp_path,
+        RecordingLogger(),
+        reference=_reference_config(),
+    )
+    assets = gaussian_system(ZeroDenoiser(), num_timesteps=2)
+    runtime = trainer(assets)
+    runtime.strategy = MappingReferenceImageStrategy(
+        assets.inference_model,
+        assets.process,
+        assets.objective,
+    )
+    reference_images = -torch.ones(2, 1, 4, 4)
+
+    diagnostic.on_fit_start(
+        fit_event(
+            runtime,
+            validation=[
+                {
+                    "class_label": torch.tensor([1, 0]),
+                    "condition": torch.ones(2, 3, 4, 4),
+                    "image": reference_images,
+                }
+            ],
+        )
+    )
+
+    assert diagnostic._reference_suite is not None
+    for _, provider in diagnostic._reference_suite.providers:
+        assert isinstance(
+            provider,
+            (FIDReferenceMetricProvider, KIDReferenceMetricProvider),
+        )
+        assert torch.count_nonzero(provider.metric.real_updates[0]) == 0
+
+
 def test_enabled_reference_reports_missing_optional_dependencies(
     monkeypatch,
     tmp_path,
@@ -338,6 +397,7 @@ def test_real_cache_warn_failure_disables_only_the_failing_provider() -> None:
         handle_error=lambda phase, provider, error: errors.append(
             (phase, provider, str(error))
         ),
+        extract_images=lambda batch: cast(torch.Tensor, batch),
     )
 
     suite.cache_real(

@@ -251,6 +251,8 @@ def _resolved_inputs(
             "format_version": CHECKPOINT_FORMAT_VERSION,
             "inference_recipe": sampling_recipe_to_dict(recipe),
             "metadata": {"data_artifacts": bindings.to_dict()},
+            "inference_asset_descriptors": {},
+            "inference_asset_state_dicts": {},
         },
         recipe=recipe,
         config_source="sample-request",
@@ -704,6 +706,8 @@ def test_result_checkpoint_header_drops_tensor_state(tmp_path: Path) -> None:
 
     assert retained.checkpoint == {
         "format_version": CHECKPOINT_FORMAT_VERSION,
+        "inference_asset_descriptors": {},
+        "inference_asset_state_dicts": {},
     }
     assert retained.config is inputs.config
     assert retained.extension_plan is inputs.extension_plan

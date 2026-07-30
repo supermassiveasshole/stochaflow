@@ -181,11 +181,13 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 | --- | --- |
 | `TrainingBuilder` | 组合注入资产和项目私有资产，返回一个 `TrainingPlan` |
 | `TrainingBuilderContext` | primary model、可选 Process/Objective、私有 `params` 与受控 model/objective factory |
-| `TrainingPlan` | Strategy、primary model、可选 Process/Objective、具名 auxiliary modules 和可选 fixed inference recipe |
+| `TrainingPlan` | Strategy、primary model、可选 Process/Objective、具名 auxiliary modules、inference asset projections 和可选 fixed inference recipe |
+| `InferenceAssetProjection` | 将一个 managed auxiliary module 投影为 checkpoint-owned inference asset |
 | `SamplingRecipe` | checkpoint 内部 SamplingBuilder identity 与不可由 sample request 覆盖的 JSON-safe contract |
 | `ManagedTrainingModule` | 辅助 `nn.Module` 及其 core-managed mode policy |
 | `TrainingStrategy` | 只定义 batch interpretation、forward、loss 与 metric 计算 |
 | `DeviceTransferableBatch` | 自定义领域 batch 可选择实现的显式设备迁移 capability |
+| `ReferenceImageBatchSemantics` | Strategy 可选实现的 reference-metric image extraction capability |
 | `TrainStepOutput` | Strategy 返回的 scalar loss、metrics 与 diagnostics |
 | `MSEObjective` | 内置 task-neutral scalar MSE Objective |
 | `PerSampleObjective` | 可选的逐样本 loss capability |
@@ -204,6 +206,11 @@ Trainer 会递归迁移 batch 中的 `Tensor`、`Mapping` 的 value、tuple（�
 namedtuple）和 list；mapping key 及其他 leaf 保持不变。领域 dataclass 或自定义容器若
 持有 Tensor，必须实现 `DeviceTransferableBatch.to_device(device)` 并返回迁移后的 batch；
 核心不会反射 dataclass 字段，也不提供通用 batch/sample registry。
+
+启用 image reference metrics 时，Strategy 必须实现
+`ReferenceImageBatchSemantics.extract_reference_images(batch)`，显式返回 validation
+batch 中的 clean image Tensor。diagnostic 不会按 mapping/list 顺序猜测第一个 Tensor，
+因此 label、condition 或其他 4-D Tensor 的排列不会改变 reference dataset 语义。
 
 core 会在每次 `TrainingDiagnostic` public callback 外保存并恢复 Python、NumPy、
 Torch CPU 以及相关 CUDA/MPS device 的 global RNG state。一个 callback 内使用 global
@@ -232,10 +239,22 @@ class DeviceTransferableBatch(Protocol):
     def to_device(self, device: torch.device) -> Self: ...
 
 
+@runtime_checkable
+class ReferenceImageBatchSemantics(Protocol):
+    def extract_reference_images(self, batch: Any) -> torch.Tensor: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ManagedTrainingModule:
     module: nn.Module
     mode: Literal["follow", "eval"] = "follow"
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceAssetProjection:
+    training_asset_name: str
+    declaration: ComponentConfig
+    capability_role: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +265,7 @@ class TrainingPlan:
     objective: nn.Module | None = None
     auxiliary_modules: Mapping[str, ManagedTrainingModule] = ...
     inference_recipe: SamplingRecipe | None = None
+    inference_assets: Mapping[str, InferenceAssetProjection] = ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,7 +284,14 @@ class TrainingBuilder(ABC):
 `TrainingBuilderContext.params` 是深复制 mapping；`primary_model`、`process` 与
 `objective` 是 core 已构建的身份对象，返回的 Plan 必须原样保留它们。Builder 可以通过
 受控 `model_factory(ComponentConfig)`/`objective_factory(ComponentConfig)` 构建额外资产。
-Plan 中所有 state root 必须互不重叠且至少包含一个可训练参数。`inference_recipe`
+Plan 中所有 state root 必须互不重叠且至少包含一个可训练参数。每个 inference asset
+slot 必须一对一引用已有 auxiliary module。projection 的 `declaration` 是
+sampling reconstruction-only 声明，只能包含从 checkpoint state 重建 module 所需的
+参数；下载地址、bootstrap path 或其他 acquisition identity 不应进入该声明。
+`capability_role` 是 checkpoint 与 Builder 之间的语义身份，具体行为接口仍由请求资产的
+SamplingBuilder 以自己的窄 capability 检查。
+
+`inference_recipe`
 为 null 时 checkpoint 不支持 `stochaflow sample`；非 null 时 `name` 必须选择已注册
 SamplingBuilder，`contract` 只允许有限数字、字符串、布尔、null 和普通 list/dict，
 并应只保存由训练组合确定、不能安全覆盖的 inference 事实。step loss 必须是浮点 scalar
@@ -316,8 +343,9 @@ sigma-space solver 的 universal 接口。
 | `SamplingObserver` | observation consumer protocol |
 | `TrajectoryObserver` | 按间隔保留 initial、accepted 与 final observations |
 | `SamplingBuilder` | checkpoint recipe 内部的任务级 inference 组合与执行入口；sample request 不直接选择 |
-| `SamplingBuilderContext` | resolved recipe params、可选 Process、model provider、device、seed、shape/count/batch size |
+| `SamplingBuilderContext` | resolved recipe params、可选 Process、model/asset providers、device、seed、shape/count/batch size |
 | `InferenceModelProvider` | 在 Builder 中选择 raw/EMA inference model 的受控入口 |
+| `InferenceAssetProvider` | 按 checkpoint slot 和 role 延迟重建声明的 embedded `nn.Module` |
 | `SamplingOutput` | Builder 返回的 ordered `SamplingBatch` 与 metadata |
 | `SamplingBatch` | writer-ready samples 与可选 observation trajectory |
 | `SamplingArtifactWriter` | 将完整 sampling artifact context 写入文件的契约 |
@@ -347,6 +375,18 @@ class SamplingBuilder(ABC):
     def run(self) -> SamplingOutput: ...
 
 
+class InferenceAssetProvider:
+    @classmethod
+    def empty(cls) -> Self: ...
+
+    def get(
+        self,
+        slot: str,
+        *,
+        expected_capability_role: str,
+    ) -> nn.Module: ...
+
+
 @dataclass(frozen=True, slots=True)
 class SamplingBatch:
     samples: Any
@@ -370,8 +410,14 @@ class SamplingArtifactWriter(ABC):
 `SamplingBuilderContext.params` 由 runtime 组合：checkpoint `sampling.options` 的
 resolved shallow merge、可选顶层 `sampling.sampler`，以及最后加入且不可覆盖的
 `SamplingRecipe.contract`。`options` 不得包含保留 key `sampler`；与 contract 冲突会在
-Builder 构造前失败。Context 还提供可选 Process、InferenceModelProvider、device、seed、
-可选单 item shape、num_samples 和 batch_size。Builder 的 batches 不能为空，metadata key
+Builder 构造前失败。Context 还提供可选 Process、InferenceModelProvider、
+InferenceAssetProvider、device、seed、可选单 item shape、num_samples 和 batch_size。
+asset provider 复用 model Registry，只在 `get()` 请求某个 slot 后构造和 strict-load
+该 module；未请求的合法资产不会被构造。它先校验 slot 与 role，Builder 再校验
+extension-owned capability。加载成功的 module 会迁移到 sampling device、切换为 eval
+并按 slot 缓存；失败不会进入缓存。
+
+Builder 的 batches 不能为空，metadata key
 必须是字符串且整个 mapping 可 JSON 序列化。trajectory 的 step index 必须严格递增。
 Writer 返回值必须非空，跨 writer artifact key 必须唯一，所有路径在返回时必须存在。
 

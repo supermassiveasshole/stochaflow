@@ -80,6 +80,7 @@ _DISTILLATION: Final = FixtureReferenceProject(
         ),
         ("models", "stochaflow-knowledge-distillation.student"),
         ("models", "stochaflow-knowledge-distillation.teacher"),
+        ("models", "stochaflow-knowledge-distillation.calibrator"),
         ("objectives", "stochaflow-knowledge-distillation.cross-entropy"),
         ("objectives", "stochaflow-knowledge-distillation.temperature-kl"),
         (
@@ -391,6 +392,15 @@ def _checkpoint_assets(path: Path) -> dict[str, dict[str, object]]:
         for name, state in assets.items()
     )
     return assets
+
+
+def _checkpoint_inference_descriptors(path: Path) -> dict[str, object]:
+    payload: object = torch.load(path, map_location="cpu", weights_only=True)
+    assert isinstance(payload, dict)
+    descriptors = payload.get("inference_asset_descriptors")
+    assert isinstance(descriptors, dict)
+    assert all(isinstance(name, str) for name in descriptors)
+    return descriptors
 
 
 def _assert_tensor_state_equal(
@@ -780,24 +790,42 @@ def test_reference_project_unit_suite_uses_installed_wheel(
     )
 
 
-def test_distillation_cli_train_resume_and_student_only_sample(
+def test_distillation_cli_train_resume_and_offline_calibrated_sample(
     installed_reference_environment: FixtureInstalledReferenceEnvironment,
 ) -> None:
     installed = installed_reference_environment
     project_root = installed.projects[_DISTILLATION.directory]
     teacher_state = project_root / "data/teacher.pt"
+    calibrator_state = project_root / "data/calibrator.pt"
     _run(
         [
             installed.python,
             project_root / "tools/create_teacher_bootstrap.py",
-            "--output",
+            "--teacher-output",
             teacher_state,
+            "--calibrator-output",
+            calibrator_state,
         ],
         cwd=project_root,
         environment=installed.environment,
     )
     assert teacher_state.is_file()
-    initial_bootstrap = _load_tensor_state(teacher_state)
+    assert calibrator_state.is_file()
+    initial_teacher_bootstrap = _load_tensor_state(teacher_state)
+    initial_calibrator_bootstrap = _load_tensor_state(calibrator_state)
+    initial_scale = initial_calibrator_bootstrap["scale"]
+    initial_bias = initial_calibrator_bootstrap["bias"]
+    assert isinstance(initial_scale, torch.Tensor)
+    assert isinstance(initial_bias, torch.Tensor)
+    assert torch.equal(
+        initial_scale,
+        torch.zeros(4),
+    )
+    expected_calibrator_bias = torch.arange(4, dtype=torch.float32)
+    assert torch.equal(
+        initial_bias,
+        expected_calibrator_bias,
+    )
 
     _run_cli(
         installed,
@@ -830,24 +858,63 @@ def test_distillation_cli_train_resume_and_student_only_sample(
     assert first_manifest["data_artifacts"] is None
     assert not (project_root / ".stochaflow-cache").exists()
     first_assets = _checkpoint_assets(first_checkpoint)
-    assert set(first_assets) == {"distillation_objective", "teacher"}
+    assert set(first_assets) == {
+        "calibrator",
+        "distillation_objective",
+        "teacher",
+    }
     assert set(first_assets["distillation_objective"]) == {"temperature"}
-    _assert_tensor_state_equal(initial_bootstrap, first_assets["teacher"])
+    _assert_tensor_state_equal(
+        initial_teacher_bootstrap,
+        first_assets["teacher"],
+    )
+    _assert_tensor_state_equal(
+        initial_calibrator_bootstrap,
+        first_assets["calibrator"],
+    )
+    assert _checkpoint_inference_descriptors(first_checkpoint) == {
+        "calibrator": {
+            "training_asset_name": "calibrator",
+            "declaration": {
+                "name": "stochaflow-knowledge-distillation.calibrator",
+                "params": {"num_classes": 4},
+            },
+            "capability_role": "classification_logit_calibrator",
+            "persistence": "embedded_state",
+        }
+    }
 
     _run(
         [
             installed.python,
             project_root / "tools/create_teacher_bootstrap.py",
-            "--output",
+            "--teacher-output",
             teacher_state,
+            "--calibrator-output",
+            calibrator_state,
             "--seed",
             "314159",
+            "--calibrator-scale",
+            "3.0",
+            "--calibrator-bias",
+            "9.0",
+            "8.0",
+            "7.0",
+            "6.0",
         ],
         cwd=project_root,
         environment=installed.environment,
     )
-    changed_bootstrap = _load_tensor_state(teacher_state)
-    assert _tensor_state_differs(initial_bootstrap, changed_bootstrap)
+    changed_teacher_bootstrap = _load_tensor_state(teacher_state)
+    changed_calibrator_bootstrap = _load_tensor_state(calibrator_state)
+    assert _tensor_state_differs(
+        initial_teacher_bootstrap,
+        changed_teacher_bootstrap,
+    )
+    assert _tensor_state_differs(
+        initial_calibrator_bootstrap,
+        changed_calibrator_bootstrap,
+    )
 
     resumed_root = project_root / "outputs/resumed"
     _run_cli(
@@ -874,9 +941,16 @@ def test_distillation_cli_train_resume_and_student_only_sample(
     resumed_assets = _checkpoint_assets(resumed_checkpoint)
     _assert_tensor_state_equal(first_assets["teacher"], resumed_assets["teacher"])
     _assert_tensor_state_equal(
+        first_assets["calibrator"],
+        resumed_assets["calibrator"],
+    )
+    _assert_tensor_state_equal(
         first_assets["distillation_objective"],
         resumed_assets["distillation_objective"],
     )
+    assert _checkpoint_inference_descriptors(
+        resumed_checkpoint
+    ) == _checkpoint_inference_descriptors(first_checkpoint)
     _assert_manifest_provenance(
         resumed_run / "run_manifest.yaml",
         _DISTILLATION,
@@ -892,17 +966,70 @@ def test_distillation_cli_train_resume_and_student_only_sample(
     assert not (project_root / ".stochaflow-cache").exists()
 
     teacher_state.unlink()
-    sample_root = project_root / "sample-output"
-    _run_cli(
-        installed,
-        project_root,
-        "sample",
-        "--checkpoint",
-        resumed_run,
-        "--output-dir",
-        sample_root,
-        "--device",
-        "cpu",
+    calibrator_state.unlink()
+    external_cwd = installed.root / "distillation-offline-sampling"
+    external_cwd.mkdir()
+    network_guard = installed.root / "network-guard"
+    network_guard.mkdir()
+    (network_guard / "sitecustomize.py").write_text(
+        """
+import socket
+
+def deny_network(*args, **kwargs):
+    raise RuntimeError("network access is disabled by the acceptance test")
+
+class OfflineSocket(socket.socket):
+    def connect(self, *args, **kwargs):
+        return deny_network(*args, **kwargs)
+
+socket.socket = OfflineSocket
+socket.create_connection = deny_network
+""".lstrip(),
+        encoding="utf-8",
+    )
+    offline_environment = dict(installed.environment)
+    offline_environment["PYTHONPATH"] = str(network_guard)
+
+    projection_check = """
+from pathlib import Path
+import socket
+import sys
+from stochaflow.sampling.runtime import resolve_sampling_inputs
+
+assert socket.socket.__name__ == "OfflineSocket"
+inputs = resolve_sampling_inputs(config_path=None, checkpoint=Path(sys.argv[1]))
+payload = inputs.checkpoint
+assert set(payload["inference_asset_descriptors"]) == {"calibrator"}
+assert set(payload["inference_asset_state_dicts"]) == {"calibrator"}
+assert "training_assets_state_dict" not in payload
+assert all("teacher" not in key for key in payload)
+assert all("distillation_objective" not in key for key in payload)
+"""
+    _run(
+        [
+            installed.python,
+            "-c",
+            projection_check,
+            resumed_checkpoint,
+        ],
+        cwd=external_cwd,
+        environment=offline_environment,
+    )
+
+    sample_root = external_cwd / "sample-output"
+    _run(
+        [
+            installed.cli,
+            "sample",
+            "--checkpoint",
+            resumed_run,
+            "--output-dir",
+            sample_root,
+            "--device",
+            "cpu",
+        ],
+        cwd=external_cwd,
+        environment=offline_environment,
     )
     assert (sample_root / "samples.pt").is_file()
     samples: object = torch.load(
@@ -912,6 +1039,10 @@ def test_distillation_cli_train_resume_and_student_only_sample(
     )
     assert isinstance(samples, torch.Tensor)
     assert samples.shape == (8, 4)
+    assert torch.equal(
+        samples,
+        expected_calibrator_bias.expand(samples.shape[0], -1),
+    )
     _assert_manifest_provenance(
         sample_root / "resolved_sampling.yaml",
         _DISTILLATION,

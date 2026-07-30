@@ -1,6 +1,7 @@
 """Training package and public extension contracts."""
 
 from .builder import (
+    InferenceAssetProjection,
     ManagedTrainingModule,
     TrainingBuilder,
     TrainingBuilderContext,
@@ -45,6 +46,7 @@ from .reporting import FinalSummary, RichTrainingReporter, RunSummary
 from .strategy import (
     Batch,
     DeviceTransferableBatch,
+    ReferenceImageBatchSemantics,
     ScalarMetric,
     TrainingStrategy,
     TrainStepOutput,
@@ -68,11 +70,13 @@ __all__ = [
     "GaussianDenoisingTrainingBuilder",
     "GaussianDenoisingTrainingStrategy",
     "GaussianDiagnosticSemantics",
+    "InferenceAssetProjection",
     "MSEObjective",
     "ManagedTrainingModule",
     "PerSampleObjective",
     "PrecisionKind",
     "PrecisionRuntime",
+    "ReferenceImageBatchSemantics",
     "RichTrainingReporter",
     "RunSummary",
     "ScalarMetric",

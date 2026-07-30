@@ -37,6 +37,15 @@ class ManagedTrainingModule:
 
 
 @dataclass(frozen=True, slots=True)
+class InferenceAssetProjection:
+    """Reconstructable inference projection of one managed training asset."""
+
+    training_asset_name: str
+    declaration: ComponentConfig
+    capability_role: str
+
+
+@dataclass(frozen=True, slots=True)
 class TrainingPlan:
     """Fully assembled assets and computation for one training run."""
 
@@ -48,6 +57,9 @@ class TrainingPlan:
         default_factory=dict
     )
     inference_recipe: SamplingRecipe | None = None
+    inference_assets: Mapping[str, InferenceAssetProjection] = field(
+        default_factory=dict
+    )
 
 
 class TrainingBuilderContext:
@@ -149,6 +161,9 @@ def validate_training_plan(value: object) -> TrainingPlan:
     declared_auxiliaries = cast(object, value.auxiliary_modules)
     if not isinstance(declared_auxiliaries, Mapping):
         raise TypeError("TrainingPlan.auxiliary_modules must be a mapping")
+    declared_inference_assets = cast(object, value.inference_assets)
+    if not isinstance(declared_inference_assets, Mapping):
+        raise TypeError("TrainingPlan.inference_assets must be a mapping")
 
     roots: list[tuple[str, nn.Module]] = [("primary_model", value.primary_model)]
     if value.process is not None:
@@ -179,6 +194,66 @@ def validate_training_plan(value: object) -> TrainingPlan:
     _validate_distinct_state_roots(roots)
     if not trainable_parameters(value):
         raise ValueError("TrainingPlan must contain at least one trainable parameter")
+
+    inference_assets: dict[str, InferenceAssetProjection] = {}
+    projected_training_assets: dict[str, str] = {}
+    for declared_slot, declared_projection in declared_inference_assets.items():
+        slot = _validate_projection_string(
+            cast(object, declared_slot),
+            path="TrainingPlan.inference_assets slot",
+        )
+        projection = cast(object, declared_projection)
+        if not isinstance(projection, InferenceAssetProjection):
+            raise TypeError(
+                f"TrainingPlan.inference_assets[{slot!r}] must be "
+                "InferenceAssetProjection"
+            )
+        projection_path = f"TrainingPlan.inference_assets[{slot!r}]"
+        training_asset_name = _validate_projection_string(
+            cast(object, projection.training_asset_name),
+            path=f"{projection_path}.training_asset_name",
+        )
+        if training_asset_name not in declared_auxiliaries:
+            raise ValueError(
+                f"{projection_path} references missing training auxiliary "
+                f"{training_asset_name!r}"
+            )
+        previous_slot = projected_training_assets.setdefault(
+            training_asset_name,
+            slot,
+        )
+        if previous_slot != slot:
+            raise ValueError(
+                "TrainingPlan.inference_assets cannot project training auxiliary "
+                f"{training_asset_name!r} more than once "
+                f"(slots {previous_slot!r} and {slot!r})"
+            )
+        declaration_value = cast(object, projection.declaration)
+        if not isinstance(declaration_value, ComponentConfig):
+            raise TypeError(
+                f"{projection_path}.declaration must be ComponentConfig"
+            )
+        declaration_name = _validate_projection_string(
+            cast(object, declaration_value.name),
+            path=f"{projection_path}.declaration.name",
+        )
+        declaration_params = cast(object, declaration_value.params)
+        if type(declaration_params) is not dict:
+            raise TypeError(
+                f"{projection_path}.declaration.params must be an exact dictionary"
+            )
+        capability_role = _validate_projection_string(
+            cast(object, projection.capability_role),
+            path=f"{projection_path}.capability_role",
+        )
+        inference_assets[slot] = InferenceAssetProjection(
+            training_asset_name=training_asset_name,
+            declaration=ComponentConfig(
+                name=declaration_name,
+                params=deepcopy(cast(dict[str, Any], declaration_params)),
+            ),
+            capability_role=capability_role,
+        )
     return TrainingPlan(
         strategy=value.strategy,
         primary_model=value.primary_model,
@@ -186,6 +261,7 @@ def validate_training_plan(value: object) -> TrainingPlan:
         objective=value.objective,
         inference_recipe=recipe,
         auxiliary_modules=MappingProxyType(dict(value.auxiliary_modules)),
+        inference_assets=MappingProxyType(inference_assets),
     )
 
 
@@ -238,7 +314,19 @@ def _validate_distinct_state_roots(roots: list[tuple[str, nn.Module]]) -> None:
                 )
 
 
+def _validate_projection_string(value: object, *, path: str) -> str:
+    if type(value) is not str:
+        raise TypeError(f"{path} must be an exact string")
+    result = cast(str, value)
+    if not result:
+        raise ValueError(f"{path} must be non-empty")
+    if result != result.strip():
+        raise ValueError(f"{path} must not contain surrounding whitespace")
+    return result
+
+
 __all__ = [
+    "InferenceAssetProjection",
     "ManagedTrainingModule",
     "ModelFactory",
     "ObjectiveFactory",

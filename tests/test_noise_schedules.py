@@ -112,6 +112,20 @@ def test_discrete_vp_schedule_accepts_a_precomputed_beta_parameterization() -> N
     assert torch.allclose(schedule.alpha_bar_t, torch.cumprod(schedule.alpha_t, 0))
 
 
+def test_discrete_vp_schedule_snapshots_caller_owned_betas() -> None:
+    betas = torch.linspace(0.01, 0.1, 8, requires_grad=True)
+    schedule = TabulatedDiscreteVPSchedule(betas)
+    expected_betas = schedule.beta_t.clone()
+    expected_alpha_bars = schedule.alpha_bar_t.clone()
+
+    with torch.no_grad():
+        betas.fill_(0.5)
+
+    assert not schedule.beta_t.requires_grad
+    assert torch.equal(schedule.beta_t, expected_betas)
+    assert torch.equal(schedule.alpha_bar_t, expected_alpha_bars)
+
+
 def test_discrete_vp_schedule_rejects_invalid_transition_tables() -> None:
     with pytest.raises(ValueError, match="non-empty 1D"):
         TabulatedDiscreteVPSchedule(torch.empty(0))
@@ -202,12 +216,16 @@ def test_discrete_vp_schedule_validates_query_shape_and_domain() -> None:
 
     with pytest.raises(TypeError, match="integer mathematical states"):
         schedule.marginal_scales(torch.tensor([0.0, 1.0]))
+    with pytest.raises(TypeError, match="integer mathematical states"):
+        schedule.marginal_scales(torch.tensor([0.0j, 1.0 + 2.0j]))
     with pytest.raises(ValueError, match=r"\[0, T\]"):
         schedule.marginal_scales(torch.tensor([0, 9]))
 
     process = DiscreteGaussianProcess(
         {"name": "linear_beta", "params": {"num_timesteps": 8}}
     )
+    with pytest.raises(TypeError, match="integer mathematical states"):
+        process.validate_noisy_state_times(torch.tensor([1.0 + 2.0j]))
     with pytest.raises(ValueError, match="batch dimension"):
         process.marginal_scales(torch.tensor([0, 1]), torch.Size([3, 3]))
 

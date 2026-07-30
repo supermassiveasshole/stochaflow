@@ -1,20 +1,25 @@
 # Metrics 支持开发计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：P2 parallel enabler，尚未进入实现；M0–M1 在 AFHQ latent vertical
-  slice 后、开放正式 baseline 前完成
+- 状态：P1 queued foundation；A0 ADM topology correctness 与 B1 Train/Sample
+  authority cutover 完成后立即执行 M0–M1，并在 pretrained codec 与 AFHQ latent
+  vertical slice 前关闭
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25
 - 架构复核：2026-07-26；明确为 Training/Diagnostic/Evaluation/AutoML 共用的
-  task-neutral 统计子系统；2026-07-29 排为 latent formal baseline 的并行前置
+  task-neutral 统计子系统；2026-07-30 将 M0–M1 调整为 latent 主线的直接工程前置，
+  A0 只是统一排期中的 correctness 前置，不构成 Metrics 架构依赖
 - 前置范围：现有单 optimizer 自动训练循环、validation/test iterable、训练期
-  diagnostic、C1 后 checkpoint schema 与 extension registry
+  diagnostic、B1/C1 后 checkpoint schema 与 extension registry
 - 目标范围：内置与第三方 epoch metrics、train/validation/test 聚合、diagnostic
   指标参与统一监控、best checkpoint、early stopping 与未来 HPO
 - 关联计划：
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)、
-  [自动化模型调优开发计划](automated-model-tuning-plan.md)
+  [自动化模型调优开发计划](automated-model-tuning-plan.md)、
+  [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)
+- 当前执行边界：优先实施 M0–M1；完成它们不表示 M2 diagnostic monitoring、M3
+  extension/distributed readiness 或 M4 正式文档/计划收束已经完成
 
 ## 1. 目标与结论
 
@@ -61,6 +66,10 @@
   命名为 image reconstruction PSNR；PSNR、SSIM、LPIPS、rFID 等 image-space
   指标必须先经过 checkpoint-owned codec decode，并由 latent diagnostic 或
   Evaluation task method 提供正确 channel。
+- **epoch loss 聚合权重与 P2 weighting 是两个概念。**
+  `loss_aggregation_weight` 只告诉 Metric/Trainer 一个 batch 对 epoch aggregate
+  应占多少统计权重，不参与反向传播；P2 的 timestep/SNR coefficient 在 Gaussian
+  Strategy 内组成可微 objective。二者不得共享字段、config 或日志名称。
 
 ### 1.1 Metrics 与 Evaluation 的包含关系
 
@@ -256,7 +265,7 @@ class TrainStepOutput:
     metrics: Mapping[str, ScalarMetric] = field(default_factory=dict)
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
     metric_updates: Mapping[str, MetricUpdate] = field(default_factory=dict)
-    loss_weight: float | int | torch.Tensor = 1.0
+    loss_aggregation_weight: float | int | torch.Tensor = 1.0
 ```
 
 约束：
@@ -267,7 +276,8 @@ class TrainStepOutput:
 - v1 metric 不可微，更新在 `torch.no_grad()` 下执行；
 - sample weight 若存在，必须是具体 channel 的显式 `args/kwargs` 语义；core 不能按
   metric 构造参数名或 batch shape 猜测；
-- `loss_weight` 由 Strategy 明确给出，默认 `1.0` 保持当前等权 batch 行为；
+- `loss_aggregation_weight` 由 Strategy 明确给出，默认 `1.0` 保持当前等权 batch
+  行为；该值在 loss detach 后仅用于 epoch统计，不缩放当前 step 的 backward loss；
 - MetricEngine 不消费 `diagnostics` 作为隐式 fallback，避免拼写约定变成隐藏 API。
 
 内置 Strategy 首批声明：
@@ -454,8 +464,8 @@ system/...
 - list、tuple、非 scalar Tensor 或嵌套 mapping 默认拒绝；需由 wrapper 显式展开；
 - bool 不是 numeric metric；
 - 日志、history、checkpoint `metrics` 和 monitor 使用同一 canonical key；
-- `train_loss`、`valid_loss` 作为一版兼容 alias 只在 config/旧 checkpoint 读取边界
-  归一化，新的 payload 不再写双份 key。
+- 新 config 和 checkpoint 不再接受或写入 `train_loss`、`valid_loss` 旧 key。B1 已经
+  明确旧 checkpoint 不兼容，因此 Metrics 不新增 alias reader 或双写迁移层。
 
 canonical snapshot 不能只有裸 `Mapping[str, float]`。它还要为每个 key 保存最小
 source metadata：
@@ -682,7 +692,7 @@ checkpoint 需要保存：
 
 strict resume 必须：
 
-- 归一化旧 `train_loss`/`valid_loss` monitor alias；
+- 只接受当前 schema 的 canonical monitor key；
 - 验证 metric declarations 与 checkpoint config 完全一致；
 - 恢复 best/early-stopping 的 observation counter；
 - 从下一个完整 epoch 重新初始化 metric state。
@@ -708,10 +718,12 @@ strict resume 必须：
 ### 阶段 M0：契约测试与命名统一
 
 1. 为 current loss/history/logger/monitor 行为增加 characterization tests；
-2. 定义 canonical tag 和旧 alias 归一化；
-3. 定义 `MetricSource`/`EpochMetricSnapshot` 和 test-selection guard；
-4. 增加 `MetricUpdate`、`loss_weight` 验证与递归 detach helper；
-5. 不改变现有默认 config 的训练数值。
+2. 定义 canonical tag，并删除/拒绝旧 alias；
+3. 将 retained MNIST/AFHQ config、配置参考和相关测试的 monitor 从
+   `valid_loss` 迁移为 `valid/loss`；
+4. 定义 `MetricSource`/`EpochMetricSnapshot` 和 test-selection guard；
+5. 增加 `MetricUpdate`、`loss_aggregation_weight` 验证与递归 detach helper；
+6. 不改变现有默认 config 的训练数值。
 
 ### 阶段 M1：Validation MetricEngine
 
@@ -739,7 +751,7 @@ strict resume 必须：
 4. 加入 TorchMetrics DDP reduction contract tests；在 Stochaflow 真正支持 DDP 前，
    文档只承诺单进程结果。
 
-### 阶段 M4：正式文档与迁移
+### 阶段 M4：正式文档与计划收束
 
 1. 更新 config reference generator 与示例；
 2. 更新 `docs/api/extensions.md`；
@@ -751,8 +763,9 @@ strict resume 必须：
 
 ### 单元测试
 
-- `MetricUpdate` 拒绝空 channel、无效 mapping 和冲突；`loss_weight` 必须是有限
-  scalar numeric value；
+- `MetricUpdate` 拒绝空 channel、无效 mapping 和冲突；
+  `loss_aggregation_weight` 必须是有限 scalar numeric value，且不得用于缩放
+  autograd loss；
 - metric config 的 id、phase、duplicate 和 native target allowlist；
 - `reset/update/compute` 每 phase 精确调用次数；
 - train/validation/test state 完全隔离；
@@ -812,7 +825,10 @@ uv run pyright
 - diagnostic monitor 的缺失 cadence 语义明确且可测试；
 - 现有 FID/KID 缓存、sampler、artifact 和 failure policy 不被普通 MetricEngine 吸收；
 - Metric 不成为 managed trainable asset，不进入 optimizer，也不伪装 Objective；
-- 旧 `train_loss`/`valid_loss` checkpoint/config 有明确迁移行为；
+- 新 checkpoint/config 只使用 canonical key；旧
+  `train_loss`/`valid_loss` 不提供 reader、alias 或迁移路径；
+- retained MNIST/AFHQ config、生成配置参考与 contract tests 已使用
+  `valid/loss`；
 - 公开 API 由独立 extension implementation 验证，而不只由 built-in subclass 验证。
 
 ## 12. 明确不进入首版

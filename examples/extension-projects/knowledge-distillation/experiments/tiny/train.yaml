@@ -42,6 +42,11 @@ training:
         hidden_features: 24
         num_classes: 4
     teacher_bootstrap: data/teacher.pt
+    calibrator:
+      name: stochaflow-knowledge-distillation.calibrator
+      params:
+        num_classes: 4
+    calibrator_bootstrap: data/calibrator.pt
     distillation_objective:
       name: stochaflow-knowledge-distillation.temperature-kl
       params:

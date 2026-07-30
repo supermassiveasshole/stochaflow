@@ -17,6 +17,7 @@ from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
+from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.plugins import parse_extension_plugin_provenance
 from stochaflow.utils.sampling_recipe import (
     SamplingRecipe,
@@ -56,6 +57,28 @@ class InferenceAssetDescriptor(TypedDict):
     declaration: InferenceAssetDeclaration
     capability_role: str
     persistence: Literal["embedded_state"]
+
+
+class InferenceAssetProjectionSource(Protocol):
+    """Training-side values required to build one checkpoint descriptor."""
+
+    @property
+    def training_asset_name(self) -> str:
+        """Return the managed auxiliary-module name."""
+
+        ...
+
+    @property
+    def declaration(self) -> ComponentConfig:
+        """Return the reconstruction-only component declaration."""
+
+        ...
+
+    @property
+    def capability_role(self) -> str:
+        """Return the semantic role expected by the sampling builder."""
+
+        ...
 
 
 class CheckpointState(TypedDict, total=False):
@@ -133,12 +156,17 @@ def validate_inference_asset_descriptors(
         raise TypeError(f"{path} must be an exact dictionary")
     raw_descriptors = cast(dict[object, object], value)
     descriptors: dict[str, InferenceAssetDescriptor] = {}
+    projected_training_assets: dict[str, str] = {}
     for slot_value, descriptor_value in raw_descriptors.items():
         if type(slot_value) is not str:
             raise TypeError(f"{path} slot names must be exact strings")
         slot = cast(str, slot_value)
         if not slot:
             raise ValueError(f"{path} slot names must be non-empty")
+        if slot != slot.strip():
+            raise ValueError(
+                f"{path} slot names must not contain surrounding whitespace"
+            )
         descriptor_path = f"{path}[{slot!r}]"
         descriptor = _exact_dict(
             descriptor_value,
@@ -176,6 +204,16 @@ def validate_inference_asset_descriptors(
             declaration["name"],
             path=f"{declaration_path}.name",
         )
+        previous_slot = projected_training_assets.setdefault(
+            training_asset_name,
+            slot,
+        )
+        if previous_slot != slot:
+            raise ValueError(
+                f"{path} cannot reference training asset "
+                f"{training_asset_name!r} from more than one slot "
+                f"({previous_slot!r} and {slot!r})"
+            )
         params_value = declaration["params"]
         if type(params_value) is not dict:
             raise TypeError(f"{declaration_path}.params must be an exact dictionary")
@@ -193,6 +231,38 @@ def validate_inference_asset_descriptors(
             "persistence": "embedded_state",
         }
     return descriptors
+
+
+def inference_asset_descriptors_from_projections(
+    projections: Mapping[str, InferenceAssetProjectionSource],
+) -> dict[str, InferenceAssetDescriptor]:
+    """Convert validated training projections into checkpoint descriptors."""
+
+    descriptors: dict[str, InferenceAssetDescriptor] = {
+        slot: {
+            "training_asset_name": projection.training_asset_name,
+            "declaration": {
+                "name": projection.declaration.name,
+                "params": dict(projection.declaration.params),
+            },
+            "capability_role": projection.capability_role,
+            "persistence": "embedded_state",
+        }
+        for slot, projection in projections.items()
+    }
+    return validate_inference_asset_descriptors(
+        descriptors,
+        path="TrainingPlan inference asset descriptors",
+    )
+
+
+def inference_asset_descriptors_equal(
+    left: Mapping[str, InferenceAssetDescriptor],
+    right: Mapping[str, InferenceAssetDescriptor],
+) -> bool:
+    """Compare descriptors without ambiguous Tensor equality."""
+
+    return _checkpoint_values_equal(left, right)
 
 
 @dataclass(slots=True)
@@ -481,7 +551,7 @@ class CheckpointManager:
             state.get("inference_asset_descriptors"),
             path="checkpoint.inference_asset_descriptors",
         )
-        if not _checkpoint_values_equal(
+        if not inference_asset_descriptors_equal(
             checkpoint_descriptors,
             self.inference_asset_descriptors,
         ):
@@ -670,34 +740,34 @@ class CheckpointManager:
         if type(metadata) is not dict:
             raise TypeError("checkpoint is missing valid metadata")
 
-        _validate_module_state_dict_compatibility(
+        validate_module_state_dict_compatibility(
             self.model,
             model_state_dict,
             path="checkpoint.model_state_dict",
         )
         if self.process is not None:
             assert validated_process_state is not None
-            _validate_module_state_dict_compatibility(
+            validate_module_state_dict_compatibility(
                 self.process,
                 validated_process_state,
                 path="checkpoint.process_state_dict",
             )
         if self.objective is not None:
             assert validated_objective_state is not None
-            _validate_module_state_dict_compatibility(
+            validate_module_state_dict_compatibility(
                 self.objective,
                 validated_objective_state,
                 path="checkpoint.objective_state_dict",
             )
         for name, module in self.auxiliary_modules.items():
-            _validate_module_state_dict_compatibility(
+            validate_module_state_dict_compatibility(
                 module,
                 validated_assets[name],
                 path=f"checkpoint.training_assets_state_dict[{name!r}]",
             )
         if self.ema is not None:
             assert isinstance(ema_model_state_dict, dict)
-            _validate_module_state_dict_compatibility(
+            validate_module_state_dict_compatibility(
                 self.model,
                 ema_model_state_dict,
                 path="checkpoint.ema_model_state_dict",
@@ -1280,6 +1350,8 @@ def _nonempty_exact_string(value: object, *, path: str) -> str:
     result = cast(str, value)
     if not result:
         raise ValueError(f"{path} must be non-empty")
+    if result != result.strip():
+        raise ValueError(f"{path} must not contain surrounding whitespace")
     return result
 
 
@@ -1642,11 +1714,12 @@ def _checkpoint_values_equal(left: object, right: object) -> bool:
     return bool(left == right)
 
 
-def _validate_module_state_dict_compatibility(
+def validate_module_state_dict_compatibility(
     module: nn.Module,
     state_dict: Mapping[str, object],
     *,
     path: str,
+    allow_lazy_state: bool = True,
 ) -> None:
     """Reject ordinary strict-load failures before touching a module."""
 
@@ -1674,10 +1747,13 @@ def _validate_module_state_dict_compatibility(
             raise ValueError(
                 f"{path}[{name!r}] cannot use the meta device"
             )
-        if (
-            not torch.nn.parameter.is_lazy(runtime_value)
-            and checkpoint_value.shape != runtime_value.shape
-        ):
+        if torch.nn.parameter.is_lazy(runtime_value):
+            if not allow_lazy_state:
+                raise ValueError(
+                    f"{path}[{name!r}] runtime state is lazy; exact shape "
+                    "validation requires initialized state"
+                )
+        elif checkpoint_value.shape != runtime_value.shape:
             raise ValueError(
                 f"{path}[{name!r}] shape does not match runtime: "
                 f"{tuple(checkpoint_value.shape)} != "

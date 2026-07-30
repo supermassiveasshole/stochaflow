@@ -44,6 +44,13 @@ checkpoint 不能 strict resume，也不能作为 `stochaflow sample` 的输入�
 - Python、NumPy、Torch CPU 及可用 CUDA/MPS 的 epoch-boundary RNG snapshot；
 - extension provenance、lineage、`selected_components` 和可选 data artifact bindings。
 
+每个 non-empty inference asset descriptor 将一个 slot 一对一绑定到
+`training_assets_state_dict` 中的 managed auxiliary asset，并固定
+`persistence: embedded_state`。descriptor 的 `declaration` 是自包含的
+reconstruction-only component config；训练时下载地址、bootstrap path 或其他
+acquisition identity 不能作为 sampling reconstruction 输入。多个 slot 指向同一 training
+asset 会被拒绝。空 descriptor checkpoint 的 wire shape 和 pixel inference 行为不变。
+
 v10 恢复是事务性的。manager 先验证完整 header、precision/scaler topology、inference
 descriptors、fixed inference recipe、module key/shape/dtype/layout、optimizer parameter
 groups、scheduler、EMA 与可选资产拓扑，再加载 state；后期 load hook 或任一资产失败时，
@@ -114,11 +121,21 @@ CPU/CUDA/MPS RNG snapshot 只覆盖相应全局 generator，不扩展 DataLoader
 私有 generator 的持久化边界。需要 epoch-boundary 逐 batch 重建的 DataBuilder 应使用
 epoch-aware sampler 和 stateless `(seed, epoch, sample identity)` augmentation。
 
-`sample` 使用单独的 inference view：它只保留 model、可选 EMA、可选 Process、声明的
-inference assets、fixed recipe 和必要 metadata，不构建或加载 Objective、optimizer、
-scheduler 或其他 training-only assets。checkpoint config 始终保留 Process 声明与 state
+`sample` 使用单独的 inference view：它只保留 model、可选 EMA、可选 Process、按 slot
+保存的 inference asset descriptors、按 training asset name 保存且被 descriptor 引用的
+embedded state、fixed recipe 和必要 metadata；tensor storage 不因 projection 再复制。
+Objective、optimizer、scheduler、teacher 和其他 training-only assets 不进入 view。
+checkpoint config 始终保留 Process 声明与 state
 配对；sample request 不能删除或替换 model、Process、TrainingBuilder 或 recipe。实际构建
 的 model/Process 仍必须严格加载被复用的 state。
+
+extension plugin 激活后，SamplingBuilder 可通过 `InferenceAssetProvider.get(slot,
+expected_capability_role=...)` 请求资产。provider 在 factory 调用前拒绝未知 slot 或错误
+role，随后通过已激活的 model Registry 延迟构造，在 CPU 上校验 exact
+key/shape/dtype/layout 并 strict-load，最后迁移到 sampling device、设为 eval 并缓存。
+未请求的合法资产 constructor count 保持为零；失败不缓存。role 只证明语义身份，实际
+窄行为 capability 必须由具体 SamplingBuilder 再验证。sample request 不能覆盖
+descriptor、declaration、role 或 embedded state。
 
 ## Config authority
 

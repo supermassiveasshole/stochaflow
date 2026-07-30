@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 from stochaflow.training import (
     DeviceTransferableBatch,
     FitStartEvent,
+    InferenceAssetProjection,
     ManagedTrainingModule,
     SupervisedTrainingStrategy,
     TrainBatchEndEvent,
@@ -25,7 +26,11 @@ from stochaflow.training import (
     trainable_parameters,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
-from stochaflow.utils.checkpoint import CheckpointManager
+from stochaflow.utils.checkpoint import (
+    CheckpointManager,
+    InferenceAssetDescriptor,
+)
+from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.logging import ExperimentLogger
 
 
@@ -323,6 +328,69 @@ def test_trainer_rejects_checkpoint_manager_precision_mismatch(tmp_path) -> None
             objective=objective,
             optimizer=optimizer,
             checkpoint_manager=checkpoint_manager,
+        )
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "role"])
+def test_trainer_rejects_checkpoint_manager_inference_asset_mismatch(
+    tmp_path,
+    mismatch: str,
+) -> None:
+    model = TinyRegressor()
+    objective = nn.MSELoss()
+    calibrator = nn.Linear(1, 1)
+    calibrator.requires_grad_(False)
+    strategy = SupervisedTrainingStrategy(model, objective)
+    plan = TrainingPlan(
+        strategy=strategy,
+        primary_model=model,
+        objective=objective,
+        auxiliary_modules={
+            "calibrator": ManagedTrainingModule(calibrator, mode="eval")
+        },
+        inference_assets={
+            "calibrator": InferenceAssetProjection(
+                training_asset_name="calibrator",
+                declaration=ComponentConfig(
+                    name="test_calibrator",
+                    params={"num_features": 1},
+                ),
+                capability_role="classification_logit_calibrator",
+            )
+        },
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    descriptors: dict[str, InferenceAssetDescriptor] = {}
+    if mismatch == "role":
+        descriptors = {
+            "calibrator": {
+                "training_asset_name": "calibrator",
+                "declaration": {
+                    "name": "test_calibrator",
+                    "params": {"num_features": 1},
+                },
+                "capability_role": "wrong_role",
+                "persistence": "embedded_state",
+            }
+        }
+    manager = CheckpointManager(
+        model=model,
+        objective=objective,
+        auxiliary_modules={"calibrator": calibrator},
+        optimizer=optimizer,
+        inference_asset_descriptors=descriptors,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="inference asset descriptors must match TrainingPlan",
+    ):
+        Trainer(
+            plan,
+            optimizer,
+            device="cpu",
+            checkpoint_manager=manager,
+            checkpoint_dir=tmp_path,
         )
 
 

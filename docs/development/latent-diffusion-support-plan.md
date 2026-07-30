@@ -1,13 +1,17 @@
 # Latent Diffusion 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：当前产品主线，尚未进入实现；Phase 1–4C 为 P1，开放数据与正式
-  Evaluation 为 P2
+- 状态：当前产品主线；Phase 1 inference asset projection 已完成，Phase 2–3
+  尚未实现且为 P1，Phase 4A–4C 为 P1/P2，开放数据与正式 Evaluation 为 P2
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)；本文拥有 latent
   capability contract，统一排期拥有跨计划执行顺序
 - 初始制定日期：2026-07-26
-- 本次修订日期：2026-07-29
+- 本次修订日期：2026-07-30
+- 排期前置：Phase 1 已完成；先完成 A0 ADM topology correctness、B1/C1
+  Train/Sample authority、Metrics M0–M1 和 A1 learned-range/P2 core，再进入本计划
+  Phase 2；这是当前单人实施顺序，不表示 codec 架构依赖 ADM、P2 或 MetricEngine，
+  A2 长实验可与 Phase 2 并行
 - 当前主线：冻结的预训练图像 codec + conditional latent Gaussian diffusion
 - 首个 reference denoiser：DiT-S/2 → DiT-B/2；它是验收实现，不是该计划的
   abstraction boundary
@@ -26,7 +30,8 @@
 - 关联计划：
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
   [Metrics 支持开发计划](metrics-support-plan.md)、
-  [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)
+  [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)、
+  [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)
 
 ## 1. 本轮结论
 
@@ -244,25 +249,27 @@ codec 可以来自：
 - 不给现有 `standard_denoising` 堆叠 `latent=true`、
   `conditional=true` 等模式开关。
 
-### 4.2 当前断点
+### 4.2 已闭合的 asset projection 与当前断点
 
-当前实现已有：
+Phase 1 已经闭合并验证：
 
-- `InferenceAssetDescriptor`；
-- `inference_asset_descriptors` checkpoint 字段；
-- `training_assets_state_dict`；
-- `inference_recipe`。
+- `TrainingPlan` 产生 `InferenceAssetDescriptor`；
+- factory 将 descriptors 与 `training_assets_state_dict` 交给 checkpoint；
+- sampling checkpoint view 只投影请求的 descriptor 和 auxiliary state；
+- `InferenceAssetProvider` 可从 checkpoint-only embedded state 重建 module；
+- `inference_recipe` 与 asset projection 可在 strict resume、断网和非项目 cwd 下
+  恢复。
 
-但生产 wiring 尚未闭合：
+当前剩余断点是 codec-specific composition，而不是 projection wiring：
 
-1. `TrainingPlan` 没有产生 inference asset projection；
-2. factory 构造 `CheckpointManager` 时没有传入 descriptors；
-3. sampling checkpoint view 丢弃 descriptor 和 auxiliary states；
-4. `InferenceModelProvider` 只解析 primary model；
-5. diagnostics 默认假设 pixel/image state，并默认可能开启 pixel clipping。
+1. 尚无 image codec capability 与 Diffusers `AutoencoderKL` provider；
+2. latent TrainingBuilder 尚未构造、freeze 并声明 codec asset；
+3. latent SamplingBuilder 尚未请求 codec、恢复 latent transform 并 decode；
+4. diagnostics 仍默认假设 pixel/image state，并可能开启 pixel clipping；
+5. 正式长训练尚无 run-level codec asset bundle 去重。
 
-所以这不是“设计一个新的通用 asset universe”，而是把现有 checkpoint
-schema 接入真实 composition。
+所以本计划不再“设计一个新的通用 asset universe”，而是在已验证的 checkpoint
+projection 上接入 concrete codec 与 latent recipe。
 
 ### 4.3 当前 DiT 能力
 
@@ -1024,6 +1031,8 @@ batch contract 决定；core runner 不增加分支。
 - Gaussian Process；
 - epsilon prediction 作为 parity baseline；
 - fixed variance；
+- constant/unweighted simple MSE；P2 capability 即使已经在 pixel Gaussian recipe 中
+  实现，也不自动成为 latent correctness default；
 - `clip_denoised=false`；
 - concrete condition dropout 由 Strategy 管理；
 - model-internal dropout 关闭；
@@ -1031,6 +1040,11 @@ batch contract 决定；core runner 不增加分支。
 
 `v` prediction 可以作为受控扩展，但不能因为 pixel AFHQ recipe 可用就自动成为
 latent default。
+
+P2 weighting 是 parameterization-dependent 的 Gaussian training policy。只有在
+latent epsilon baseline、codec reconstruction 和 decoded evaluation protocol稳定后，
+才能以相同 topology/data/budget 做 `constant`/`p2` A/B；pixel AFHQ 的收益不能直接
+推广到 latent DiT，更不能把 P2 参数放进 codec 或 Process 配置。
 
 learned variance 后续需要：
 
@@ -1420,6 +1434,7 @@ training:
 
 - 先完成 Hydra 迁移计划 C0/C1 的 plain Train/Sample authority cutover；不等待
   Hydra H0–H4；
+- 随后完成 Metrics 计划 M0–M1，冻结 canonical epoch result 与 monitor contract；
 - 本文档冻结；
 - public docs 不宣称 VAE training support；
 - development docs 区分 pretrained codec、external training、
@@ -1435,7 +1450,12 @@ training:
 - metadata/provenance/capacity proposal 保持 deferred；
 - 本 phase 不修改 runtime。
 
-### Phase 1：闭合 inference asset projection
+### Phase 1：闭合 inference asset projection（已完成）
+
+状态（2026-07-30）：embedded-state 基础设施已通过 knowledge-distillation reference
+extension 的独立 `LogitCalibrator` vertical slice 闭合。该验收覆盖 fresh train、
+strict resume、删除 bootstrap、断网、非项目 cwd 的 checkpoint-only sampling；不表示
+Diffusers codec、latent workflow、asset bundle 或 latent diagnostic 已实现。
 
 实现：
 
@@ -1446,7 +1466,6 @@ training:
 - `InferenceAssetProvider`；
 - slot/capability validation；
 - requested-only asset loading；
-- diagnostics 使用显式 latent capability。
 - embedded asset descriptor 区分 acquisition identity、self-contained reconstruction
   declaration 和 state；reconstruction 不依赖 Hub cache 或原 local directory。
 
@@ -1458,6 +1477,14 @@ training:
 - training-only teacher 不被 sampling 自动加载；
 - current pixel recipes descriptor 为空且行为不变；
 - 删除原始 provider path 并断网后，fake embedded asset 仍可从 checkpoint 构造。
+
+实现约束：
+
+- Phase 1 只支持通过 model Registry 重建的 `nn.Module`，没有新增 asset registry；
+- sampling projection 只保留 descriptor 引用的 embedded state，teacher、Objective、
+  optimizer 和其他 training-only auxiliary 不进入 view；
+- requested-only 只承诺 module 构造和 state load 延迟，checkpoint 文件仍整体读取；
+- diagnostics latent behavior 留到出现真实 latent capability 的后续切片。
 
 ### Phase 2：Diffusers codec provider
 
@@ -1877,8 +1904,13 @@ joint_training: true
 
 ### 18.5 learned variance
 
-只有完成 `2C` prediction、variance Objective 和 transition tests 后，才支持
-official DiT learned sigma。它不阻塞 fixed-variance latent pipeline。
+P2/ADM 计划 A1 完成后，framework 将具备 `2C` prediction、learned-range variance、
+hybrid objective 和 transition tests；latent recipe仍需在自己的 TrainingBuilder /
+SamplingBuilder 边界验证 codec latent channels、DiT output layout 与 no-clipping
+语义，不能仅因 core capability存在就自动宣称 official DiT learned sigma。
+
+learned variance不阻塞 fixed-variance latent correctness pipeline，也不作为首个
+DiT-S/2 config的默认值；通过独立 parity/evaluation gate后再提升。
 
 ### 18.6 full Diffusers Pipeline
 
@@ -1938,7 +1970,7 @@ lifecycle 后，才提炼公共 `PretrainedModuleReference`。
 - floating Hub revision production run；
 - Stable Diffusion-specific component/text training；它由独立计划拥有，不是
   被整个 roadmap 移除；
-- learned variance；
+- 在首个 latent recipe 中启用 learned variance；
 - 本计划中的 512×512 production；Stable Diffusion 计划有独立 512 profile；
 - ImageNet-1K production；
 - DiT-XL/2；

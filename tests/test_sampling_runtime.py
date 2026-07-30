@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 import pytest
 import torch
@@ -63,6 +63,32 @@ class TinyDenoiser(nn.Module):
 REGISTRIES.models.add("stage3_tiny_model", TinyDenoiser)
 
 
+@runtime_checkable
+class CalibrationCapabilityFixture(Protocol):
+    """Test-only narrow capability consumed by an asset-aware builder."""
+
+    def calibrate(self, logits: torch.Tensor) -> torch.Tensor:
+        """Calibrate one batch of logits."""
+        ...
+
+
+class EmbeddedCalibrationAsset(nn.Module):
+    """Registered test asset reconstructed from embedded checkpoint state."""
+
+    constructor_calls = 0
+
+    def __init__(self, *, width: int = 2) -> None:
+        super().__init__()
+        type(self).constructor_calls += 1
+        self.bias = nn.Parameter(torch.zeros(width))
+
+    def calibrate(self, logits: torch.Tensor) -> torch.Tensor:
+        return logits + self.bias
+
+
+REGISTRIES.models.add("stage8_embedded_calibrator", EmbeddedCalibrationAsset)
+
+
 class NoShapeBuilder(SamplingBuilder):
     calls = 0
 
@@ -76,6 +102,67 @@ class NoShapeBuilder(SamplingBuilder):
 
 
 REGISTRIES.sampling_builders.add("stage3_no_shape", NoShapeBuilder)
+
+
+@REGISTRIES.sampling_builders.register("stage8_inference_asset")
+class InferenceAssetSamplingBuilder(SamplingBuilder):
+    """Consume one declared inference asset through its narrow capability."""
+
+    def run(self) -> SamplingOutput:
+        asset = self.context.inference_assets.get(
+            "calibrator",
+            expected_capability_role="classification_logit_calibrator",
+        )
+        if not isinstance(asset, CalibrationCapabilityFixture):
+            raise TypeError(
+                "calibrator must implement CalibrationCapabilityFixture"
+            )
+        logits = torch.zeros(1, 2, device=self.context.device)
+        calibrated = asset.calibrate(logits)
+        return SamplingOutput(
+            (SamplingBatch(calibrated.detach().cpu()),),
+            {"asset": "calibrator"},
+        )
+
+
+@REGISTRIES.sampling_builders.register("stage8_wrong_asset_role")
+class WrongInferenceAssetRoleBuilder(SamplingBuilder):
+    """Request a declared asset under the wrong semantic role."""
+
+    def run(self) -> SamplingOutput:
+        self.context.inference_assets.get(
+            "calibrator",
+            expected_capability_role="wrong_role",
+        )
+        raise AssertionError("wrong-role inference asset request must fail")
+
+
+@REGISTRIES.sampling_builders.register("stage8_missing_asset_slot")
+class MissingInferenceAssetSlotBuilder(SamplingBuilder):
+    """Request an undeclared inference asset slot."""
+
+    def run(self) -> SamplingOutput:
+        self.context.inference_assets.get(
+            "missing",
+            expected_capability_role="classification_logit_calibrator",
+        )
+        raise AssertionError("missing inference asset request must fail")
+
+
+@REGISTRIES.sampling_builders.register("stage8_wrong_asset_capability")
+class WrongInferenceAssetCapabilityBuilder(SamplingBuilder):
+    """Reject a reconstructed module without the builder-owned capability."""
+
+    def run(self) -> SamplingOutput:
+        asset = self.context.inference_assets.get(
+            "calibrator",
+            expected_capability_role="classification_logit_calibrator",
+        )
+        if not isinstance(asset, CalibrationCapabilityFixture):
+            raise TypeError(
+                "calibrator must implement CalibrationCapabilityFixture"
+            )
+        raise AssertionError("wrong-capability inference asset must fail")
 
 
 @REGISTRIES.sampling_builders.register("stage6_auto_weights")
@@ -1056,10 +1143,218 @@ def test_sampling_inputs_drop_training_only_checkpoint_state(tmp_path: Path) -> 
         "model_state_dict",
         "ema_model_state_dict",
         "process_state_dict",
+        "inference_asset_descriptors",
+        "inference_asset_state_dicts",
     }
+    assert inputs.checkpoint["inference_asset_descriptors"] == {}
+    assert inputs.checkpoint["inference_asset_state_dicts"] == {}
     persisted = torch.load(checkpoint, weights_only=True)
     assert "optimizer_state_dict" in persisted
     assert "training_assets_state_dict" in persisted
+
+
+def test_sampling_view_projects_only_declared_asset_state_without_copying_tensors(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(recipe_name="stage8_inference_asset")
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=True)
+    calibration_state = {
+        "bias": torch.tensor([4.0, -2.0], dtype=torch.float32)
+    }
+    teacher_state = {"weight": torch.ones(3)}
+    payload["inference_asset_descriptors"] = {
+        "calibrator": {
+            "training_asset_name": "calibrator_module",
+            "declaration": {
+                "name": "stage8_embedded_calibrator",
+                "params": {"width": 2},
+            },
+            "capability_role": "classification_logit_calibrator",
+            "persistence": "embedded_state",
+        }
+    }
+    payload["training_assets_state_dict"] = {
+        "calibrator_module": calibration_state,
+        "teacher": teacher_state,
+    }
+
+    view = sampling_runtime._sampling_checkpoint_view(payload)
+
+    assert view["inference_asset_descriptors"] == payload[
+        "inference_asset_descriptors"
+    ]
+    assert set(view["inference_asset_state_dicts"]) == {"calibrator_module"}
+    assert (
+        view["inference_asset_state_dicts"]["calibrator_module"]
+        is calibration_state
+    )
+    assert (
+        view["inference_asset_state_dicts"]["calibrator_module"]["bias"]
+        is calibration_state["bias"]
+    )
+    assert set(payload["training_assets_state_dict"]) == {
+        "calibrator_module",
+        "teacher",
+    }
+
+
+def test_sampling_uses_requested_embedded_asset_and_skips_other_training_state(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(recipe_name="stage8_inference_asset")
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=True)
+    payload["inference_asset_descriptors"] = {
+        "calibrator": {
+            "training_asset_name": "calibrator_module",
+            "declaration": {
+                "name": "stage8_embedded_calibrator",
+                "params": {"width": 2},
+            },
+            "capability_role": "classification_logit_calibrator",
+            "persistence": "embedded_state",
+        },
+        "unused": {
+            "training_asset_name": "unused_module",
+            "declaration": {
+                "name": "stage8_embedded_calibrator",
+                "params": {"width": 2},
+            },
+            "capability_role": "unused_test_role",
+            "persistence": "embedded_state",
+        },
+    }
+    payload["training_assets_state_dict"] = {
+        "calibrator_module": {
+            "bias": torch.tensor([4.0, -2.0], dtype=torch.float32)
+        },
+        "unused_module": {
+            "bias": torch.tensor([99.0, 99.0], dtype=torch.float32)
+        },
+        "teacher": {"weight": torch.ones(3)},
+    }
+    torch.save(payload, checkpoint)
+    EmbeddedCalibrationAsset.constructor_calls = 0
+
+    result = run_sampling(
+        checkpoint=checkpoint,
+        output_dir=tmp_path / "samples",
+        device_name="cpu",
+    )
+
+    assert EmbeddedCalibrationAsset.constructor_calls == 1
+    assert result.metadata == {"asset": "calibrator"}
+    assert torch.equal(
+        torch.load(result.artifacts["samples"], weights_only=True),
+        torch.tensor([[4.0, -2.0]]),
+    )
+
+
+def test_wrong_inference_asset_role_fails_before_construction_or_output(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(recipe_name="stage8_wrong_asset_role")
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=True)
+    payload["inference_asset_descriptors"] = {
+        "calibrator": {
+            "training_asset_name": "calibrator_module",
+            "declaration": {
+                "name": "stage8_embedded_calibrator",
+                "params": {"width": 2},
+            },
+            "capability_role": "classification_logit_calibrator",
+            "persistence": "embedded_state",
+        }
+    }
+    payload["training_assets_state_dict"] = {
+        "calibrator_module": {"bias": torch.zeros(2)}
+    }
+    torch.save(payload, checkpoint)
+    output_dir = tmp_path / "samples"
+    EmbeddedCalibrationAsset.constructor_calls = 0
+
+    with pytest.raises(ValueError, match=r"has capability role.*expected"):
+        run_sampling(
+            checkpoint=checkpoint,
+            output_dir=output_dir,
+            device_name="cpu",
+        )
+
+    assert EmbeddedCalibrationAsset.constructor_calls == 0
+    assert not output_dir.exists()
+
+
+def test_missing_inference_asset_slot_fails_before_construction_or_output(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(recipe_name="stage8_missing_asset_slot")
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=True)
+    payload["inference_asset_descriptors"] = {
+        "calibrator": {
+            "training_asset_name": "calibrator_module",
+            "declaration": {
+                "name": "stage8_embedded_calibrator",
+                "params": {"width": 2},
+            },
+            "capability_role": "classification_logit_calibrator",
+            "persistence": "embedded_state",
+        }
+    }
+    payload["training_assets_state_dict"] = {
+        "calibrator_module": {"bias": torch.zeros(2)}
+    }
+    torch.save(payload, checkpoint)
+    output_dir = tmp_path / "samples"
+    EmbeddedCalibrationAsset.constructor_calls = 0
+
+    with pytest.raises(KeyError, match="unknown inference asset slot"):
+        run_sampling(
+            checkpoint=checkpoint,
+            output_dir=output_dir,
+            device_name="cpu",
+        )
+
+    assert EmbeddedCalibrationAsset.constructor_calls == 0
+    assert not output_dir.exists()
+
+
+def test_builder_rejects_wrong_inference_asset_capability_without_output(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(recipe_name="stage8_wrong_asset_capability")
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    payload = torch.load(checkpoint, weights_only=True)
+    payload["inference_asset_descriptors"] = {
+        "calibrator": {
+            "training_asset_name": "calibrator_module",
+            "declaration": {
+                "name": "stage3_tiny_model",
+                "params": {},
+            },
+            "capability_role": "classification_logit_calibrator",
+            "persistence": "embedded_state",
+        }
+    }
+    payload["training_assets_state_dict"] = {
+        "calibrator_module": TinyDenoiser().state_dict()
+    }
+    torch.save(payload, checkpoint)
+    output_dir = tmp_path / "samples"
+
+    with pytest.raises(
+        TypeError,
+        match="must implement CalibrationCapabilityFixture",
+    ):
+        run_sampling(
+            checkpoint=checkpoint,
+            output_dir=output_dir,
+            device_name="cpu",
+        )
+
+    assert not output_dir.exists()
 
 
 def test_checkpoint_sampling_view_retains_and_uses_ema_weights(tmp_path: Path) -> None:

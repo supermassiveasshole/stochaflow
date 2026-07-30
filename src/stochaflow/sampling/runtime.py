@@ -5,12 +5,13 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, Required, TypedDict, cast
 
 import torch
 import yaml
 
 from stochaflow.processes import Process
+from stochaflow.sampling.assets import InferenceAssetProvider
 from stochaflow.sampling.builder import (
     InferenceModelProvider,
     SamplingBuilder,
@@ -27,6 +28,8 @@ from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     CheckpointManager,
     CheckpointState,
+    InferenceAssetDescriptor,
+    validate_inference_asset_descriptors,
 )
 from stochaflow.utils.config import (
     ConfigError,
@@ -77,6 +80,10 @@ class SamplingCheckpointView(TypedDict, total=False):
     model_state_dict: dict[str, Any]
     ema_model_state_dict: dict[str, Any]
     process_state_dict: dict[str, Any]
+    inference_asset_descriptors: Required[
+        dict[str, InferenceAssetDescriptor]
+    ]
+    inference_asset_state_dicts: Required[dict[str, dict[str, Any]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +311,10 @@ def run_resolved_sampling(
         device=device,
     )
     provider = _build_model_provider(config, inputs.checkpoint, device=device)
+    inference_assets = _build_inference_asset_provider(
+        inputs.checkpoint,
+        device=device,
+    )
     recipe_params = _sampling_recipe_params(inputs.recipe, config)
     context = SamplingBuilderContext(
         params=recipe_params,
@@ -314,6 +325,7 @@ def run_resolved_sampling(
         shape=(tuple(config.sampling.shape) if config.sampling.shape is not None else None),
         num_samples=config.sampling.num_samples,
         batch_size=config.sampling.batch_size,
+        inference_assets=inference_assets,
     )
     builder = cast(
         SamplingBuilder,
@@ -481,10 +493,38 @@ def _sampling_checkpoint_view(payload: CheckpointState) -> SamplingCheckpointVie
         "process_state_dict",
     )
     raw_payload = cast(dict[str, Any], payload)
-    return cast(
+    descriptors = validate_inference_asset_descriptors(
+        payload.get("inference_asset_descriptors"),
+        path="checkpoint.inference_asset_descriptors",
+    )
+    projected_states: dict[str, dict[str, Any]] = {}
+    if descriptors:
+        asset_states_value = cast(
+            object,
+            payload.get("training_assets_state_dict"),
+        )
+        if type(asset_states_value) is not dict:
+            raise TypeError(
+                "checkpoint with inference assets requires an exact "
+                "training_assets_state_dict"
+            )
+        asset_states = cast(dict[object, object], asset_states_value)
+        for descriptor in descriptors.values():
+            asset_name = descriptor["training_asset_name"]
+            state_value = asset_states.get(asset_name)
+            if not isinstance(state_value, dict):
+                raise TypeError(
+                    "checkpoint embedded inference asset state "
+                    f"{asset_name!r} must be a state dictionary"
+                )
+            projected_states[asset_name] = cast(dict[str, Any], state_value)
+    view = cast(
         SamplingCheckpointView,
         {key: raw_payload[key] for key in retained_keys if key in raw_payload},
     )
+    view["inference_asset_descriptors"] = descriptors
+    view["inference_asset_state_dicts"] = projected_states
+    return view
 
 
 def _build_checkpointed_process(
@@ -532,6 +572,27 @@ def _build_model_provider(
         ema_state_dict=ema,
         device=device,
         prefer_ema=config.ema.enabled and config.ema.use_for_sampling,
+    )
+
+
+def _build_inference_asset_provider(
+    payload: SamplingCheckpointView,
+    *,
+    device: torch.device,
+) -> InferenceAssetProvider:
+    descriptors = cast(
+        Mapping[str, InferenceAssetDescriptor],
+        payload.get("inference_asset_descriptors", {}),
+    )
+    state_dicts = cast(
+        Mapping[str, Mapping[str, object]],
+        payload.get("inference_asset_state_dicts", {}),
+    )
+    return InferenceAssetProvider(
+        descriptors=descriptors,
+        state_dicts=state_dicts,
+        device=device,
+        model_factory=build_model,
     )
 
 

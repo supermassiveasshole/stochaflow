@@ -13,6 +13,7 @@ from torch import nn
 
 from stochaflow.sampling import SamplingRecipe
 from stochaflow.training import (
+    InferenceAssetProjection,
     ManagedTrainingModule,
     TrainingBuilder,
     TrainingPlan,
@@ -145,6 +146,13 @@ class TeacherModel(nn.Module):
         return self.linear(inputs)
 
 
+@REGISTRIES.models.register("stage4_inference_asset_model")
+class InferenceAssetModel(nn.Module):
+    def __init__(self, *, num_features: int) -> None:
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(num_features))
+
+
 class KnowledgeDistillationStrategy(TrainingStrategy):
     def __init__(
         self,
@@ -228,6 +236,37 @@ class DirectLossBuilder(TrainingBuilder):
         return TrainingPlan(
             ScalarStrategy(self.context.primary_model),
             self.context.primary_model,
+        )
+
+
+@REGISTRIES.training_builders.register("stage4_inference_asset")
+class InferenceAssetTrainingBuilder(TrainingBuilder):
+    def build(self) -> TrainingPlan:
+        if self.context.process is not None or self.context.objective is not None:
+            raise TypeError("inference asset test expects no Process or Objective")
+        asset = self.context.model_factory(
+            ComponentConfig(
+                "stage4_inference_asset_model",
+                {"num_features": 2},
+            )
+        )
+        asset.requires_grad_(False)
+        return TrainingPlan(
+            strategy=ScalarStrategy(self.context.primary_model),
+            primary_model=self.context.primary_model,
+            auxiliary_modules={
+                "calibrator": ManagedTrainingModule(asset, mode="eval"),
+            },
+            inference_assets={
+                "calibrator": InferenceAssetProjection(
+                    training_asset_name="calibrator",
+                    declaration=ComponentConfig(
+                        "stage4_inference_asset_model",
+                        {"num_features": 2},
+                    ),
+                    capability_role="classification_logit_calibrator",
+                ),
+            },
         )
 
 
@@ -362,6 +401,177 @@ def test_plan_validates_and_snapshots_inference_recipe() -> None:
                     name="project.generate",
                     contract={"steps": (4, 2, 0)},
                 )
+            )
+        )
+
+
+def test_plan_validates_and_snapshots_inference_assets() -> None:
+    asset = nn.Linear(1, 1)
+    params = {"nested": {"value": 1}}
+    declaration = ComponentConfig("test_codec", params)
+    inference_assets = {
+        "codec": InferenceAssetProjection(
+            training_asset_name="codec",
+            declaration=declaration,
+            capability_role="image_codec",
+        )
+    }
+    validated = validate_training_plan(
+        _linear_plan(
+            auxiliary_modules={
+                "codec": ManagedTrainingModule(asset, mode="eval"),
+            },
+            inference_assets=inference_assets,
+        )
+    )
+
+    declaration.name = "mutated"
+    params["nested"]["value"] = 2
+    inference_assets["late"] = InferenceAssetProjection(
+        training_asset_name="codec",
+        declaration=ComponentConfig("late"),
+        capability_role="late",
+    )
+
+    assert set(validated.inference_assets) == {"codec"}
+    projection = validated.inference_assets["codec"]
+    assert projection.training_asset_name == "codec"
+    assert projection.declaration.name == "test_codec"
+    assert projection.declaration.params == {"nested": {"value": 1}}
+    assert projection.capability_role == "image_codec"
+    with pytest.raises(TypeError):
+        cast(Any, validated.inference_assets)["late"] = projection
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error", "message"),
+    [
+        ("slot", 1, TypeError, "slot must be an exact string"),
+        ("slot", "", ValueError, "slot must be non-empty"),
+        (
+            "slot",
+            " codec ",
+            ValueError,
+            "slot must not contain surrounding whitespace",
+        ),
+        (
+            "training_asset_name",
+            1,
+            TypeError,
+            r"training_asset_name must be an exact string",
+        ),
+        (
+            "training_asset_name",
+            " codec ",
+            ValueError,
+            r"training_asset_name.*surrounding whitespace",
+        ),
+        (
+            "declaration_name",
+            1,
+            TypeError,
+            r"declaration\.name must be an exact string",
+        ),
+        (
+            "declaration_name",
+            "",
+            ValueError,
+            r"declaration\.name must be non-empty",
+        ),
+        (
+            "capability_role",
+            1,
+            TypeError,
+            r"capability_role must be an exact string",
+        ),
+        (
+            "capability_role",
+            " image_codec",
+            ValueError,
+            r"capability_role.*surrounding whitespace",
+        ),
+    ],
+)
+def test_plan_rejects_invalid_inference_asset_strings(
+    field: str,
+    value: object,
+    error: type[Exception],
+    message: str,
+) -> None:
+    slot: Any = value if field == "slot" else "codec"
+    projection = InferenceAssetProjection(
+        training_asset_name=cast(
+            str,
+            value if field == "training_asset_name" else "codec",
+        ),
+        declaration=ComponentConfig(
+            cast(str, value if field == "declaration_name" else "test_codec"),
+        ),
+        capability_role=cast(
+            str,
+            value if field == "capability_role" else "image_codec",
+        ),
+    )
+
+    with pytest.raises(error, match=message):
+        validate_training_plan(
+            _linear_plan(
+                auxiliary_modules={
+                    "codec": ManagedTrainingModule(nn.Linear(1, 1)),
+                },
+                inference_assets={slot: projection},
+            )
+        )
+
+
+def test_plan_rejects_invalid_or_duplicate_inference_asset_projection() -> None:
+    auxiliary_modules = {
+        "codec": ManagedTrainingModule(nn.Linear(1, 1)),
+    }
+    projection = InferenceAssetProjection(
+        training_asset_name="codec",
+        declaration=ComponentConfig("test_codec"),
+        capability_role="image_codec",
+    )
+    with pytest.raises(TypeError, match="must be a mapping"):
+        validate_training_plan(
+            _linear_plan(inference_assets=cast(Any, []))
+        )
+    with pytest.raises(TypeError, match="must be InferenceAssetProjection"):
+        validate_training_plan(
+            _linear_plan(
+                auxiliary_modules=auxiliary_modules,
+                inference_assets={"codec": cast(Any, object())},
+            )
+        )
+    with pytest.raises(ValueError, match="missing training auxiliary"):
+        validate_training_plan(
+            _linear_plan(inference_assets={"codec": projection})
+        )
+    with pytest.raises(TypeError, match=r"declaration\.params"):
+        validate_training_plan(
+            _linear_plan(
+                auxiliary_modules=auxiliary_modules,
+                inference_assets={
+                    "codec": InferenceAssetProjection(
+                        training_asset_name="codec",
+                        declaration=ComponentConfig(
+                            "test_codec",
+                            cast(Any, []),
+                        ),
+                        capability_role="image_codec",
+                    )
+                },
+            )
+        )
+    with pytest.raises(ValueError, match="more than once"):
+        validate_training_plan(
+            _linear_plan(
+                auxiliary_modules=auxiliary_modules,
+                inference_assets={
+                    "encoder": projection,
+                    "decoder": projection,
+                },
             )
         )
 
@@ -604,6 +814,43 @@ def test_custom_builder_trains_without_process_or_objective(tmp_path: Path) -> N
     assert "process_state_dict" not in state
     assert "objective_state_dict" not in state
     assert state.get("training_assets_state_dict") == {}
+
+
+def test_standard_factory_projects_inference_assets_into_checkpoint(
+    tmp_path: Path,
+) -> None:
+    raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
+    raw["experiment"]["output_dir"] = str(tmp_path)
+    raw["model"] = {"name": "stage4_student", "params": {}}
+    raw["process"] = None
+    raw["training"] = {"name": "stage4_inference_asset", "params": {}}
+    raw["objective"] = None
+    raw["diagnostics"] = []
+    raw["lr_scheduler"] = None
+    raw["ema"]["enabled"] = False
+    raw["sampling"]["run_after_training"] = False
+
+    components = build_training_components(load_config_dict(raw))
+    state = components.checkpoint_manager.build_state()
+
+    assert components.checkpoint_manager.inference_asset_descriptors == {
+        "calibrator": {
+            "training_asset_name": "calibrator",
+            "declaration": {
+                "name": "stage4_inference_asset_model",
+                "params": {"num_features": 2},
+            },
+            "capability_role": "classification_logit_calibrator",
+            "persistence": "embedded_state",
+        }
+    }
+    assert state.get("inference_asset_descriptors") == (
+        components.checkpoint_manager.inference_asset_descriptors
+    )
+    assets_state = state.get("training_assets_state_dict")
+    assert isinstance(assets_state, dict)
+    assert set(assets_state) == {"calibrator"}
+    assert set(assets_state["calibrator"]) == {"scale"}
 
 
 def test_strategy_has_no_lifecycle_or_state_api() -> None:

@@ -146,10 +146,14 @@ uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-prepare \
   --artifact-verification-workers 8
 ```
 
-`require` 不创建目录、lock 或 locator，不下载、不重建、不隔离损坏项。production 与
-smoke YAML 已固定 `policy: require` 和 `verification: full`；缺失、替换或内容漂移会在
-run directory、model 和 optimizer 创建前失败。cache hit 不进入 acquisition callback，
-因此即使 raw ZIP 被删除或不可访问，仍可离线加载已发布 artifact。
+`require` 不创建目录、lock 或 locator，不下载、不重建、不隔离损坏项，因此所有
+checked-in 训练 YAML 都不会在启动时改变 artifact。ADM production 为避免每次 fresh
+training 启动都重新 hash 全部 PNG，固定使用 `policy: require` 和
+`verification: manifest`；DiT production 与 smoke 使用 `require/full`。manifest
+contract 不匹配仍会在 run directory、model 和 optimizer 创建前失败；strict resume
+与正式 evaluation 注入 expected identity，并无条件强制 full verification。cache hit
+不进入 acquisition callback，因此即使 raw ZIP 被删除或不可访问，仍可离线加载已发布
+artifact。
 
 统一 `manifest.json` 是 framework envelope 加 AFHQ producer-defined cheap contract：
 domain 只保存 resolution、class mapping、official partition roots/counts 与 canonical
@@ -190,10 +194,11 @@ uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-capacity \
 
 该命令按正常注册和构建路径使用 DataBuilder、TrainingBuilder、Trainer、optimizer、
 scheduler、EMA 和 precision runtime。DataBuilder 通过 core factory 解析注册的
-DataSource、full-verify official train/test artifact，再执行运行时分层划分并组装
-loaders；capacity 工具不维护第二套 source、partition 或训练循环。micro batch 4/6/8
-的 accumulation 分别为 8/5/4，因此 effective batch 为 32/30/32。每个 FP32 和 BF16
-trial 默认 warmup 5 次，并测量至少 25 次成功 optimizer updates。
+DataSource，按 ADM production config 执行 manifest verification，再进行运行时分层
+划分并组装 loaders；前置的 prepare 命令已独立完成 full verification。capacity 工具
+不维护第二套 source、partition 或训练循环。micro batch 4/6/8 的 accumulation 分别为
+8/5/4，因此 effective batch 为 32/30/32。每个 FP32 和 BF16 trial 默认 warmup 5 次，
+并测量至少 25 次成功 optimizer updates。
 
 JSON 报告包含 images/s、updates/s、allocated/reserved peak VRAM、data-wait/compute
 时间及比值、forward/backward/optimizer 时间、非有限 loss/gradient、运行环境身份，以及

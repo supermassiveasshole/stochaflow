@@ -701,12 +701,13 @@ PyTorch `DistributedSampler(drop_last=False)` 可能 padding indices，使各 ra
 这对普通训练可接受，但会污染正式 metric。推荐分两级：
 
 - 训练内 validation：使用 aligned schedule；padding sample 必须由 DataBuilder/
-  Strategy 私有协议 mask，并由 `TrainStepOutput.loss_weight` 排除；
+  Strategy 私有协议 mask，并由 `TrainStepOutput.loss_aggregation_weight` 排除；
 - 正式 Evaluation：必须 exact shard，无 duplicate sample ID；允许 rank step 数不同的
   replicated inference，但 FSDP collective inference 需要 Builder 产生 aligned empty/
   padded calls 和显式 zero weight。
 
-Metrics 计划中的 `loss_weight`/`MetricUpdate` 是正确 global reduction 的前置依赖。
+Metrics 计划中的 `loss_aggregation_weight`/`MetricUpdate` 是正确 global reduction
+的前置依赖。
 在该依赖实现前，distributed validation 只能报告受限的 equal-size built-in
 correctness result，不能成为正式 benchmark。
 

@@ -5,13 +5,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 import torch
 from torch import nn
 
 from stochaflow.processes import DiscreteGaussianDenoisingProcess, Process
+from stochaflow.sampling.assets import InferenceAssetProvider
 from stochaflow.sampling.gaussian import GaussianModelDynamics, PredictionType
 from stochaflow.sampling.sampler import (
     Sampler,
@@ -87,6 +88,9 @@ class SamplingBuilderContext:
     shape: tuple[int, ...] | None
     num_samples: int
     batch_size: int
+    inference_assets: InferenceAssetProvider = field(
+        default_factory=InferenceAssetProvider.empty
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "params", deepcopy(self.params))
@@ -408,6 +412,7 @@ def _validate_shape(
 
 
 __all__ = [
+    "InferenceAssetProvider",
     "InferenceModelProvider",
     "SamplingBuilder",
     "SamplingBuilderContext",

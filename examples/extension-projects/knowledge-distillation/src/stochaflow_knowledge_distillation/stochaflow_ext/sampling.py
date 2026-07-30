@@ -1,8 +1,8 @@
-"""Student-only direct prediction sampling for the reference project."""
+"""Checkpoint-only calibrated prediction sampling for the reference project."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -13,7 +13,10 @@ from stochaflow.extensions import (
     SamplingOutput,
 )
 
+from .models import LogitCalibrationCapability
+
 _PREFIX = "stochaflow-knowledge-distillation"
+_CALIBRATOR_ROLE = "classification_logit_calibrator"
 
 
 def _positive_int(value: object, name: str) -> int:
@@ -33,10 +36,10 @@ def _number(value: object, name: str) -> float:
 
 @REGISTRIES.sampling_builders.register(f"{_PREFIX}.predictions")
 class StudentPredictionBuilder(SamplingBuilder):
-    """Evaluate only the checkpointed student on deterministic synthetic inputs."""
+    """Evaluate and calibrate checkpointed student predictions."""
 
     def run(self) -> SamplingOutput:
-        """Return batched student logits without constructing training assets."""
+        """Return calibrated logits without constructing training-only assets."""
 
         if self.context.process is not None:
             raise ValueError("student prediction sampling does not use a Process")
@@ -64,6 +67,15 @@ class StudentPredictionBuilder(SamplingBuilder):
         if params:
             raise ValueError(f"unknown sampling params: {', '.join(sorted(params))}")
 
+        calibrator = self.context.inference_assets.get(
+            "calibrator",
+            expected_capability_role=_CALIBRATOR_ROLE,
+        )
+        if not isinstance(calibrator, LogitCalibrationCapability):
+            raise TypeError(
+                "inference asset 'calibrator' must implement "
+                "LogitCalibrationCapability"
+            )
         model, resolved_weights = self.context.model_provider.resolve(weights)
         generator = torch.Generator().manual_seed(self.context.seed)
         values = torch.randn(
@@ -78,18 +90,32 @@ class StudentPredictionBuilder(SamplingBuilder):
             inputs = values[start : start + self.context.batch_size].to(
                 self.context.device
             )
-            logits = model(inputs)
-            if not isinstance(logits, torch.Tensor):
+            student_logits = model(inputs)
+            if not isinstance(student_logits, torch.Tensor):
                 raise TypeError("student model must return a Tensor")
-            if logits.ndim != 2 or logits.shape[0] != inputs.shape[0]:
+            if (
+                student_logits.ndim != 2
+                or student_logits.shape[0] != inputs.shape[0]
+            ):
                 raise ValueError("student logits must have shape [batch, classes]")
+            calibrated_value = cast(
+                object,
+                calibrator.calibrate_logits(student_logits),
+            )
+            if not isinstance(calibrated_value, torch.Tensor):
+                raise TypeError("logit calibrator must return a Tensor")
+            logits = calibrated_value
+            if logits.shape != student_logits.shape:
+                raise ValueError(
+                    "calibrated logits must preserve student-logit shape"
+                )
             logits = logits.detach().cpu()
             predicted_classes.extend(logits.argmax(dim=1).tolist())
             batches.append(SamplingBatch(samples=logits))
         return SamplingOutput(
             batches=tuple(batches),
             metadata={
-                "workflow": "student-only-classification",
+                "workflow": "calibrated-student-classification",
                 "weights": resolved_weights,
                 "input_features": input_features,
                 "input_mean": mean,

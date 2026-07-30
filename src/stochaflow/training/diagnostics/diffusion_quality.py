@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,7 @@ from stochaflow.training.diagnostics.runtime import (
     SeedPolicy,
     gaussian_training_runtime,
 )
+from stochaflow.training.strategy import ReferenceImageBatchSemantics
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
 
@@ -81,6 +82,20 @@ class UnconditionalGaussianQualityFamily:
         """Return the sampler expected by the reference metric suite."""
 
         return sampler
+
+    def reference_image_extractor(
+        self,
+        trainer: Any,
+    ) -> Callable[[Any], torch.Tensor]:
+        """Resolve explicit strategy-owned reference image extraction."""
+
+        strategy = getattr(trainer, "strategy", None)
+        if not isinstance(strategy, ReferenceImageBatchSemantics):
+            raise TypeError(
+                "diffusion_quality reference metrics require a "
+                "ReferenceImageBatchSemantics strategy"
+            )
+        return strategy.extract_reference_images
 
     def profile_manifest_metadata(
         self,

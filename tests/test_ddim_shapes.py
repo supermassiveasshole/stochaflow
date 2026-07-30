@@ -128,6 +128,28 @@ def test_ddim_public_transition_supports_batch_selected_pairs() -> None:
     assert torch.count_nonzero(stochastic.standard_deviation[1]) == 0
 
 
+def test_ddim_public_transition_rejects_complex_target_times() -> None:
+    process = _process(10)
+    state = torch.randn(2, 3)
+    source_times = torch.tensor([10, 7])
+    prediction = normalize_gaussian_prediction(
+        process,
+        state,
+        source_times,
+        torch.randn_like(state),
+        clip_denoised=False,
+    )
+
+    with pytest.raises(TypeError, match="target times must contain integer states"):
+        DDIMSampler().transition(
+            process,
+            state,
+            source_times,
+            torch.tensor([3.0 + 2.0j, 0.0j]),
+            prediction,
+        )
+
+
 def test_adjacent_eta_one_public_transition_matches_ddpm_distribution() -> None:
     process = _process(5)
     state = torch.randn(2, 3)

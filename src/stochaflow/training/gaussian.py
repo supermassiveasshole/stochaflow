@@ -11,7 +11,11 @@ from stochaflow.processes import DiscreteGaussianDenoisingProcess
 from stochaflow.sampling import GaussianModelDynamics, PredictionType
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
 from stochaflow.training.objectives import compute_objective
-from stochaflow.training.strategy import TrainingStrategy, TrainStepOutput
+from stochaflow.training.strategy import (
+    Batch,
+    TrainingStrategy,
+    TrainStepOutput,
+)
 from stochaflow.utils.registry import REGISTRIES
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
@@ -84,6 +88,11 @@ class GaussianDenoisingTrainingStrategy(TrainingStrategy):
         if not isinstance(prediction, torch.Tensor):
             raise TypeError("Gaussian model must return a Tensor")
         return prediction
+
+    def extract_reference_images(self, batch: Batch) -> torch.Tensor:
+        """Extract clean images using this strategy's batch semantics."""
+
+        return _clean_samples(batch)
 
     def training_step(self, batch: Any) -> TrainStepOutput:
         """Sample a noisy marginal and compare the configured model target."""

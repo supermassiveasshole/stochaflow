@@ -222,7 +222,11 @@ def retain_result_checkpoint_header(
     format_version = cast(object, inputs.checkpoint.get("format_version"))
     if isinstance(format_version, bool) or not isinstance(format_version, int):
         raise TypeError("AFHQ-v2 evaluation checkpoint format_version must be integer")
-    checkpoint: SamplingCheckpointView = {"format_version": format_version}
+    checkpoint: SamplingCheckpointView = {
+        "format_version": format_version,
+        "inference_asset_descriptors": {},
+        "inference_asset_state_dicts": {},
+    }
     return replace(inputs, checkpoint=checkpoint)
 
 

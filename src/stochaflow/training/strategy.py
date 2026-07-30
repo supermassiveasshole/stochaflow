@@ -23,6 +23,16 @@ class DeviceTransferableBatch(Protocol):
         ...
 
 
+@runtime_checkable
+class ReferenceImageBatchSemantics(Protocol):
+    """Optional strategy capability for extracting reference metric images."""
+
+    def extract_reference_images(self, batch: Batch) -> torch.Tensor:
+        """Return the clean image tensor represented by a validation batch."""
+
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class TrainStepOutput:
     """One strategy computation consumed by the automatic training loop.
@@ -97,6 +107,7 @@ def validate_train_step_output(value: object) -> TrainStepOutput:
 __all__ = [
     "Batch",
     "DeviceTransferableBatch",
+    "ReferenceImageBatchSemantics",
     "ScalarMetric",
     "TrainStepOutput",
     "TrainingStrategy",

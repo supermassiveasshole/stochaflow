@@ -1,8 +1,8 @@
 # Hydra 配置组合与 Train/Sample 边界迁移计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：分段排期，尚未进入实现；C0/C1 为当前 P0，H0–H3 为 latent
-  vertical slice 后的 P2，H4 为 Later
+- 状态：分段排期，尚未进入实现；A0 ADM topology correctness 后执行 P0
+  C0/C1，H0–H3 为 latent vertical slice 后的 P2，H4 为 Later
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)；本文拥有配置
   contract，统一排期拥有跨计划执行顺序
@@ -17,6 +17,7 @@
   AFHQ frozen evaluation、capacity trial policy、adaptive HPO
 - 关联决策：
   [Sampling Request Config Refactor](sampling-request-config-refactor.md)、
+  [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)、
   [Extension 导入边界与激活延迟优化计划](extension-import-boundary-and-activation-latency-plan.md)、
   [自动化模型调优开发计划](automated-model-tuning-plan.md)
 
@@ -98,6 +99,11 @@ checkpoint + sample config
 13. **保留简洁的 role-scoped `name`，但不掩盖其 grammar。** 首轮不改成
     `provider: torch`、`class_name` 或 `target`；配置参考、错误信息和 `--check` 必须按
     role 明确显示该字段接受 Registry identity 还是两个受限 native identifier。
+14. **P2 research variation 不扩张 production authoring tree。** corrected ADM
+    topology 是唯一 ADM production recipe 的组成；`constant`/`p2` A/B 由 benchmark
+    protocol基于同一 readable base config产生 frozen resolved configs，不永久增加
+    `train-adm-baseline.yaml`/`train-adm-p2.yaml`，也不把训练变化伪装成 sample
+    profile。
 
 推荐的最终边界是：
 
@@ -1428,7 +1434,9 @@ batch/accumulation/scheduler 的 cohesive recipe。未进入 safe allowlist 的�
 ### Phase H2：MNIST 与 AFHQ parity
 
 本 phase 在 AFHQ latent vertical slice 后启动；此时 plain config 的 codec、latent
-recipe 和 sample authority 已稳定，不会在 Hydra parity 后再次改写。
+recipe、sample authority 以及 corrected ADM topology fields 已稳定，不会在 Hydra
+parity 后再次改写。旧 `transformer_depths`/`middle_transformer_depth` 不进入 Hydra
+groups。
 
 顺序：
 
@@ -1451,6 +1459,9 @@ Hydra composed mapping
 - MNIST DDPM 与 DDIM sample profiles消费同一个 checkpoint family；
 - MNIST observability resume overlay 不进入 Hydra；
 - AFHQ batch、accumulation、scheduler、verification 不漂移；
+- AFHQ ADM parity 使用 A0 后的 canonical skip/attention topology，并拒绝 pre-A0
+  config/checkpoint；
+- P2 benchmark override 与 production Hydra Defaults List 隔离；
 - AFHQ sample config不进入 train Defaults List；
 - AFHQ evaluation/capacity authority 不变；
 - AFHQ installed-wheel extension activation 正常。

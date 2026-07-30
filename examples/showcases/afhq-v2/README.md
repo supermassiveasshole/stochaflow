@@ -107,8 +107,11 @@ uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-prepare \
   --verification full
 ```
 
-`require` 不访问网络、不重建也不修复。缺失或被修改的文件会直接失败。production 和
-smoke 配置都固定为 `require/full`，因此长训练不会在启动时悄悄下载或改变数据。
+`require` 不访问网络、不重建也不修复，因此所有 checked-in 训练配置都不会在启动时
+悄悄下载或改变数据。ADM production 为降低每次 fresh training 启动时的完整 PNG
+rehash 成本，固定使用 `require/manifest`；DiT production 与 smoke 固定使用
+`require/full`。strict resume 注入 expected identity，因此无论原训练配置选择哪种
+verification，恢复时都会强制执行 full verification。
 
 prepare 命令通过注册的 `AFHQV2ImageDataSource` 执行，与内置 Builder 使用相同的
 source 参数解析、materialization policy 和 identity 校验。命令只准备并汇报 official

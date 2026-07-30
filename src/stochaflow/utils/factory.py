@@ -23,7 +23,10 @@ from stochaflow.training import (
 )
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.training.optimization import build_lr_scheduler, build_optimizer
-from stochaflow.utils.checkpoint import CheckpointManager
+from stochaflow.utils.checkpoint import (
+    CheckpointManager,
+    inference_asset_descriptors_from_projections,
+)
 from stochaflow.utils.config import (
     ComponentConfig,
     ConfigError,
@@ -272,6 +275,9 @@ def build_training_components(
         config.trainer.precision,
         device,
     )
+    inference_asset_descriptors = inference_asset_descriptors_from_projections(
+        plan.inference_assets
+    )
     checkpoint_manager = CheckpointManager(
         model=model,
         process=process,
@@ -284,6 +290,7 @@ def build_training_components(
         ema=ema,
         precision_kind=precision.kind,
         grad_scaler=precision.grad_scaler,
+        inference_asset_descriptors=inference_asset_descriptors,
         inference_recipe=plan.inference_recipe,
     )
     logger = build_logger(

@@ -207,14 +207,17 @@ TrainingPlan
   ├── primary model
   ├── optional Process / Objective
   ├── named managed auxiliary modules
+  ├── optional inference asset projections
   └── optional fixed inference recipe
         ↓
 Trainer lifecycle
 ```
 
 core 先构造 primary model、可选 Process/Objective，再注入 Builder；Plan 必须原样保留
-这些对象。Builder 可以构造、加载、冻结并声明 auxiliary assets，也可以声明一个
-`SamplingRecipe(name, contract)`。recipe 固定与训练语义绑定的内部 SamplingBuilder
+这些对象。Builder 可以构造、加载、冻结并声明 auxiliary assets，并可将其中一部分按
+slot 一对一投影为 inference assets；也可以声明一个
+`SamplingRecipe(name, contract)`。projection 的 component declaration 只描述如何从
+checkpoint state 重建 module，不携带训练时 acquisition path。recipe 固定与训练语义绑定的内部 SamplingBuilder
 identity 和 JSON-safe contract；可调 request defaults 仍来自顶层 `sampling`。Strategy
 只负责一次 batch 的训练计算。Trainer 负责自动优化生命周期，包括全部 managed assets
 的 device/mode、backward、一个 optimizer、可选 scheduler 和 checkpoint。EMA 仅跟踪
@@ -242,6 +245,15 @@ Registry。
 recipe 为 null 的 checkpoint 不支持该 operation。外部 sample request 只能调整
 checkpoint 已公开的 sampler、options、shape、数量、batch、seed 和 writers，不能重新
 选择内部 SamplingBuilder 或覆盖 fixed contract。
+
+声明为 inference asset 的 auxiliary module 与其 embedded state 一起进入 sampling
+projection；未声明的 teacher、Objective、optimizer、scheduler 和其他 training-only
+资产不会进入该 view。extension 激活后，runtime 才创建
+`InferenceAssetProvider`。具体 SamplingBuilder 以 slot 与语义 role 请求资产，并继续
+验证自己的窄 capability。module 只在首次请求时于 CPU 上完成 exact
+key/shape/dtype/layout 检查与 strict load，成功后迁移到 sampling device、切换为 eval
+并缓存。这里的 requested-only 指 module 构造和加载；`torch.load` 仍会先读取整个
+checkpoint。
 
 所有数值 Sampler 共享一个完整执行入口：
 
@@ -276,7 +288,8 @@ writer 才开始工作。它适合有界离线采样，但不是 streaming contr
 | Strict resume | checkpoint 内保存的完整 config | device/output/epoch/limit 等明确 runtime options |
 | Checkpoint inference | 显式 v10 checkpoint 的 config、state 与 `inference_recipe` | 可选 partial sample request；device/output 等 sampling CLI runtime options |
 
-checkpoint 保存 resolved config、managed state 和 fixed inference recipe，但不冻结
+checkpoint 保存 resolved config、managed state、inference asset descriptors 和 fixed
+inference recipe，但不冻结
 extension 的 Python class、源码、wheel、数据或环境，因此是自描述 artifact，不是
 自包含可执行环境。extension provenance 记录 entry-point name、distribution、version
 和 module target；sample request 只能追加插件，不能删除 checkpoint-required plugin。

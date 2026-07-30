@@ -42,7 +42,11 @@ from stochaflow.training.strategy import (
     TrainStepOutput,
     validate_train_step_output,
 )
-from stochaflow.utils.checkpoint import CheckpointManager
+from stochaflow.utils.checkpoint import (
+    CheckpointManager,
+    inference_asset_descriptors_equal,
+    inference_asset_descriptors_from_projections,
+)
 from stochaflow.utils.device import move_module_to_device
 from stochaflow.utils.iterables import try_length
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
@@ -304,6 +308,16 @@ def _validate_checkpoint_manager(
     if manager.inference_recipe != plan.inference_recipe:
         raise ValueError(
             "CheckpointManager inference recipe must match TrainingPlan"
+        )
+    expected_descriptors = inference_asset_descriptors_from_projections(
+        plan.inference_assets
+    )
+    if not inference_asset_descriptors_equal(
+        manager.inference_asset_descriptors,
+        expected_descriptors,
+    ):
+        raise ValueError(
+            "CheckpointManager inference asset descriptors must match TrainingPlan"
         )
 
 
