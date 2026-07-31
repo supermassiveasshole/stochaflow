@@ -138,12 +138,24 @@ def test_external_module_registers_every_provider_type_without_orchestrator_chan
     )
     diagnostic.on_train_batch_end(batch_event(runtime))
 
-    diagnostic.on_train_epoch_end(epoch_event(runtime))
+    results = diagnostic.on_train_epoch_end(epoch_event(runtime))
 
     all_metrics = {key for _, payload in logger.metrics for key in payload}
-    assert "diagnostics/custom/step" in all_metrics
-    assert "diagnostics/samplers/ddpm/custom" in all_metrics
-    assert "diagnostics/samplers/ddpm/custom_reference" in all_metrics
+    assert "diagnostics/diffusion_quality/custom/step" in all_metrics
+    assert results is not None
+    returned_metrics = {
+        key
+        for result in results
+        for key in result.metrics
+    }
+    assert (
+        "diagnostics/diffusion_quality/samplers/ddpm/custom"
+        in returned_metrics
+    )
+    assert (
+        "diagnostics/diffusion_quality/samplers/ddpm/custom_reference"
+        in returned_metrics
+    )
     epoch = tmp_path / "diagnostics" / "diffusion_quality" / "epoch_0001"
     assert (epoch / "denoiser" / "custom.txt").is_file()
     assert (epoch / "ddpm" / "custom.txt").is_file()
@@ -177,7 +189,10 @@ def test_provider_metric_collision_isolated_by_warn_policy(monkeypatch, tmp_path
     diagnostic.on_train_batch_end(batch_event(runtime))
 
     assert any("metric tag collision" in text for _, text, _ in logger.text)
-    assert logger.metrics[-1][1]["diagnostics/custom/step"] == 7.0
+    assert (
+        logger.metrics[-1][1]["diagnostics/diffusion_quality/custom/step"]
+        == 7.0
+    )
 
 
 def test_provider_registry_rejects_wrong_base() -> None:

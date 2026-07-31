@@ -12,6 +12,8 @@ import torch
 
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
+    DiagnosticResult,
+    DiagnosticSourceRequest,
     FitStartEvent,
     ReconstructionCallable,
     TrainBatchEndEvent,
@@ -314,6 +316,12 @@ class ClassConditionalDiffusionQualityDiagnostic(TrainingDiagnostic):
         self.denoiser_artifacts = self._engine.denoiser_artifacts
         self.sampler_artifacts = self._engine.sampler_artifacts
 
+    @property
+    def metric_source_requests(self) -> tuple[DiagnosticSourceRequest, ...]:
+        """Expose source requests for composition-time verification."""
+
+        return self._engine.metric_source_requests
+
     def on_fit_start(self, event: FitStartEvent) -> None:
         """Initialize label-aware runtime and sampler resources."""
 
@@ -324,10 +332,13 @@ class ClassConditionalDiffusionQualityDiagnostic(TrainingDiagnostic):
 
         self._engine.on_train_batch_end(event)
 
-    def on_train_epoch_end(self, event: TrainEpochEndEvent) -> None:
-        """Dispatch one completed epoch."""
+    def on_train_epoch_end(
+        self,
+        event: TrainEpochEndEvent,
+    ) -> tuple[DiagnosticResult, ...] | None:
+        """Return due epoch results."""
 
-        self._engine.on_train_epoch_end(event)
+        return self._engine.on_train_epoch_end(event)
 
 
 __all__ = [

@@ -244,7 +244,7 @@ class ConditionalGaussianBuilder(TrainingBuilder):
 Builder 返回的 `primary_model`、`process` 和 `objective` 必须保留 context 注入的对象；
 设备、mode、optimizer、EMA 和 checkpoint 生命周期仍由核心管理。Strategy 只定义 batch
 解释、forward 和 loss。`prediction_type` 是训练与 inference 必须一致的语义，因此由
-TrainingBuilder 固化进 v10 checkpoint recipe contract，而不是留给 sample request。
+TrainingBuilder 固化进 v11 checkpoint recipe contract，而不是留给 sample request。
 
 ## 4. 用 LR closure 复用 DDPM/DDIM
 

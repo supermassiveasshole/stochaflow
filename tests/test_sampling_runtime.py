@@ -1460,7 +1460,7 @@ def test_sampling_runtime_rejects_legacy_checkpoint_headers(
     raw = _raw_config(recipe_name="stage3_no_shape")
     checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw, version=version)
 
-    with pytest.raises(ValueError, match=r"expected version 10"):
+    with pytest.raises(ValueError, match=r"expected version 11"):
         run_sampling(checkpoint=checkpoint, output_dir=tmp_path / "samples")
 
 
@@ -1547,4 +1547,4 @@ def test_sampling_builder_context_copies_params() -> None:
     )
     context.params["nested"]["value"] = 2
     assert raw == {"nested": {"value": 1}}
-    assert CHECKPOINT_FORMAT_VERSION == 10
+    assert CHECKPOINT_FORMAT_VERSION == 11

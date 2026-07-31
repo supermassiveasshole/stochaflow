@@ -175,6 +175,63 @@ loader 必须可重复迭代，不能是一份已经创建的 iterator。train �
 正数 `steps_per_epoch`；若有 `len()`，显式步数不能超过它。每个 epoch 开始时，核心会对
 train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoch)`。
 
+## Metrics
+
+| 符号 | 用途 |
+| --- | --- |
+| `MetricConfig` | 一条绑定到 train、validation 或 test phase 的 metric 声明 |
+| `MetricSpec` | 不含 phase 的 metric 构造与 channel binding |
+| `MetricUpdate` | Strategy 交给一个已声明 channel 的不透明 `args`/`kwargs` payload |
+| `MetricChannelProvider` | Strategy 可选实现的 channel 声明能力 |
+| `MetricEngine` | 一个隔离统计 scope 中的 metric 构造、update、compute 与 reset 生命周期 |
+| `MetricRuntimeError` | channel、update 或 compute 结果违反 runtime contract |
+| `MetricPayloadDetachable` | 自定义有状态 payload 容器的显式递归 detach 能力 |
+| `MetricOrigin` / `MetricDataRole` | source 的受限 origin 与 data-role 类型 |
+| `MetricSource` | 一个 canonical epoch result 的 origin、data role、protocol 与 selection metadata |
+| `EpochMetricSnapshot` | 数值与 `MetricSource` 一一对应的只读 epoch snapshot |
+| `TRAINING_METRIC_PHASES` | 配置可选的 `train`、`validation`、`test` phase 集合 |
+| `build_metric` | 从一个 `MetricSpec` 通过 metric Registry 构造实例 |
+| `detach_metric_update` / `detach_metric_updates` | 在进入 metric state 前切断 payload 中的 autograd graph |
+| `validate_metric_spec` / `validate_metric_configs` / `validate_metric_updates` | 不导入实现的纯声明与 update 校验 |
+| `validate_training_monitor_key` | 校验 phase/diagnostic canonical monitor key |
+
+`REGISTRIES.metrics` 只接受 `torchmetrics.Metric` 子类。Stochaflow 不解析任意
+`torchmetrics.*` class path，也不镜像上游 namespace；第三方 extension 应注册自己的
+稳定名称。当前内置集合只有：
+
+| Registry name | 稳定语义 |
+| --- | --- |
+| `mean` | scalar mean；固定 `nan_strategy="error"` |
+| `mse` | scalar mean squared error；固定 `squared=True`、`num_outputs=1` |
+| `mae` | scalar mean absolute error；固定 `num_outputs=1` |
+
+`mse` 和 `mae` 不提供 vector-valued `num_outputs>1` 模式。需要分类、按类别、结构化
+mapping 或其他任务 metric 时，extension 应注册一个明确的 `Metric` 实现，并通过
+Strategy 自己的 channel 提供所需 payload。
+
+phase metric 不解释 batch、prediction、target、label 或 sample weight。Strategy 用
+`MetricChannelProvider.metric_channels` 声明自己能产生的 channel，再把对应
+`MetricUpdate` 放入 `TrainStepOutput.metric_updates`。组合阶段会确认每条配置引用的
+channel 确实由该 Strategy 提供；运行时为每个配置 phase 构造独立 metric 实例，避免
+train、validation 与 test state 串扰。train metric 只提交成功 optimizer window 的
+updates；validation/test 则在成功 evaluation step 后提交。
+
+payload 中的 Tensor 会在 metric update 前 detach，并在 `torch.no_grad()` 下消费。
+普通 `dict`、`OrderedDict`、`MappingProxyType`、list、tuple、namedtuple 和安全 scalar
+leaf 受支持；其他持有 Tensor 的自定义容器必须实现
+`MetricPayloadDetachable.detach_metric_payload()`。核心不会反射 dataclass 或任意对象
+属性。
+
+`MetricEngine.compute()` 的 scalar 结果使用 `<id>`；flat mapping 结果使用
+`<id>/<subkey>`。训练 runtime 再添加 phase prefix：
+`train/metrics/...`、`valid/metrics/...` 或 `test/metrics/...`。一个完成 epoch 的
+`EpochMetricSnapshot` 保存相同 canonical key 及逐 key source metadata，供 logger、
+history、checkpoint 与 monitor 共用。
+
+`Metric` state 可以声明 TorchMetrics 的 reduction 与 synchronization policy，但当前
+Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trainer 尚未实现；不要把
+一个 extension metric 的 reduction 声明解读为 distributed training 支持。
+
 ## Training
 
 | 符号 | 用途 |
@@ -189,12 +246,18 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 | `DenoiserChannelLayout` | model 可选暴露的静态 `in_channels`/`out_channels` capability；Gaussian Builder 据此在组合时预检 fixed `C` 或 learned-range `2C` 输出 |
 | `DeviceTransferableBatch` | 自定义领域 batch 可选择实现的显式设备迁移 capability |
 | `ReferenceImageBatchSemantics` | Strategy 可选实现的 reference-metric image extraction capability |
-| `TrainStepOutput` | Strategy 返回的 scalar loss、metrics 与 diagnostics |
+| `TrainStepOutput` | Strategy 返回的 scalar loss、低成本 step report、diagnostics、metric channel updates 与 epoch loss reporting weight |
 | `MSEObjective` | 内置 task-neutral scalar MSE Objective |
 | `PerSampleObjective` | 可选的逐样本 loss capability |
 | `compute_objective` | 校验并执行 scalar Objective，同时读取可选逐样本 capability |
 | `TrainingDiagnostic` | training diagnostic 生命周期根契约 |
 | `DiagnosticBuildContext` | diagnostic 构建期 logger 和输出目录；采样 shape 由 diagnostic 私有配置拥有 |
+| `DiagnosticSourceProvider` | diagnostic 可选实现的 source role 与 protocol 声明能力 |
+| `DiagnosticSourceRequest` | 一个待 composition 验证的 source id、data role 与 JSON-safe protocol descriptor |
+| `VerifiedMetricSource` | composition 根据实际数据 provenance 绑定的 SHA-256 protocol identity 与 source metadata |
+| `BoundTrainingDiagnostic` | 一个 diagnostic、verified sources，以及仅限当前 fit 的实际 iterable 绑定 |
+| `DiagnosticResult` | 到期 diagnostic 为一个已绑定 source 返回的 canonical scalar metrics |
+| `bind_training_diagnostic` / `bind_training_diagnostics` | 在 Builder/factory 组合边界生成 verified source bindings |
 | `FitStartEvent` | fit 开始事件 |
 | `TrainBatchEndEvent` | 成功 optimizer step 后的事件 |
 | `TrainEpochEndEvent` | 一个 epoch 完成后的事件 |
@@ -226,6 +289,8 @@ class TrainStepOutput:
     loss: torch.Tensor
     metrics: Mapping[str, float | int | torch.Tensor] = ...
     diagnostics: Mapping[str, Any] = ...
+    metric_updates: Mapping[str, MetricUpdate] = ...
+    loss_aggregation_weight: float | int | torch.Tensor = 1.0
 
 
 class TrainingStrategy(ABC):
@@ -243,6 +308,12 @@ class DeviceTransferableBatch(Protocol):
 @runtime_checkable
 class ReferenceImageBatchSemantics(Protocol):
     def extract_reference_images(self, batch: Any) -> torch.Tensor: ...
+
+
+@runtime_checkable
+class MetricChannelProvider(Protocol):
+    @property
+    def metric_channels(self) -> frozenset[str]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,8 +367,67 @@ SamplingBuilder 以自己的窄 capability 检查。
 为 null 时 checkpoint 不支持 `stochaflow sample`；非 null 时 `name` 必须选择已注册
 SamplingBuilder，`contract` 只允许有限数字、字符串、布尔、null 和普通 list/dict，
 并应只保存由训练组合确定、不能安全覆盖的 inference 事实。step loss 必须是浮点 scalar
-Tensor，metric 必须是 scalar numeric value。所有 managed module 都参与声明的
+Tensor，`metrics` 中的低成本 report 必须是 scalar numeric value。
+`loss_aggregation_weight` 必须是有限、非负的 detached scalar，只控制 epoch loss 报告：
+它不会缩放 backward loss，也不会自动成为某个 Metric 的 sample weight。Metric 若需要
+权重，Strategy 必须把它显式放进对应 `MetricUpdate`。
+所有 managed module 都参与声明的
 device/mode、优化和 checkpoint 生命周期；EMA 只跟踪 primary model。
+
+## Diagnostic metric 与 provider 扩展边界
+
+`TrainingDiagnostic` 可以同时产出 artifact、外部运行观测以及候选 validation quality
+metric，但 callback 自己不能宣称一个结果可用于 checkpoint 选择。实现若会返回 epoch
+metric，应实现 `DiagnosticSourceProvider.metric_source_requests`；每个 request 明确
+source id、`train|validation|test|external` data role 和 JSON-safe protocol descriptor。
+Builder/factory 再把 resolved data config、实际 data artifact identity 和已选择插件
+provenance 纳入 SHA-256 digest，并把 request 的 train/validation role 绑定到本次运行
+实际创建的 iterable，生成 `VerifiedMetricSource`。稳定 digest 不包含 Python 对象
+identity；`BoundTrainingDiagnostic.source_iterables` 只用于当前进程的运行期核对，
+不会写入 checkpoint。`Trainer.fit()` 会在任何 diagnostic callback 或 loader 迭代前
+确认绑定对象正是本次传入的 train/validation iterable，因此 provider 不能只靠自报
+`data_role="validation"` 获得 selection 资格。
+
+声明非空 `metric_source_requests` 的 raw diagnostic 必须先经过
+`bind_training_diagnostic(s)`；Trainer 不会再用空 provenance 自动绑定。没有 metric
+source、只产生 artifact/日志的旧 diagnostic 仍可直接注入。当前
+`FitStartEvent` 不注入 test iterable，所以 training diagnostic binder 拒绝 test-role
+request；正式 test 结果属于冻结 subject 后的独立 Evaluation 生命周期。
+
+composition 只把 verified validation source 标记为 selection eligible；test 与 external
+source 永远不能控制 best checkpoint 或 early stopping。首版每个 diagnostic 最多有一个
+selection-eligible source，避免 cadence 与缺失值归属不清。callback 在到期 epoch 返回
+`tuple[DiagnosticResult, ...]`，未到期返回 `None`。一个空 `metrics` mapping 仍表示该
+source 已到期；它不是 cadence skip。
+
+每个结果 key 必须使用
+`diagnostics/<configured-diagnostic-id>/<metric...>`，`source_id` 必须存在于
+`BoundTrainingDiagnostic.sources`。Trainer 在 history 和 checkpoint 之前合并这些结果，
+并把 verified `MetricSource` 一起写入 epoch snapshot。未声明 source、重复 source、错误
+前缀、key collision 或 source/protocol mismatch 都会 fail closed。
+
+Gaussian quality pipeline 的 provider-level extension surface 也从
+`stochaflow.extensions` 导出：
+
+| Provider category | 基类与 context | 局部 Registry |
+| --- | --- | --- |
+| step scalar | `StepMetricProvider` / `StepMetricContext` | `DIAGNOSTIC_PROVIDERS.step_metrics` |
+| sampler scalar | `SamplerMetricProvider` / `SamplerMetricContext` | `DIAGNOSTIC_PROVIDERS.sampler_metrics` |
+| denoiser artifact | `DenoiserArtifactProvider` / `DenoiserArtifactContext` | `DIAGNOSTIC_PROVIDERS.denoiser_artifacts` |
+| sampler artifact | `SamplerArtifactProvider` / `SamplerArtifactContext` | `DIAGNOSTIC_PROVIDERS.sampler_artifacts` |
+| reference quality | `ReferenceMetricProvider` | `DIAGNOSTIC_PROVIDERS.reference_metrics` |
+
+`DiagnosticProviderCatalog` 是这五个局部 Registry 的 typed catalog；
+`ProviderSpec`、`ProviderPipelineConfig`、`ReferencePipelineConfig`、
+`DiagnosticCadenceConfig`、`DiagnosticSamplingConfig`、`SamplerProfileConfig` 和
+`TrajectoryProviderConfig` 是 Gaussian diagnostic 的公开配置值。
+
+这些 Registry 只扩展 Gaussian diagnostic 内部 pipeline，不是 framework-global Metric
+Registry，也不让 provider 直接选择 checkpoint。reference provider 的 `compute()` 结果
+由 diagnostic 的 verified validation source 承载；sampler statistics、延迟与 artifact
+仍属于 external observation。provider 模块必须来自已安装并通过
+`extensions.plugins` 选择的可信 distribution；完整插件 provenance 随 resolved config 和
+checkpoint 保存。
 
 ## Process 根契约
 
@@ -422,7 +552,7 @@ Builder 的 batches 不能为空，metadata key
 必须是字符串且整个 mapping 可 JSON 序列化。trajectory 的 step index 必须严格递增。
 Writer 返回值必须非空，跨 writer artifact key 必须唯一，所有路径在返回时必须存在。
 
-`stochaflow sample` 始终要求显式 v10 checkpoint。可选 request YAML 顶层只允许
+`stochaflow sample` 始终要求显式 v11 checkpoint。可选 request YAML 顶层只允许
 `sampling` 与 optional `extensions`，不能声明 `run_after_training` 或 Builder。
 未提供的 request 字段继承 checkpoint；`options` 浅合并，`sampler`/`writers` 原子替换，
 插件 selection 只允许 additive 扩展。

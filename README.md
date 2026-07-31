@@ -116,7 +116,7 @@ not require retraining.
 | Training | Unconditional and class-conditional Gaussian denoising; fixed or learned-range variance; constant or epsilon-only P2 simple-loss weighting; supervised training, mixed precision, gradient accumulation, EMA, and a single-optimizer automatic loop |
 | Probability process | Discrete variance-preserving Gaussian process with linear-beta and cosine-alpha-bar schedules, selected-pair marginal coefficients, and learned-range variance bounds |
 | Sampling | Full or uniformly respaced ancestral DDPM, DDIM, class allocation, classifier-free guidance, trajectory observation, and Tensor/PNG/GIF writers |
-| Runtime | Registry-based composition, explicit extension activation, checkpoint v10 strict resume, checkpoint-backed inference, local/TensorBoard/W&B logging, and training diagnostics |
+| Runtime | Registry-based composition, explicit extension activation, checkpoint v11 strict resume, checkpoint-backed inference, local/TensorBoard/W&B logging, and training diagnostics |
 | CLI | `stochaflow init`, `stochaflow train`, and `stochaflow sample` |
 
 The built-in `super_resolution` capability covers paired data and degradation
@@ -191,12 +191,11 @@ incompatible topology and are intentionally not presented as current AFHQ
 results; the corrected production model does not yet have a published
 long-training quality result.
 
-Separately, every newly built Gaussian checkpoint now freezes
-`variance.mode`—including `fixed`—beside `prediction_type`. A pre-change v10
-Gaussian checkpoint whose inference recipe lacks `variance` can therefore be
-rejected by strict resume even for a non-ADM model; sampling keeps the
-fixed-compatible default unless a separate model/state incompatibility exists.
-The framework does not patch the saved training recipe.
+Separately, every newly built Gaussian checkpoint freezes
+`variance.mode`—including `fixed`—beside `prediction_type`. Current v11
+checkpoints also persist the complete metric-monitor policy and
+observation-based patience state. Pre-change v10 checkpoints are not migrated;
+the framework does not patch their saved training recipe.
 
 The repository includes:
 
@@ -303,7 +302,7 @@ examples/built-in/image-generation/configs/
 The MNIST train config contains one training recipe. The two sample files are
 checkpoint-backed profiles with the current top-level `sampling:` request
 envelope; they choose request-time solver, output, and writer settings without
-selecting an internal SamplingBuilder. Current checkpoint v10 remains
+selecting an internal SamplingBuilder. Current checkpoint v11 remains
 authoritative for the fixed inference recipe.
 
 Strict resume restores the saved configuration and full training state:
@@ -324,7 +323,7 @@ uv run stochaflow train \
     examples/built-in/image-generation/configs/overlays/mnist-observability.yaml
 ```
 
-Only checkpoint format v10 is currently accepted; older formats are not
+Only checkpoint format v11 is currently accepted; older formats are not
 migrated. Strict resume guarantees only the state explicitly owned by the
 framework and does not promise cross-device or cross-version bitwise equality.
 See the [configuration handbook](docs/configuration/index.md) and

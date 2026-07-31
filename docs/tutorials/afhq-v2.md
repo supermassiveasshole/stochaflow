@@ -350,13 +350,12 @@ production diagnostic `class_conditional_diffusion_quality`：
 这些结果是训练监控，不是正式 post-training dataset metric。`reference.enabled: false`
 明确禁用不具备 class-aware protocol 的 reference metric。
 
-checkpoint v10 保存完整 managed training state、precision/scaler topology、resolved
+checkpoint v11 保存完整 managed training state、precision/scaler topology、resolved
 config、data binding、epoch-boundary RNG，以及 TrainingBuilder 固化的
 `class_conditional_denoising` inference recipe。它把 `v` prediction 固定在 contract
-中，并显式冻结 `variance: {mode: fixed}`；独立 request 不能覆盖。变更前缺少
-`variance` contract 的 v10 Gaussian checkpoint 会因 recipe equality 被 strict resume
-拒绝，但 non-ADM sampling 仍保留 fixed-compatible default；不会自动补写 checkpoint。
-旧 ADM sampling 另因 state/topology 不兼容而失败。production 每 5 epochs 写
+中，并显式冻结 `variance: {mode: fixed}`；独立 request 不能覆盖。v10 及更早
+checkpoint 不会自动补写或迁移；旧 ADM checkpoint 还另有 state/topology
+不兼容。production 每 5 epochs 写
 `epoch_*.pt`，每 epoch 更新 `latest.pt`，并维护 `best.pt`。
 
 strict resume：

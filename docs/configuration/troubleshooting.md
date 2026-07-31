@@ -306,7 +306,7 @@ KID 不使用这条 fallback，仍保留配置的 runtime device。CPU transfer 
 
 ### `sample` 拒绝完整 config 或缺少 checkpoint
 
-v10 `sample` 必须显式提供 `--checkpoint`。可选 `--config` 是 partial sample request，
+v11 `sample` 必须显式提供 `--checkpoint`。可选 `--config` 是 partial sample request，
 不是另一份完整实验配置；顶层只能包含 `sampling` 与 optional `extensions`。model、
 Process、TrainingBuilder 和内部 SamplingBuilder 都由 checkpoint config/recipe 决定。
 
@@ -317,7 +317,7 @@ Process、TrainingBuilder 和内部 SamplingBuilder 都由 checkpoint config/rec
 
 ### sample request 无法覆盖某个 option
 
-checkpoint v10 的 `inference_recipe.contract` 固定训练时语义。request 的
+checkpoint v11 的 `inference_recipe.contract` 固定训练时语义。request 的
 `sampling.options` 若使用同名 key 会失败；例如 Gaussian recipe 已固定
 `prediction_type`，不能把 epsilon checkpoint 当作 v-prediction 使用。
 `sampling.options.sampler` 也始终非法，应把可替换求解器声明放在
@@ -383,9 +383,10 @@ Tensor 只声明 `tensor` writer，或注册领域 writer。
 
 ### `checkpoint format version ... is unsupported`
 
-当前 checkpoint writer/runtime 只支持 v10。它保存 primary model、可选
+当前 checkpoint writer/runtime 只支持 v11。它保存 primary model、可选
 Process/Objective、可选 EMA model、带 concrete class identity 的 optimizer/scheduler、
-按稳定名称组织的 training assets，以及始终存在的 `inference_recipe` 字段。v8/v9
+按稳定名称组织的 training assets、metric monitor policy，以及始终存在的
+`inference_recipe` 字段。v10 及更早
 不读取、不补写 recipe，也不能 strict resume 或用于 `sample`；请使用新 schema 启动
 fresh run。
 
@@ -409,7 +410,7 @@ partial-noised initial state 使用 public state time `t` 时，显式 DDIM sche
 
 ### checkpoint state 不是 weights-only 安全值
 
-当前 v10 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor
+当前 v11 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor
 subclass 和其他 `torch.load(..., weights_only=True)` 默认值域之外的对象。自定义
 module、optimizer 或 scheduler 的 extra state 应转换为 Tensor、primitive、
 list/tuple/dict 等普通 container；不要添加 `safe_globals` 或依赖导入 extension class

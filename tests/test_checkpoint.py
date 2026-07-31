@@ -373,7 +373,7 @@ def _inference_asset_descriptors() -> dict[str, InferenceAssetDescriptor]:
     }
 
 
-def test_v10_checkpoint_always_records_header_recipe_and_plugin_metadata() -> None:
+def test_v11_checkpoint_always_records_header_recipe_and_plugin_metadata() -> None:
     manager = CheckpointManager(nn.Linear(1, 1))
 
     default_state = manager.build_state()
@@ -391,7 +391,7 @@ def test_v10_checkpoint_always_records_header_recipe_and_plugin_metadata() -> No
         }
     )
 
-    assert CHECKPOINT_FORMAT_VERSION == 10
+    assert CHECKPOINT_FORMAT_VERSION == 11
     assert default_state.get("precision_kind") == "fp32"
     assert default_state.get("inference_asset_descriptors") == {}
     assert "inference_recipe" in default_state
@@ -419,7 +419,7 @@ def test_v10_checkpoint_always_records_header_recipe_and_plugin_metadata() -> No
         assert rng_state["torch_mps"] is None
 
 
-def test_v10_checkpoint_round_trips_inference_recipe(tmp_path: Path) -> None:
+def test_v11_checkpoint_round_trips_inference_recipe(tmp_path: Path) -> None:
     recipe = SamplingRecipe(
         name="project.generate",
         contract={
@@ -446,7 +446,7 @@ def test_v10_checkpoint_round_trips_inference_recipe(tmp_path: Path) -> None:
     ).restore_payload(payload, path=checkpoint)
 
 
-def test_v10_checkpoint_rejects_non_json_recipe_contract_tuple(
+def test_v11_checkpoint_rejects_non_json_recipe_contract_tuple(
     tmp_path: Path,
 ) -> None:
     payload = CheckpointManager(nn.Linear(1, 1)).build_state()
@@ -957,7 +957,7 @@ def test_inference_asset_descriptor_topology_mismatch_is_atomic(
     "missing_field",
     ["precision_kind", "inference_asset_descriptors", "inference_recipe"],
 )
-def test_v10_header_rejects_missing_required_fields(
+def test_v11_header_rejects_missing_required_fields(
     missing_field: str,
 ) -> None:
     manager = CheckpointManager(nn.Linear(1, 1))
@@ -965,7 +965,7 @@ def test_v10_header_rejects_missing_required_fields(
     state.pop(missing_field)
 
     with pytest.raises((TypeError, ValueError), match=missing_field):
-        manager.restore_payload(state, path="missing-v10-field.pt")
+        manager.restore_payload(state, path="missing-v11-field.pt")
 
 
 @pytest.mark.parametrize(
@@ -1819,11 +1819,11 @@ def test_legacy_v8_checkpoint_is_not_migrated(tmp_path: Path) -> None:
     checkpoint = tmp_path / "legacy-v8.pt"
     torch.save(legacy, checkpoint)
 
-    with pytest.raises(ValueError, match="expected version 10"):
+    with pytest.raises(ValueError, match="expected version 11"):
         CheckpointManager.load_payload(checkpoint)
 
 
-def test_native_v10_tied_ema_does_not_infer_aliases_from_equal_values() -> None:
+def test_native_v11_tied_ema_does_not_infer_aliases_from_equal_values() -> None:
     source_model = FixtureTiedStateModule()
     source_model.first.weight.data.fill_(2.0)
     source_ema = ExponentialMovingAverage(source_model)
@@ -1837,11 +1837,11 @@ def test_native_v10_tied_ema_does_not_infer_aliases_from_equal_values() -> None:
     )
 
     with pytest.raises(ValueError, match=r"second\.weight.*EMA state"):
-        CheckpointManager.save_payload(state, "native-v10-tied-invalid.pt")
+        CheckpointManager.save_payload(state, "native-v11-tied-invalid.pt")
 
 
 @pytest.mark.parametrize("missing_field", ["ema_state_dict", "ema_model_state_dict"])
-def test_shared_v10_header_rejects_incomplete_ema_topology_on_save_and_load(
+def test_shared_v11_header_rejects_incomplete_ema_topology_on_save_and_load(
     tmp_path: Path,
     missing_field: str,
 ) -> None:
@@ -1860,7 +1860,7 @@ def test_shared_v10_header_rejects_incomplete_ema_topology_on_save_and_load(
         CheckpointManager.load_payload(destination)
 
 
-def test_shared_v10_header_rejects_malformed_ema_and_projection(
+def test_shared_v11_header_rejects_malformed_ema_and_projection(
     tmp_path: Path,
 ) -> None:
     model = nn.Linear(1, 1)
@@ -1917,7 +1917,7 @@ def test_legacy_v9_checkpoint_is_not_migrated(tmp_path: Path) -> None:
     checkpoint = tmp_path / "legacy-v9.pt"
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="expected version 10"):
+    with pytest.raises(ValueError, match="expected version 11"):
         CheckpointManager.load_payload(checkpoint)
 
 
@@ -1937,7 +1937,7 @@ def test_v8_is_rejected_regardless_of_newer_payload_fields(
     legacy = _legacy_v8_payload(manager)
     legacy[field_name] = {} if field_name.endswith(("dict", "descriptors")) else "fp32"
 
-    with pytest.raises(ValueError, match="expected version 10"):
+    with pytest.raises(ValueError, match="expected version 11"):
         manager.restore_payload(legacy, path="smuggled-v8.pt")
 
 
@@ -1957,7 +1957,7 @@ def test_v8_rejects_smuggled_trainer_precision_fields(
         "fp32" if field_name == "precision" else 1
     )
 
-    with pytest.raises(ValueError, match="expected version 10"):
+    with pytest.raises(ValueError, match="expected version 11"):
         manager.restore_payload(legacy, path="smuggled-config-v8.pt")
 
 
@@ -1970,7 +1970,7 @@ def test_v8_cannot_resume_into_fp16_runtime() -> None:
     target_model = nn.Linear(1, 1)
     original_weight = target_model.weight.detach().clone()
 
-    with pytest.raises(ValueError, match="expected version 10"):
+    with pytest.raises(ValueError, match="expected version 11"):
         CheckpointManager(
             target_model,
             precision_kind="fp16-mixed",
@@ -1983,7 +1983,7 @@ def test_writer_rejects_legacy_v8_payload(tmp_path: Path) -> None:
     legacy = _legacy_v8_payload(CheckpointManager(nn.Linear(1, 1)))
     destination = tmp_path / "legacy.pt"
 
-    with pytest.raises(ValueError, match="writer requires format version 10"):
+    with pytest.raises(ValueError, match="writer requires format version 11"):
         CheckpointManager.save_payload(legacy, destination)
 
     assert not destination.exists()
@@ -2012,7 +2012,7 @@ def test_restore_payload_rejects_v7_and_missing_plugin_metadata(
     manager = CheckpointManager(nn.Linear(1, 1))
     v7 = manager.build_state()
     v7["format_version"] = 7
-    with pytest.raises(ValueError, match=r"version 7.*expected version 10"):
+    with pytest.raises(ValueError, match=r"version 7.*expected version 11"):
         manager.restore_payload(v7, path=tmp_path / "v7.pt")
 
     missing_plugins = manager.build_state()
@@ -2035,7 +2035,7 @@ def test_restore_payload_rejects_legacy_v8_rng_state_without_mps(
     assert rng_state is not None
     rng_state.pop("torch_mps")
 
-    with pytest.raises(ValueError, match="expected version 10"):
+    with pytest.raises(ValueError, match="expected version 11"):
         manager.restore_payload(
             legacy_v8,
             path=tmp_path / "legacy-v8.pt",

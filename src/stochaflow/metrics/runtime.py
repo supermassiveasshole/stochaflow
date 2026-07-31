@@ -130,10 +130,17 @@ class MetricEngine:
             for channel, metric_ids in self._channels.items():
                 update = detach_metric_update(validated[channel])
                 for metric_id in metric_ids:
-                    self._metrics[metric_id].update(
-                        *update.args,
-                        **update.kwargs,
-                    )
+                    try:
+                        self._metrics[metric_id].update(
+                            *update.args,
+                            **update.kwargs,
+                        )
+                    except Exception as error:
+                        self.reset()
+                        raise MetricRuntimeError(
+                            f"metric {metric_id!r} update failed for "
+                            f"channel {channel!r}"
+                        ) from error
         self._successful_updates += 1
 
     def compute(self, *, reset: bool = False) -> dict[str, float]:

@@ -554,7 +554,7 @@ diagnostic 构造参数；logger 与 output_dir 由运行时注入；需要采�
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{accumulate_grad_batches: 1, device: cpu, early_stopping: {enabled: false, min_delta: 0.0, mode: min, monitor: valid/loss, patience: 10}, max_grad_norm: null, num_epochs: 1, precision: fp32, show_progress: true}`
+- 默认值：`{accumulate_grad_batches: 1, device: cpu, early_stopping: {enabled: false, min_delta: 0.0, missing: error, mode: min, monitor: valid/loss, patience: 10}, max_grad_norm: null, num_epochs: 1, precision: fp32, show_progress: true}`
 
 (config-field-path-trainer-num-epochs)=
 ### `trainer.num_epochs`
@@ -624,7 +624,7 @@ Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{enabled: false, min_delta: 0.0, mode: min, monitor: valid/loss, patience: 10}`
+- 默认值：`{enabled: false, min_delta: 0.0, missing: error, mode: min, monitor: valid/loss, patience: 10}`
 
 (config-field-path-trainer-early-stopping-enabled)=
 ### `trainer.early_stopping.enabled`
@@ -638,12 +638,12 @@ Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。
 (config-field-path-trainer-early-stopping-monitor)=
 ### `trainer.early_stopping.monitor`
 
-需要监控的 canonical epoch 指标，例如 valid/loss、train/loss 或 valid/metrics/prediction_mae。
+需要监控的 canonical epoch 指标，例如 valid/loss、valid/metrics/prediction_mae 或 diagnostics/diffusion_quality/samplers/ddim_50/fid。
 
 - 类型：`str`
 - 必填：否
 - 默认值：`valid/loss`
-- 约束：接受 train/valid loss 或 phase metric（可带一个 flat subkey）；拒绝 step、system、test、diagnostic namespace、周围空白与旧别名。
+- 约束：接受 train/valid/test phase key 或 diagnostics/<diagnostic-id>/...；system、step、周围空白和旧别名被拒绝，test-role 指标随后在 selection 语义检查中被拒绝。
 
 (config-field-path-trainer-early-stopping-mode)=
 ### `trainer.early_stopping.mode`
@@ -655,10 +655,20 @@ min 表示越小越好，max 表示越大越好。
 - 默认值：`min`
 - 约束：min 或 max。
 
+(config-field-path-trainer-early-stopping-missing)=
+### `trainer.early_stopping.missing`
+
+monitor 缺席时的策略；error 立即失败，skip 仅用于尚未到 cadence 的 diagnostic metric。
+
+- 类型：`str`
+- 必填：否
+- 默认值：`error`
+- 约束：error 或 skip；skip 仅允许 diagnostics/... monitor，已到 cadence 但未返回值仍失败。
+
 (config-field-path-trainer-early-stopping-patience)=
 ### `trainer.early_stopping.patience`
 
-指标无足够改善时容忍的 epoch 数。
+指标无足够改善时容忍的有效 observation 数；低频 diagnostic 未到 cadence 的 epoch 不计数。
 
 - 类型：`int`
 - 必填：否

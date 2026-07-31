@@ -297,7 +297,7 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
   --artifact-verification-workers 8
 ```
 
-checkpoint v10 严格恢复 model、Process、Objective、optimizer、scheduler、EMA、
+checkpoint v11 严格恢复 model、Process、Objective、optimizer、scheduler、EMA、
 precision/scaler topology、global step、epoch-boundary RNG、训练循环状态和 data
 artifact identity。恢复前会用 `require/full` 重新验证同一个 prepared artifact；source、
 materialization、manifest 或内容 identity 不一致时，在恢复训练资产前失败。运行时
@@ -307,9 +307,8 @@ validation policy 不进入 artifact identity，而由 checkpoint 的 resolved c
 `--artifact-verification-workers` 仅覆盖本次启动。
 
 当前 Gaussian inference recipe 还显式冻结 `variance.mode`（production 为 `fixed`）。
-变更前缺少该字段的 v10 Gaussian checkpoint 会被 strict resume 拒绝，框架不会补写；
-non-ADM sampling 仍采用 fixed-compatible default。旧 ADM checkpoint 还另外存在完整
-topology/state 不兼容，因此 sampling 也会失败。
+v10 及更早 checkpoint 会被 strict resume 拒绝，框架不会补写或迁移；旧 ADM
+checkpoint 还另外存在完整 topology/state 不兼容，因此 sampling 也会失败。
 
 resume 创建新的 sibling run，不续写旧日志。它不能通过 config 替换 model、optimizer、
 precision 或 accumulation。`--observability-config` 只用于允许的 diagnostics/logging

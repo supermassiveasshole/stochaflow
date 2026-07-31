@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torchmetrics import Metric
 
-from stochaflow.metrics import MetricConfig
+from stochaflow.metrics import MetricConfig, MetricUpdate
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.training import (
     GaussianDenoisingTrainingStrategy,
@@ -120,9 +120,46 @@ class MappingMeanAbsoluteErrorMetric(Metric):
         return {"mae": mean, "twice": mean * 2.0}
 
 
+class BinaryAccuracyMetric(Metric):
+    """Compute binary accuracy for a custom higher-is-better metric."""
+
+    correct: torch.Tensor
+    total: torch.Tensor
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_state(
+            "correct",
+            default=torch.tensor(0),
+            dist_reduce_fx="sum",
+        )
+        self.add_state(
+            "total",
+            default=torch.tensor(0),
+            dist_reduce_fx="sum",
+        )
+
+    def update(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> None:
+        predicted_class = prediction >= 0.5
+        target_class = target >= 0.5
+        self.correct += (predicted_class == target_class).sum()
+        self.total += target.numel()
+
+    def compute(self) -> torch.Tensor:
+        return self.correct.float() / self.total
+
+
 REGISTRIES.metrics.add(
     "test.training_mapping_mae",
     MappingMeanAbsoluteErrorMetric,
+)
+REGISTRIES.metrics.add(
+    "test.training_binary_accuracy",
+    BinaryAccuracyMetric,
 )
 
 
@@ -158,6 +195,22 @@ class IncreasingTargetLoader:
             torch.tensor([[0.0]]),
             torch.tensor([[float(self.iterations)]]),
         )
+
+
+class ImprovingAccuracyLoader:
+    """Yield incorrect labels first and correct labels on the next epoch."""
+
+    def __init__(self) -> None:
+        self.iterations = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        targets = (
+            torch.tensor([[1.0], [0.0]])
+            if self.iterations == 1
+            else torch.tensor([[0.0], [1.0]])
+        )
+        yield torch.tensor([[0.0], [1.0]]), targets
 
 
 class IterationCountingLoader:
@@ -465,6 +518,33 @@ def test_best_checkpoint_supports_max_mode_phase_metric(tmp_path) -> None:
     assert trainer.best_metric_value == pytest.approx(2.0)
 
 
+def test_best_checkpoint_supports_max_mode_custom_accuracy(tmp_path) -> None:
+    trainer, _ = build_metric_trainer(
+        tmp_path,
+        declarations=[
+            MetricConfig(
+                id="binary_accuracy",
+                name="test.training_binary_accuracy",
+                channel="supervised.prediction_target",
+                phases=["validation"],
+            )
+        ],
+    )
+
+    trainer.fit(
+        [(torch.tensor([[0.0]]), torch.tensor([[0.0]]))],
+        num_epochs=2,
+        validation_dataloader=ImprovingAccuracyLoader(),
+        show_progress=False,
+        early_stopping_monitor="valid/metrics/binary_accuracy",
+        early_stopping_mode="max",
+        track_best=True,
+    )
+
+    assert trainer.best_epoch == 2
+    assert trainer.best_metric_value == pytest.approx(1.0)
+
+
 def test_non_finite_phase_metric_fails_closed_when_monitored(tmp_path) -> None:
     trainer, _ = build_metric_trainer(
         tmp_path,
@@ -697,6 +777,29 @@ def test_metric_runtime_reports_ids_by_phase(tmp_path) -> None:
     assert not runtime.has_metric("validation", "missing")
 
 
+def test_metric_runtime_moves_every_phase_engine_and_preserves_state() -> None:
+    model = ScalarRegressor()
+    strategy = SupervisedTrainingStrategy(model, nn.MSELoss())
+    runtime = TrainingMetricRuntime(
+        metric_declarations(),
+        strategy,
+        device="cpu",
+    )
+    runtime.update_phase(
+        "train",
+        {
+            "supervised.prediction_target": MetricUpdate(
+                args=(torch.tensor([3.0]), torch.tensor([1.0])),
+            )
+        },
+    )
+
+    assert runtime.to(torch.device("cpu")) is runtime
+    assert runtime.compute_phase("train") == {
+        "train/metrics/prediction_mae": pytest.approx(2.0)
+    }
+
+
 def test_unknown_metric_monitor_fails_before_loader_iteration(tmp_path) -> None:
     trainer, _ = build_metric_trainer(
         tmp_path,
@@ -866,7 +969,7 @@ def test_test_phase_monitor_is_rejected_before_training(tmp_path) -> None:
         declarations=metric_declarations(),
     )
 
-    with pytest.raises(ValueError, match="canonical epoch metric key"):
+    with pytest.raises(ValueError, match="test metrics cannot be used"):
         trainer.fit(
             [(torch.tensor([[0.0]]), torch.tensor([[1.0]]))],
             num_epochs=1,

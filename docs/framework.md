@@ -17,7 +17,7 @@ Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它
 | 概率过程 | 离散 VP Gaussian Process、linear/cosine schedule、selected-pair coefficients 与 learned-range bounds | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
 | 采样 | full/respaced ancestral DDPM、DDIM、class-conditional CFG、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
 | 输出 | Tensor、PNG、trajectory grid/GIF | `SamplingArtifactWriter` 可输出 NetCDF、Zarr 等领域格式 |
-| 生命周期 | EMA、checkpoint v10、strict resume、checkpoint-bound inference、diagnostic、Rich/TensorBoard/W&B 日志 | 注册 Objective、diagnostic 和 logger |
+| 生命周期 | EMA、checkpoint v11、strict resume、checkpoint-bound inference、diagnostic、Rich/TensorBoard/W&B 日志 | 注册 Objective、diagnostic 和 logger |
 | 项目扩展 | `stochaflow init`、Python packaging entry point、插件 provenance | 普通可安装 Python distribution；不绑定 `uv` 或固定仓库布局 |
 
 内置 `super_resolution` 只负责数据配对和退化，不自动提供条件模型或训练/采样策略。
@@ -271,7 +271,7 @@ primary model；Process、Objective 与 auxiliary modules 只保存 raw state。
 `accumulate_grad_batches`。autocast、GradScaler、unscale/clip/step 顺序和 partial-window
 flush 都属于 Trainer/PrecisionRuntime，不散落在 Strategy 中。scheduler、EMA、global
 step 和 update-level diagnostics 只在 optimizer step 成功后推进。precision 与
-accumulation 会进入 checkpoint v10 的 strict resume 边界，不能用 observability config
+accumulation 会进入 checkpoint v11 的 strict resume 边界，不能用 observability config
 改写。
 
 冻结 teacher 蒸馏仍属于这套边界：Builder 加载并冻结 teacher，Strategy 组合
@@ -285,7 +285,7 @@ Registry。
 ## Checkpoint inference 与采样组合边界
 
 `stochaflow sample` 表示 checkpoint-backed inference，而不只表示随机图像生成。生成、
-重建和 prediction 都通过同一 operation 解析 v10 checkpoint 中的 `inference_recipe`；
+重建和 prediction 都通过同一 operation 解析 v11 checkpoint 中的 `inference_recipe`；
 recipe 为 null 的 checkpoint 不支持该 operation。外部 sample request 只能调整
 checkpoint 已公开的 sampler、options、shape、数量、batch、seed 和 writers，不能重新
 选择内部 SamplingBuilder 或覆盖 fixed contract。
@@ -330,7 +330,7 @@ writer 才开始工作。它适合有界离线采样，但不是 streaming contr
 | --- | --- | --- |
 | 新训练 | `train --config` 指向的完整 YAML | 文档化的训练 CLI runtime options |
 | Strict resume | checkpoint 内保存的完整 config | device/output/epoch/limit 等明确 runtime options |
-| Checkpoint inference | 显式 v10 checkpoint 的 config、state 与 `inference_recipe` | 可选 partial sample request；device/output 等 sampling CLI runtime options |
+| Checkpoint inference | 显式 v11 checkpoint 的 config、state 与 `inference_recipe` | 可选 partial sample request；device/output 等 sampling CLI runtime options |
 
 checkpoint 保存 resolved config、managed state、inference asset descriptors 和 fixed
 inference recipe，但不冻结

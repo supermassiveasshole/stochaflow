@@ -21,6 +21,7 @@ CLI 安装在同一 Python environment。Stochaflow 不扫描源码目录、工�
 | `sampling_builders` | `SamplingBuilder` 类 | `TrainingPlan.inference_recipe.name` 固化进 checkpoint；sample request 不直接选择 |
 | `training_builders` | `TrainingBuilder` 类 | `training.name` |
 | `objectives` | `torch.nn.Module` 类 | `objective.name` |
+| `metrics` | `torchmetrics.Metric` 类 | `metrics[].name` |
 | `optimizers` | 第三方 `torch.optim.Optimizer` 子类 | `optimizer.name` |
 | `lr_schedulers` | Stochaflow 自有或第三方 `LRScheduler` 子类 | `lr_scheduler.name` |
 | `loggers` | `ExperimentLogger` 类 | `logging.backends[].name` |
@@ -170,7 +171,7 @@ loggers 和 diagnostics。这个摘要保留显式 `null` 与列表顺序，但�
 ownership 推断或 compatibility 判断；checkpoint 中的完整 config 与 runtime state
 仍是恢复权威。
 
-当前 checkpoint v10 使用 `torch.load(..., weights_only=True)`，payload 只允许
+当前 checkpoint v11 使用 `torch.load(..., weights_only=True)`，payload 只允许
 Tensor、primitive 和普通 container，且不读取旧格式。扩展组件的 `state_dict`、
 extra state 与 `SamplingRecipe.contract` 也必须编码为受支持的数据类型；不能要求
 `safe_globals`、保存自定义 class instance 或 custom Tensor subclass。这个约束让 runtime
@@ -515,7 +516,8 @@ class DirectTransformBuilder(SamplingBuilder):
 训练侧的注册入口是 `TrainingBuilder`，而不是 Strategy。Builder 接收核心预先构建的
 primary model、可选 Process/Objective 和辅助 factory，返回完成依赖注入的
 `TrainingPlan`。`TrainingStrategy` 只是普通训练计算对象：解释 structured batch、调用
-注入的模型和 Objective，并返回 `TrainStepOutput(loss, metrics, diagnostics)`。
+注入的模型和 Objective，并返回包含 loss、低成本 step report、diagnostics 和可选
+metric channel updates 的 `TrainStepOutput`。
 Strategy 没有统一的构造参数 schema；每个 Builder 可以直接向它注入该任务需要的模型、
 Objective、Process capability 或 callable。统一的是 step 的输入输出和职责边界，而不是
 把所有训练任务压进一个包含大量可选字段的 Strategy context。
@@ -578,6 +580,136 @@ EMA 只跟踪 primary model，Process、Objective 和 auxiliary modules 始终�
 这个片段是普通 paired regression，不是 diffusion super-resolution。Gaussian 条件超分
 还必须由 Strategy 采样 marginal、构造 prediction target 并把 LR condition 传给模型；
 完整组合见[条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md)。
+
+### 自定义 Metric 与 Strategy channel
+
+metric 的注册入口是 `REGISTRIES.metrics`，注册类必须继承 `torchmetrics.Metric`。metric
+只拥有统计 state 和 `update()`/`compute()`；Strategy 拥有 batch 与模型输出语义，并通过
+一个有文档的 channel 把 payload 交给 metric。核心不按 `preds`、`target`、label 或 batch
+类型猜参数。
+
+下面的 Strategy 声明一个任务私有的 class prediction channel。`metrics` 仍是低成本
+step report；进入跨 batch state 的值必须放在 `metric_updates`：
+
+```python
+from stochaflow.extensions import (
+    MetricUpdate,
+    TrainStepOutput,
+    TrainingStrategy,
+)
+
+
+class ClassifierStrategy(TrainingStrategy):
+    def __init__(self, model, objective):
+        self.model = model
+        self.objective = objective
+
+    @property
+    def metric_channels(self) -> frozenset[str]:
+        return frozenset({"class-eval.prediction_target"})
+
+    def training_step(self, batch):
+        inputs, targets = batch
+        logits = self.model(inputs)
+        loss = self.objective(logits, targets)
+        return TrainStepOutput(
+            loss=loss,
+            metric_updates={
+                "class-eval.prediction_target": MetricUpdate(
+                    args=(logits, targets),
+                )
+            },
+            loss_aggregation_weight=targets.numel(),
+        )
+```
+
+插件的注册模块再给一个 `Metric` 子类稳定命名：
+
+```python
+import torch
+from torchmetrics import Metric
+
+from stochaflow.extensions import REGISTRIES
+
+
+@REGISTRIES.metrics.register("class-eval.per-class-recall")
+class PerClassRecallMetric(Metric):
+    def __init__(self, *, num_classes: int):
+        super().__init__(dist_sync_on_step=False, sync_on_compute=True)
+        self.num_classes = num_classes
+        self.add_state(
+            "correct",
+            default=torch.zeros(num_classes, dtype=torch.long),
+            dist_reduce_fx="sum",
+        )
+        self.add_state(
+            "total",
+            default=torch.zeros(num_classes, dtype=torch.long),
+            dist_reduce_fx="sum",
+        )
+
+    def update(self, logits, targets):
+        predictions = logits.argmax(dim=1)
+        self.total += torch.bincount(targets, minlength=self.num_classes)
+        matched = targets[predictions == targets]
+        self.correct += torch.bincount(
+            matched,
+            minlength=self.num_classes,
+        )
+
+    def compute(self):
+        observed = self.total > 0
+        values = self.correct.float() / self.total.clamp_min(1)
+        return {
+            **{
+                f"class_{index}": values[index]
+                for index in range(self.num_classes)
+            },
+            "macro": values[observed].mean(),
+        }
+```
+
+这个例子把每个 state 的 reduction 明确声明为 `sum`，但这不代表 Stochaflow Trainer
+支持 distributed execution；当前只承诺单进程训练。实际实现还应在构造、update 和
+compute 边界验证 shape、dtype、class 范围，以及 validation 是否覆盖预期类别。完整、
+带防御性校验的版本见[按类别验证与自定义 Metric](../tutorials/class-metrics.md)。
+
+配置把 Registry name、channel 和 phase 绑定在一起：
+
+```yaml
+extensions:
+  plugins: [class-eval]
+
+metrics:
+  - id: class_recall
+    name: class-eval.per-class-recall
+    channel: class-eval.prediction_target
+    phases: [validation, test]
+    params:
+      num_classes: 4
+
+trainer:
+  early_stopping:
+    enabled: true
+    monitor: valid/metrics/class_recall/macro
+    mode: max
+    missing: error
+    patience: 8
+    min_delta: 0.001
+```
+
+每个 phase 获得独立 metric 实例。结果 key 是
+`valid/metrics/class_recall/class_0` 到 `class_3` 以及
+`valid/metrics/class_recall/macro`；test 使用 `test/...`，且不能用于 best checkpoint
+或 early stopping。`mse`、`mae` 和 `mean` 是仅有的内置 metric 名称，其中 MSE/MAE
+固定为单输出 scalar；不要把任意 TorchMetrics class path 写入 `name`。
+
+插件 entry-point name、distribution、version 与 target 会进入 resolved config/run
+manifest/checkpoint provenance；metric declaration 与 channel 也保存在完整 resolved
+config 中。checkpoint 不保存 Python class/source 或 Metric runtime state，只保存完成
+epoch 的 canonical scalar snapshot 与 source metadata。strict resume 因而要求同一插件
+identity/version policy 和同一 metric/Strategy 配置，但仍需由项目 lockfile 固定
+TorchMetrics 及其他依赖。
 
 ### Frozen-teacher 蒸馏
 

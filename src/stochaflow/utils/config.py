@@ -108,11 +108,12 @@ class EMAConfig:
 
 @dataclass(slots=True)
 class EarlyStoppingConfig:
-    """Validation-based early stopping policy."""
+    """Epoch-metric selection and early-stopping policy."""
 
     enabled: bool = False
     monitor: str = "valid/loss"
     mode: str = "min"
+    missing: str = "error"
     patience: int = 10
     min_delta: float = 0.0
 
@@ -278,6 +279,10 @@ class StochaflowConfig:
             raise ConfigError("trainer.max_grad_norm must be positive when provided")
         if self.trainer.early_stopping.mode not in {"min", "max"}:
             raise ConfigError("trainer.early_stopping.mode must be 'min' or 'max'")
+        if self.trainer.early_stopping.missing not in {"error", "skip"}:
+            raise ConfigError(
+                "trainer.early_stopping.missing must be 'error' or 'skip'"
+            )
         try:
             validate_training_monitor_key(
                 self.trainer.early_stopping.monitor,
@@ -285,6 +290,16 @@ class StochaflowConfig:
             )
         except (TypeError, ValueError) as exc:
             raise ConfigError(str(exc)) from exc
+        if (
+            self.trainer.early_stopping.missing == "skip"
+            and not self.trainer.early_stopping.monitor.startswith(
+                "diagnostics/"
+            )
+        ):
+            raise ConfigError(
+                "trainer.early_stopping.missing='skip' is only supported for "
+                "diagnostic metrics"
+            )
         if self.trainer.early_stopping.patience <= 0:
             raise ConfigError("trainer.early_stopping.patience must be positive")
         if self.trainer.early_stopping.min_delta < 0:

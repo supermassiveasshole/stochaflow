@@ -1,10 +1,11 @@
 # Metrics 支持开发计划
 
-- 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：M0–M1 已于 2026-07-31 在 feature branch 实现并进入维护者验证；M2–M4
-  仍待后续里程碑
+- 文档性质：已完成并原地归档的开发计划；`docs/development/` 不进入 Sphinx
+  公开文档导航
+- 状态：M0–M4 已于 2026-07-31 在 feature branch 实现；本地 full branch verification
+  已通过，远端 CI 待本次提交推送后确认
 - 实现决策与自审：
-  [Metrics M0–M1 实现决策与维护者审查记录](metrics-implementation-decisions.md)
+  [Metrics M0–M4 实现决策与维护者审查记录](metrics-implementation-decisions.md)
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25
@@ -19,12 +20,12 @@
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)、
   [自动化模型调优开发计划](automated-model-tuning-plan.md)、
   [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)
-- 当前执行边界：优先实施 M0–M1；完成它们不表示 M2 diagnostic monitoring、M3
-  extension/distributed readiness 或 M4 正式文档/计划收束已经完成
+- 归档说明：稳定的 API、配置、迁移与 extension 教程已经移入公开文档；本文只保留
+  需求来源、决策演进和验收清单，不应从 Sphinx index 链接
 
 ## 1. 目标与结论
 
-本计划解决四个相互关联但不能混为一体的问题：
+本计划解决了四个相互关联但不能混为一体的问题：
 
 1. `TrainingStrategy` 怎样把任务专属的 prediction/target 等值交给指标，而不让
    `Trainer` 猜测任意 batch 结构或模型签名；
@@ -35,13 +36,12 @@
 4. 内置 metric、TorchMetrics metric 与 extension 自定义 metric 怎样共享稳定的
    构造路径，而不复制整个 TorchMetrics 命名空间和参数表。
 
-推荐结论如下：
+最终结论如下：
 
 - **以 TorchMetrics 的 `Metric` 作为统计状态契约**，不在 Stochaflow 内重新实现
   distributed reduction、device state、`update/compute/reset` 和自定义 state
-  机制。推荐在完成跨平台兼容性矩阵后，把 `torchmetrics` 从当前 `quality` extra
-  提升为基础依赖；若某个受支持平台阻止提升，则必须建立明确的 `metrics` extra 并在
-  composition preflight 给出安装错误，不能运行到首个 validation batch 才失败。
+  机制。`torchmetrics>=1.9,<2` 已从 `quality` extra 提升为基础依赖；
+  `torch-fidelity` 仍只属于 FID/KID 使用的 `quality` extra。
 - **向 `TrainStepOutput` 增加不透明的 `metric_updates` 通道**。Strategy 解释 batch
   和模型输出，并为每个有文档的 channel 产生调用参数；Trainer 只把
   `args/kwargs` 分发给绑定到该 channel 的 metric，不理解 `preds`、`target`、
@@ -52,10 +52,10 @@
   普通 validation loop。
 - **建立一个统一的 epoch metric snapshot**。train、validation、test 和 epoch-end
   diagnostic 的 scalar 结果使用同一命名、冲突检查、日志和 monitor 解析路径。
-- **让 epoch diagnostic 显式返回结果，并提前到 best-selection 之前执行**。当前
-  diagnostic 直接写 logger 且发生在 checkpoint 之后，因此不能被 best checkpoint、
-  early stopping 或未来 HPO 消费；返回结果还必须携带实际 data role/protocol，
-  只有 validation-role 且 selection-eligible 的 observation 才能参与选择。
+- **让 epoch diagnostic 显式返回结果，并提前到 best-selection 之前执行**。实施前
+  diagnostic 只直接写 logger 且发生在 checkpoint 之后；现已返回 typed result 并携带
+  verified data role/protocol。只有 validation-role 且 selection-eligible 的
+  observation 才能参与选择。
 - **先支持单目标 scalar monitoring**。非 scalar、曲线、图像和 per-class tensor
   仍作为 artifact 或显式展开后的多个 scalar；复合目标和约束留给后续 HPO 计划。
 - **训练后的正式评估是独立 Evaluation Operation，不属于 MetricEngine 的职责**。
@@ -71,6 +71,10 @@
   `loss_aggregation_weight` 只告诉 Metric/Trainer 一个 batch 对 epoch aggregate
   应占多少统计权重，不参与反向传播；P2 的 timestep/SNR coefficient 在 Gaussian
   Strategy 内组成可微 objective。二者不得共享字段、config 或日志名称。
+
+实现结果没有加入 dog-specific 评估分支或数据。通用训练期 evaluation 按配置中的
+class/data protocol 工作；仓库现有 AFHQ example 仍可按自身类别配置运行，但 Metrics
+功能的正确性不依赖单独验证“狗”类别。
 
 ### 1.1 Metrics 与 Evaluation 的包含关系
 
@@ -91,11 +95,14 @@ versioned preprocessing profile。重型 FID/KID 在训练上下文继续由 dia
 provider 拥有 sampling/cache；在独立 benchmark 上则由 task EvaluationBuilder
 组合，不能因算法名字相同就强行进入每 batch validation。
 
-## 2. 当前仓库基线
+## 2. 实施前仓库基线（历史）
 
-### 2.1 已有能力
+本节保留计划制定时的基线，不能当作归档后的当前实现说明；稳定行为以公开文档和
+[实现决策记录](metrics-implementation-decisions.md) 为准。
 
-当前代码已经提供了大部分生命周期骨架：
+### 2.1 当时已有能力
+
+计划制定时，代码已经提供了大部分生命周期骨架：
 
 | 位置 | 已有行为 |
 | --- | --- |
@@ -112,7 +119,7 @@ provider 拥有 sampling/cache；在独立 benchmark 上则由 task EvaluationBu
 `GaussianDiagnosticSemantics` 也证明了“额外模型调用必须依赖窄 capability，而不是
 从 Process 或 prediction type 猜模型签名”的做法可行。
 
-### 2.2 当前缺口
+### 2.2 实施前缺口（均已关闭）
 
 1. `TrainStepOutput.metrics` 只在 training 的 `log_every` 批次上写入
    `train/strategy/*`，没有跨 batch 状态，也不参与 validation/test。
@@ -134,8 +141,8 @@ provider 拥有 sampling/cache；在独立 benchmark 上则由 task EvaluationBu
 9. best/early-stopping 对 monitor 缺失一律报错，无法表达“每 N 个 epoch 才产生一次”
    的 diagnostic metric。
 
-这些缺口说明，不能只在 config 增加一个 `metrics` 列表；必须先建立输入通道、状态
-生命周期和统一结果面。
+这些缺口说明了为什么实现不能只在 config 增加一个 `metrics` 列表，而必须先建立输入
+通道、状态生命周期和统一结果面。M0–M4 已关闭上述缺口。
 
 ## 3. 成熟方案调研
 
@@ -247,11 +254,11 @@ core 不定义以下通用字段：
 具体 Strategy 通过文档化的 channel 决定 payload；Metric 只声明自己绑定的 channel。
 兼容性在完整 `TrainingPlan + metric declarations` 构成后验证。
 
-## 5. 建议架构
+## 5. 最终架构
 
 ### 5.1 Strategy 产出不透明更新通道
 
-建议新增以下 public data-only contract：
+实现采用以下 public data-only contract：
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -273,7 +280,11 @@ class TrainStepOutput:
 
 - channel name 是非空字符串，在一个 step 内唯一；
 - `args/kwargs` 是 metric-specific，不进入通用 YAML schema；
-- core 在分发前递归 detach Tensor，metric 不得保留 autograd graph；
+- core 在分发前 detach Tensor，metric 不得保留 autograd graph；普通容器使用明确
+  allowlist，自定义有状态容器必须实现
+  `MetricPayloadDetachable.detach_metric_payload()`；
+- 不依赖私有 `torch.utils._pytree`，也不反射未知 dataclass/对象属性；未知容器
+  fail closed；
 - v1 metric 不可微，更新在 `torch.no_grad()` 下执行；
 - sample weight 若存在，必须是具体 channel 的显式 `args/kwargs` 语义；core 不能按
   metric 构造参数名或 batch shape 猜测；
@@ -292,7 +303,7 @@ class TrainStepOutput:
 第三方 Strategy 可以声明自己的 channel；这不是全框架 batch schema。Builder 构造
 Strategy 后，在完整 `TrainingPlan + metric declarations` 边界验证 channel。
 
-建议使用一个可选窄 capability，而不是给所有 `TrainingStrategy` 增加无关方法：
+实现使用一个可选窄 capability，而不是给所有 `TrainingStrategy` 增加无关方法：
 
 ```python
 @runtime_checkable
@@ -309,7 +320,7 @@ class MetricChannelProvider(Protocol):
 
 ### 5.2 Metric declaration
 
-建议在 `StochaflowConfig` 增加：
+`StochaflowConfig` 已增加：
 
 ```python
 @dataclass(slots=True)
@@ -338,7 +349,7 @@ metrics: list[MetricConfig] = field(default_factory=list)
 ```yaml
 metrics:
   - id: accuracy
-    name: torchmetrics.classification.MulticlassAccuracy
+    name: my-project.multiclass-accuracy
     channel: supervised.prediction_target
     phases: [validation, test]
     params:
@@ -362,7 +373,7 @@ metrics:
 
 ### 5.3 构造与 registry
 
-新增 `REGISTRIES.metrics`，注册项必须继承 `torchmetrics.Metric`。M0–M1 先使用
+`REGISTRIES.metrics` 已新增，注册项必须继承 `torchmetrics.Metric`。实现使用
 Stochaflow registry、少量 built-in wrapper 和 extension contract：
 
 1. Stochaflow 自有的少量高层 built-in 使用 registry name；
@@ -370,24 +381,21 @@ Stochaflow registry、少量 built-in wrapper 和 extension contract：
 3. 第三方 metric 通过 extension entry point 注册到 `REGISTRIES.metrics`；
 4. 不允许 config 导入任意 Python target。
 
-是否增加 `torchmetrics.*` role-scoped native provider 是 M1 的独立 decision gate，
-不能仅因为 optimizer/scheduler 已有 native provider 就默认采用。只有直接使用多个
-TorchMetrics 类的真实配置重复、constructor/lifecycle contract 和可读错误模型都已
-证明稳定时，才增加受限 public namespace resolver；否则继续用少量 wrapper 与
-extension registry。这一 gate 必须与 Hydra 配置计划的 native-family 原则一致。
+`torchmetrics.*` role-scoped native provider 是 M1 的独立 decision gate，最终被拒绝：
+不同 domain 的 update/constructor/optional-dependency contract 不统一，且直接暴露
+上游 namespace 会形成不受控配置 API。实现继续使用少量 wrapper 与 extension registry。
 
-首批 Stochaflow built-in 建议保持小而稳定：
+首批 Stochaflow built-in 保持小而稳定：
 
 | 名称 | 实现 | 目的 |
 | --- | --- | --- |
 | `mean` | `torchmetrics.aggregation.MeanMetric` wrapper | scalar/weight channel 基线 |
-| `mse` | `torchmetrics.regression.MeanSquaredError` | prediction-target 回归 |
-| `mae` | `torchmetrics.regression.MeanAbsoluteError` | prediction-target 回归 |
-| `cosine_similarity` | 受测 wrapper | denoising/representation 对齐 |
+| `mse` | 固定 `squared=True`、`num_outputs=1` 的 `MeanSquaredError` | scalar prediction-target 回归 |
+| `mae` | 固定 `num_outputs=1` 的 `MeanAbsoluteError` | scalar prediction-target 回归 |
 
-classification accuracy/F1 等先由明确 wrapper 或 extension 提供；若上述 native
-provider gate 通过，才允许直接使用受限的 `torchmetrics.*` identifier。只有当
-Stochaflow 需要固定额外语义或跨版本兼容时，才增加自己的 wrapper。
+classification accuracy/F1 等由明确 wrapper 或 extension 提供。native provider gate
+最终被拒绝：配置不允许直接使用 `torchmetrics.*` identifier。只有当 Stochaflow
+需要固定额外语义或跨版本兼容时，才增加自己的 wrapper。
 
 ### 5.4 MetricEngine
 
@@ -397,7 +405,7 @@ Stochaflow 需要固定额外语义或跨版本兼容时，才增加自己的 wr
 metrics/
 ├── config.py        # MetricConfig 的局部严格验证
 ├── contracts.py     # MetricUpdate、phase/result contracts
-├── factory.py       # registry + TorchMetrics native resolver
+├── factory.py       # registry construction；不提供任意 TorchMetrics native resolver
 ├── runtime.py       # MetricEngine
 └── builtin.py       # 少量 Stochaflow wrappers
 
@@ -444,7 +452,7 @@ flowchart LR
 
 ### 5.5 统一结果与命名
 
-建议 canonical keys：
+canonical keys：
 
 ```text
 train/loss
@@ -508,6 +516,13 @@ tracking，也不能成为 tuning objective。`origin="system"` 必须使用
 
 ```python
 @dataclass(frozen=True, slots=True)
+class DiagnosticSourceRequest:
+    id: str
+    data_role: Literal["train", "validation", "test", "external"]
+    protocol: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class VerifiedMetricSource:
     id: str
     metadata: MetricSource
@@ -530,15 +545,27 @@ class TrainingDiagnostic:
 
 @dataclass(frozen=True, slots=True)
 class BoundTrainingDiagnostic:
+    id: str
     diagnostic: TrainingDiagnostic
     sources: Mapping[str, VerifiedMetricSource]
+    source_iterables: Mapping[str, Iterable[Any]]
 ```
 
-`VerifiedMetricSource` 只能由 TrainingBuilder/diagnostic composition 根据实际注入的
-reference iterable、split 和 versioned protocol 构造；callback 只返回
-`source_id`，不能自行声明 `selection_eligible=True`。Trainer 必须把每个 result 的
-source id 与 `BoundTrainingDiagnostic.sources` 做严格 lookup，并把 verified metadata
-写入 `EpochMetricSnapshot`；未知、重复或不匹配的 source id 立即失败。
+diagnostic 通过 `DiagnosticSourceRequest` 声明 source role 和 JSON-safe versioned
+protocol。`VerifiedMetricSource` 只能由 TrainingBuilder/diagnostic composition 构造：
+绑定 descriptor 包含 configured diagnostic/source id、request protocol、resolved data
+config、实际 data artifact identities 与 selected extension provenance，并以 canonical
+JSON 计算 SHA-256。composition 同时把 train/validation request 绑定到 DataBuilder
+实际创建的 iterable；Trainer 在 callback 和 loader iteration 前核对它与本次 `fit()`
+收到的是同一对象。对象 identity 只用于当前运行防错，不进入 digest 或 checkpoint，
+所以新进程可从相同 stable descriptor 重建同一 protocol identity。callback 只返回
+`source_id`，不能自行声明
+`selection_eligible=True`。Trainer 必须把每个 result 的 source id 与
+`BoundTrainingDiagnostic.sources` 做严格 lookup，并把 verified metadata 写入
+`EpochMetricSnapshot`；未知、重复或不匹配的 source id 立即失败。
+
+声明非空 source request 的 raw diagnostic 必须先在 composition 边界绑定；Trainer
+不能用空 provenance 自动赋予资格。没有 source 的旧 diagnostic 仍可直接注入。
 
 现有返回 `None` 的第三方 diagnostic 保持合法。`DiffusionQualityDiagnostic` 改为：
 
@@ -547,19 +574,32 @@ source id 与 `BoundTrainingDiagnostic.sources` 做严格 lookup，并把 verifi
 - 返回一个或多个已带完整 `diagnostics/...` tag 和 verified source id 的
   `DiagnosticResult`；
 - Trainer 统一做 collision check、日志和 snapshot 合并。
+- sampler statistics、sample count 与 timing 进入 external `observation` source；
+  reference provider 的 FID/KID 进入独立 validation `validation_quality` source。
 
 source 规则：
 
-- 使用 test reference 的 diagnostic 必须标记 `data_role="test"` 且
-  `selection_eligible=False`；
+- 当前 `FitStartEvent` 不注入 test iterable，因此 training diagnostic binder 拒绝
+  test-role request；正式 test 属于冻结 subject 后的独立 Evaluation；
 - 首版只有经过 Builder 验证的 validation protocol 可以把 diagnostic 标记为
   selection eligible；
 - train/external source 默认不允许 HPO，未来如需外部固定 benchmark objective，
   先定义等价的数据治理 contract；
 - 一个 diagnostic 若混合多个 data roles，必须拆成多个带独立 source 的结果，不能
   用一个模糊 `external` 覆盖；tuple return 正式表达这一点；
+- 首版每个 diagnostic 最多有一个 selection-eligible source，避免 cadence 缺席无法
+  无歧义地归因到 source；
 - built-in 和 extension diagnostic contract tests 必须证明 binding 对应实际使用的
   iterable/protocol，不能只断言 metadata 字符串。
+
+callback 的到期语义：
+
+- 返回 `None` 表示本 epoch 没有 source 到 cadence；
+- 返回 tuple 表示其中 source 已到期；
+- `DiagnosticResult(metrics={})` 是 source 已到期但没有 scalar 的 marker。
+
+因此 due-but-missing、provider failure 或拼错 monitor key 不能被
+`missing: skip` 掩盖；skip 只适用于 `None` 所表达的未到 cadence。
 
 epoch 顺序调整为：
 
@@ -582,13 +622,12 @@ step diagnostic 仍然只做 step logging，不能作为 epoch monitor。若要�
 
 ```yaml
 trainer:
-  monitor:
-    metric: valid/metrics/accuracy
+  early_stopping:
+    enabled: true
+    monitor: valid/metrics/accuracy
     mode: max
     missing: error
     min_delta: 0.001
-  early_stopping:
-    enabled: true
     patience: 5
 ```
 
@@ -596,8 +635,9 @@ trainer:
 
 ```yaml
 trainer:
-  monitor:
-    metric: diagnostics/diffusion_quality/samplers/ddim_50/fid
+  early_stopping:
+    enabled: true
+    monitor: diagnostics/diffusion_quality/samplers/ddim_50/fid
     mode: min
     missing: skip
 ```
@@ -605,8 +645,11 @@ trainer:
 语义：
 
 - `missing: error` 适用于每 epoch validation metric；
-- `missing: skip` 只在 metric 未到 cadence 时跳过 best/early-stop 更新；
+- `missing: skip` 只允许 diagnostic monitor，且只在 callback 返回 `None`、metric
+  未到 cadence 时跳过 best/early-stop 更新；
+- due marker 已出现却没有 monitor value 时，即使 `missing: skip` 也失败；
 - patience 计数单位是**有效 observation 次数**，不是 wall-clock epoch；
+- 整个 fit 零有效 observation 时失败，不能把“从未评估”报告成成功；
 - 不提供 carry-forward，避免把陈旧 FID 当成本 epoch 结果；
 - 被选为 monitor 的 diagnostic 必须在所有 trial/run 使用相同 cadence；
 - monitor source 的 failure policy 为 `warn` 时，缺失按 monitor policy 处理，不静默
@@ -616,23 +659,24 @@ trainer:
   early-stopping monitor；
 - diagnostic observation 只有 `data_role="validation"` 且
   `selection_eligible=True` 时才能成为 monitor；
+- strict resume 精确核对 tracking 开关、完整 monitor policy、patience、best state 与
+  observation counters，不能在恢复时静默切换 policy；
 - prefix 与 source metadata 冲突时 fail closed，不能信任更宽松的一侧。
 
 ## 6. Extension API
 
-为支持真正的自定义 metrics，需要公开：
+为支持真正的自定义 metrics，稳定 extension surface 已公开：
 
 - `MetricUpdate`
-- `MetricConfig` 或其稳定只读 view
+- `MetricConfig`、`MetricSpec` 与 `MetricPayloadDetachable`
 - `Metric` 所要求的上游基类说明
 - `REGISTRIES.metrics`
 - metric channel 命名与 Strategy 兼容性检查约定
 - `MetricSource`、`VerifiedMetricSource`、`EpochMetricSnapshot` 与
   `BoundTrainingDiagnostic` 的只读 contract
-- `DiagnosticResult`
+- `DiagnosticSourceRequest` 与 `DiagnosticResult`
 
-若继续宣称支持 provider-level diagnostic extension，还应在同一稳定性审查中决定是否
-公开：
+provider-level diagnostic extension decision gate 最终选择公开：
 
 - `DIAGNOSTIC_PROVIDERS`
 - `StepMetricProvider`
@@ -640,8 +684,9 @@ trainer:
 - `ReferenceMetricProvider`
 - 对应 context types
 
-另一条受支持的简单路线是注册完整 `TrainingDiagnostic`；不能一边让 config 接受
-`modules`，一边要求 extension 依赖未承诺稳定的内部路径。
+原因是 config 已接受 provider `modules`；保留该配置能力却要求 extension 依赖内部路径
+会形成虚假的 extension contract。注册完整 `TrainingDiagnostic` 仍是另一条受支持路线，
+但不会取代 provider-level surface。
 
 自定义 metric 示例：
 
@@ -673,7 +718,11 @@ class RelativeL2(Metric):
 ```
 
 具体 extension 仍需让自己的 Strategy 产生与 `update()` 相容的 channel。注册 metric
-本身不会赋予 core 解释 batch 的能力。
+本身不会赋予 core 解释 batch 的能力。独立 contract fixture 已使用 custom Strategy +
+custom Metric，经 entry-point discovery、真实模块激活、factory/Trainer 与 checkpoint
+验证这一路径；resolved config 保存选择名与 component declarations，安装
+distribution/version/target provenance 保存在 run manifest/checkpoint，而不是由测试
+手工伪造。
 
 ## 7. Checkpoint、resume 与 reproducibility
 
@@ -687,16 +736,22 @@ Metric state 默认不写 checkpoint，理由是当前 Trainer 只在完整 epoc
 checkpoint 需要保存：
 
 - 本 epoch 完整 canonical metric values 与 `MetricSource` metadata；
-- canonical monitor key、mode、best value、best epoch；
-- missing policy 与 observation wait counter；
+- 完整 monitor policy：canonical key、mode、missing、min_delta；
+- tracking enabled、best value/epoch、early-stopping patience、stopped state；
+- `monitor_observations` 与 `observations_without_improvement`；
 - resolved metric declarations 和 extension provenance（已在完整 config/provenance 中）。
 
 strict resume 必须：
 
 - 只接受当前 schema 的 canonical monitor key；
 - 验证 metric declarations 与 checkpoint config 完全一致；
-- 恢复 best/early-stopping 的 observation counter；
+- 精确核对 tracking 开关、monitor policy 与 patience，不能在恢复时切换；
+- 恢复 best/early-stopping 的 observation counters；
 - 从下一个完整 epoch 重新初始化 metric state。
+
+这些字段使 training-loop state 与 v10 不兼容，checkpoint format 因此 bump 到 v11。
+早期“复用 v10 容器即可”的判断只适用于 M0–M1，已被 M2 的 cadence/strict-resume
+语义取代。
 
 如果未来支持 mid-epoch checkpoint，再单独定义 persistent metric state 和 loader cursor；
 不能在本功能中暗示已经支持。
@@ -708,99 +763,150 @@ strict resume 必须：
   budget 决定，不由 MetricEngine 截断。
 - CPU-only metric 需要显式 wrapper 和 transfer policy，不能根据类名猜设备。
 - 同一 output channel 的 payload 只 detach 一次，再分发给多个 metrics。
-- metric update 失败默认终止 phase；这是配置或契约错误，不应当作普通 warning。
+- metric update 失败默认 reset 整个 engine 后终止 phase；不能保留同一调用中已更新的
+  部分 metric state。这是配置或契约错误，不应当作普通 warning。
 - diagnostic 保留现有 `raise|warn` failure policy，因为其额外 artifact/quality 检查可
   被明确设为非关键。
-- 被 monitor 的 metric 失败时总是终止或按显式 missing policy 跳过，不能记录 0、
-  `NaN` 替代值或使用上一次结果。
+- 被 monitor 的 metric 失败时总是终止；显式 missing policy 只允许跳过 diagnostic
+  未到 cadence 的 epoch，不能跳过 due-but-missing，也不能记录 0、`NaN` 替代值或
+  使用上一次结果。
+
+### 8.1 Distributed readiness 的实际边界
+
+M3 已完成 built-in 与独立 extension metric 的声明矩阵：每个 TorchMetrics state 必须
+声明 reduction，compute synchronization policy 也被检查。该测试是静态/单进程契约
+审计，不把当前 Trainer 升级为 DDP/FSDP。
+
+继续阻塞 distributed Trainer 的是语义正确性，而不只是尚未在“实际硬件规格”上跑
+性能：
+
+- distributed sampler 的 replicated/uneven validation 样本如何计数与去重；
+- rank-local update failure、OOM、non-finite、GradScaler overflow 如何共同
+  commit/reset/abort；
+- diagnostic sampling 是否重复，以及其他 rank 如何等待并传播 rank-zero 失败；
+- canonical snapshot、artifact、logger 与 best/latest checkpoint 的 rank-zero
+  publication/一致性协议。
+
+这些问题与图像类别无关，不需要 dog-specific 测试。硬件性能与多机 soak test 应在
+上述 contract 落地之后进行；在此之前公开文档只承诺单进程结果。
 
 ## 9. 实施阶段
 
-### 阶段 M0：契约测试与命名统一
+### 阶段 M0：契约测试与命名统一（完成）
 
-1. 为 current loss/history/logger/monitor 行为增加 characterization tests；
-2. 定义 canonical tag，并删除/拒绝旧 alias；
-3. 将 retained MNIST/AFHQ config、配置参考和相关测试的 monitor 从
-   `valid_loss` 迁移为 `valid/loss`；
-4. 定义 `MetricSource`/`EpochMetricSnapshot` 和 test-selection guard；
-5. 增加 `MetricUpdate`、`loss_aggregation_weight` 验证与递归 detach helper；
-6. 不改变现有默认 config 的训练数值。
+- [x] 为既有 loss/history/logger/monitor 行为增加 characterization tests。
+- [x] 定义 canonical tag，并删除/拒绝旧 alias。
+- [x] 将 retained example config、配置参考和相关测试从 `valid_loss` 迁移为
+  `valid/loss`。
+- [x] 定义 `MetricSource`/`EpochMetricSnapshot` 和 test-selection guard。
+- [x] 增加 `MetricUpdate`、`loss_aggregation_weight` 与显式 detach contract。
+- [x] 不改变既有默认 config 的训练数值。
 
-### 阶段 M1：Validation MetricEngine
+### 阶段 M1：Validation MetricEngine（完成）
 
-1. 确定 TorchMetrics 的依赖层级和跨 Python/Torch 平台兼容性；
-2. 增加 `MetricConfig`、registry 与 MetricEngine；native resolver 只有在独立 gate
-   通过后进入；
-3. 在 built-in supervised/Gaussian Strategy 中产生 channel；
-4. 支持 validation/test，随后支持 train epoch metrics；
-5. 增加 `mse`、`mae`、`mean` 最小 built-in；
-6. logger/history/checkpoint 使用 canonical snapshot。
+- [x] 把 TorchMetrics 固定为基础依赖，保留 `torch-fidelity` 在 quality extra。
+- [x] 增加 `MetricConfig`、registry 与 MetricEngine；native resolver gate 被拒绝。
+- [x] 在 built-in supervised/Gaussian Strategy 中产生 channel。
+- [x] 支持 validation/test/train epoch metrics 与 device movement。
+- [x] 增加 scalar-only `mse`、`mae` 和 `mean` 最小 built-in。
+- [x] logger/history/checkpoint 使用 canonical snapshot。
+- [x] update failure reset 整个 engine，防止部分 state 提交。
 
-### 阶段 M2：Diagnostic monitoring
+### 阶段 M2：Diagnostic monitoring（完成）
 
-1. 增加 verified diagnostic source binding 与 tuple `DiagnosticResult`；
-2. 让 `DiffusionQualityDiagnostic` 返回 epoch metrics；
-3. 调整 epoch 顺序；
-4. 引入 monitor missing policy 和 observation-based patience；
-5. 验证 FID/KID cadence、warn failure 与 best checkpoint 行为。
+- [x] 增加 `DiagnosticSourceRequest`、`VerifiedMetricSource`、tuple
+  `DiagnosticResult` 与 `BoundTrainingDiagnostic`。
+- [x] 用 data config、data artifacts、extension provenance 和 protocol descriptor
+  生成 Builder-bound SHA-256 source identity。
+- [x] 把 train/validation source 绑定到当前 fit 的实际 re-iterable，在 callback 前
+  核对对象；stable digest 不含 Python identity。
+- [x] 让 Gaussian quality diagnostic 返回 epoch metrics，并分离 external observation
+  与 validation-quality FID/KID。
+- [x] 使用 `diagnostics/<configured-id>/...` canonical path，并在 history/checkpoint
+  之前合并。
+- [x] 定义 `None=not due` 与 empty-result=due marker；`missing: skip` 只跳过 not-due
+  cadence，due-but-missing 失败。
+- [x] 首版每个 diagnostic 最多一个 selection-eligible source。
+- [x] 实现 observation-based patience、零 observation guard 与 exact strict resume。
+- [x] checkpoint format bump 到 v11。
 
-### 阶段 M3：Extension 与 distributed readiness
+### 阶段 M3：Extension 与 distributed readiness（完成，单进程承诺）
 
-1. 公开并测试自定义 metric extension contract；
-2. 决定 provider-level diagnostic contract 的 public export；
-3. 用独立 extension 实现 custom metric，而非只测内置子类；
-4. 加入 TorchMetrics DDP reduction contract tests；在 Stochaflow 真正支持 DDP 前，
-   文档只承诺单进程结果。
+- [x] 公开并测试自定义 metric extension contract。
+- [x] 将 provider-level diagnostic contract 纳入 stable
+  `stochaflow.extensions` exports。
+- [x] 用独立 custom Strategy + custom Metric 验证真实 extension 路径与 plugin
+  provenance；测试覆盖 entry-point discovery、真实激活、factory/Trainer 和
+  checkpoint，而非手工伪造 metadata 或只测内置子类。
+- [x] 加入 built-in/extension TorchMetrics reduction declaration matrix。
+- [x] 公开文档明确只承诺单进程；replicated/uneven samples、rank-local
+  failure/overflow 与 rank-zero publication 仍是未来 distributed Trainer 的语义前置。
 
-### 阶段 M4：正式文档与计划收束
+### 阶段 M4：正式文档与计划收束（完成）
 
-1. 更新 config reference generator 与示例；
-2. 更新 `docs/api/extensions.md`；
-3. 增加 validation/custom metric 教程；
-4. 把稳定内容移出 `docs/development/`；
-5. 删除或归档本计划，且不从 Sphinx index 链接开发历史。
+- [x] 更新 config reference generator 与示例。
+- [x] 更新 `docs/api/extensions.md`、配置、迁移与 troubleshooting 文档。
+- [x] 增加 validation/custom metric 教程。
+- [x] 把稳定行为写入 Sphinx 公共文档。
+- [x] 本计划在 `docs/development/` 原地归档，且不从 Sphinx index 链接开发历史。
+
+实现清单和本地 branch closeout verification 已完成；远端 CI 仍需在本次提交推送后
+确认。
 
 ## 10. 测试计划
 
 ### 单元测试
 
-- `MetricUpdate` 拒绝空 channel、无效 mapping 和冲突；
+- [x] `MetricUpdate` 拒绝空 channel、无效 mapping 和冲突；
   `loss_aggregation_weight` 必须是有限 scalar numeric value，且不得用于缩放
   autograd loss；
-- metric config 的 id、phase、duplicate 和 native target allowlist；
-- `reset/update/compute` 每 phase 精确调用次数；
-- train/validation/test state 完全隔离；
-- variable batch 的显式 weight 产生正确均值；
-- metric scalar/dict flatten、collision、bool、non-scalar、NaN/Inf；
-- metric update 不保留 autograd graph；
-- custom registered TorchMetrics subclass；
-- unknown/missing channel 在 Builder/Strategy compatibility boundary 失败。
+- [x] metric config 的 id、phase、duplicate 和 native target allowlist；
+- [x] `reset/update/compute` 每 phase 精确调用次数；
+- [x] train/validation/test state 完全隔离；
+- [x] variable batch 的显式 weight 产生正确均值；
+- [x] metric scalar/dict flatten、collision、bool、non-scalar、NaN/Inf；
+- [x] metric update 不保留 autograd graph；未知自定义容器必须显式实现
+  `MetricPayloadDetachable`；
+- [x] update failure 执行 atomic reset；
+- [x] MSE/MAE 拒绝非 scalar multi-output 配置；
+- [x] custom registered TorchMetrics subclass；
+- [x] unknown/missing channel 在 Builder/Strategy compatibility boundary 失败。
 
 ### Trainer 集成测试
 
-- validation metric 写入 history、logger 和 checkpoint 同一 key；
-- best checkpoint 可按 `mode: max` accuracy 选择；
-- `test/*` phase metric 无法配置为 best/early-stopping monitor；
-- diagnostic metric 在 checkpoint 选择前可见；
-- 低频 diagnostic 的 `missing: skip` 不增加 patience；
-- strict resume 恢复 monitor 和 observation counter；
-- test metrics 只在最终 test evaluation 计算，不参与训练选择；
-- diagnostic source metadata 与实际 reference split/protocol 一致；
-- diagnostic callback 的 unknown source id、混合-role 单结果和 binding mismatch 失败；
-- 一个 diagnostic 可返回多个各自绑定 source 的 result；
-- test-role diagnostic 即使使用 `diagnostics/...` key 也不能成为 monitor；
-- diagnostic callback 的 RNG preservation 保持不变。
+- [x] validation metric 写入 history、logger 和 checkpoint 同一 key；
+- [x] best checkpoint 可按 `mode: max` accuracy 选择；
+- [x] `test/*` phase metric 无法配置为 best/early-stopping monitor；
+- [x] diagnostic metric 在 checkpoint 选择前可见；
+- [x] 低频 diagnostic 的 `missing: skip` 不增加 patience；
+- [x] due-but-missing 与整个 fit 零 observation 失败；
+- [x] strict resume 精确恢复/核对 monitor policy、patience 和 observation counters；
+- [x] test metrics 只在最终 test evaluation 计算，不参与训练选择；
+- [x] diagnostic SHA-256 source identity 随 data config/artifact provenance 改变；
+- [x] stable descriptor 在新 run 的新 loader 上保持同一 digest，但每次 fit 必须使用
+  自己 composition 绑定的实际 iterable；
+- [x] diagnostic callback 的 unknown/duplicate source、错误 id scope 和 binding mismatch
+  失败；
+- [x] 一个 diagnostic 可返回多个各自绑定 source 的 result，但最多一个 source 可选择；
+- [x] test/external-role diagnostic 即使使用 `diagnostics/...` key 也不能成为 monitor；
+- [x] built-in Diffusion quality 联合覆盖 FID/KID cadence、`warn` 隔离和 best
+  checkpoint 选择顺序；
+- [x] diagnostic callback 的 RNG preservation 保持不变。
 
 ### Extension contract 测试
 
-- 独立 custom Strategy + custom Metric；
-- custom channel payload 不要求 tuple image batch；
-- extension metric 版本/provenance 进入 resolved config/checkpoint；
-- 未安装或未选择 extension 时给出 registry name 和可用项错误。
+- [x] 独立 custom Strategy + custom Metric；
+- [x] custom channel payload 不要求 tuple image batch；
+- [x] 真实 entry-point activation 后，resolved config 保存 extension/component 选择，
+  run manifest/checkpoint 保存安装 distribution/version/target provenance；
+- [x] provider-level diagnostic symbols 与 metric contracts 从 stable extension surface
+  导出；
+- [x] built-in 与独立 extension state 的 reduction/sync declaration matrix；
+- [x] 未安装或未选择 extension 时给出 registry name 和可用项错误。
 
 ### 回归验证
 
-常规增量验证：
+以下是最终 closeout 命令：
 
 ```text
 uv run pytest tests/test_training_strategy.py
@@ -809,28 +915,44 @@ uv run pytest tests/diagnostics
 uv run pytest <新增 metrics tests>
 uv run ruff check .
 uv run pyright
+uv run python tools/generate_config_reference.py --check
+uv run sphinx-build -W --keep-going -b html docs docs/_build/html
+uv build
 ```
 
-完整分支合并前再运行全部 `uv run pytest` 和一个短 supervised/Gaussian smoke run。
+本地已运行全部 `uv run pytest`、内存中的短 Gaussian diagnostic end-to-end smoke
+以及其余命令。通用 Metrics closeout 不要求额外 dog-specific smoke；若运行 AFHQ，
+则只用仓库 example 的既有 class-aware 配置与数据边界。
 
 ## 11. 验收标准
 
-- 任意 DataBuilder batch 不被 core 解包或推断；
-- built-in supervised 和 Gaussian training 可声明至少一个 validation metric；
-- extension 可注册 custom Metric，并由 custom Strategy channel 驱动；
-- train/validation/test metric state 不串扰；
-- validation 和 epoch diagnostic scalar 使用同一结果命名、日志、history 和 checkpoint
+- [x] 任意 DataBuilder batch 不被 core 解包或推断；
+- [x] built-in supervised 和 Gaussian training 可声明至少一个 validation metric；
+- [x] extension 可注册 custom Metric，并由 custom Strategy channel 驱动；
+- [x] train/validation/test metric state 不串扰；
+- [x] validation 和 epoch diagnostic scalar 使用同一结果命名、日志、history 和 checkpoint
   路径；
-- best checkpoint/early stopping 可监控 validation metric 或低频 diagnostic metric；
-- monitor/HPO 基于 typed source metadata 拒绝所有 test-role observation；
-- diagnostic monitor 的缺失 cadence 语义明确且可测试；
-- 现有 FID/KID 缓存、sampler、artifact 和 failure policy 不被普通 MetricEngine 吸收；
-- Metric 不成为 managed trainable asset，不进入 optimizer，也不伪装 Objective；
-- 新 checkpoint/config 只使用 canonical key；旧
+- [x] best checkpoint/early stopping 可监控 validation metric 或低频 diagnostic metric；
+- [x] training monitor 基于 typed source metadata 拒绝所有 test/external-role observation；
+  未来 HPO 必须复用或收紧该 guard；
+- [x] diagnostic monitor 的 not-due、due-but-missing 与 observation patience 语义明确且
+  可测试；
+- [x] FID/KID validation quality 与 sampler observation 分 source，缓存、sampler、
+  artifact 和 failure policy 不被普通 MetricEngine 吸收；
+- [x] Metric 不成为 managed trainable asset，不进入 optimizer，也不伪装 Objective；
+- [x] 新 checkpoint/config 只使用 canonical key；旧
   `train_loss`/`valid_loss` 不提供 reader、alias 或迁移路径；
-- retained MNIST/AFHQ config、生成配置参考与 contract tests 已使用
+- [x] v11 保存并 strict-resume 完整 monitor policy 与 observation state；
+- [x] retained MNIST/AFHQ config、生成配置参考与 contract tests 已使用
   `valid/loss`；
-- 公开 API 由独立 extension implementation 验证，而不只由 built-in subclass 验证。
+- [x] 公开 API 由独立 extension implementation 验证，而不只由 built-in subclass
+  验证；
+- [x] DDP state declaration matrix 已覆盖 built-in/extension fixture，同时文档明确
+  distributed Trainer 不在本计划承诺内；
+- [x] 本地 full pytest、Ruff、Pyright、config reference、严格 Sphinx、package build
+  与短 Gaussian end-to-end smoke；
+- [ ] 远端 CI；此项是合并门禁，不回滚 M0–M4 的实现状态，但未通过前不能宣称
+  branch ready to merge。
 
 ## 12. 明确不进入首版
 

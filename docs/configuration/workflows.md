@@ -95,7 +95,7 @@ config、checkpoint 和 CLI 当作三份对等配置做通用 merge。
 | --- | --- | --- | --- |
 | `train --config ...` | 外部完整 config | 无 | train CLI flags |
 | `train --resume ...` | checkpoint config | 完整训练 state | 安全 train runtime flags；可选 observability config |
-| `sample --checkpoint ...` | checkpoint config + v10 `inference_recipe` | 推理 state | 可选 partial sample request；sample CLI runtime flags |
+| `sample --checkpoint ...` | checkpoint config + v11 `inference_recipe` | 推理 state | 可选 partial sample request；sample CLI runtime flags |
 
 config 字段覆盖进入 resolved config；`limit-batches`、deterministic、启动 cwd、lineage、
 skip-final-sample 和插件 version acceptance 等 invocation 事实进入独立 manifest，而不是
@@ -209,7 +209,7 @@ resume 仍创建新的兄弟 run，因此 local 日志和 TensorBoard event 文�
 checkpoint 再次 resume 且不传该选项时，使用的就是先前已固化的 effective config 和
 审计链。
 
-`--resume` 与 `--config` 互斥。当前 checkpoint v10 保存 resolved config、primary
+`--resume` 与 `--config` 互斥。当前 checkpoint v11 保存 resolved config、primary
 inference model、可选 Process/Objective、可选 EMA model、optimizer、scheduler、EMA、具名
 training assets、训练进度，以及始终存在的 fixed `inference_recipe` 字段。它只保存
 `data: {name, params}`，不保存 Dataset、PyTorch Sampler、DataLoader、partition 或数值
@@ -232,7 +232,7 @@ monitor、mode、resolved config 和 extension provenance 必须与所选 checkp
 校验且能载入当前资产拓扑的 inherited best 会在训练开始前原子物化到新 run 的
 `checkpoints/best.pt`，并记录当前 resolved config/provenance；后续恢复和 sampling 不依赖
 父 run。
-Strict resume 还要求合法的 `epoch`、`global_step` 和 v10 RNG snapshot，并在 selected state
+Strict resume 还要求合法的 `epoch`、`global_step` 和 v11 RNG snapshot，并在 selected state
 与 inherited-best 全部验证后恢复 Python、NumPy、Torch CPU 及适用的 CUDA/MPS RNG。
 普通 checkpoint load 不修改全局 RNG。checkpoint-backed inference 不恢复 checkpoint
 RNG snapshot，而是按 resolved `sampling.seed`（为 `null` 时使用 checkpoint config 的
@@ -248,7 +248,7 @@ generator 的 runtime state。内置图像 recipe 会由 experiment seed 与 epo
 恢复时应显式传 `--output-dir`。DataBuilder 私有 params 中的相对路径遵循同一 cwd 规则，
 核心不会猜测并重写不透明字段。
 
-当前 v10 payload 只允许 Tensor、primitive 与普通 container，并始终由
+当前 v11 payload 只允许 Tensor、primitive 与普通 container，并始终由
 `torch.load(..., weights_only=True)` 读取；旧 checkpoint 格式不迁移。扩展代码/class
 不会 freeze 在 checkpoint 中；恢复与 inference 环境需要安装记录的 entry-point
 distribution。实现变化造成的不兼容由 state/资产/recipe 契约报错，Stochaflow 不保存或
@@ -392,11 +392,11 @@ epoch diagnostic 汇总。
 Physics 任务执行重建，direct-transform 任务也可以产生 prediction。数值 `Sampler`
 只是某些 recipe 的内部协作，不是运行该命令的前提。
 
-v10 checkpoint 除模型、可选 EMA/Process state 和训练配置外，还保存
+v11 checkpoint 除模型、可选 EMA/Process state 和训练配置外，还保存
 `inference_recipe`。它固定内部 `SamplingBuilder` identity 与不可覆盖的 contract；
 `null` 表示该 checkpoint 不支持 `sample`。CLI 仍允许完整 sampling defaults 已保存在
 checkpoint 时省略 request 文件，但维护中的 MNIST authoring 文件刻意不声明 sampler、
-shape 或 writers，其 resolved v10 defaults 不足以形成完整调用，因此应显式提供
+shape 或 writers，其 resolved v11 defaults 不足以形成完整调用，因此应显式提供
 sample profile：
 
 ```bash
@@ -505,7 +505,7 @@ name、contract 和最终 resolved sampling settings 都写入 `resolved_samplin
 `ema.use_for_sampling` 都为 true 且 checkpoint 含 EMA state 时选择 EMA，否则选择 raw。
 正式评估应显式请求 `raw` 或 `ema`。
 
-每次 inference 都写 `resolved_sampling.yaml`，其中记录 checkpoint lineage、v10 recipe、
+每次 inference 都写 `resolved_sampling.yaml`，其中记录 checkpoint lineage、v11 recipe、
 完整最终 config、request source、实际插件 provenance/version acceptance、启动 cwd、
 runtime options，以及 recipe metadata/artifacts。`sampling.writers` 决定其他输出：
 `tensor` 写 PT，`image` 写 PNG/GIF；开启 trajectory 后，两者会写各自支持的

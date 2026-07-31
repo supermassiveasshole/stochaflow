@@ -83,10 +83,11 @@ class TrainingMetricRuntime:
                 if phase in declaration.phases
             )
             if specs:
-                engines[phase] = MetricEngine(specs).to(device)
+                engines[phase] = MetricEngine(specs)
                 metric_ids[phase] = frozenset(spec.id for spec in specs)
         self._engines = engines
         self._metric_ids = metric_ids
+        self.to(device)
 
     @property
     def configured(self) -> bool:
@@ -142,6 +143,16 @@ class TrainingMetricRuntime:
             f"{prefix}/metrics/{name}": value
             for name, value in engine.compute(reset=reset).items()
         }
+
+    def to(
+        self,
+        device: torch.device | str,
+    ) -> TrainingMetricRuntime:
+        """Move every configured phase engine to a device and return this runtime."""
+
+        for engine in self._engines.values():
+            engine.to(device)
+        return self
 
 
 __all__ = ["TrainingMetricPhase", "TrainingMetricRuntime"]

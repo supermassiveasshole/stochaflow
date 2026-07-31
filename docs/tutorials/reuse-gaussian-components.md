@@ -3,7 +3,7 @@
 本教程实现一个最小的条件 inference recipe。扩展保留内置
 `DiscreteGaussianDenoisingProcess`、`GaussianModelDynamics` 和 DDPM/DDIM，只在
 `SamplingBuilder` 中组装 condition、classifier-free guidance、初始噪声和模型调用；
-训练侧同时把 recipe identity 与固定 prediction semantics 写入 v10 checkpoint。
+训练侧同时把 recipe identity 与固定 prediction semantics 写入 v11 checkpoint。
 
 适用前提是 checkpoint 中的模型已经按以下签名训练：
 

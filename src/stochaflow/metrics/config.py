@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 METRIC_TAG_SEGMENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-_TRAINING_MONITOR_PATTERN = re.compile(
-    r"^(?:train|valid)/(?:loss|metrics/"
-    r"[A-Za-z0-9][A-Za-z0-9_.-]*"
-    r"(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)?)$"
+_METRIC_TAG_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
+_PHASE_EPOCH_METRIC_PATTERN = re.compile(
+    rf"^(?P<phase>train|valid|test)/(?:loss|metrics/"
+    rf"{_METRIC_TAG_SEGMENT}(?:/{_METRIC_TAG_SEGMENT})?)$"
+)
+_DIAGNOSTIC_EPOCH_METRIC_PATTERN = re.compile(
+    rf"^diagnostics/{_METRIC_TAG_SEGMENT}/"
+    rf"{_METRIC_TAG_SEGMENT}(?:/{_METRIC_TAG_SEGMENT})*$"
+)
+_SYSTEM_EPOCH_METRIC_PATTERN = re.compile(
+    rf"^system/{_METRIC_TAG_SEGMENT}/"
+    rf"{_METRIC_TAG_SEGMENT}(?:/{_METRIC_TAG_SEGMENT})*$"
 )
 TRAINING_METRIC_PHASES = frozenset({"train", "validation", "test"})
+type EpochMetricKeyOrigin = Literal["phase", "diagnostic", "system"]
+type EpochMetricKeyDataRole = Literal["train", "validation", "test"]
 
 
 @dataclass(slots=True)
@@ -108,16 +118,48 @@ def validate_training_monitor_key(
     *,
     path: str = "training monitor",
 ) -> str:
-    """Validate a monitor supported by the M0-M1 epoch snapshot."""
+    """Validate a selectable phase or diagnostic epoch metric key."""
 
     monitor = _non_empty_string(value, path=path)
-    if _TRAINING_MONITOR_PATTERN.fullmatch(monitor) is None:
-        raise ValueError(
-            f"{path} must use a canonical epoch metric key such as "
-            "'train/loss', 'valid/loss', or "
-            "'valid/metrics/prediction_mae'"
-        )
+    message = (
+        f"{path} must use a canonical epoch metric key such as "
+        "'train/loss', 'valid/loss', or "
+        "'diagnostics/quality/fid'"
+    )
+    try:
+        origin, _ = classify_epoch_metric_key(monitor, path=path)
+    except ValueError as error:
+        raise ValueError(message) from error
+    if origin == "system":
+        raise ValueError(message)
     return monitor
+
+
+def classify_epoch_metric_key(
+    value: object,
+    *,
+    path: str = "epoch metric key",
+) -> tuple[EpochMetricKeyOrigin, EpochMetricKeyDataRole | None]:
+    """Classify one strict canonical epoch metric key."""
+
+    key = _non_empty_string(value, path=path)
+    phase_match = _PHASE_EPOCH_METRIC_PATTERN.fullmatch(key)
+    if phase_match is not None:
+        phase = phase_match.group("phase")
+        data_role: EpochMetricKeyDataRole = (
+            "validation" if phase == "valid" else cast(EpochMetricKeyDataRole, phase)
+        )
+        return "phase", data_role
+    if _DIAGNOSTIC_EPOCH_METRIC_PATTERN.fullmatch(key) is not None:
+        return "diagnostic", None
+    if _SYSTEM_EPOCH_METRIC_PATTERN.fullmatch(key) is not None:
+        return "system", None
+    raise ValueError(
+        f"{path} must use a canonical epoch metric key such as "
+        "'train/loss', 'valid/metrics/prediction_mae', "
+        "'diagnostics/quality/fid', or "
+        "'system/train/skipped_optimizer_steps'"
+    )
 
 
 __all__ = [

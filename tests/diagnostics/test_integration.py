@@ -57,10 +57,11 @@ def test_step_pipeline_logs_all_denoiser_provider_metrics(tmp_path) -> None:
     diagnostic.on_train_batch_end(batch_event(runtime))
 
     metrics = logger.metrics[-1][1]
-    assert metrics["diagnostics/denoiser/loss_t_001_002"] == 1.0
-    assert metrics["diagnostics/denoiser/loss_t_003_004"] == 3.0
-    assert "diagnostics/denoiser/noise_cosine_similarity" in metrics
-    assert "diagnostics/denoiser/reconstruction_t_0001/mse" in metrics
+    prefix = "diagnostics/diffusion_quality/denoiser"
+    assert metrics[f"{prefix}/loss_t_001_002"] == 1.0
+    assert metrics[f"{prefix}/loss_t_003_004"] == 3.0
+    assert f"{prefix}/noise_cosine_similarity" in metrics
+    assert f"{prefix}/reconstruction_t_0001/mse" in metrics
 
 
 def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
@@ -75,7 +76,7 @@ def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
     diagnostic.on_fit_start(fit_event(runtime))
     diagnostic.on_train_batch_end(batch_event(runtime))
 
-    diagnostic.on_train_epoch_end(epoch_event(runtime))
+    results = diagnostic.on_train_epoch_end(epoch_event(runtime))
 
     epoch_dir = tmp_path / "diagnostics" / "diffusion_quality" / "epoch_0001"
     manifest_path = epoch_dir / "manifest.yaml"
@@ -94,16 +95,27 @@ def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
     tags = {tag for tag, _, _, _ in logger.images}
     assert "diagnostics/samplers/ddpm_full/samples" in tags
     assert "diagnostics/samplers/ddim_2/trajectory" in tags
-    combined = {name for _, payload in logger.metrics for name in payload}
-    assert "diagnostics/samplers/ddpm_full/sampling_seconds" in combined
-    assert "diagnostics/samplers/ddim_2/batch_diversity" in combined
-    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    expected_combined_metrics = {
-        name: value
-        for profile in manifest["profiles"]
-        for name, value in profile["metrics"].items()
+    assert results is not None
+    combined = {
+        name
+        for result in results
+        for name in result.metrics
     }
-    assert manifest["combined_metrics"] == expected_combined_metrics
+    assert (
+        "diagnostics/diffusion_quality/samplers/ddpm_full/sampling_seconds"
+        in combined
+    )
+    assert (
+        "diagnostics/diffusion_quality/samplers/ddim_2/batch_diversity"
+        in combined
+    )
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert set(manifest["combined_metrics"]) == {
+        "observation",
+        "validation_quality",
+    }
+    assert set(manifest["combined_metrics"]["observation"]) == combined
+    assert manifest["combined_metrics"]["validation_quality"] == {}
     assert "metrics" not in manifest
 
 
@@ -222,11 +234,19 @@ def test_warn_policy_isolates_profile_failure_and_records_manifest_error(tmp_pat
     torch.manual_seed(321)
     rng_before = torch.random.get_rng_state().clone()
 
-    diagnostic.on_train_epoch_end(epoch_event(runtime))
+    results = diagnostic.on_train_epoch_end(epoch_event(runtime))
 
-    assert any(
-        payload.get("diagnostics/system/error_count") == 1.0
-        for _, payload in logger.metrics
+    assert results is not None
+    returned_metrics = {
+        key: value
+        for result in results
+        for key, value in result.metrics.items()
+    }
+    assert (
+        returned_metrics[
+            "diagnostics/diffusion_quality/system/error_count"
+        ]
+        == 1.0
     )
     assert "sampling failed" in logger.text[-1][1]
     assert model.training

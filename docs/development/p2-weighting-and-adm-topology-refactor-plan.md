@@ -1,7 +1,8 @@
 # P2 Weighting 与 ADM 拓扑重构计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式文档导航
-- 状态：Implemented（A0/A1 已完成；单类别 reproduction lane 已取消）
+- 状态：Implemented（A0/A1 与范围修订后的 A2 class-aware example contract 已完成；
+  单类别 reproduction lane 已取消）
 - 制定日期：2026-07-30
 - 最近范围修订：2026-07-31
 - 统一排期：
@@ -260,6 +261,10 @@ canonical cutover 前的 AFHQ checkpoint、FID/KID 与 sample panel 不属于新
 - 保留 aggregate/per-class evaluation config、实现与测试；
 - Metrics 合并后保证 prediction metric 只消费 `C` head；
 - monitor 在 epoch loop 前验证 metric id、phase 与 validation-loader compatibility。
+
+该范围已由 AFHQ example 的 class-aware evaluation 与回归测试闭合；它不依赖
+dog-specific lane，也不等待 4090/DGX 性能数据。通用、跨任务的 Evaluation Operation
+仍由独立 Evaluation 计划负责，不能反向把 A2 标为硬件阻塞。
 
 ## 7. Test plan
 

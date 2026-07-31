@@ -256,7 +256,7 @@ schema，不导入第三方代码。runner 随后发现并预检所选
 `stochaflow.extensions` entry points，在任何插件导入前处理 checkpoint provenance 和
 version policy，再激活插件、执行跨组件校验并构建组件。训练、resume 和
 checkpoint-backed inference 因而使用同一套显式插件选择与审计结果。这里的
-`prediction_type` 来自 TrainingBuilder 固化到 v10 checkpoint 的 recipe contract，
+`prediction_type` 来自 TrainingBuilder 固化到 v11 checkpoint 的 recipe contract，
 不会在 sampling request 中重复声明。
 
 (gaussian-variance-p2-respaced-ddpm)=

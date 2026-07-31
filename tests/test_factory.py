@@ -288,7 +288,7 @@ def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> 
     assert "process_gain" not in components.ema.shadow_params
 
     state = components.checkpoint_manager.build_state()
-    assert state.get("format_version") == 10
+    assert state.get("format_version") == 11
     process_state = state.get("process_state_dict")
     assert process_state is not None
     assert "process_gain" in process_state

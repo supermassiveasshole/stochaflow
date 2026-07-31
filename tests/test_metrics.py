@@ -135,10 +135,36 @@ class FailingUpdateMetric(Metric):
         return self.total
 
 
+class MutatingFailingUpdateMetric(Metric):
+    """Mutate state before rejecting negative inputs."""
+
+    total: torch.Tensor
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_state(
+            "total",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum",
+        )
+
+    def update(self, value: torch.Tensor) -> None:
+        self.total += value.sum()
+        if torch.any(value < 0):
+            raise RuntimeError("intentional failure after mutation")
+
+    def compute(self) -> torch.Tensor:
+        return self.total
+
+
 REGISTRIES.metrics.add("test.recording_sum", RecordingSumMetric)
 REGISTRIES.metrics.add("test.configured_result", ConfiguredResultMetric)
 REGISTRIES.metrics.add("test.failing_compute", FailingComputeMetric)
 REGISTRIES.metrics.add("test.failing_update", FailingUpdateMetric)
+REGISTRIES.metrics.add(
+    "test.mutating_failing_update",
+    MutatingFailingUpdateMetric,
+)
 
 
 def test_metric_update_validates_and_freezes_kwargs() -> None:
@@ -427,6 +453,25 @@ def test_builtin_mse_and_mae_share_one_opaque_channel() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("name", "params", "message"),
+    [
+        ("mse", {"squared": False}, "fixes squared=True"),
+        ("mse", {"num_outputs": 2}, "fixes num_outputs=1"),
+        ("mse", {"num_outputs": 1.0}, "fixes num_outputs=1"),
+        ("mae", {"num_outputs": 2}, "fixes num_outputs=1"),
+        ("mae", {"num_outputs": True}, "fixes num_outputs=1"),
+    ],
+)
+def test_builtin_error_metrics_reject_non_scalar_semantics(
+    name: str,
+    params: dict[str, Any],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_metric(MetricSpec("error", name, "prediction", params))
+
+
 def test_engine_detaches_each_channel_once_and_updates_under_no_grad() -> None:
     RecordingSumMetric.observed.clear()
     RecordingSumMetric.grad_enabled.clear()
@@ -547,13 +592,44 @@ def test_engine_rejects_compute_without_a_complete_successful_update() -> None:
         ]
     )
 
-    with pytest.raises(RuntimeError, match="intentional update failure"):
+    with pytest.raises(
+        MetricRuntimeError,
+        match=r"metric 'failure'.*channel 'value'",
+    ) as error:
         engine.update({"value": MetricUpdate(args=(torch.tensor(1.0),))})
+    assert isinstance(error.value.__cause__, RuntimeError)
     with pytest.raises(
         MetricRuntimeError,
         match=r"metrics=partial, failure; channels=value",
     ):
         engine.compute()
+
+
+def test_failed_metric_update_resets_all_accumulated_and_partial_state() -> None:
+    engine = MetricEngine(
+        [
+            MetricSpec("sum", "test.recording_sum", "value"),
+            MetricSpec(
+                "guarded",
+                "test.mutating_failing_update",
+                "value",
+            ),
+        ]
+    )
+    engine.update({"value": MetricUpdate(args=(torch.tensor(2.0),))})
+
+    with pytest.raises(
+        MetricRuntimeError,
+        match=r"metric 'guarded'.*channel 'value'",
+    ) as error:
+        engine.update({"value": MetricUpdate(args=(torch.tensor(-1.0),))})
+
+    assert isinstance(error.value.__cause__, RuntimeError)
+    engine.update({"value": MetricUpdate(args=(torch.tensor(3.0),))})
+    assert engine.compute() == {
+        "sum": pytest.approx(3.0),
+        "guarded": pytest.approx(3.0),
+    }
 
 
 def test_engine_reset_clears_successful_update_guard() -> None:
@@ -570,10 +646,15 @@ def test_engine_reset_clears_successful_update_guard() -> None:
 def test_mean_rejects_nan_while_snapshot_preserves_non_finite_facts() -> None:
     engine = MetricEngine([MetricSpec("average", "mean", "value")])
 
-    with pytest.raises(RuntimeError, match=r"[Nn][Aa][Nn]"):
+    with pytest.raises(
+        MetricRuntimeError,
+        match=r"metric 'average'.*channel 'value'",
+    ) as error:
         engine.update(
             {"value": MetricUpdate(args=(torch.tensor([math.nan]),))}
         )
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert "nan" in str(error.value.__cause__).lower()
 
     source = MetricSource("phase", "validation", None, True)
     snapshot = EpochMetricSnapshot(

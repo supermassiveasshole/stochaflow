@@ -11,7 +11,7 @@
     <li class="sf-pill">PyTorch</li>
     <li class="sf-pill">DDPM / DDIM</li>
     <li class="sf-pill">可安装扩展</li>
-    <li class="sf-pill">Checkpoint v10</li>
+    <li class="sf-pill">Checkpoint v11</li>
   </ul>
 </div>
 
@@ -31,6 +31,7 @@ design/scope
 platform-support
 configuration/index
 tutorials/tensorboard
+tutorials/class-metrics
 tutorials/afhq-v2
 tutorials/super-resolution
 tutorials/reuse-gaussian-components
@@ -165,6 +166,8 @@ residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与�
 - [完整字段参考](configuration/reference.md)：由 dataclass、Registry 和 CLI 自动生成。
 - [TensorBoard 使用指南](tutorials/tensorboard.md)：启用日志、比较多次运行、解读
   loss/LR/diagnostic 面板并排查 event 路径。
+- [按类别验证与自定义 Metric](tutorials/class-metrics.md)：用自定义 Strategy channel
+  聚合逐类别与 macro validation 指标。
 - [AFHQ-v2 数据准备与训练](tutorials/afhq-v2.md)：安全下载、确定性 managed artifact、
   离线验证、strict resume 与 128×128 showcase。
 - [纵向扩展参考项目](configuration/reference-projects.md)：Physics reconstruction 与
@@ -174,7 +177,8 @@ residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与�
 - [条件 Gaussian 超分辨率](tutorials/super-resolution.md)：从内置 SR 数据 recipe 到
   condition-aware 训练和复用 DDPM/DDIM 的完整组合。
 - [Checkpoint、配置权威与可移植性](configuration/compatibility-and-migration.md)：
-  checkpoint v10、fixed inference recipe、partial sample request 和跨环境恢复边界。
+  checkpoint v11、canonical metric snapshot、fixed inference recipe、partial sample
+  request 和跨环境恢复边界。
 - [扩展公共 API](api/extensions.md)：第三方 extension 的稳定 Python import surface。
 - [Sampling artifact 容量](configuration/sampling-capacity.md)：整体物化生命周期、
   内存估算、trajectory 限制和参考主机证据。

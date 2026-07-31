@@ -47,17 +47,18 @@ load、映射 key、转换 state、保留 legacy model name 或自动改写 reso
 state validation 会 fail closed。升级时必须 fresh train，并从新 checkpoint 执行 resume
 或 sampling。拓扑修复前发布的 AFHQ 指标与样本不能归因给 corrected ADM 或 P2。
 
-## Checkpoint v10
+## Checkpoint v11
 
-当前 writer 和 runtime 只接受 `format_version: 10`；不读取或迁移 v8/v9。旧
+当前 writer 和 runtime 只接受 `format_version: 11`；不读取或迁移 v8/v9/v10。旧
 checkpoint 不能 strict resume，也不能作为 `stochaflow sample` 的输入，应由新运行重新
-生成。payload 通过
+生成。手工改写 `format_version` 不能补齐所需 schema，也不是受支持的迁移。payload 通过
 `torch.load(..., weights_only=True)` 读取，并递归限制为 Tensor/Parameter、primitive 和
 普通 `dict`、`OrderedDict`、`list`、`tuple` 等 data-only 值。
 
 训练 checkpoint 保存：
 
-- format version、epoch/global step、resolved config、metrics 与 metadata；
+- format version、epoch/global step、resolved config、canonical epoch metrics 与
+  `metadata.metric_sources`；
 - primary model，以及存在时的 Process、Objective 和按名称声明的 managed auxiliary
   module state；
 - optimizer/scheduler 的 concrete class identity 与 state；
@@ -67,6 +68,9 @@ checkpoint 不能 strict resume，也不能作为 `stochaflow sample` 的输入�
 - 始终存在的 `inference_recipe`；`null` 表示不支持 checkpoint-backed inference，
   否则严格保存 `{schema_version: 1, name, contract}`；
 - Python、NumPy、Torch CPU 及可用 CUDA/MPS 的 epoch-boundary RNG snapshot；
+- 完整 `metadata.training_loop`，包括是否启用 best tracking、monitor
+  `metric/mode/missing/min_delta`、patience、最佳值，以及按 observation 计数的
+  early-stopping state；
 - extension provenance、lineage、`selected_components` 和可选 data artifact bindings。
 
 每个 non-empty inference asset descriptor 将一个 slot 一对一绑定到
@@ -76,11 +80,16 @@ reconstruction-only component config；训练时下载地址、bootstrap path �
 acquisition identity 不能作为 sampling reconstruction 输入。多个 slot 指向同一 training
 asset 会被拒绝。空 descriptor checkpoint 的 wire shape 和 pixel inference 行为不变。
 
-v10 恢复是事务性的。manager 先验证完整 header、precision/scaler topology、inference
+v11 恢复是事务性的。manager 先验证完整 header、precision/scaler topology、inference
 descriptors、fixed inference recipe、module key/shape/dtype/layout、optimizer parameter
 groups、scheduler、EMA 与可选资产拓扑，再加载 state；后期 load hook 或任一资产失败时，
 已触及的 runtime 对象会回滚到恢复前快照。strict resume 因而是完整恢复，不是
 weights-only warm start。
+
+strict resume 还会在修改 runtime 前解析完整 epoch metric snapshot、逐 key source
+metadata 与 training-loop state。恢复后的 best-tracking policy、missing policy 和
+patience 必须与继续运行时完全一致；不能通过 resume 把已保存的 observation counter
+重解释为另一套 early-stopping 规则。
 
 可选资产按“存在性 + state”严格配对：runtime 有 Process/Objective 时 checkpoint 必须有
 对应 state，runtime 没有时 payload 也不能含该 key。辅助资产名称、
@@ -88,19 +97,49 @@ optimizer/scheduler class、EMA topology、precision 和 accumulation 同样必�
 data-aware 训练还会在构建 sibling run 和恢复任何训练资产前，重新 materialize 并比较
 checkpoint 的完整 `DataArtifactBindings`。
 
-### Gaussian inference recipe variance cutover
+### Canonical metric key 是 breaking boundary
+
+v11 checkpoint、logger、history 和 monitor 只使用以下 canonical epoch key：
+
+- phase loss：`train/loss`、`valid/loss`、`test/loss`；
+- stateful phase metric：
+  `train|valid|test/metrics/<id>[/<subkey>]`；
+- verified diagnostic metric：
+  `diagnostics/<diagnostic-id>/<metric...>`；
+- runtime observation：`system/<scope>/<metric...>`，不能用于模型选择。
+
+旧 `train_loss`、`valid_loss` 及其他 underscore alias 没有 reader、双写或迁移路径。
+配置加载和 checkpoint snapshot 解析都会拒绝非 canonical key；不要通过修改 JSONL、
+YAML 或 checkpoint metadata 尝试混用旧名称。test-role metric 即使 key 合法，也不能控制
+best checkpoint 或 early stopping。
+
+### Diagnostic monitor 的 missing 语义
+
+`trainer.early_stopping.missing` 支持 `error` 与 `skip`：
+
+- `error` 是默认值；本 epoch 找不到 monitor 时立即失败；
+- `skip` 只允许 `diagnostics/...` monitor，并且只在已验证 source 按 cadence **尚未到期**
+  时跳过本次选择；
+- source 已到期但 callback 没有返回被监控 key、返回失败、source id 不匹配或 metric
+  非有限值时仍然失败，不能用上一次值、零或 `NaN` 代替；
+- 整个 fit 没有产生任何 monitor observation 时失败，避免一次没有真正评估的训练被标记为
+  成功；
+- patience 按“已经观察到但没有改进”的次数累计；cadence skip 不增加 wait counter。
+
+diagnostic 只有 composition 验证过的 validation source 才有 selection 资格。checkpoint
+同时保存其 `data_role=validation`、`selection_eligible=true` 与
+`protocol_id=sha256:<digest>`；external sampler statistics、耗时、artifact 以及任何
+test-role 结果都不能成为 monitor。
+
+### Gaussian inference recipe
 
 新构建的所有 Gaussian training recipe 都在 checkpoint fixed contract 中同时冻结
 `prediction_type` 与 `variance: {mode: fixed|learned_range}`。即使使用兼容默认值
 `fixed`，该字段也会显式保存；sample request 不能覆盖它。
 
-因此，在这次变更前写出的某些 v10 Gaussian checkpoint 虽然 format version 相同，但其
-`inference_recipe.contract` 缺少 `variance`。strict resume 会因新 TrainingPlan 的
-explicit fixed recipe 与旧保存 recipe 不相等而拒绝它；框架不会改写 checkpoint。
-checkpoint-backed sampling 对缺失字段继续采用 fixed-compatible default，除非另有
-model/state incompatibility。对非 ADM 模型，这是 training recipe authority cutover；
-对 ADM checkpoint 还同时存在上一节更强的 state key/shape/topology 不兼容，因此旧 ADM
-sampling 仍会失败。手工补字段不能修复 ADM state，也不是受支持的 checkpoint migration。
+当前 v11 writer 总是显式保存该字段。所有 v10 Gaussian checkpoint 会先因 format
+version 失败；即使其 model state 看似相同，也不能通过手工补字段或改版本升级。对 ADM
+checkpoint 还同时存在上一节更强的 state key/shape/topology 不兼容。
 
 ### Precision 与 accumulation
 
@@ -123,16 +162,20 @@ micro-batch 数归一化。只有成功的 optimizer update 才推进 global ste
 EMA 和 update-level diagnostics。precision、scaler state 和 accumulation 都属于 strict
 resume config/state 边界，不能通过 observability overlay 改写。
 
-### v9 到 v10 是 breaking migration
+### v10 到 v11 是 breaking migration
 
-v10 把训练时确定的 inference composition 从用户可改写的 sampling 配置中移出，固定为
-checkpoint `inference_recipe`。框架不会根据旧 `sampling.builder` 猜测 recipe，不会为
-v9 payload 补写 contract，也不提供 dual reader。迁移方式是用新 schema 启动 fresh run；
-无法仅通过编辑 YAML 把旧 checkpoint 升级为可信 v10。
+v11 把 canonical metric snapshot、逐结果 source metadata、完整 monitor policy 和
+observation-based early-stopping counter 固化为 strict-resume schema。v10 没有这些完整
+事实，框架无法可靠判断旧 best 值来自 train、validation、test 还是 external diagnostic，
+也无法把 epoch wait counter 无歧义地转换成 observation counter。因此没有 v10 reader、
+alias、dual write 或自动迁移；升级方式是以 v11 启动 fresh run。
+
+更早的 v10 曾把训练时确定的 inference composition 从用户可改写的 sampling 配置中移出。
+v11 保留该 authority boundary，但旧 sampling 文件仍不能直接使用：
 
 旧 sampling 文件也不再有效：
 
-| 旧字段/行为 | v10 替换 |
+| 旧字段/行为 | 当前 v11 替换 |
 | --- | --- |
 | `sampling.builder.name` | 由 `TrainingPlan.inference_recipe.name` 固化进 checkpoint |
 | `sampling.builder.params.prediction_type` 等训练语义 | `inference_recipe.contract`，request 不可覆盖 |
@@ -144,16 +187,19 @@ v9 payload 补写 contract，也不提供 dual reader。迁移方式是用新 sc
 
 ### 不在 checkpoint 中的状态
 
-v10 不保存：
+v11 不保存：
 
 - extension 的 Python class、源码、wheel、依赖环境或 lockfile；
 - DataBuilder/TrainingBuilder/Strategy/SamplingBuilder 实例；
 - Dataset、DataLoader、iterator、worker、PyTorch data sampler 或 partition runtime
   state；
 - epoch 中间尚未 step 的 gradients、accumulation window 或 DataLoader cursor；
+- epoch 中间的 Metric state；只保存完成 epoch 的 canonical scalar snapshot 与 source
+  metadata；
 - Sampler、Observer、solver history、sampling trajectory 等临时采样状态；
-- TrainingDiagnostic/ExperimentLogger 实例、diagnostic cache/counter、打开的日志文件或
-  TensorBoard writer/event 文件；
+- TrainingDiagnostic/ExperimentLogger 实例、diagnostic 自有 cache/counter、打开的日志
+  文件或 TensorBoard writer/event 文件；best/early-stopping 的 monitor observation
+  counters 则属于上述 `metadata.training_loop`；
 - 用户私有 generator、数据集、网络资源或输出目录内容。
 
 CPU/CUDA/MPS RNG snapshot 只覆盖相应全局 generator，不扩展 DataLoader worker 或用户

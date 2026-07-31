@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, cast
 
 import torch
@@ -137,6 +139,26 @@ class KIDReferenceMetricProvider(ReferenceMetricProvider):
 ReferenceErrorHandler = Callable[[str, str, Exception], None]
 
 
+@dataclass(frozen=True, slots=True)
+class ReferenceMetricResult:
+    """Separate selection metrics from protocol/runtime observations."""
+
+    metrics: Mapping[str, float]
+    observations: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "metrics",
+            MappingProxyType(dict(self.metrics)),
+        )
+        object.__setattr__(
+            self,
+            "observations",
+            MappingProxyType(dict(self.observations)),
+        )
+
+
 class ReferenceMetricSuite:
     """Cache real features once and stream shared fake batches to providers."""
 
@@ -206,7 +228,7 @@ class ReferenceMetricSuite:
         sampler: BoundSampler,
         sample_shape: tuple[int, int, int],
         visual_samples: torch.Tensor | None,
-    ) -> Mapping[str, float]:
+    ) -> ReferenceMetricResult:
         """Evaluate every active provider from one shared generated image stream."""
 
         started_at = time.perf_counter()
@@ -258,9 +280,10 @@ class ReferenceMetricSuite:
                 seen += generated.shape[0]
 
             prefix = f"diagnostics/samplers/{profile_id}"
-            metrics: dict[str, float] = {
+            observations: dict[str, float] = {
                 f"{prefix}/reference_fake_samples": float(seen),
             }
+            metrics: dict[str, float] = {}
             for name, provider in self.providers:
                 if name in failed:
                     continue
@@ -275,10 +298,13 @@ class ReferenceMetricSuite:
                 except Exception as exc:  # noqa: BLE001
                     failed.add(name)
                     self.handle_error("reference_compute", name, exc)
-            metrics[f"{prefix}/reference_metric_seconds"] = (
+            observations[f"{prefix}/reference_metric_seconds"] = (
                 time.perf_counter() - started_at
             )
-            return metrics
+            return ReferenceMetricResult(
+                metrics=metrics,
+                observations=observations,
+            )
         finally:
             for name, provider in self.providers:
                 if name in self._unavailable:
@@ -293,5 +319,6 @@ class ReferenceMetricSuite:
 __all__ = [
     "FIDReferenceMetricProvider",
     "KIDReferenceMetricProvider",
+    "ReferenceMetricResult",
     "ReferenceMetricSuite",
 ]

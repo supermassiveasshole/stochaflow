@@ -1,28 +1,28 @@
-# Metrics M0–M1 实现决策与维护者审查记录
+# Metrics M0–M4 实现决策与维护者审查记录
 
 - 文档性质：feature branch 的维护者审查记录；不是稳定公共 API 文档
 - 审查基线：[Metrics 支持开发计划](metrics-support-plan.md)
-- 实现范围：M0–M1
-- 明确延期：M2 diagnostic monitoring、M3 extension/distributed readiness、M4
-  正式文档与计划收束
+- 实现范围：M0–M4
+- 状态：实现、公开文档和本地 full branch verification 已收束；远端 CI 待推送确认
 - 记录日期：2026-07-31
 
 本文记录本次实现采用的责任边界、兼容性决策和已知限制。计划仍是需求依据；当计划中
-列出 decision gate 时，本文记录该 gate 在本次实现中的最终结论。
+列出 decision gate 时，本文记录该 gate 在本次实现中的最终结论。本文也保留早期
+M0–M1 审查时的历史结论，但凡与后续实现冲突，以标注为“当前”的 M2–M4 决策为准。
 
 ## 1. 范围结论
 
-| 阶段 | 本次状态 | 落地内容或延期理由 |
+| 阶段 | 当前状态 | 落地内容 |
 | --- | --- | --- |
-| M0 | 已实现 | canonical tag、旧 monitor alias 拒绝、`MetricUpdate`、`MetricSource`、`EpochMetricSnapshot`、递归 detach、loss reporting weight |
+| M0 | 已实现 | canonical tag、旧 monitor alias 拒绝、`MetricUpdate`、`MetricSource`、`EpochMetricSnapshot`、显式 detach、loss reporting weight |
 | M1 | 已实现 | `MetricConfig`/`MetricSpec`、metric registry/factory、task-neutral `MetricEngine`、training phase binding、`mean`/`mse`/`mae`、Strategy channel、logger/history/checkpoint 接入 |
-| M2 | 延期 | Diagnostic 尚未返回带 verified source 的结果，调用仍发生在 checkpoint 选择之后；因此 FID/KID 不能作为本次实现的 monitor |
-| M3 | 延期 | 已提供必要的 `MetricUpdate`、`MetricChannelProvider` 和 registry 基础，但独立第三方 extension、provenance 及 DDP contract matrix 尚未完成，不能宣称 M3 完成 |
-| M4 | 延期 | 本记录仍位于 `docs/development/`；稳定 extension API 教程、完整公开文档迁移和计划归档留待后续 |
+| M2 | 已实现 | typed diagnostic result/source request、stable provenance + actual fit iterable verified source、checkpoint 前 diagnostic merge、cadence-aware missing policy、observation-based patience、严格恢复 |
+| M3 | 已实现（单进程承诺） | stable extension exports、真实 plugin activation 下的 custom Strategy + Metric contract/provenance、built-in/extension DDP reduction declaration matrix；distributed Trainer 仍明确不在范围内 |
+| M4 | 已实现 | config reference、公开 extension/config/migration 文档、custom metric 教程与开发计划归档已收束 |
 
-M0–M1 的完成不扩大到 post-training Evaluation、HPO、多目标选择、mid-epoch
-resume 或 distributed Trainer。本次也没有把 FID/KID 搬进普通 validation batch
-循环。
+本次完成不扩大到 post-training Evaluation、HPO、多目标选择、mid-epoch resume 或
+distributed Trainer，也没有把 FID/KID 搬进普通 validation batch 循环。M3 的
+“distributed readiness”只表示声明级契约已审计，并不表示多进程运行语义已被支持。
 
 ## 2. 依赖决策
 
@@ -73,8 +73,8 @@ quality extra    -> FID/KID 等需要额外模型或特征依赖的质量诊断/
 | Registry name | Implementation |
 | --- | --- |
 | `mean` | 固定 `nan_strategy="error"` 的 `MeanMetric` wrapper |
-| `mse` | `MeanSquaredError` |
-| `mae` | `MeanAbsoluteError` |
+| `mse` | 固定 `squared=True`、`num_outputs=1` 的 `MeanSquaredError` |
+| `mae` | 固定 `num_outputs=1` 的 `MeanAbsoluteError` |
 
 拒绝 native resolver 的理由：
 
@@ -86,7 +86,7 @@ quality extra    -> FID/KID 等需要额外模型或特征依赖的质量诊断/
 4. 当前真实配置只需要三个稳定实现，没有足够重复证明 resolver 的维护成本合理；
 5. 第三方仍可显式注册一个保持 `Metric` contract 的实现，不需要修改 core dispatch。
 
-计划中的 `torchmetrics.classification.*` 示例因此不是 M0–M1 可用配置。需要该类指标
+计划中的 `torchmetrics.classification.*` 示例因此也不是当前可用配置。需要该类指标
 时，应先增加受测 wrapper 或由 extension 注册稳定名字；只有新的独立 decision gate
 通过后才能引入受限 native provider。
 
@@ -118,8 +118,18 @@ conditioning 已在 Strategy 的 model invocation 中完成；core 不需要增�
 class label 或 Gaussian concrete-class 分支。未配置 metric 的自定义 Strategy 无需实现
 `MetricChannelProvider`，保持旧 extension 的最小接口。
 
-所有 payload tensor 在分发前递归 detach，metric update 在 `torch.no_grad()` 下执行。
+所有 payload tensor 在分发前 detach，metric update 在 `torch.no_grad()` 下执行。
+普通 `dict`、`OrderedDict`、`MappingProxyType`、list、tuple、namedtuple 与安全 scalar
+leaf 保留各自容器语义；未知的有状态容器不会被反射遍历。自定义容器必须显式实现
+`MetricPayloadDetachable.detach_metric_payload()`，否则 fail closed。这里没有依赖
+PyTorch 私有的 `torch.utils._pytree`：私有 API 的注册表、支持类型和兼容性不属于
+Stochaflow 可以承诺的公共边界，而一个窄的 opt-in protocol 可以让 extension 对
+detach 后的类型与不变量负责。
+
 `diagnostics` 不作为缺失 channel 的 fallback；否则 diagnostic key 拼写会成为隐藏 API。
+内置 `mse` 和 `mae` 固定为 scalar-only、`num_outputs=1`；`mse` 还固定
+`squared=True`。这避免一个名字看似 scalar、直到 epoch `compute()` 才返回向量并失败。
+需要多输出统计时，extension 应注册一个命名与 flatten contract 都明确的 Metric。
 
 ## 5. 每个 phase 的独立生命周期
 
@@ -144,6 +154,10 @@ test engine:        reset -> update evaluation batches           -> compute -> r
 - validation/test 在 `torch.no_grad()` evaluation step 后立即更新；
 - phase 异常、空 phase、全零 loss aggregation weight 或 compute 失败时执行 reset，
   不把部分 state 泄漏到下一次调用；
+- 一个 update 在任意已绑定 metric 上失败时，整个 engine 立即 reset，再带 metric id
+  与 channel 上下文抛错；不会保留“前几个 metric 已更新、后一个失败”的部分提交；
+- `TrainingMetricRuntime` 在组合完成后显式迁移到 Trainer device，不从 payload 或
+  metric 类名猜测 device；
 - metric state 不属于 managed training assets，不进入 optimizer、mode lifecycle 或
   checkpoint。
 
@@ -158,6 +172,7 @@ test engine:        reset -> update evaluation batches           -> compute -> r
 | completed validation epoch | `valid/loss` | logger、history、checkpoint、monitor |
 | completed test phase | `test/loss` | logger 和 post-training test result；永不参与训练选择 |
 | stateful phase metric | `<phase>/metrics/<id>[/<subkey>]` | 对应 phase 的 canonical result |
+| epoch diagnostic metric | `diagnostics/<diagnostic-id>/<metric...>` | logger、history、checkpoint；只有 verified validation source 可参与 monitor |
 | runtime/throughput | `system/...` | observation only，source 不具 selection 资格 |
 
 将 step loss 改为 `train/step/loss`，是为了避免一个 W&B/TensorBoard series 同时混入
@@ -167,18 +182,22 @@ batch 值和 epoch aggregate。`train/loss`、`valid/loss` 等 canonical epoch k
 metric 返回 scalar 时 key 结束于 `<id>`；返回 flat mapping 时增加经过验证的
 `<subkey>`。bool、list、tuple、non-scalar tensor、嵌套 mapping 和冲突 key 默认失败。
 
-当前 monitor grammar 只接受 `train/loss`、`valid/loss` 和对应
-`<phase>/metrics/<id>[/<subkey>]`。配置加载时即拒绝 step、system、test、diagnostic
-namespace、周围空白和旧 alias，避免长训练直到首个 epoch 结束才发现 monitor 不存在。
-无 validation loader 时，runner 只把默认的 `valid/loss` 回退为 `train/loss`；显式
-`train/metrics/...` 保持不变，显式 `valid/metrics/...` 则在训练前失败。
+当前 monitor grammar 接受 `train/loss`、`valid/loss`、`test/loss`、对应
+`<phase>/metrics/<id>[/<subkey>]`，以及
+`diagnostics/<diagnostic-id>/<metric...>`。配置加载时拒绝 step、system、
+不完整 diagnostic path、周围空白和旧 alias，避免长训练直到首个 epoch 结束才发现
+monitor 不存在。无 validation loader 时，runner 只把默认的 `valid/loss` 回退为
+`train/loss`；显式 `train/metrics/...` 保持不变，显式 `valid/metrics/...` 或可选择的
+diagnostic 则在训练前失败。`test/*` 的 key grammar 合法，但 selection preflight 会因
+test-role source 不具资格而拒绝。
 
 当 best tracking 或 early stopping 实际启用时，`Trainer.fit()` 还会在 diagnostic、
 loader iteration 和 epoch loop 之前预检 monitor 的完整静态依赖：`valid/*` 必须存在
-validation loader，metric id 必须声明在对应 train/validation phase。flat mapping 的
-subkey 由 `Metric.compute()` 动态产生，因此 preflight 只验证 base id；完整 subkey
-继续在首个 epoch snapshot 中 fail closed。`track_best: false` 时 monitor 未被消费，
-不会触发这项语义检查。
+validation loader，phase metric id 必须声明在对应 phase；diagnostic monitor 必须定位
+到恰好一个 composition-verified、validation-role、selection-eligible source。flat
+mapping 的 subkey 由 `Metric.compute()` 或 diagnostic callback 动态产生，因此
+preflight 验证静态 binding，完整 key 继续在 due snapshot 中 fail closed。
+`track_best: false` 时 monitor 未被消费，不会触发这项语义检查。
 
 ### 6.2 W&B 保留 canonical path
 
@@ -219,39 +238,109 @@ core 不从 tensor shape 或 constructor 参数名猜测。
 该字段也不承载 diffusion timestep/SNR/P2 weighting。后者属于 Strategy 内可微
 objective 数学；两者共享字段会混淆训练目标和观测统计。
 
-## 8. Checkpoint v10 与 source metadata
+## 8. Diagnostic monitoring、source verification 与 checkpoint v11
 
-`CHECKPOINT_FORMAT_VERSION` 保持 v10，不 bump。理由是本次没有增加新的 required
-top-level header、managed asset state、inference recipe 字段或 restore 顺序，而是复用
-v10 已有的三个容器：
+### 8.1 Composition 绑定 source，而不是相信 callback
 
-- resolved metric declarations 进入既有 `config`；
-- `EpochMetricSnapshot.values` 进入既有 scalar `metrics` mapping；
-- `EpochMetricSnapshot.sources` 序列化到既有 `metadata.metric_sources`。
+会产生 epoch metric 的 diagnostic 通过 `DiagnosticSourceRequest` 声明 source id、
+`train|validation|test|external` data role 与 JSON-safe protocol descriptor。完整
+Builder/factory composition 把以下事实组成 canonical descriptor，再计算 SHA-256：
 
-source metadata 不放进 `metrics`，因为 `MetricSource` 的
+- configured diagnostic id 与 source id；
+- source role 与 diagnostic 自己的 versioned protocol/config descriptor；
+- resolved data config；
+- 实际 data artifact identities；
+- 已选择 extension plugin provenance。
+
+digest 同时保存在 `VerifiedMetricSource.protocol_digest` 和
+`MetricSource.protocol_id="sha256:<digest>"`。callback 只返回 `DiagnosticResult` 的
+`source_id` 与 scalar mapping，不能自行声明 data role 或
+`selection_eligible=True`。未知 source、重复 source、错误 diagnostic-id 前缀、key
+collision 或 binding mismatch 都会 fail closed。
+
+request 中的 role 只是待验证约束，不是授权。composition 还把 train/validation
+request 绑定到本次 DataBuilder 实际创建的 re-iterable；
+`BoundTrainingDiagnostic.source_iterables` 只保留这一运行期对象绑定，Trainer 在任何
+callback 或 loader iteration 前按对象 identity 与本次 `fit()` 参数核对。Python
+identity 不进入 SHA-256 或 checkpoint，因此新进程可用相同 stable descriptor 和新建
+loader 得到相同 protocol digest。缺少完整 provenance、缺少实际 iterable、当前 fit
+对象错配，以及未经绑定但声明 source 的 raw diagnostic 都 fail closed。没有 source
+的 observation-only raw diagnostic 保持兼容。
+
+当前 `FitStartEvent` 只注入 train/validation iterable；因此 training diagnostic
+binder 不接受 test-role request。正式 test 只属于冻结 subject 后的独立 Evaluation，
+不能在训练期 diagnostic 中旁路这一治理边界。
+
+Gaussian quality diagnostic 将结果分成两个 source：
+
+- `observation` 是 `data_role="external"` 的 sampler statistics、样本计数与耗时；
+- `validation_quality` 是使用已绑定 validation reference protocol 得到的 FID/KID。
+
+这项拆分防止仅凭 `diagnostics/...` 名称或 provider 类型，把外部运行观测误当成
+validation 质量。所有 key 使用
+`diagnostics/<configured-diagnostic-id>/<metric...>`，因此同类 diagnostic 的多个
+配置实例不会互相碰撞。首版每个 diagnostic 最多有一个 selection-eligible source；
+否则一个 monitor 缺失时无法无歧义地归因 cadence。
+
+callback 的时间语义也是 typed contract：
+
+- `None` 表示本 epoch 没有任何 source 到 cadence；
+- 非空 tuple 表示其中 source 已到期；
+- `DiagnosticResult(metrics={})` 是明确的“已到期” marker，不是 cadence skip。
+
+因此 `missing="skip"` 只跳过尚未到 cadence 的 observation。source 已到期却没有返回
+monitor key、返回失败或拼错 key 时仍立即失败；整个 fit 一次有效 observation 都没有
+也会失败。diagnostic 在 history、best/early-stopping 与 checkpoint 之前运行并合并到
+同一个 `EpochMetricSnapshot`。
+
+### 8.2 Observation-based monitor policy
+
+当前 monitor policy 保存 canonical `metric`、`mode`、`missing` 与 `min_delta`。
+`missing="skip"` 只允许 `diagnostics/...` monitor；普通 train/validation metric
+缺席继续报错。patience 的计数单位是有效 observation 次数，而不是 wall-clock epoch：
+未到 cadence 不增加 wait counter，也不 carry-forward 陈旧值。一个有效且未改善的
+observation 才增加 `observations_without_improvement`。
+
+strict resume 精确核对并恢复：
+
+- tracking 是否启用；
+- monitor 的 `metric/mode/missing/min_delta`；
+- early-stopping patience；
+- best epoch/value；
+- `monitor_observations` 与 `observations_without_improvement`；
+- stopped state。
+
+resume 不能静默切换 policy、关闭已启用的 tracking，或把 epoch 数解释成 observation
+数。无论是否继承 best checkpoint，strict reader 都解析并验证完整 training-loop
+snapshot。
+
+### 8.3 为什么 bump 到 v11
+
+早期 M0–M1 审查曾决定保持 v10，因为当时只复用现有 metric values/source metadata
+容器。M2 后这个结论已被明确取代：observation-based patience 与完整 monitor policy
+成为 strict resume 所需状态，v10 不能无歧义表达它们，因此
+`CHECKPOINT_FORMAT_VERSION` bump 到 v11。
+
+v11 保存：
+
+- resolved metric declarations 与 extension/data provenance；
+- 本 epoch `EpochMetricSnapshot.values` 和逐 key `MetricSource`；
+- 完整 monitor policy、best state、observation counters 与 patience。
+
+source metadata 不放进 `metrics`，因为
 `origin/data_role/protocol_id/selection_eligible` 是 provenance 和选择资格，不是 scalar
-observation。保持分离后，logger 仍只消费标量，monitor 可用相同 canonical key 同时查
-value 和 source，checkpoint reader 也不会把 metadata 错当成数值。
+observation。`EpochMetricSnapshot` 同时严格验证 canonical namespace 与 source：
+`train/*`、`valid/*`、`test/*` 分别匹配 phase role，`system/*` 使用 system source，
+`diagnostics/*` 使用 diagnostic source；prefix 与 metadata 冲突时 fail closed。
 
-`EpochMetricSnapshot` 同时验证 key namespace 与 source：`train/*`、`valid/*`、
-`test/*` 必须分别匹配对应 phase data role，`system/*` 必须使用 system source，
-`diagnostics/*` 必须使用 diagnostic source。prefix 与 metadata 冲突时 fail closed；
-其中 diagnostic prefix 只约束 origin，不推断其 validation/test role 或 selection
-资格。
-
-Metric state 本身不保存：当前 checkpoint 只在完整 epoch 后产生，下一个 phase 总会
+Metric state 本身仍不保存：checkpoint 只在完整 epoch 后产生，下个 phase 总会先
 reset；保存 list state 还可能把全量 prediction/target 写进 checkpoint。mid-epoch
-resume 若未来进入范围，必须同时设计 loader cursor 和 persistent metric state，不能
-从本实现推断已经支持。
+resume 若未来进入范围，必须同时设计 loader cursor 和 persistent metric state。
 
 post-training test 发生在训练 checkpoint 冻结之后。`test/metrics/*` 由 logger 发布，
-终端 `FinalSummary` 仍只展示 test loss；测试结果不会回写 best/latest checkpoint。
-test-role source 始终不具 selection 资格。
-
-v10 writer 现在只写 canonical keys；旧 `train_loss`/`valid_loss` semantic snapshot
-没有迁移层。这是计划已明确的 compatibility cutover，仍应在 release notes 中提醒
-持有 pre-cutover v10 checkpoint 的用户。
+不会回写 best/latest checkpoint；test-role source 始终不具 selection 资格。v11 writer
+只写 canonical keys，也不为旧 `train_loss`/`valid_loss` 或 pre-cutover v10 snapshot
+提供 alias/migration reader。
 
 ## 9. MNIST 与 AFHQ 指标选择
 
@@ -288,24 +377,64 @@ Gaussian phase metrics：
 KID/FID Evaluation；现有训练期 quality diagnostic 的 sampling、cache、cadence 和
 failure policy 也保持原边界。
 
-## 10. 单进程承诺与未来 DDP
+这里的 contract 验证按配置的数据 class/protocol 工作，不增加“狗”这一类别的专门
+验收，也不为 Metrics 功能另行下载或生成狗样本。若使用仓库已有 AFHQ example，类别
+范围由该 example 的 data/evaluation 配置决定；通用实现与测试不写入 dog-specific
+分支、fixture 或输出。
+
+## 10. Stable extension surface 与单进程承诺
+
+### 10.1 公开 provider-level diagnostic contract
+
+M3 的 decision gate 选择公开 provider-level diagnostic contract。原因是现有
+diagnostic `modules` 配置已经允许 extension provider；若只公开完整
+`TrainingDiagnostic`，配置能力与可依赖 API 会不一致。`stochaflow.extensions`
+因此稳定导出：
+
+- `MetricConfig`、`MetricSpec`、`MetricUpdate`、`MetricPayloadDetachable`、
+  `MetricSource`、`EpochMetricSnapshot`、metric registry/factory/runtime contracts；
+- `DiagnosticSourceRequest`、`VerifiedMetricSource`、`DiagnosticResult`、
+  `BoundTrainingDiagnostic` 与 source provider capability；
+- Gaussian diagnostic 的 step/sampler/reference provider bases、contexts 与局部
+  `DIAGNOSTIC_PROVIDERS` catalog。
+
+provider registry 只扩展 Gaussian diagnostic 内部 pipeline，不是 framework-global
+Metric registry。reference provider 的质量结果由 verified validation source 承载；
+sampler statistics 与耗时仍进入 external observation。独立 extension fixture 同时注册
+custom Strategy 与 custom Metric，并经过 entry-point discovery 和真实模块激活运行
+微型 train/validation：resolved config 保存 plugin name 与 component declarations，
+run manifest/checkpoint 保存安装 distribution/version/target provenance。这避免手工
+伪造 metadata 或只用仓库内置 subclass 自证公共 API。
+
+### 10.2 单进程承诺与未来 DDP
 
 TorchMetrics 提供 state reduction 和 compute-time synchronization，但这不等于
 Stochaflow Trainer 已具备 DDP/FSDP 语义。TorchMetrics 的
 [structure/DDP guide](https://lightning.ai/docs/torchmetrics/stable/pages/overview.html)
 还指出 distributed sampler 为补齐各 rank 可能复制样本并造成 evaluation bias。
 
-M0–M1 只承诺单进程 CPU/单 GPU 的正确结果。未来 M3 至少需要验证：
+M3 已加入声明级 contract matrix：逐项审计 built-in 与独立 extension fixture 的每个
+TorchMetrics state 都有显式 reduction，并检查 compute-time synchronization policy。
+这能在单进程测试中阻止“新增 state 却忘记声明 reduction”的退化，但不能证明
+distributed Trainer 语义。
 
-- 每个 built-in 与 extension metric 的 `dist_reduce_fx`；
-- uneven/replicated validation samples 的计数与去重政策；
-- rank-local update failure、compute synchronization 和 reset；
-- train overflow/跳步在各 rank 上的一致提交；
-- list-state memory、CPU offload 和 process-group policy；
-- logger/checkpoint 只由明确 rank 发布，且 canonical snapshot 在各 rank 一致。
+继续只承诺单进程 CPU/单 GPU 结果。分布式支持的阻塞是以下 correctness 与 publication
+协议尚未定义，而不是缺少一张特定显卡上的速度曲线：
 
-在这些 contract tests 完成前，不能因 `Metric` 默认支持 synchronization 就在文档中
-宣称 distributed-ready。
+- distributed sampler 为补齐 uneven shard 可能复制 validation 样本；需要定义样本
+  identity、计数、去重或明确接受 bias 的协议；
+- rank-local metric update 失败、OOM、non-finite 或 GradScaler overflow 时，必须让
+  所有 rank 对提交/reset/终止达成一致，避免某些 rank 进入 compute collective、另一些
+  已退出；
+- list-state metric 的 gather/cat、uneven state 与 process-group policy 需要受测；
+- canonical snapshot、logger、artifact、best/latest checkpoint 必须由明确的 rank-zero
+  publication policy 产生，同时保证其他 rank 的 loop state 与选择决策一致；
+- diagnostic sampling 若每个 rank 独立运行，可能重复样本或重复 artifact；若只在
+  rank zero 运行，又需要定义其他 rank 的同步与失败传播。
+
+这些问题与类别无关，不是 dog-specific validation；它们也不只是“还没在实际硬件规格
+上跑性能验证”。即使无限算力，若没有上述语义，结果仍可能重复计数、死锁或由多个 rank
+竞写 checkpoint。真实多机/多卡性能与 soak test 应在语义 contract 落地后进行。
 
 ## 11. 审查中发现的问题与剩余风险
 
@@ -317,13 +446,21 @@ M0–M1 只承诺单进程 CPU/单 GPU 的正确结果。未来 M3 至少需要�
   sanitize collision 检查。
 - 当前主要生图任务使用 class-conditional Gaussian Strategy；它现在与无条件
   Gaussian Strategy 声明相同 channel，没有通过 example-specific runner 分支补丁接入。
+- diagnostic scalar 过去只直接写 logger 且在 checkpoint 之后运行；现在通过
+  Builder-bound verified source 合并进 checkpoint 前的 canonical snapshot。
+- sampler observation 与 reference FID/KID 过去共享一个无 data-role 区分的 mapping；
+  现在分别绑定 external 与 validation source。
+- 低频 monitor 过去只能把缺席当错误；现在只对“未到 cadence”提供显式
+  `missing="skip"`，patience 与 strict resume 都按 observation 计数。
+- 自定义 stateful payload 过去可能被不完整递归 detach 后保留 autograd graph；现在未知
+  容器必须实现 `MetricPayloadDetachable`。
+- metric update 过去可能在后一个 metric 失败后留下前面的部分 state；现在 update
+  failure 原子 reset 整个 engine。
+- MSE/MAE 的多输出 constructor 过去可能延迟到 epoch compute 才以 non-scalar 失败；
+  内置名称现在固定 single-output scalar 语义。
 
 ### 11.2 剩余
 
-- M2 未实现，diagnostic result 仍不能进入同一 snapshot、best selection 或 early
-  stopping；FID/KID monitor 配置现在不应被宣称支持。
-- M3 未完成，stable extension 文档、独立第三方实现/provenance 和 DDP contract tests
-  仍是 merge 后续工作。
 - W&B 官方支持 `/` 进行 panel grouping，但其部分 GraphQL sort/filter UI 要求
   identifier-style 名称；见
   [W&B metric naming constraints](https://docs.wandb.ai/support/models/articles/why-cant-i-sort-or-filter-metrics-with-c)。
@@ -338,8 +475,10 @@ M0–M1 只承诺单进程 CPU/单 GPU 的正确结果。未来 M3 至少需要�
   `valid/loss` 选择 checkpoint。
 - train metric 为等待 optimizer window 是否成功，会先递归 detach 并暂存 payload；
   `MetricEngine` 在分发前仍进行一次防御性 detach。Tensor 的第二次 `detach()` 不复制
-  storage，但会重建小型容器；这是当前正确性优先的轻微开销，后续若优化需引入能证明
-  payload 已 detached 的窄 contract，不能用不受约束的布尔开关绕过安全边界。
+  storage，但会重建小型容器；`MetricPayloadDetachable` 只描述如何安全 detach 自定义
+  容器，并不是“已经 detached”的免检标记。后续若优化需另设可验证的窄 contract。
+- DDP declaration matrix 已完成，但 distributed sampler、rank-local failure/overflow、
+  diagnostic duplication 与 rank-zero publication 仍未定义，所以产品承诺保持单进程。
 - `torchmetrics>=1.9,<2` 成为基础依赖后，发布前仍需在仓库支持的平台矩阵执行安装与
   import smoke，尤其要保留 Intel macOS best-effort lane 的明确结果。
 
@@ -351,8 +490,9 @@ M0–M1 只承诺单进程 CPU/单 GPU 的正确结果。未来 M3 至少需要�
 - [x] built-in 和 extension metric 共享 registry/factory 路径；没有 hidden core path。
 - [x] config load 不导入任意 target；native TorchMetrics namespace resolver 已拒绝。
 - [x] channel compatibility 在完整 Strategy + declarations composition boundary 失败。
-- [x] metric payload 递归 detach，并在 `torch.no_grad()` 下 update。
-- [x] train/validation/test 使用不同 metric instances，异常路径 reset。
+- [x] metric payload 按内置容器或 `MetricPayloadDetachable` 明确 detach，并在
+  `torch.no_grad()` 下 update。
+- [x] train/validation/test 使用不同 metric instances，异常与部分 update 路径 reset。
 - [x] variable batch 的 epoch loss report 使用显式 weight，backward loss 不乘该 weight。
 - [x] step 与 epoch loss 使用不同 key；logger/history/checkpoint/monitor 共享 canonical
   epoch key。
@@ -362,11 +502,24 @@ M0–M1 只承诺单进程 CPU/单 GPU 的正确结果。未来 M3 至少需要�
 - [x] checkpoint 只保存完成 epoch 的 values/source metadata，不保存派生 metric state。
 - [x] retained MNIST/AFHQ configs 提供低成本 prediction/reconstruction proxy，且
   monitor 已迁移为 `valid/loss`。
-- [ ] M2 verified diagnostic result、cadence-aware missing policy 与 checkpoint 前排序。
-- [ ] M3 独立 extension contract fixture、provenance 和 distributed reduction matrix。
-- [ ] M4 稳定 API 文档、教程、计划归档与公开导航收束。
-- [ ] 合并前在全部支持平台完成 dependency/import smoke、全量 pytest、Ruff、Pyright
-  和短 Gaussian end-to-end run。
+- [x] M2 typed/verified diagnostic result、cadence-aware missing policy 与 checkpoint
+  前排序。
+- [x] M2 validation source 同时绑定实际 fit iterable 与 stable provenance；raw
+  source provider、缺失 provenance/iterable 和 fit 对象错配均 fail closed。
+- [x] M2 只把 validation-role FID/KID 作为可选择 source；external sampler observation
+  不可选择。
+- [x] M2 observation-based patience、至少一次 observation guard 与 exact strict resume。
+- [x] checkpoint 已 bump v11，并记录 pre-cutover v10 不兼容。
+- [x] M3 独立 extension contract fixture 经 entry-point discovery、真实 import
+  activation、factory/Trainer 和 checkpoint 验证 plugin provenance；并覆盖
+  distributed reduction declaration matrix。
+- [x] M3 provider-level diagnostic contract 已进入 stable extension exports；产品承诺
+  仍为单进程。
+- [x] M4 stable API/config/migration 文档、教程与公开导航收束。
+- [x] 本计划已在 `docs/development/` 原地归档；该目录不进入 Sphinx 发布。
+- [x] 本机完成全量 pytest、Ruff、Pyright、config reference、严格 Sphinx、package
+  build 和短 Gaussian end-to-end run。
+- [ ] 远端支持平台矩阵 CI 待本次提交推送后确认。
 
 ## 13. 一手资料
 
@@ -383,7 +536,9 @@ M0–M1 只承诺单进程 CPU/单 GPU 的正确结果。未来 M3 至少需要�
 
 ## 14. Feature branch 验证记录
 
-2026-07-31 在 Windows/CUDA 开发环境完成：
+### 14.1 历史 M0–M1 基线
+
+2026-07-31 曾在 Windows/CUDA 开发环境对 M0–M1 基线完成：
 
 | 验证 | 结果 |
 | --- | --- |
@@ -401,3 +556,22 @@ M0–M1 只承诺单进程 CPU/单 GPU 的正确结果。未来 M3 至少需要�
 阶段终止，尚未进入训练。这一外部获取失败不计为 metrics runtime 验证；无网络
 Gaussian smoke 覆盖了同一 Strategy channel、phase engine、monitor、checkpoint 和
 test metric 路径。
+
+### 14.2 当前 M0–M4 本地收束结果
+
+2026-07-31 在 macOS/Python 3.14.3 对当前工作树完成：
+
+| 验证 | 结果 |
+| --- | --- |
+| `uv run pytest` | 1405 passed、14 skipped；skip 均为 CUDA/BF16 不可用 |
+| diagnostic/source/plugin 聚焦组合 | 171 passed |
+| built-in Diffusion quality end-to-end | 内存 Gaussian batch；FID/KID cadence、`warn` 隔离与 best checkpoint 通过 |
+| `uv run ruff check .` | 通过 |
+| `uv run pyright` | 0 errors、0 warnings |
+| `uv run python tools/generate_config_reference.py --check` | 配置参考最新 |
+| `uv run sphinx-build -W --keep-going -b html ...` | 严格构建通过 |
+| `uv build` | wheel 与 source distribution 构建成功，包含 diagnostic binding |
+| built wheel import smoke | 从 wheel 导入 `stochaflow.training.diagnostics.binding` 成功 |
+
+这些结果不依赖 dog-specific 数据或外部下载。远端支持平台矩阵 CI 需要在本次提交推送后
+单独确认；在其通过前不声称 branch ready to merge。

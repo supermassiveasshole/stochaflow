@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
@@ -19,6 +19,8 @@ from stochaflow.training.diagnostics.contracts import (
     ArtifactRecord,
     DenoiserArtifactContext,
     DenoiserArtifactProvider,
+    DiagnosticResult,
+    DiagnosticSourceRequest,
     FitStartEvent,
     ProviderValidationContext,
     ReconstructionCallable,
@@ -151,6 +153,14 @@ class GaussianQualityFamily(Protocol[FamilyRuntimeT, FamilySamplerT]):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class GaussianProfileMetricResults:
+    """Source-separated metrics produced by one sampler profile."""
+
+    observations: Mapping[str, float]
+    validation_quality: Mapping[str, float]
+
+
 class GaussianQualityEngine[
     RuntimeT: DiagnosticTrainingRuntime,
     BoundSamplerT,
@@ -186,6 +196,7 @@ class GaussianQualityEngine[
         self.sample_shape = self.config.sampling.shape
         self.logger = logger
         self.output_dir = Path(output_dir) / "diagnostics" / diagnostic_name
+        self.diagnostic_name = diagnostic_name
         self.family = family
         self.seed_policy = SeedPolicy(self.config.sampling.seed)
         self._last_clean_batch: torch.Tensor | None = None
@@ -220,6 +231,34 @@ class GaussianQualityEngine[
         )
         for spec in self.config.reference.metrics:
             DIAGNOSTIC_PROVIDERS.reference_metrics.resolve(spec.name)
+
+    @property
+    def metric_source_requests(self) -> tuple[DiagnosticSourceRequest, ...]:
+        """Describe independently governed epoch-result sources."""
+
+        config_descriptor = asdict(self.config)
+        requests = [
+            DiagnosticSourceRequest(
+                id="observation",
+                data_role="external",
+                protocol={
+                    "kind": "gaussian-quality-observation/v1",
+                    "config": config_descriptor,
+                },
+            )
+        ]
+        if self.config.reference.enabled:
+            requests.append(
+                DiagnosticSourceRequest(
+                    id="validation_quality",
+                    data_role="validation",
+                    protocol={
+                        "kind": "gaussian-quality-reference/v1",
+                        "config": config_descriptor,
+                    },
+                )
+            )
+        return tuple(requests)
 
     def _build_providers(
         self,
@@ -273,7 +312,7 @@ class GaussianQualityEngine[
                     event.validation_dataloader
                 )
                 self.logger.log_metrics(
-                    dict(cache_metrics),
+                    self._scope_metrics(cache_metrics),
                     step=event.trainer.global_step,
                 )
 
@@ -352,10 +391,16 @@ class GaussianQualityEngine[
                     provider=spec.name,
                 )
         if metrics:
-            self.logger.log_metrics(metrics, step=event.global_step)
+            self.logger.log_metrics(
+                self._scope_metrics(metrics),
+                step=event.global_step,
+            )
 
-    def on_train_epoch_end(self, event: TrainEpochEndEvent) -> None:
-        """Dispatch sampler, artifact, and optional reference providers."""
+    def on_train_epoch_end(
+        self,
+        event: TrainEpochEndEvent,
+    ) -> tuple[DiagnosticResult, ...] | None:
+        """Return source-separated results for due epoch providers."""
 
         artifact_due = (
             event.epoch_index % self.config.cadence.artifact_every_epochs == 0
@@ -365,9 +410,11 @@ class GaussianQualityEngine[
             and event.epoch_index % self.config.reference.every_epochs == 0
         )
         if not artifact_due and not reference_due:
-            return
+            return None
         store = EpochArtifactStore(self.output_dir, event.epoch_index)
-        combined_metrics: dict[str, float] = {}
+        error_count_before = self._error_count
+        observation_metrics: dict[str, float] = {}
+        validation_quality_metrics: dict[str, float] = {}
         profile_manifest: list[dict[str, Any]] = []
         if artifact_due:
             for spec, provider in zip(
@@ -392,7 +439,7 @@ class GaussianQualityEngine[
             else None
         )
         for profile in self.config.samplers:
-            profile_metrics: dict[str, float] = {}
+            profile_metrics = GaussianProfileMetricResults({}, {})
             try:
                 profile_metrics = self._run_profile(
                     event,
@@ -403,8 +450,13 @@ class GaussianQualityEngine[
                     reference_due=reference_due,
                 )
                 self._merge_metrics(
-                    combined_metrics,
-                    profile_metrics,
+                    observation_metrics,
+                    profile_metrics.observations,
+                    provider=f"profile:{profile.id}:observation",
+                )
+                self._merge_metrics(
+                    validation_quality_metrics,
+                    profile_metrics.validation_quality,
                     provider=f"profile:{profile.id}",
                 )
             # A profile invokes registered sampler and provider extensions.
@@ -419,16 +471,24 @@ class GaussianQualityEngine[
             profile_manifest.append(
                 {
                     **asdict(profile),
-                    "metrics": profile_metrics,
+                    "metrics": {
+                        "observation": dict(profile_metrics.observations),
+                        "validation_quality": dict(
+                            profile_metrics.validation_quality
+                        ),
+                    },
                     **self.family.profile_manifest_metadata(profile),
                 }
             )
 
-        if combined_metrics:
-            self.logger.log_metrics(
-                combined_metrics,
-                step=event.trainer.global_step,
+        if self._error_count > error_count_before:
+            observation_metrics["diagnostics/system/error_count"] = float(
+                self._error_count
             )
+        scoped_observations = self._scope_metrics(observation_metrics)
+        scoped_validation_quality = self._scope_metrics(
+            validation_quality_metrics
+        )
         store.write_manifest(
             {
                 "epoch": event.epoch_index,
@@ -444,10 +504,27 @@ class GaussianQualityEngine[
                 "reference_metrics_due": reference_due,
                 "providers": asdict(self.config.providers),
                 "profiles": profile_manifest,
-                "combined_metrics": combined_metrics,
+                "combined_metrics": {
+                    "observation": scoped_observations,
+                    "validation_quality": scoped_validation_quality,
+                },
                 **self.family.manifest_metadata(event),
             }
         )
+        results = [
+            DiagnosticResult(
+                source_id="observation",
+                metrics=scoped_observations,
+            )
+        ]
+        if reference_due:
+            results.append(
+                DiagnosticResult(
+                    source_id="validation_quality",
+                    metrics=scoped_validation_quality,
+                )
+            )
+        return tuple(results)
 
     def _run_denoiser_artifact_provider(
         self,
@@ -487,11 +564,12 @@ class GaussianQualityEngine[
         initial_noise: torch.Tensor | None,
         artifact_due: bool,
         reference_due: bool,
-    ) -> dict[str, float]:
+    ) -> GaussianProfileMetricResults:
         if self._sampler_pool is None or self._sampler_runner is None:
             raise RuntimeError("diffusion_quality on_fit_start was not called")
         sampler = self._sampler_pool.get(profile.id)
-        metrics: dict[str, float] = {}
+        observations: dict[str, float] = {}
+        validation_quality: dict[str, float] = {}
         result = None
         with EvaluationGuard(
             event.trainer,
@@ -529,7 +607,7 @@ class GaussianQualityEngine[
                 ):
                     try:
                         self._merge_metrics(
-                            metrics,
+                            observations,
                             provider.collect(metric_context),
                             provider=spec.name,
                         )
@@ -579,16 +657,21 @@ class GaussianQualityEngine[
                 self._reference_step = event.trainer.global_step
                 self._reference_profile = profile.id
                 try:
-                    reference_metrics = self._reference_suite.evaluate(
+                    reference_result = self._reference_suite.evaluate(
                         profile_id=profile.id,
                         sampler=self.family.reference_sampler(sampler),
                         sample_shape=self.sample_shape,
                         visual_samples=(result.samples if result is not None else None),
                     )
                     self._merge_metrics(
-                        metrics,
-                        reference_metrics,
+                        validation_quality,
+                        reference_result.metrics,
                         provider="reference",
+                    )
+                    self._merge_metrics(
+                        observations,
+                        reference_result.observations,
+                        provider="reference_observation",
                     )
                 # The suite invokes registered sampler and metric extensions.
                 except Exception as exc:  # noqa: BLE001
@@ -602,7 +685,26 @@ class GaussianQualityEngine[
                 finally:
                     self._reference_store = None
                     self._reference_profile = ""
-        return metrics
+        return GaussianProfileMetricResults(
+            observations=observations,
+            validation_quality=validation_quality,
+        )
+
+    def _scope_metrics(
+        self,
+        metrics: Mapping[str, float],
+    ) -> dict[str, float]:
+        scoped: dict[str, float] = {}
+        for key, value in metrics.items():
+            if not key.startswith("diagnostics/"):
+                raise ValueError(
+                    f"diagnostic metric key must start with 'diagnostics/': {key!r}"
+                )
+            suffix = key.removeprefix("diagnostics/")
+            scoped[
+                f"diagnostics/{self.diagnostic_name}/{suffix}"
+            ] = float(value)
+        return scoped
 
     def _record_artifacts(
         self,
@@ -684,10 +786,15 @@ class GaussianQualityEngine[
         self._error_count += 1
         if store is not None:
             store.record_error(phase=phase, provider=provider, error=error)
-        self.logger.log_metrics(
-            {"diagnostics/system/error_count": float(self._error_count)},
-            step=step,
-        )
+        if store is None:
+            self.logger.log_metrics(
+                {
+                    f"diagnostics/{self.diagnostic_name}/system/error_count": (
+                        float(self._error_count)
+                    )
+                },
+                step=step,
+            )
         self.logger.log_text(
             "diagnostics/system/error",
             (

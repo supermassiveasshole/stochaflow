@@ -5,6 +5,7 @@ import gc
 import hashlib
 import math
 import warnings
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -20,7 +21,7 @@ from stochaflow.data import (
     build_data_loaders,
 )
 from stochaflow.data.artifact_io import MAX_ARTIFACT_VERIFICATION_WORKERS
-from stochaflow.metrics import EpochMetricSnapshot
+from stochaflow.metrics import EpochMetricSnapshot, MetricDataRole
 from stochaflow.sampling.runtime import run_sampling
 from stochaflow.scripts.artifact_reporting import (
     RichArtifactVerificationReporter,
@@ -836,7 +837,7 @@ def _parse_strict_resume_state(
     require_cuda_compatibility: bool,
     require_mps_compatibility: bool = False,
 ) -> tuple[int, int, ParsedRNGState]:
-    """Validate resume-only progress and RNG fields before mutating runtime state."""
+    """Validate all resume-only state before mutating the runtime."""
 
     epoch = cast(object, payload.get("epoch"))
     if type(epoch) is not int or cast(int, epoch) <= 0:
@@ -851,6 +852,58 @@ def _parse_strict_resume_state(
         require_cuda_compatibility=require_cuda_compatibility,
         require_mps_compatibility=require_mps_compatibility,
     )
+    metadata = cast(object, payload.get("metadata"))
+    if type(metadata) is not dict:
+        raise TypeError("strict resume requires checkpoint metadata as an exact mapping")
+    metadata_mapping = cast(dict[str, Any], metadata)
+    fit_state = TrainingFitState.from_mapping(
+        metadata_mapping.get("training_loop")
+    )
+    snapshot = EpochMetricSnapshot.from_dict(
+        {
+            "values": payload.get("metrics"),
+            "sources": metadata_mapping.get("metric_sources"),
+        },
+        path="strict resume checkpoint metric snapshot",
+    )
+    monitor = fit_state.monitor
+    if monitor is not None:
+        if monitor not in snapshot.values:
+            if fit_state.missing != "skip":
+                raise ValueError(
+                    f"strict resume metric snapshot is missing monitor {monitor!r}"
+                )
+        else:
+            monitor_source = snapshot.sources[monitor]
+            if (
+                not monitor_source.selection_eligible
+                or monitor_source.data_role == "test"
+            ):
+                raise ValueError(
+                    "strict resume monitor source must be selection eligible "
+                    "and must not use test data"
+                )
+            if monitor.startswith("diagnostics/"):
+                protocol_id = monitor_source.protocol_id
+                protocol_digest = (
+                    protocol_id.removeprefix("sha256:")
+                    if isinstance(protocol_id, str)
+                    and protocol_id.startswith("sha256:")
+                    else ""
+                )
+                if (
+                    monitor_source.data_role != "validation"
+                    or len(protocol_digest) != 64
+                    or protocol_digest != protocol_digest.lower()
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in protocol_digest
+                    )
+                ):
+                    raise ValueError(
+                        "strict resume diagnostic monitor source must use "
+                        "validation data and a sha256 protocol identity"
+                    )
     return cast(int, epoch), cast(int, global_step), rng_state
 
 
@@ -870,9 +923,9 @@ def _validate_best_snapshot_fit_state(
         raise ValueError(
             f"{label} must record best_epoch and best_metric_value"
         )
-    if fit_state.epochs_without_improvement != 0:
+    if fit_state.observations_without_improvement != 0:
         raise ValueError(
-            f"{label} must record epochs_without_improvement=0"
+            f"{label} must record observations_without_improvement=0"
         )
     if fit_state.stopped_early:
         raise ValueError(f"{label} must record stopped_early=false")
@@ -1186,6 +1239,7 @@ def _fit_and_select_best(
         ),
         early_stopping_monitor=monitor,
         early_stopping_mode=early_stopping.mode,
+        monitor_missing=early_stopping.missing,
         early_stopping_min_delta=early_stopping.min_delta,
         reporter=reporter,
         track_best=True,
@@ -1296,9 +1350,15 @@ def _run_single_run(
             data_artifacts.to_dict() if data_artifacts is not None else None
         ),
     }
+    diagnostic_data_iterables: dict[MetricDataRole, Iterable[Any]] = {
+        "train": loaders.train,
+    }
+    if loaders.validation is not None:
+        diagnostic_data_iterables["validation"] = loaders.validation
     training = build_training_components(
         config,
         checkpoint_metadata=checkpoint_metadata,
+        diagnostic_data_iterables=diagnostic_data_iterables,
     )
     selected_components = selected_component_identities(
         config,

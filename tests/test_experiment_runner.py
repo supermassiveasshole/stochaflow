@@ -22,6 +22,7 @@ from stochaflow.data import (
     DataArtifactIdentity,
     DataLoaders,
 )
+from stochaflow.metrics import EpochMetricSnapshot
 from stochaflow.scripts import experiment_runner
 from stochaflow.scripts.cli import build_argument_parser
 from stochaflow.training import (
@@ -212,16 +213,62 @@ def _inference_recipe() -> SamplingRecipe:
     )
 
 
+def _training_loop_state(
+    *,
+    best_epoch: int | None = None,
+    best_metric_value: float | None = None,
+    observations_without_improvement: int = 0,
+    monitor_observations: int | None = None,
+    stopped_early: bool = False,
+    monitor: str | None = None,
+    mode: str = "min",
+    missing: str = "error",
+    min_delta: float = 0.0,
+    early_stopping_patience: int | None = None,
+) -> dict[str, Any]:
+    tracking_enabled = monitor is not None
+    if monitor_observations is None:
+        monitor_observations = (
+            0
+            if not tracking_enabled
+            else max(
+                observations_without_improvement,
+                1 if best_epoch is not None else 0,
+            )
+        )
+    return {
+        "best_epoch": best_epoch,
+        "best_metric_value": best_metric_value,
+        "observations_without_improvement": observations_without_improvement,
+        "monitor_observations": monitor_observations,
+        "stopped_early": stopped_early,
+        "tracking_enabled": tracking_enabled,
+        "monitor_policy": (
+            {
+                "metric": monitor,
+                "mode": mode,
+                "missing": missing,
+                "min_delta": min_delta,
+            }
+            if monitor is not None
+            else None
+        ),
+        "early_stopping_patience": early_stopping_patience,
+    }
+
+
 def _best_payload(
     loop_state: dict[str, Any],
     *,
     epoch: int | None = None,
 ) -> CheckpointState:
     best_epoch = loop_state["best_epoch"] if epoch is None else epoch
-    monitor = loop_state["monitor"]
+    monitor_policy = loop_state["monitor_policy"]
+    assert isinstance(monitor_policy, dict)
+    monitor = monitor_policy["metric"]
     best_snapshot_loop = {
         **loop_state,
-        "epochs_without_improvement": 0,
+        "observations_without_improvement": 0,
         "stopped_early": False,
     }
     data_role = (
@@ -260,6 +307,11 @@ def _strict_resume_fields(*, epoch: int, global_step: int) -> CheckpointState:
         "epoch": epoch,
         "global_step": global_step,
         "rng_state": capture_rng_state(),
+        "metrics": {},
+        "metadata": {
+            "training_loop": _training_loop_state(),
+            "metric_sources": {},
+        },
     }
 
 
@@ -278,14 +330,8 @@ def _write_training_checkpoint(
     checkpoint_metadata = {
         "extension_plugins": [],
         "checkpoint_kind": "latest",
-        "training_loop": {
-            "best_epoch": None,
-            "best_metric_value": None,
-            "epochs_without_improvement": 0,
-            "stopped_early": False,
-            "monitor": None,
-            "mode": None,
-        },
+        "training_loop": _training_loop_state(),
+        "metric_sources": {},
         **({} if metadata is None else metadata),
     }
     torch.save(
@@ -300,6 +346,7 @@ def _write_training_checkpoint(
             "model_state_dict": {},
             "training_assets_state_dict": {},
             "rng_state": capture_rng_state(),
+            "metrics": {},
             "metadata": checkpoint_metadata,
         },
         path,
@@ -394,16 +441,19 @@ def test_runner_uses_canonical_validation_loss_when_validation_is_available(
         build_training_components,
     )
 
-    _run_single(
-        config,
-        _loaders(validation=True),
-        _options(config),
-    )
+    loaders = _loaders(validation=True)
+    _run_single(config, loaders, _options(config))
 
     assert trainer.fit_kwargs["validation_dataloader"] is not None
     assert trainer.fit_kwargs["early_stopping_monitor"] == "valid/loss"
+    assert trainer.fit_kwargs["monitor_missing"] == "error"
     assert trainer.fit_kwargs["num_epochs"] == config.trainer.num_epochs
     assert build_kwargs["checkpoint_metadata"]["extension_plugins"] == []
+    assert build_kwargs["diagnostic_data_iterables"]["train"] is loaders.train
+    assert (
+        build_kwargs["diagnostic_data_iterables"]["validation"]
+        is loaders.validation
+    )
     assert logger.closed
 
 
@@ -461,6 +511,32 @@ def test_runner_preserves_explicit_train_metric_without_validation(
         trainer.fit_kwargs["early_stopping_monitor"]
         == "train/metrics/prediction_mae"
     )
+
+
+def test_runner_passes_diagnostic_missing_policy_to_trainer(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = load_config(MNIST_TRAIN_CONFIG)
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "test"
+    config.trainer.early_stopping.monitor = "diagnostics/quality/fid"
+    config.trainer.early_stopping.missing = "skip"
+    trainer = RecordingTrainer()
+    logger = RecordingLogger()
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+
+    _run_single(
+        config,
+        _loaders(validation=True),
+        _options(config),
+    )
+
+    assert trainer.fit_kwargs["monitor_missing"] == "skip"
 
 
 def test_runner_rejects_explicit_validation_metric_without_validation() -> None:
@@ -671,14 +747,11 @@ def test_runner_rejects_checkpoint_at_target_epoch(monkeypatch, tmp_path):
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
     logger = RecordingLogger()
-    loop_state = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 0,
-        "stopped_early": False,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
+    loop_state = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        monitor="valid/loss",
+    )
     loaded = SimpleNamespace(
         epoch=config.trainer.num_epochs,
         global_step=123,
@@ -719,14 +792,11 @@ def test_runner_rejects_checkpoint_at_target_epoch(monkeypatch, tmp_path):
 def test_strict_resume_requires_sibling_best_for_latest_checkpoint(tmp_path):
     trainer = RecordingTrainer()
     logger = RecordingLogger()
-    loop_state = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 0,
-        "stopped_early": False,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
+    loop_state = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        monitor="valid/loss",
+    )
     loaded = SimpleNamespace(
         epoch=1,
         global_step=2,
@@ -752,14 +822,11 @@ def test_strict_resume_requires_sibling_best_for_latest_checkpoint(tmp_path):
 def test_strict_resume_recognizes_renamed_best_from_metadata(tmp_path):
     trainer = RecordingTrainer()
     logger = RecordingLogger()
-    loop_state = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 0,
-        "stopped_early": False,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
+    loop_state = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        monitor="valid/loss",
+    )
     loaded = SimpleNamespace(
         epoch=1,
         global_step=2,
@@ -792,19 +859,17 @@ def test_strict_resume_recognizes_renamed_best_from_metadata(tmp_path):
 def test_strict_resume_rejects_sibling_best_from_future_epoch(tmp_path):
     trainer = RecordingTrainer()
     logger = RecordingLogger()
-    selected_loop = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 1,
-        "stopped_early": False,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
+    selected_loop = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        observations_without_improvement=1,
+        monitor="valid/loss",
+    )
     future_loop = {
         **selected_loop,
         "best_epoch": 3,
         "best_metric_value": 0.25,
-        "epochs_without_improvement": 0,
+        "observations_without_improvement": 0,
     }
     loaded = SimpleNamespace(
         epoch=2,
@@ -853,15 +918,19 @@ def test_strict_resume_rejects_mismatched_sibling_best_identity(
 ) -> None:
     trainer = RecordingTrainer()
     logger = RecordingLogger()
-    selected_loop = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 1,
-        "stopped_early": False,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
-    candidate_loop = {**selected_loop, field: value}
+    selected_loop = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        observations_without_improvement=1,
+        monitor="valid/loss",
+    )
+    candidate_loop = deepcopy(selected_loop)
+    if field == "best_metric_value":
+        candidate_loop[field] = value
+    else:
+        policy = candidate_loop["monitor_policy"]
+        assert isinstance(policy, dict)
+        policy["metric" if field == "monitor" else "mode"] = value
     loaded = SimpleNamespace(
         epoch=2,
         global_step=4,
@@ -895,14 +964,14 @@ def test_strict_resume_rejects_mismatched_sibling_best_identity(
     ("field", "value", "message"),
     [
         (
-            "epochs_without_improvement",
+            "observations_without_improvement",
             1,
-            "epochs_without_improvement=0",
+            "observations_without_improvement=0",
         ),
         (
             "stopped_early",
             True,
-            "stopped_early=false",
+            "stopped_early requires",
         ),
     ],
 )
@@ -912,14 +981,11 @@ def test_strict_resume_rejects_noncanonical_best_snapshot_state(
     value: object,
     message: str,
 ) -> None:
-    loop_state = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 0,
-        "stopped_early": False,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
+    loop_state = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        monitor="valid/loss",
+    )
     selected = _best_payload(loop_state, epoch=2)
     _checkpoint_metadata(selected)["checkpoint_kind"] = "latest"
     candidate = _best_payload(loop_state)
@@ -949,14 +1015,12 @@ def test_strict_resume_rejects_sibling_from_another_run(
 ) -> None:
     trainer = RecordingTrainer()
     logger = RecordingLogger()
-    loop_state = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 1,
-        "stopped_early": False,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
+    loop_state = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        observations_without_improvement=1,
+        monitor="valid/loss",
+    )
     selected_payload = _best_payload(loop_state, epoch=2)
     _checkpoint_metadata(selected_payload)["checkpoint_kind"] = "latest"
     loaded = SimpleNamespace(
@@ -1019,14 +1083,12 @@ def test_strict_resume_rejects_sibling_from_another_run(
 def test_strict_resume_materializes_matching_sibling_best_in_new_run(tmp_path):
     trainer = RecordingTrainer()
     logger = RecordingLogger()
-    loop_state = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 1,
-        "stopped_early": False,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
+    loop_state = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        observations_without_improvement=1,
+        monitor="valid/loss",
+    )
     loaded = SimpleNamespace(
         epoch=2,
         global_step=4,
@@ -1115,14 +1177,15 @@ def test_strict_resume_materializes_matching_sibling_best_in_new_run(tmp_path):
 def test_strict_resume_rejects_terminal_early_stopping_state(tmp_path):
     trainer = RecordingTrainer()
     logger = RecordingLogger()
-    loop_state = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 2,
-        "stopped_early": True,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
+    loop_state = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        observations_without_improvement=2,
+        monitor_observations=3,
+        stopped_early=True,
+        monitor="valid/loss",
+        early_stopping_patience=2,
+    )
     loaded = SimpleNamespace(
         epoch=1,
         global_step=2,
@@ -1173,6 +1236,103 @@ def test_strict_resume_rejects_missing_or_invalid_progress(
         )
 
 
+def test_strict_resume_validates_metric_snapshot_without_inherited_best() -> None:
+    payload = _strict_resume_fields(epoch=1, global_step=2)
+    payload["metrics"] = {"train/loss": 0.5}
+
+    with pytest.raises(
+        ValueError,
+        match=r"sources must exactly match values",
+    ):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_requires_error_policy_monitor_in_current_snapshot() -> None:
+    payload = _strict_resume_fields(epoch=1, global_step=2)
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _training_loop_state(
+        monitor="valid/loss",
+    )
+
+    with pytest.raises(ValueError, match=r"missing monitor 'valid/loss'"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_allows_skipped_diagnostic_observation() -> None:
+    payload = _strict_resume_fields(epoch=1, global_step=2)
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _training_loop_state(
+        monitor="diagnostics/quality/fid",
+        missing="skip",
+    )
+
+    epoch, global_step, _ = experiment_runner._parse_strict_resume_state(
+        payload,
+        require_cuda_compatibility=False,
+    )
+
+    assert (epoch, global_step) == (1, 2)
+
+
+def test_strict_resume_rejects_ineligible_current_monitor_source() -> None:
+    payload = _strict_resume_fields(epoch=1, global_step=2)
+    payload["metrics"] = {"valid/loss": 0.5}
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _training_loop_state(
+        monitor="valid/loss",
+    )
+    metadata["metric_sources"] = {
+        "valid/loss": {
+            "origin": "phase",
+            "data_role": "validation",
+            "protocol_id": None,
+            "selection_eligible": False,
+        }
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"monitor source must be selection eligible",
+    ):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_requires_verified_diagnostic_monitor_source() -> None:
+    monitor = "diagnostics/quality/fid"
+    payload = _strict_resume_fields(epoch=1, global_step=2)
+    payload["metrics"] = {monitor: 12.5}
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _training_loop_state(
+        monitor=monitor,
+    )
+    metadata["metric_sources"] = {
+        monitor: {
+            "origin": "diagnostic",
+            "data_role": "external",
+            "protocol_id": None,
+            "selection_eligible": True,
+        }
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"validation data and a sha256 protocol identity",
+    ):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
 def test_strict_mps_resume_warns_when_legacy_v8_has_no_mps_rng(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1182,14 +1342,7 @@ def test_strict_mps_resume_warns_when_legacy_v8_has_no_mps_rng(
     trainer.best_epoch = None
     trainer.best_metric_value = None
     logger = RecordingLogger()
-    loop_state = {
-        "best_epoch": None,
-        "best_metric_value": None,
-        "epochs_without_improvement": 0,
-        "stopped_early": False,
-        "monitor": None,
-        "mode": None,
-    }
+    loop_state = _training_loop_state()
     loaded = SimpleNamespace(
         epoch=1,
         global_step=2,
@@ -1347,7 +1500,10 @@ def test_trainer_isolates_each_diagnostic_rng_callback(
             epoch_index=1,
         )
     else:
-        trainer._emit_epoch_diagnostics(epoch_index=1, metrics={"loss": 0.0})
+        trainer._emit_epoch_diagnostics(
+            epoch_index=1,
+            snapshot=EpochMetricSnapshot(values={}, sources={}),
+        )
 
     assert random.getstate() == python_state
     np.testing.assert_equal(np.random.get_state(), numpy_state)
@@ -1773,14 +1929,12 @@ def test_strict_resume_preflights_sibling_best_before_any_run_side_effect(
 ) -> None:
     config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path / "runs" / "original")
-    loop_state = {
-        "best_epoch": 1,
-        "best_metric_value": 0.5,
-        "epochs_without_improvement": 1,
-        "stopped_early": False,
-        "monitor": "valid/loss",
-        "mode": "min",
-    }
+    loop_state = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        observations_without_improvement=1,
+        monitor="valid/loss",
+    )
     selected = _best_payload(loop_state, epoch=2)
     selected["config"] = config.to_dict()
     selected_metadata = _checkpoint_metadata(selected)
@@ -1840,7 +1994,7 @@ def test_strict_resume_preflights_sibling_best_before_any_run_side_effect(
         (
             "invalid_wait",
             TypeError,
-            "epochs_without_improvement",
+            "observations_without_improvement",
         ),
         (
             "terminal_early_stop",
@@ -1878,9 +2032,25 @@ def test_strict_resume_preflights_complete_loop_state_before_plugin_activation(
     loop_state = metadata["training_loop"]
     assert isinstance(loop_state, dict)
     if case == "invalid_wait":
-        loop_state["epochs_without_improvement"] = []
+        loop_state["observations_without_improvement"] = []
     elif case == "terminal_early_stop":
-        loop_state["stopped_early"] = True
+        metadata["training_loop"] = _training_loop_state(
+            best_epoch=1,
+            best_metric_value=0.5,
+            observations_without_improvement=1,
+            stopped_early=True,
+            monitor="valid/loss",
+            early_stopping_patience=1,
+        )
+        payload["metrics"] = {"valid/loss": 0.5}
+        metadata["metric_sources"] = {
+            "valid/loss": {
+                "origin": "phase",
+                "data_role": "validation",
+                "protocol_id": None,
+                "selection_eligible": True,
+            }
+        }
     elif case == "invalid_checkpoint_kind":
         metadata["checkpoint_kind"] = []
     elif case == "best_without_state":

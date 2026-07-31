@@ -1,6 +1,6 @@
 """Component registries and builder utilities."""
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from importlib import import_module
 from typing import Any, cast
@@ -10,13 +10,16 @@ from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
+from stochaflow.metrics import MetricDataRole
 from stochaflow.processes import Process
 from stochaflow.training import (
+    BoundTrainingDiagnostic,
     DiagnosticBuildContext,
     PrecisionRuntime,
     Trainer,
     TrainingDiagnostic,
     TrainingPlan,
+    bind_training_diagnostics,
     build_precision_runtime,
     build_training_plan,
     trainable_parameters,
@@ -233,6 +236,9 @@ def build_training_components(
     config: StochaflowConfig,
     *,
     checkpoint_metadata: dict[str, Any] | None = None,
+    diagnostic_data_iterables: (
+        Mapping[MetricDataRole, Iterable[Any]] | None
+    ) = None,
 ) -> TrainingComponents:
     """Build model-side training components without dataset I/O side effects."""
 
@@ -306,6 +312,40 @@ def build_training_components(
         logger=logger,
         output_dir=config.experiment.output_dir,
     )
+    data_artifact_provenance = (
+        checkpoint_metadata.get("data_artifacts")
+        if checkpoint_metadata is not None
+        else None
+    )
+    if data_artifact_provenance is not None and not isinstance(
+        data_artifact_provenance,
+        Mapping,
+    ):
+        raise TypeError(
+            "checkpoint metadata.data_artifacts must be a mapping or null"
+        )
+    extension_provenance = (
+        checkpoint_metadata.get("extension_plugins", [])
+        if checkpoint_metadata is not None
+        else []
+    )
+    protocol_provenance = {
+        "schema_version": 1,
+        "data_artifacts": cast(
+            Mapping[str, Any] | None,
+            data_artifact_provenance,
+        ),
+        "data_config": config.to_dict()["data"],
+        "extension_plugins": extension_provenance,
+    }
+    bound_diagnostics: list[BoundTrainingDiagnostic] = (
+        bind_training_diagnostics(
+            [item.name for item in config.diagnostics],
+            diagnostics,
+            protocol_provenance=protocol_provenance,
+            data_iterables=diagnostic_data_iterables,
+        )
+    )
     metric_runtime = TrainingMetricRuntime(
         config.metrics,
         plan.strategy,
@@ -324,7 +364,7 @@ def build_training_components(
         ema=ema,
         max_grad_norm=config.trainer.max_grad_norm,
         logger=logger,
-        diagnostics=diagnostics,
+        diagnostics=bound_diagnostics,
         metric_runtime=metric_runtime,
         log_every=config.logging.log_every,
         checkpoint_manager=checkpoint_manager,

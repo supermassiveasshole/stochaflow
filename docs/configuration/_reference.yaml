@@ -70,9 +70,10 @@ fields:
   trainer.show_progress: {description: 是否显示 Rich 进度条。, cli: "train --progress / --no-progress"}
   trainer.early_stopping: {description: 基于 epoch 指标的提前停止策略。}
   trainer.early_stopping.enabled: {description: 是否启用提前停止。}
-  trainer.early_stopping.monitor: {description: 需要监控的 canonical epoch 指标，例如 valid/loss、train/loss 或 valid/metrics/prediction_mae。, constraints: 接受 train/valid loss 或 phase metric（可带一个 flat subkey）；拒绝 step、system、test、diagnostic namespace、周围空白与旧别名。}
+  trainer.early_stopping.monitor: {description: 需要监控的 canonical epoch 指标，例如 valid/loss、valid/metrics/prediction_mae 或 diagnostics/diffusion_quality/samplers/ddim_50/fid。, constraints: 接受 train/valid/test phase key 或 diagnostics/<diagnostic-id>/...；system、step、周围空白和旧别名被拒绝，test-role 指标随后在 selection 语义检查中被拒绝。}
   trainer.early_stopping.mode: {description: min 表示越小越好，max 表示越大越好。, constraints: min 或 max。}
-  trainer.early_stopping.patience: {description: 指标无足够改善时容忍的 epoch 数。, constraints: 正整数。}
+  trainer.early_stopping.missing: {description: monitor 缺席时的策略；error 立即失败，skip 仅用于尚未到 cadence 的 diagnostic metric。, constraints: error 或 skip；skip 仅允许 diagnostics/... monitor，已到 cadence 但未返回值仍失败。}
+  trainer.early_stopping.patience: {description: 指标无足够改善时容忍的有效 observation 数；低频 diagnostic 未到 cadence 的 epoch 不计数。, constraints: 正整数。}
   trainer.early_stopping.min_delta: {description: 被视为改善所需的最小绝对差值。, constraints: 非负数。}
   logging: {description: 指标记录频率、后端与 torch 内部日志配置。}
   logging.log_every: {description: 每隔多少个训练 step 写一次 step 指标。, constraints: 正整数。}

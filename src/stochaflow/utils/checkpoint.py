@@ -33,7 +33,7 @@ else:
     ExponentialMovingAverage = Any
 
 
-CHECKPOINT_FORMAT_VERSION = 10
+CHECKPOINT_FORMAT_VERSION = 11
 _PRECISION_KINDS = frozenset(("fp32", "bf16-mixed", "fp16-mixed"))
 
 _CHECKPOINT_LEAF_TYPES = (type(None), bool, int, float, complex, str, bytes)
@@ -465,7 +465,7 @@ class CheckpointManager:
         checkpoint_metadata.setdefault("extension_plugins", [])
         state["metadata"] = checkpoint_metadata
         _validate_checkpoint_value(state, path="checkpoint")
-        _validate_v10_checkpoint_header(state)
+        _validate_v11_checkpoint_header(state)
         return state
 
     def save(
@@ -499,7 +499,7 @@ class CheckpointManager:
             raise TypeError("checkpoint payload must be an exact dictionary")
         _validate_checkpoint_value(payload, path="checkpoint")
         state = cast(CheckpointState, payload)
-        _validate_v10_checkpoint_header(state)
+        _validate_v11_checkpoint_header(state)
         _ensure_parent_directory(checkpoint_path)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{checkpoint_path.name}.",
@@ -1375,12 +1375,12 @@ def _normalize_checkpoint_header(state: CheckpointState) -> CheckpointState:
             f"checkpoint format version {version!r} is unsupported; "
             f"expected version {CHECKPOINT_FORMAT_VERSION}"
         )
-    _validate_v10_checkpoint_header(state)
+    _validate_v11_checkpoint_header(state)
     return state
 
 
-def _validate_v10_checkpoint_header(state: CheckpointState) -> None:
-    """Validate the exact inference and precision topology of a v10 checkpoint."""
+def _validate_v11_checkpoint_header(state: CheckpointState) -> None:
+    """Validate the exact inference and precision topology of a v11 checkpoint."""
 
     version = cast(object, state.get("format_version"))
     if type(version) is not int or version != CHECKPOINT_FORMAT_VERSION:
@@ -1397,7 +1397,7 @@ def _validate_v10_checkpoint_header(state: CheckpointState) -> None:
         path="checkpoint.inference_asset_descriptors",
     )
     if "inference_recipe" not in state:
-        raise TypeError("v10 checkpoint is missing inference_recipe")
+        raise TypeError("v11 checkpoint is missing inference_recipe")
     inference_recipe_value = state["inference_recipe"]
     if inference_recipe_value is not None:
         sampling_recipe_from_dict(inference_recipe_value)
@@ -1467,14 +1467,14 @@ def _validate_v10_checkpoint_header(state: CheckpointState) -> None:
             + ", ".join(unexpected)
         )
 
-    _validate_v10_ema_payload(state)
+    _validate_v11_ema_payload(state)
     _validate_checkpoint_config(state, precision_kind=precision_kind)
     _validate_extension_plugin_metadata(state)
     parse_rng_state(state.get("rng_state"))
 
 
-def _validate_v10_ema_payload(state: CheckpointState) -> None:
-    """Validate the self-contained EMA projection shared by v10 readers."""
+def _validate_v11_ema_payload(state: CheckpointState) -> None:
+    """Validate the self-contained EMA projection shared by v11 readers."""
 
     has_ema_state = "ema_state_dict" in state
     has_ema_projection = "ema_model_state_dict" in state

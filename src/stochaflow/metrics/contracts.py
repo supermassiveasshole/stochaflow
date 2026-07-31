@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from numbers import Real
+from enum import Enum
+from numbers import Number, Real
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 import torch
+
+from stochaflow.metrics.config import classify_epoch_metric_key
 
 type MetricOrigin = Literal["phase", "diagnostic", "system"]
 type MetricDataRole = Literal["train", "validation", "test", "external"]
@@ -22,12 +26,14 @@ METRIC_SOURCE_FIELDS = frozenset(
     }
 )
 EPOCH_METRIC_SNAPSHOT_FIELDS = frozenset({"values", "sources"})
-PHASE_PREFIX_BY_DATA_ROLE: dict[MetricDataRole, str] = {
-    "train": "train/",
-    "validation": "valid/",
-    "test": "test/",
-    "external": "",
-}
+
+
+@runtime_checkable
+class MetricPayloadDetachable(Protocol):
+    """Explicit detach capability for a custom stateful metric payload."""
+
+    def detach_metric_payload(self) -> Any:
+        """Return an equivalent payload with every contained tensor detached."""
 
 
 def _non_empty_string(value: object, *, path: str) -> str:
@@ -101,21 +107,71 @@ def validate_metric_updates(
     return MappingProxyType(normalized)
 
 
+def _is_named_tuple_instance(value: object) -> bool:
+    fields = getattr(type(value), "_fields", None)
+    return not (
+        not isinstance(value, tuple)
+        or not isinstance(fields, tuple)
+        or any(not isinstance(field_name, str) for field_name in fields)
+    )
+
+
+def _unsupported_metric_payload(value: object) -> TypeError:
+    return TypeError(
+        "metric payload contains unsupported value type "
+        f"{type(value).__name__!r}; custom stateful payload containers must "
+        "implement MetricPayloadDetachable.detach_metric_payload()"
+    )
+
+
 def detach_metric_value(value: Any) -> Any:
-    """Recursively detach tensors while preserving ordinary payload structure."""
+    """Recursively detach tensors in a supported metric payload tree."""
 
     if isinstance(value, torch.Tensor):
         return value.detach()
-    if isinstance(value, Mapping):
+    if type(value) is dict:
         return {
             key: detach_metric_value(item)
             for key, item in value.items()
         }
-    if isinstance(value, tuple):
+    if type(value) is OrderedDict:
+        return OrderedDict(
+            (key, detach_metric_value(item))
+            for key, item in value.items()
+        )
+    if type(value) is MappingProxyType:
+        return MappingProxyType(
+            {
+                key: detach_metric_value(item)
+                for key, item in value.items()
+            }
+        )
+    if type(value) is tuple:
         return tuple(detach_metric_value(item) for item in value)
-    if isinstance(value, list):
+    if _is_named_tuple_instance(value):
+        constructor = cast(Any, type(value))
+        return constructor(*(detach_metric_value(item) for item in value))
+    if type(value) is list:
         return [detach_metric_value(item) for item in value]
-    return value
+    if type(value) is torch.Size:
+        return torch.Size(detach_metric_value(item) for item in value)
+    if isinstance(value, MetricPayloadDetachable):
+        return value.detach_metric_payload()
+    if value is None or isinstance(
+        value,
+        (
+            str,
+            bytes,
+            Number,
+            Enum,
+            torch.device,
+            torch.dtype,
+            torch.layout,
+            torch.memory_format,
+        ),
+    ):
+        return value
+    raise _unsupported_metric_payload(value)
 
 
 def detach_metric_update(update: MetricUpdate) -> MetricUpdate:
@@ -228,25 +284,21 @@ def _validate_source_key_consistency(
     key: str,
     source: MetricSource,
 ) -> None:
-    if source.origin == "system":
-        if not key.startswith("system/"):
-            raise ValueError(
-                f"system metric source requires a 'system/' key, got {key!r}"
-            )
+    origin, data_role = classify_epoch_metric_key(
+        key,
+        path="epoch metric snapshot key",
+    )
+    if origin != source.origin:
+        raise ValueError(
+            f"{source.origin} metric source conflicts with canonical "
+            f"{origin} metric key {key!r}"
+        )
+    if origin != "phase":
         return
-    if source.origin == "diagnostic":
-        if not key.startswith("diagnostics/"):
-            raise ValueError(
-                "diagnostic metric source requires a 'diagnostics/' key, "
-                f"got {key!r}"
-            )
-        return
-    assert source.data_role is not None
-    expected_prefix = PHASE_PREFIX_BY_DATA_ROLE[source.data_role]
-    if not key.startswith(expected_prefix):
+    if source.data_role != data_role:
         raise ValueError(
             f"phase metric key {key!r} conflicts with data role "
-            f"{source.data_role!r}; expected prefix {expected_prefix!r}"
+            f"{source.data_role!r}; canonical key has data role {data_role!r}"
         )
 
 
@@ -347,6 +399,7 @@ __all__ = [
     "EpochMetricSnapshot",
     "MetricDataRole",
     "MetricOrigin",
+    "MetricPayloadDetachable",
     "MetricSource",
     "MetricUpdate",
     "detach_metric_update",

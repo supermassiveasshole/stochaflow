@@ -4,8 +4,8 @@
 - 状态：Active
 - 制定日期：2026-07-29
 - 最近排期复核：2026-07-30
-- 当前工程优先项：A0/A1 repository implementation 已关闭；下一步完成 Metrics
-  M0–M1 与 class-aware Evaluation 基础
+- 当前工程优先项：A0/A1、修订后的 A2 class-aware example contract 与 Metrics
+  M0–M4 repository implementation 已关闭；下一步推进通用 Evaluation E0–E1
 - 当前产品主线：pretrained image autoencoder + class-conditional latent diffusion
 - 当前 pixel-quality lane：corrected ADM + learned-range Gaussian + P2 weighting
   已具备 algorithm/config substrate；quality evidence 尚未运行
@@ -227,7 +227,7 @@ retained MNIST/AFHQ 的训练数值行为保持不变。
 参数；loss、variance、respacing 与 pinned reference parity 已测试；旧
 fixed-variance paths 无回归。
 
-### A2 — Class-aware AFHQ Evaluation（scope revised）
+### A2 — Class-aware AFHQ Evaluation（scope revised，repository contract complete）
 
 原单类别 reproduction lane 已取消，不再新增专用 DataSource、训练 recipe、采样
 protocol 或 benchmark resolver。AFHQ 只维护现有 class-conditional product surface：
@@ -237,8 +237,9 @@ protocol 或 benchmark resolver。AFHQ 只维护现有 class-conditional product
 - validation 选择 frozen subject 后，official test 只运行一次；
 - 结果固定 checkpoint、data identity、class allocation、sampler 与 metric protocol。
 
-代码合并只要求 class-aware evaluation contract 与回归测试通过。4090/DGX 上的容量、
-吞吐、显存和长训练质量结果属于后续运行验收，不阻塞 A0/A1、Metrics 或 main 合并。
+class-aware evaluation contract 与回归测试已经通过。4090/DGX 上的容量、吞吐、显存
+和长训练质量结果属于后续运行验收，不阻塞 A0/A1、A2、Metrics 或 main 合并。通用
+Evaluation Operation 的 E0–E3 仍是后续独立能力，不影响 AFHQ example 这一已闭合边界。
 
 ### L0 — Pretrained Codec Ready（P1，1–2 个工程周）
 

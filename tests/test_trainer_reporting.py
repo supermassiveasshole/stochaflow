@@ -591,10 +591,17 @@ def test_fit_resume_preserves_best_and_early_stopping_wait(tmp_path) -> None:
         {
             "best_epoch": 1,
             "best_metric_value": 0.1,
-            "epochs_without_improvement": 1,
+            "observations_without_improvement": 1,
+            "monitor_observations": 2,
             "stopped_early": False,
-            "monitor": "valid/loss",
-            "mode": "min",
+            "tracking_enabled": True,
+            "monitor_policy": {
+                "metric": "valid/loss",
+                "mode": "min",
+                "missing": "error",
+                "min_delta": 0.0,
+            },
+            "early_stopping_patience": 2,
         },
         best_checkpoint_path=previous_best,
     )
@@ -633,10 +640,17 @@ def test_fit_resume_preserves_best_and_early_stopping_wait(tmp_path) -> None:
     assert metadata["training_loop"] == {
         "best_epoch": 1,
         "best_metric_value": 0.1,
-        "epochs_without_improvement": 2,
+        "observations_without_improvement": 2,
+        "monitor_observations": 3,
         "stopped_early": True,
-        "monitor": "valid/loss",
-        "mode": "min",
+        "tracking_enabled": True,
+        "monitor_policy": {
+            "metric": "valid/loss",
+            "mode": "min",
+            "missing": "error",
+            "min_delta": 0.0,
+        },
+        "early_stopping_patience": 2,
     }
 
 
@@ -652,10 +666,17 @@ def test_restore_fit_state_rejects_non_finite_best_metric(
             {
                 "best_epoch": 1,
                 "best_metric_value": value,
-                "epochs_without_improvement": 0,
+                "observations_without_improvement": 0,
+                "monitor_observations": 1,
                 "stopped_early": False,
-                "monitor": "valid/loss",
-                "mode": "min",
+                "tracking_enabled": True,
+                "monitor_policy": {
+                    "metric": "valid/loss",
+                    "mode": "min",
+                    "missing": "error",
+                    "min_delta": 0.0,
+                },
+                "early_stopping_patience": None,
             }
         )
 
@@ -906,6 +927,6 @@ def test_checkpoint_manager_rejects_unsupported_format(tmp_path) -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"checkpoint format version 7 is unsupported; expected version 10",
+        match=r"checkpoint format version 7 is unsupported; expected version 11",
     ):
         checkpoint_manager.load(checkpoint)

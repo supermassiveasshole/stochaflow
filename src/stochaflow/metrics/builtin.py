@@ -27,8 +27,48 @@ class ErrorOnNanMeanMetric(TorchMeanMetric):
         super().__init__(nan_strategy="error", **kwargs)
 
 
-REGISTRIES.metrics.add("mse", MeanSquaredError)
-REGISTRIES.metrics.add("mae", MeanAbsoluteError)
+@REGISTRIES.metrics.register("mse")
+class SingleOutputMeanSquaredError(MeanSquaredError):
+    """Compute scalar MSE with fixed single-output semantics."""
+
+    def __init__(
+        self,
+        *,
+        squared: bool = True,
+        num_outputs: int = 1,
+        **kwargs: Any,
+    ) -> None:
+        if squared is not True:
+            raise ValueError("mse metric fixes squared=True")
+        if type(num_outputs) is not int or num_outputs != 1:
+            raise ValueError("mse metric fixes num_outputs=1")
+        super().__init__(
+            squared=True,
+            num_outputs=1,
+            **kwargs,
+        )
 
 
-__all__ = ["ErrorOnNanMeanMetric"]
+@REGISTRIES.metrics.register("mae")
+class SingleOutputMeanAbsoluteError(MeanAbsoluteError):
+    """Compute scalar MAE with fixed single-output semantics."""
+
+    def __init__(
+        self,
+        *,
+        num_outputs: int = 1,
+        **kwargs: Any,
+    ) -> None:
+        if type(num_outputs) is not int or num_outputs != 1:
+            raise ValueError("mae metric fixes num_outputs=1")
+        super().__init__(
+            num_outputs=1,
+            **kwargs,
+        )
+
+
+__all__ = [
+    "ErrorOnNanMeanMetric",
+    "SingleOutputMeanAbsoluteError",
+    "SingleOutputMeanSquaredError",
+]
