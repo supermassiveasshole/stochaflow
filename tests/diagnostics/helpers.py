@@ -9,7 +9,6 @@ from typing import Any, ClassVar
 import torch
 from torch import nn
 
-from stochaflow.families.gaussian import PredictionType
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.sampling import Sampler, SamplerResult, SamplingObservation
 from stochaflow.training import (
@@ -20,14 +19,6 @@ from stochaflow.training import (
     TrainBatchEndEvent,
     TrainEpochEndEvent,
     TrainStepOutput,
-)
-from stochaflow.training.gaussian_loss import (
-    GaussianLossComposer,
-    build_gaussian_loss_composer,
-)
-from stochaflow.training.gaussian_variance import GaussianVarianceConfig
-from stochaflow.training.gaussian_weighting import (
-    ConstantGaussianSimpleLossWeighting,
 )
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
@@ -78,24 +69,6 @@ class TinyDenoiser(nn.Module):
         return self.projection(xt)
 
 
-def gaussian_loss_composer(
-    process: DiscreteGaussianProcess,
-    objective: nn.Module,
-    *,
-    prediction_type: PredictionType = "epsilon",
-) -> GaussianLossComposer:
-    """Build the fixed-variance loss composition used by diagnostics tests."""
-
-    return build_gaussian_loss_composer(
-        objective=objective,
-        process=process,
-        prediction_type=prediction_type,
-        variance=GaussianVarianceConfig(),
-        loss_weighting=ConstantGaussianSimpleLossWeighting(),
-        path="Gaussian diagnostics test policy",
-    )
-
-
 class GaussianTestAssets(nn.Module):
     """Test-only asset holder for a Gaussian diagnostic runtime."""
 
@@ -108,11 +81,11 @@ class GaussianTestAssets(nn.Module):
         self.inference_model = inference_model
         self.process = process
         self.objective = MSEObjective()
-        self.loss_composer = gaussian_loss_composer(process, self.objective)
         self.strategy = GaussianDenoisingTrainingStrategy(
             inference_model,
             process,
-            self.loss_composer,
+            self.objective,
+            prediction_type="epsilon",
         )
 
     @property
@@ -316,7 +289,6 @@ __all__ = [
     "batch_event",
     "epoch_event",
     "fit_event",
-    "gaussian_loss_composer",
     "gaussian_system",
     "profiles",
     "provider_config",

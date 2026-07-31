@@ -10,7 +10,7 @@ from typing import Any, Required, TypedDict, cast
 import torch
 import yaml
 
-from stochaflow.processes import Process
+from stochaflow.processes.base import Process
 from stochaflow.sampling.assets import InferenceAssetProvider
 from stochaflow.sampling.builder import (
     InferenceModelProvider,

@@ -13,8 +13,8 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 import torch
 
-from stochaflow.metrics import MetricDataRole, MetricSource
-from stochaflow.sampling import SamplingObservation
+from stochaflow.metrics.contracts import MetricDataRole, MetricSource
+from stochaflow.sampling.sampler import SamplingObservation
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
 

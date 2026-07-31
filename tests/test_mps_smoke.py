@@ -21,11 +21,6 @@ from stochaflow.training import (
     Trainer,
     TrainingPlan,
 )
-from stochaflow.training.gaussian_loss import build_gaussian_loss_composer
-from stochaflow.training.gaussian_variance import GaussianVarianceConfig
-from stochaflow.training.gaussian_weighting import (
-    ConstantGaussianSimpleLossWeighting,
-)
 
 pytestmark = pytest.mark.skipif(
     not torch.backends.mps.is_available(),
@@ -75,18 +70,11 @@ def test_trainer_runs_forward_backward_and_optimizer_step_on_mps() -> None:
     process = _process()
     model = TinyGaussianModel()
     objective = MSEObjective()
-    loss_composer = build_gaussian_loss_composer(
-        objective=objective,
-        process=process,
-        prediction_type="epsilon",
-        variance=GaussianVarianceConfig(),
-        loss_weighting=ConstantGaussianSimpleLossWeighting(),
-        path="MPS smoke test policy",
-    )
     strategy = GaussianDenoisingTrainingStrategy(
         model,
         process,
-        loss_composer,
+        objective,
+        prediction_type="epsilon",
     )
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     trainer = Trainer(

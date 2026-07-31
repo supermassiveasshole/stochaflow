@@ -1,4 +1,4 @@
-"""Discrete variance-preserving noise paths."""
+"""Gaussian-family discrete variance-preserving noise paths."""
 
 from abc import abstractmethod
 from dataclasses import dataclass

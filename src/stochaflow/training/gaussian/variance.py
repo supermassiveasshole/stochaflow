@@ -1,28 +1,28 @@
-"""Gaussian learned-variance training policy isolated from simple loss weighting."""
+"""Learned-range variance semantics owned by Gaussian training."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import Literal, cast
 
 import torch
 
-from stochaflow.families.gaussian import (
-    PredictionType,
-    VarianceMode,
-    normalize_gaussian_prediction,
-)
+from stochaflow.families.gaussian import PredictionType, normalize_gaussian_prediction
 from stochaflow.models.denoising import DenoiserChannelLayout
-from stochaflow.processes import DiscreteGaussianDenoisingProcess
-from stochaflow.processes.gaussian import LearnedRangeGaussianVarianceProcess
+from stochaflow.processes.gaussian.contracts import (
+    DiscreteGaussianDenoisingProcess,
+    LearnedRangeGaussianVarianceProcess,
+)
+
+from .contracts import VarianceMode
 
 VarianceLossName = Literal["rescaled_variational_bound"]
 
 
 @dataclass(frozen=True, slots=True)
 class GaussianVarianceConfig:
-    """Validated Gaussian model-variance and hybrid-loss policy."""
+    """Validated Gaussian model-variance and hybrid-loss recipe."""
 
     mode: VarianceMode = "fixed"
     loss: VarianceLossName | None = None
@@ -30,13 +30,11 @@ class GaussianVarianceConfig:
     def __post_init__(self) -> None:
         """Fail closed when constructed outside the YAML parser."""
 
-        mode_value = cast(object, self.mode)
-        if not isinstance(mode_value, str) or mode_value not in (
-            "fixed",
-            "learned_range",
-        ):
-            raise ValueError("GaussianVarianceConfig.mode must be fixed or learned_range")
-        if mode_value == "fixed":
+        if self.mode not in ("fixed", "learned_range"):
+            raise ValueError(
+                "GaussianVarianceConfig.mode must be fixed or learned_range"
+            )
+        if self.mode == "fixed":
             if self.loss is not None:
                 raise ValueError("fixed Gaussian variance cannot define a loss")
             return
@@ -45,111 +43,6 @@ class GaussianVarianceConfig:
                 "learned_range Gaussian variance requires "
                 "loss='rescaled_variational_bound'"
             )
-
-
-@runtime_checkable
-class GaussianVarianceLoss(Protocol):
-    """Compute an optional per-sample Gaussian variance-training term."""
-
-    @property
-    def bound_process(self) -> DiscreteGaussianDenoisingProcess:
-        """Return the exact Process whose coefficients this loss consumes."""
-
-        ...
-
-    def per_sample_loss(
-        self,
-        *,
-        clean: torch.Tensor,
-        noisy: torch.Tensor,
-        state_times: torch.Tensor,
-        mean_output: torch.Tensor,
-        variance_values: torch.Tensor,
-        prediction_type: PredictionType,
-    ) -> torch.Tensor:
-        """Return one variance loss for every leading batch item."""
-
-        ...
-
-
-class LearnedRangeGaussianVarianceLoss:
-    """Compute the improved-DDPM learned-range variational-bound term."""
-
-    def __init__(self, process: DiscreteGaussianDenoisingProcess) -> None:
-        if not isinstance(process, LearnedRangeGaussianVarianceProcess):
-            raise TypeError(
-                "learned_range variance requires "
-                "LearnedRangeGaussianVarianceProcess capability"
-            )
-        self.process = process
-        self.variance_process = cast(LearnedRangeGaussianVarianceProcess, process)
-
-    @property
-    def bound_process(self) -> DiscreteGaussianDenoisingProcess:
-        """Return the Process bound at the Builder composition boundary."""
-
-        return self.process
-
-    def per_sample_loss(
-        self,
-        *,
-        clean: torch.Tensor,
-        noisy: torch.Tensor,
-        state_times: torch.Tensor,
-        mean_output: torch.Tensor,
-        variance_values: torch.Tensor,
-        prediction_type: PredictionType,
-    ) -> torch.Tensor:
-        """Return the detached-mean decoder NLL or KL term in bits."""
-
-        process = self.process
-        target_times = state_times - 1
-        model_log_variance = learned_range_log_variance(
-            self.variance_process,
-            state_times,
-            target_times,
-            variance_values,
-        )
-        scales = process.marginal_scales(state_times, noisy.size())
-        frozen_prediction = normalize_gaussian_prediction(
-            noisy,
-            mean_output.detach(),
-            signal_scale=scales.signal,
-            noise_scale=scales.noise,
-            prediction_type=prediction_type,
-        )
-        true_mean = process.posterior_mean(noisy, state_times, clean)
-        model_mean = process.posterior_mean(
-            noisy,
-            state_times,
-            frozen_prediction.clean,
-        )
-        true_log_variance = self.variance_process.reverse_log_variance_bounds(
-            state_times,
-            target_times,
-            clean.size(),
-        ).lower
-        kl = _mean_flat(
-            _normal_kl(
-                true_mean,
-                true_log_variance,
-                model_mean,
-                model_log_variance,
-            )
-        ) / math.log(2.0)
-        decoder_nll = -_discretized_gaussian_log_likelihood(
-            clean,
-            means=model_mean,
-            log_scales=0.5 * model_log_variance,
-        )
-        decoder_nll = _mean_flat(decoder_nll) / math.log(2.0)
-        per_sample = torch.where(
-            state_times == process.clean_time + 1,
-            decoder_nll,
-            kl,
-        )
-        transition_count = process.terminal_time - process.clean_time
-        return per_sample * (transition_count / 1000.0)
 
 
 def parse_gaussian_variance(
@@ -185,24 +78,13 @@ def parse_gaussian_variance(
     )
 
 
-def build_gaussian_variance_loss(
-    process: DiscreteGaussianDenoisingProcess,
-    config: GaussianVarianceConfig,
-) -> GaussianVarianceLoss | None:
-    """Build the configured variance collaborator at the composition boundary."""
-
-    if config.mode == "fixed":
-        return None
-    return LearnedRangeGaussianVarianceLoss(process)
-
-
 def validate_gaussian_model_output_layout(
     model: object,
     *,
     variance_mode: VarianceMode,
     path: str,
 ) -> None:
-    """Preflight a static denoiser channel declaration when one is available."""
+    """Preflight a static denoiser channel declaration when available."""
 
     if not isinstance(model, DenoiserChannelLayout):
         return
@@ -247,6 +129,73 @@ def learned_range_log_variance(
     )
     fraction = (variance_values + 1.0) / 2.0
     return fraction * bounds.upper + (1.0 - fraction) * bounds.lower
+
+
+def learned_range_variational_bound(
+    process: DiscreteGaussianDenoisingProcess,
+    *,
+    clean: torch.Tensor,
+    noisy: torch.Tensor,
+    state_times: torch.Tensor,
+    mean_output: torch.Tensor,
+    variance_values: torch.Tensor,
+    prediction_type: PredictionType,
+) -> torch.Tensor:
+    """Return the improved-DDPM per-sample variance term in bits."""
+
+    if not isinstance(process, LearnedRangeGaussianVarianceProcess):
+        raise TypeError(
+            "learned_range variance requires "
+            "LearnedRangeGaussianVarianceProcess capability"
+        )
+    variance_process = cast(LearnedRangeGaussianVarianceProcess, process)
+    target_times = state_times - 1
+    model_log_variance = learned_range_log_variance(
+        variance_process,
+        state_times,
+        target_times,
+        variance_values,
+    )
+    scales = process.marginal_scales(state_times, noisy.size())
+    frozen_prediction = normalize_gaussian_prediction(
+        noisy,
+        mean_output.detach(),
+        signal_scale=scales.signal,
+        noise_scale=scales.noise,
+        prediction_type=prediction_type,
+    )
+    true_mean = process.posterior_mean(noisy, state_times, clean)
+    model_mean = process.posterior_mean(
+        noisy,
+        state_times,
+        frozen_prediction.clean,
+    )
+    true_log_variance = variance_process.reverse_log_variance_bounds(
+        state_times,
+        target_times,
+        clean.size(),
+    ).lower
+    kl = _mean_flat(
+        _normal_kl(
+            true_mean,
+            true_log_variance,
+            model_mean,
+            model_log_variance,
+        )
+    ) / math.log(2.0)
+    decoder_nll = -_discretized_gaussian_log_likelihood(
+        clean,
+        means=model_mean,
+        log_scales=0.5 * model_log_variance,
+    )
+    decoder_nll = _mean_flat(decoder_nll) / math.log(2.0)
+    per_sample = torch.where(
+        state_times == process.clean_time + 1,
+        decoder_nll,
+        kl,
+    )
+    transition_count = process.terminal_time - process.clean_time
+    return per_sample * (transition_count / 1000.0)
 
 
 def _normal_kl(
@@ -318,10 +267,4 @@ def _positive_channel_count(value: object, *, path: str) -> int:
 
 __all__ = [
     "GaussianVarianceConfig",
-    "GaussianVarianceLoss",
-    "LearnedRangeGaussianVarianceLoss",
-    "build_gaussian_variance_loss",
-    "learned_range_log_variance",
-    "parse_gaussian_variance",
-    "validate_gaussian_model_output_layout",
 ]

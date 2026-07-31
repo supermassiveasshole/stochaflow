@@ -12,7 +12,7 @@ from stochaflow.sampling import (
     PredictionType,
     SamplingBuilderContext,
 )
-from stochaflow.sampling.class_conditional import (
+from stochaflow.sampling.gaussian.class_conditional import (
     ClassConditionalDenoisingBuilder,
     ClassConditionalEvaluationCounts,
     ClassifierFreeGuidancePredictor,

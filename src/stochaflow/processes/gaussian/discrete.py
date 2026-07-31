@@ -10,12 +10,13 @@ import torch
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.registry import REGISTRIES
 
-from .gaussian import (
+from .contracts import (
     DiscreteGaussianDenoisingProcess,
     GaussianLogVarianceBounds,
     GaussianMarginalCoefficientSnapshot,
 )
-from .noise_schedules import DiscreteVPSchedule, GaussianScales
+from .noise_schedules.base import GaussianScales
+from .noise_schedules.discrete_vp import DiscreteVPSchedule
 
 
 @REGISTRIES.processes.register("discrete_gaussian")

@@ -12,27 +12,30 @@ from stochaflow.models.conditioning import (
     ClassConditionalDenoiser,
     predict_prevalidated_class_conditioned,
 )
-from stochaflow.processes import (
+from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
     LearnedRangeGaussianVarianceProcess,
 )
-from stochaflow.sampling.builder import (
-    DenoisingTrajectoryConfig,
+from stochaflow.utils.config import ComponentConfig
+from stochaflow.utils.registry import REGISTRIES
+
+from ..builder import (
     SamplingBuilder,
     SamplingOutput,
-    StandardDenoisingObserver,
     WeightSelection,
 )
-from stochaflow.sampling.gaussian import (
+from ..sampler import Sampler, SamplerResult
+from ..writers import SamplingBatch
+from .builder import (
+    DenoisingTrajectoryConfig,
+    StandardDenoisingObserver,
+    _variance_mode_from_declaration,
+)
+from .dynamics import (
     GaussianModelDynamics,
     PredictionType,
     VarianceMode,
-    _variance_mode_from_declaration,
 )
-from stochaflow.sampling.sampler import Sampler, SamplerResult
-from stochaflow.sampling.writers import SamplingBatch
-from stochaflow.utils.config import ComponentConfig
-from stochaflow.utils.registry import REGISTRIES
 
 
 @dataclass(frozen=True, slots=True)

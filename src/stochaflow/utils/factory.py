@@ -10,23 +10,24 @@ from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from stochaflow.metrics import MetricDataRole
-from stochaflow.processes import Process
-from stochaflow.training import (
-    BoundTrainingDiagnostic,
-    DiagnosticBuildContext,
-    PrecisionRuntime,
-    Trainer,
-    TrainingDiagnostic,
+from stochaflow.metrics.contracts import MetricDataRole
+from stochaflow.processes.base import Process
+from stochaflow.training.builder import (
     TrainingPlan,
-    bind_training_diagnostics,
-    build_precision_runtime,
     build_training_plan,
     trainable_parameters,
+)
+from stochaflow.training.diagnostics.binding import bind_training_diagnostics
+from stochaflow.training.diagnostics.contracts import (
+    BoundTrainingDiagnostic,
+    DiagnosticBuildContext,
+    TrainingDiagnostic,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.training.metric_binding import TrainingMetricRuntime
 from stochaflow.training.optimization import build_lr_scheduler, build_optimizer
+from stochaflow.training.precision import PrecisionRuntime, build_precision_runtime
+from stochaflow.training.trainer import Trainer
 from stochaflow.utils.checkpoint import (
     CheckpointManager,
     inference_asset_descriptors_from_projections,

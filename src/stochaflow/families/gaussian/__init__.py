@@ -1,6 +1,6 @@
-"""Algorithm-family mathematical contracts shared across runtime layers."""
+"""Process-free Gaussian prediction mathematics shared across layers."""
 
-from .gaussian import (
+from .prediction import (
     GaussianPrediction,
     PredictionType,
     normalize_gaussian_prediction,

@@ -11,18 +11,20 @@ from stochaflow.processes import (
     GaussianScales,
 )
 from stochaflow.sampling import (
+    GenerativeDynamics,
+    Sampler,
+    SamplerResult,
+    SamplingObservation,
+    TrajectoryObserver,
+)
+from stochaflow.sampling.gaussian import (
     DDIMSampler,
     DDPMAncestralSampler,
     GaussianDenoisingDynamics,
     GaussianModelDynamics,
     GaussianPrediction,
     GaussianTransition,
-    GenerativeDynamics,
     PredictionType,
-    Sampler,
-    SamplerResult,
-    SamplingObservation,
-    TrajectoryObserver,
     normalize_gaussian_prediction,
 )
 

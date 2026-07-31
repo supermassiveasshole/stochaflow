@@ -17,6 +17,7 @@ from stochaflow.training import (
     MetricChannelProvider,
     MetricUpdate,
     MSEObjective,
+    P2GaussianDenoisingTrainingBuilder,
     SupervisedTrainingStrategy,
     TrainStepOutput,
     gaussian_training_target,
@@ -24,14 +25,6 @@ from stochaflow.training import (
     validate_train_step_output,
 )
 from stochaflow.training.builder import TrainingBuilderContext
-from stochaflow.training.gaussian_loss import (
-    GaussianLossComposer,
-    build_gaussian_loss_composer,
-)
-from stochaflow.training.gaussian_variance import parse_gaussian_variance
-from stochaflow.training.gaussian_weighting import (
-    build_gaussian_simple_loss_weighting,
-)
 from stochaflow.utils.config import ComponentConfig
 
 
@@ -224,30 +217,6 @@ class PerfectConditionalTargetModel(PerfectTargetModel):
         return self.forward(state, model_time)
 
 
-def _gaussian_loss_composer(
-    process: DiscreteGaussianProcess,
-    objective: nn.Module,
-    *,
-    prediction_type: PredictionType = "epsilon",
-    variance: object = None,
-    loss_weighting: object = None,
-) -> GaussianLossComposer:
-    return build_gaussian_loss_composer(
-        objective=objective,
-        process=process,
-        prediction_type=prediction_type,
-        variance=parse_gaussian_variance(
-            variance,
-            path="test Gaussian variance",
-        ),
-        loss_weighting=build_gaussian_simple_loss_weighting(
-            loss_weighting,
-            path="test Gaussian loss weighting",
-        ),
-        path="test Gaussian training policy",
-    )
-
-
 def test_supervised_strategy_declares_and_emits_metric_channel() -> None:
     model = nn.Linear(2, 1, bias=False)
     objective = MSEObjective()
@@ -282,11 +251,8 @@ def test_gaussian_strategy_supports_all_prediction_targets(
     strategy = GaussianDenoisingTrainingStrategy(
         model,
         process,
-        _gaussian_loss_composer(
-            process,
-            objective,
-            prediction_type=prediction_type,
-        ),
+        objective,
+        prediction_type=prediction_type,
     )
 
     output = strategy.training_step(torch.full((2, 1, 2, 2), 0.25))
@@ -327,7 +293,8 @@ def test_class_conditional_gaussian_strategy_emits_shared_gaussian_channels() ->
     strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
         model,
         process,
-        _gaussian_loss_composer(process, objective),
+        objective,
+        prediction_type="epsilon",
     )
     clean = torch.full((2, 1, 2, 2), 0.25)
     labels = torch.tensor([0, 2])
@@ -361,7 +328,8 @@ def test_gaussian_strategy_rejects_unhandled_conditions() -> None:
     strategy = GaussianDenoisingTrainingStrategy(
         PerfectTargetModel(process, "epsilon", 0.0),
         process,
-        _gaussian_loss_composer(process, objective),
+        objective,
+        prediction_type="epsilon",
     )
 
     with pytest.raises(TypeError, match="custom TrainingBuilder"):
@@ -370,7 +338,7 @@ def test_gaussian_strategy_rejects_unhandled_conditions() -> None:
         )
 
 
-def test_unconditional_builder_composes_p2_learned_range_recipe() -> None:
+def test_p2_builder_composes_learned_range_recipe() -> None:
     process = DeterministicGaussianProcess(
         {"name": "linear_beta", "params": {"num_timesteps": 4}}
     )
@@ -388,18 +356,15 @@ def test_unconditional_builder_composes_p2_learned_range_recipe() -> None:
         del config
         raise AssertionError("Gaussian builder must preserve the injected objective")
 
-    builder = GaussianDenoisingTrainingBuilder(
+    builder = P2GaussianDenoisingTrainingBuilder(
         TrainingBuilderContext(
             params={
-                "prediction_type": "epsilon",
                 "variance": {
                     "mode": "learned_range",
                     "loss": "rescaled_variational_bound",
                 },
-                "loss_weighting": {
-                    "name": "p2",
-                    "params": {"k": 1.0, "gamma": 1.0},
-                },
+                "k": 1.0,
+                "gamma": 1.0,
             },
             primary_model=model,
             process=process,

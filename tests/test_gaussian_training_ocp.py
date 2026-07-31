@@ -1,29 +1,33 @@
-"""Open-closed and lifecycle tests for Gaussian simple-loss weighting."""
+"""Open-closed tests for Strategy-level Gaussian training extension."""
 
 from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import torch
 import yaml
-from torch import nn
+from fixtures.gaussian_training_extension import (
+    MODEL_NAME as PLUGIN_MODEL_NAME,
+)
+from fixtures.gaussian_training_extension import (
+    TRAINING_NAME as PLUGIN_TRAINING_NAME,
+)
+from fixtures.gaussian_training_extension import (
+    PluginGaussianDenoiser,
+    PluginScaledGaussianStrategy,
+)
 from torch.utils.data import DataLoader, Dataset
 
+import stochaflow.training.gaussian as gaussian_training
 from stochaflow.data import DataLoaders
-from stochaflow.extensions import (
-    GaussianSimpleLossContext,
-    GaussianSimpleLossWeighting,
-    register_gaussian_simple_loss_weighting,
-)
-from stochaflow.families.gaussian import PredictionType
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.scripts import experiment_runner
 from stochaflow.scripts.cli import build_argument_parser
-from stochaflow.training.builder import TrainingPlan, build_training_plan
+from stochaflow.training.builder import build_training_plan
 from stochaflow.training.objectives import MSEObjective
 from stochaflow.training.strategy import validate_train_step_output
 from stochaflow.utils import plugins
@@ -31,17 +35,10 @@ from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import ComponentConfig, load_config_dict
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-CUSTOM_WEIGHTING_NAME = "tests.gaussian-weighting.scaled"
-CUSTOM_WEIGHTING_SPEC = {
-    "name": CUSTOM_WEIGHTING_NAME,
-    "params": {"scale": 0.25},
-}
-PLUGIN_NAME = "gaussian-weighting-lifecycle"
-PLUGIN_DISTRIBUTION = "gaussian-weighting-lifecycle-tests"
+PLUGIN_NAME = "gaussian-strategy-lifecycle"
+PLUGIN_DISTRIBUTION = "gaussian-strategy-lifecycle-tests"
 PLUGIN_VERSION = "1.2.3"
-PLUGIN_TARGET = "fixtures.gaussian_weighting_extension"
-PLUGIN_MODEL_NAME = "tests.gaussian-weighting-plugin.denoiser"
-PLUGIN_WEIGHTING_NAME = "tests.gaussian-weighting-plugin.scaled-snr"
+PLUGIN_TARGET = "fixtures.gaussian_training_extension"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,82 +71,8 @@ class InstalledPluginEntryPoint:
         return InstalledPluginDistribution(self.distribution, self.version)
 
 
-@register_gaussian_simple_loss_weighting(CUSTOM_WEIGHTING_NAME)
-class ScaledExtensionGaussianWeighting(GaussianSimpleLossWeighting):
-    """Independent extension policy supporting every Gaussian prediction type."""
-
-    def __init__(self, scale: float) -> None:
-        self.scale = float(scale)
-
-    @property
-    def requires_per_sample_loss(self) -> bool:
-        """Require the explicit reducer because samples receive custom weights."""
-
-        return True
-
-    def validate_contract(self, *, prediction_type: PredictionType) -> None:
-        """Accept all family prediction representations without core dispatch."""
-
-    def sample_weights(
-        self,
-        context: GaussianSimpleLossContext,
-    ) -> torch.Tensor:
-        """Return deterministic weights using only the narrow family context."""
-
-        return torch.full_like(context.signal_to_noise_ratio, self.scale)
-
-
-class OCPUnconditionalDenoiser(nn.Module):
-    """Parameter-bearing model satisfying the built-in unconditional signature."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.offset = nn.Parameter(torch.zeros(()))
-
-    def forward(
-        self,
-        state: torch.Tensor,
-        model_time: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return one batch-aligned x0 prediction."""
-
-        del model_time
-        return torch.zeros_like(state) + self.offset
-
-
-class OCPClassConditionalDenoiser(nn.Module):
-    """Parameter-bearing structural implementation of class conditioning."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.offset = nn.Parameter(torch.zeros(()))
-
-    @property
-    def num_classes(self) -> int:
-        """Expose two real classes."""
-
-        return 2
-
-    @property
-    def null_class_id(self) -> int:
-        """Reserve the first identifier after the real classes."""
-
-        return 2
-
-    def predict_class_conditioned(
-        self,
-        state: torch.Tensor,
-        model_time: torch.Tensor,
-        class_labels: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return one batch-aligned x0 prediction."""
-
-        del model_time, class_labels
-        return torch.zeros_like(state) + self.offset
-
-
 class TensorOnlyDataset(Dataset[torch.Tensor]):
-    """Return unwrapped tensors for the built-in Gaussian batch contract."""
+    """Return unwrapped tensors for the plugin Gaussian batch contract."""
 
     def __init__(self, values: torch.Tensor) -> None:
         self.values = values
@@ -176,88 +99,88 @@ def gaussian_process() -> DiscreteGaussianProcess:
     )
 
 
-def reject_model_factory(config: ComponentConfig) -> nn.Module:
-    """Prove the built-in Gaussian builders do not construct hidden models."""
+def test_gaussian_code_is_physically_grouped_by_layer_and_family() -> None:
+    """Keep family implementations out of the generic layer roots."""
 
-    del config
-    raise AssertionError("Gaussian builder unexpectedly constructed a model")
+    source_root = REPOSITORY_ROOT / "src" / "stochaflow"
+    expected_packages = (
+        source_root / "families" / "gaussian",
+        source_root / "processes" / "gaussian",
+        source_root / "sampling" / "gaussian",
+        source_root / "training" / "gaussian",
+    )
+    assert all(path.is_dir() for path in expected_packages)
+    assert not (source_root / "training" / "gaussian_loss.py").exists()
+    assert not (source_root / "training" / "gaussian_weighting.py").exists()
+    assert not (source_root / "training" / "class_conditional_gaussian.py").exists()
+    assert not (source_root / "sampling" / "ddpm.py").exists()
+    assert not (source_root / "sampling" / "ddim.py").exists()
+    assert not (source_root / "processes" / "discrete_gaussian.py").exists()
 
 
-def reject_objective_factory(config: ComponentConfig) -> nn.Module:
-    """Prove the built-in Gaussian builders preserve the injected Objective."""
+def test_gaussian_training_does_not_depend_on_sampling_or_policy_registry() -> None:
+    training_root = (
+        REPOSITORY_ROOT / "src" / "stochaflow" / "training" / "gaussian"
+    )
+    violations: list[str] = []
+    source = ""
+    for path in training_root.glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        source += text
+        tree = ast.parse(text, filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module is not None
+                and node.module.startswith("stochaflow.sampling")
+            ):
+                violations.append(f"{path.name}:{node.lineno}")
+            if isinstance(node, ast.Import) and any(
+                alias.name.startswith("stochaflow.sampling")
+                for alias in node.names
+            ):
+                violations.append(f"{path.name}:{node.lineno}")
 
-    del config
-    raise AssertionError("Gaussian builder unexpectedly constructed an Objective")
+    assert not violations
+    assert "GaussianLossComposer" not in source
+    assert "GaussianSimpleLossWeighting" not in source
+    assert "register_gaussian_simple_loss_weighting" not in source
 
 
-def build_gaussian_plan(
-    *,
-    builder_name: str,
-    model: nn.Module,
-    process: DiscreteGaussianProcess,
-    training_params: dict[str, Any] | None = None,
-) -> TrainingPlan:
-    """Build through the registered built-in TrainingBuilder boundary."""
+def test_gaussian_training_facade_keeps_strategy_internals_private() -> None:
+    assert {
+        "GaussianLossComputation",
+        "gaussian_signal_to_noise_ratio",
+        "learned_range_log_variance",
+        "parse_gaussian_variance",
+        "validate_gaussian_model_output_layout",
+    }.isdisjoint(gaussian_training.__all__)
 
-    params: dict[str, Any] = {
-        "prediction_type": "x0",
-        "loss_weighting": CUSTOM_WEIGHTING_SPEC,
-    }
-    if training_params is not None:
-        params.update(training_params)
-    return build_training_plan(
-        ComponentConfig(name=builder_name, params=params),
+
+def test_namespaced_training_builder_composes_custom_strategy() -> None:
+    process = gaussian_process()
+    model = PluginGaussianDenoiser()
+    plan = build_training_plan(
+        ComponentConfig(
+            name=PLUGIN_TRAINING_NAME,
+            params={"scale": 0.25},
+        ),
         primary_model=model,
         process=process,
         objective=MSEObjective(),
-        model_factory=reject_model_factory,
-        objective_factory=reject_objective_factory,
-    )
-
-
-def test_gaussian_training_core_has_no_sampling_or_p2_dispatch() -> None:
-    core_paths = (
-        REPOSITORY_ROOT / "src/stochaflow/training/gaussian.py",
-        REPOSITORY_ROOT
-        / "src/stochaflow/training/class_conditional_gaussian.py",
-        REPOSITORY_ROOT / "src/stochaflow/training/gaussian_loss.py",
-    )
-    violations: list[str] = []
-    for path in core_paths:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and (
-                node.module == "stochaflow.sampling"
-                or (
-                    node.module is not None
-                    and node.module.startswith("stochaflow.sampling.")
-                )
-            ):
-                violations.append(f"{path.name}:{node.lineno}: sampling import")
-            if isinstance(node, ast.Import) and any(
-                alias.name == "stochaflow.sampling"
-                or alias.name.startswith("stochaflow.sampling.")
-                for alias in node.names
-            ):
-                violations.append(f"{path.name}:{node.lineno}: sampling import")
-            if isinstance(node, ast.Constant) and node.value == "p2":
-                violations.append(f"{path.name}:{node.lineno}: P2 name dispatch")
-
-    assert not violations, "\n".join(violations)
-
-
-def test_custom_policy_runs_both_unconditional_train_and_evaluation() -> None:
-    process = gaussian_process()
-    plan = build_gaussian_plan(
-        builder_name="gaussian_denoising",
-        model=OCPUnconditionalDenoiser(),
-        process=process,
+        model_factory=lambda config: (_ for _ in ()).throw(
+            AssertionError(f"unexpected model construction: {config}")
+        ),
+        objective_factory=lambda config: (_ for _ in ()).throw(
+            AssertionError(f"unexpected objective construction: {config}")
+        ),
     )
     batch = torch.full((2, 1, 2, 2), 0.5)
 
     training = validate_train_step_output(plan.strategy.training_step(batch))
     evaluation = validate_train_step_output(plan.strategy.evaluation_step(batch))
 
+    assert isinstance(plan.strategy, PluginScaledGaussianStrategy)
     for output in (training, evaluation):
         assert torch.isfinite(output.loss)
         assert output.loss_aggregation_weight == 2
@@ -267,42 +190,17 @@ def test_custom_policy_runs_both_unconditional_train_and_evaluation() -> None:
         )
 
 
-def test_custom_policy_runs_both_conditional_train_and_evaluation() -> None:
-    process = gaussian_process()
-    plan = build_gaussian_plan(
-        builder_name="class_conditional_gaussian_denoising",
-        model=OCPClassConditionalDenoiser(),
-        process=process,
-        training_params={"condition_dropout": 0.0},
-    )
-    batch = (
-        torch.full((2, 1, 2, 2), 0.5),
-        {"class_label": torch.tensor([0, 1])},
-    )
-
-    training = validate_train_step_output(plan.strategy.training_step(batch))
-    evaluation = validate_train_step_output(plan.strategy.evaluation_step(batch))
-
-    for output in (training, evaluation):
-        assert torch.isfinite(output.loss)
-        assert output.loss_aggregation_weight == 2
-        assert torch.equal(
-            output.diagnostics["timestep_loss_weight"],
-            torch.full((2,), 0.25),
-        )
-
-
-def test_custom_policy_config_survives_checkpoint_roundtrip(
+def test_custom_training_builder_config_survives_checkpoint_roundtrip(
     tmp_path: Path,
 ) -> None:
     raw_config: dict[str, Any] = {
         "experiment": {
-            "name": "gaussian-weighting-ocp",
+            "name": "gaussian-strategy-ocp",
             "output_dir": str(tmp_path / "outputs"),
         },
-        "extensions": {"plugins": ["tests-gaussian-weighting"]},
+        "extensions": {"plugins": [PLUGIN_NAME]},
         "data": {"name": "tests.synthetic", "params": {}},
-        "model": {"name": "tests.denoiser", "params": {}},
+        "model": {"name": PLUGIN_MODEL_NAME, "params": {}},
         "process": {
             "name": "discrete_gaussian",
             "params": {
@@ -313,65 +211,32 @@ def test_custom_policy_config_survives_checkpoint_roundtrip(
             },
         },
         "training": {
-            "name": "gaussian_denoising",
-            "params": {
-                "prediction_type": "x0",
-                "loss_weighting": CUSTOM_WEIGHTING_SPEC,
-            },
+            "name": PLUGIN_TRAINING_NAME,
+            "params": {"scale": 0.25},
         },
         "objective": {"name": "mse", "params": {"reduction": "mean"}},
     }
     resolved = load_config_dict(raw_config)
-    serialized = resolved.to_dict()
-    checkpoint = CheckpointManager(nn.Linear(1, 1)).save(
-        tmp_path / "custom-weighting.pt",
-        config=serialized,
-        metadata={
-            "extension_plugins": [
-                {
-                    "name": "tests-gaussian-weighting",
-                    "distribution": "tests-gaussian-weighting",
-                    "version": "1.0.0",
-                    "target": "tests_gaussian_weighting.stochaflow_ext",
-                }
-            ]
-        },
+    checkpoint = CheckpointManager(torch.nn.Linear(1, 1)).save(
+        tmp_path / "custom-strategy.pt",
+        config=resolved.to_dict(),
+        metadata={},
     )
 
     payload = CheckpointManager.load_payload(checkpoint, map_location="cpu")
     checkpoint_config = payload.get("config")
-    assert checkpoint_config is not None
-    restored = load_config_dict(cast(dict[str, Any], checkpoint_config))
+    assert isinstance(checkpoint_config, dict)
+    restored = load_config_dict(checkpoint_config)
 
-    expected_spec = {
-        "name": CUSTOM_WEIGHTING_NAME,
-        "params": {"scale": 0.25},
-    }
-    assert restored.training.params["loss_weighting"] == expected_spec
-    process = gaussian_process()
-    plan = build_training_plan(
-        restored.training,
-        primary_model=OCPUnconditionalDenoiser(),
-        process=process,
-        objective=MSEObjective(),
-        model_factory=reject_model_factory,
-        objective_factory=reject_objective_factory,
-    )
-    output = validate_train_step_output(
-        plan.strategy.evaluation_step(torch.ones(2, 1, 2, 2))
-    )
-    assert torch.isfinite(output.loss)
-    assert torch.equal(
-        output.diagnostics["timestep_loss_weight"],
-        torch.full((2,), 0.25),
-    )
+    assert restored.training.name == PLUGIN_TRAINING_NAME
+    assert restored.training.params == {"scale": 0.25}
 
 
-def test_installed_custom_weighting_survives_strict_cli_resume(
+def test_installed_custom_strategy_survives_strict_cli_resume(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Exercise YAML, plugin activation, checkpoints, and exact strict resume."""
+    """Exercise YAML, plugin activation, checkpoints, and strict resume."""
 
     plugins._reset_extension_activation_state_for_testing()
     installed = [InstalledPluginEntryPoint()]
@@ -400,7 +265,7 @@ def test_installed_custom_weighting_survives_strict_cli_resume(
         yaml.safe_dump(
             {
                 "experiment": {
-                    "name": "gaussian-weighting-lifecycle",
+                    "name": "gaussian-strategy-lifecycle",
                     "seed": 17,
                     "output_dir": str(initial_root),
                 },
@@ -417,14 +282,8 @@ def test_installed_custom_weighting_survives_strict_cli_resume(
                     },
                 },
                 "training": {
-                    "name": "gaussian_denoising",
-                    "params": {
-                        "prediction_type": "x0",
-                        "loss_weighting": {
-                            "name": PLUGIN_WEIGHTING_NAME,
-                            "params": {"scale": 0.25},
-                        },
-                    },
+                    "name": PLUGIN_TRAINING_NAME,
+                    "params": {"scale": 0.25},
                 },
                 "objective": {
                     "name": "mse",
@@ -489,10 +348,8 @@ def test_installed_custom_weighting_survives_strict_cli_resume(
         assert first_payload.get("epoch") == 1
         first_config = first_payload.get("config")
         assert isinstance(first_config, dict)
-        assert first_config["training"]["params"][
-            "loss_weighting"
-        ] == {
-            "name": PLUGIN_WEIGHTING_NAME,
+        assert first_config["training"] == {
+            "name": PLUGIN_TRAINING_NAME,
             "params": {"scale": 0.25},
         }
 
@@ -553,10 +410,8 @@ def test_installed_custom_weighting_survives_strict_cli_resume(
         ]
         resumed_config = resumed_payload.get("config")
         assert isinstance(resumed_config, dict)
-        assert resumed_config["training"]["params"][
-            "loss_weighting"
-        ] == {
-            "name": PLUGIN_WEIGHTING_NAME,
+        assert resumed_config["training"] == {
+            "name": PLUGIN_TRAINING_NAME,
             "params": {"scale": 0.25},
         }
     finally:

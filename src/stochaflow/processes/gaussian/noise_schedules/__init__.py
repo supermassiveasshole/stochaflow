@@ -1,4 +1,4 @@
-"""Gaussian forward-marginal schedule contracts and implementations."""
+"""Gaussian Process schedule contracts and implementations."""
 
 from .base import GaussianNoiseSchedule, GaussianScales
 from .cosine_alpha_bar import CosineAlphaBarSchedule

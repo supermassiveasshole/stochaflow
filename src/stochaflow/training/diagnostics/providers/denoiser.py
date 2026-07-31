@@ -7,7 +7,9 @@ from collections.abc import Mapping, Sequence
 import torch
 import torch.nn.functional as F
 
-from stochaflow.processes import DiscreteGaussianDenoisingProcess
+from stochaflow.processes.gaussian.contracts import (
+    DiscreteGaussianDenoisingProcess,
+)
 from stochaflow.training.diagnostics.contracts import (
     ProviderValidationContext,
     StepMetricContext,

@@ -14,22 +14,23 @@ import numpy as np
 import torch
 from torch import nn
 
-from stochaflow.processes import DiscreteGaussianDenoisingProcess
-from stochaflow.sampling import (
-    GaussianDenoisingDynamics,
-    GaussianModelDynamics,
-    PredictionType,
-    Sampler,
-    SamplerResult,
-    SamplingObservation,
-    VarianceMode,
+from stochaflow.families.gaussian.prediction import PredictionType
+from stochaflow.processes.gaussian.contracts import (
+    DiscreteGaussianDenoisingProcess,
 )
-from stochaflow.sampling.class_conditional import (
+from stochaflow.sampling.gaussian.class_conditional import (
     ClassConditionalEvaluationCounts,
     ClassifierFreeGuidancePredictor,
 )
-from stochaflow.training.class_conditional_gaussian import (
-    ClassConditionalGaussianDiagnosticSemantics,
+from stochaflow.sampling.gaussian.dynamics import (
+    GaussianDenoisingDynamics,
+    GaussianModelDynamics,
+    VarianceMode,
+)
+from stochaflow.sampling.sampler import (
+    Sampler,
+    SamplerResult,
+    SamplingObservation,
 )
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
@@ -37,7 +38,10 @@ from stochaflow.training.diagnostics.contracts import (
     ReconstructionResult,
     SamplingResult,
 )
-from stochaflow.training.gaussian import GaussianDiagnosticSemantics
+from stochaflow.training.gaussian.contracts import (
+    ClassConditionalGaussianDiagnosticSemantics,
+    GaussianDiagnosticSemantics,
+)
 from stochaflow.utils.registry import REGISTRIES
 from stochaflow.utils.seed import preserve_global_rng_state
 

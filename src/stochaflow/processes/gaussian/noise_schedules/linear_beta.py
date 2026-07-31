@@ -1,4 +1,4 @@
-"""Linear-beta variance-preserving schedules."""
+"""Gaussian-family linear-beta variance-preserving schedules."""
 
 import torch
 

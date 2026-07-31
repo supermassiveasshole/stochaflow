@@ -9,20 +9,13 @@ from torch import nn
 from stochaflow.families.gaussian import PredictionType
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.training.builder import TrainingBuilderContext
-from stochaflow.training.class_conditional_gaussian import (
+from stochaflow.training.gaussian import (
     ClassConditionalGaussianDenoisingTrainingBuilder,
     ClassConditionalGaussianDenoisingTrainingStrategy,
     ClassConditionalGaussianDiagnosticSemantics,
-)
-from stochaflow.training.gaussian_loss import (
-    GaussianLossComposer,
-    build_gaussian_loss_composer,
-)
-from stochaflow.training.gaussian_variance import GaussianVarianceConfig
-from stochaflow.training.gaussian_weighting import (
-    ConstantGaussianSimpleLossWeighting,
-    GaussianSimpleLossWeighting,
-    P2GaussianSimpleLossWeighting,
+    ClassConditionalP2GaussianDenoisingTrainingBuilder,
+    ClassConditionalP2GaussianDenoisingTrainingStrategy,
+    GaussianVarianceConfig,
 )
 from stochaflow.training.objectives import MSEObjective
 from stochaflow.utils.config import ComponentConfig
@@ -182,51 +175,6 @@ def _batch(
     return torch.full((2, 1, 2, 2), 0.25), {"class_label": labels}
 
 
-def _loss_composer(
-    process: DeterministicConditionalGaussianProcess,
-    *,
-    objective: nn.Module | None = None,
-    prediction_type: PredictionType = "epsilon",
-    variance: GaussianVarianceConfig | None = None,
-    loss_weighting: GaussianSimpleLossWeighting | None = None,
-) -> GaussianLossComposer:
-    return build_gaussian_loss_composer(
-        objective=MSEObjective() if objective is None else objective,
-        process=process,
-        prediction_type=prediction_type,
-        variance=GaussianVarianceConfig() if variance is None else variance,
-        loss_weighting=(
-            ConstantGaussianSimpleLossWeighting()
-            if loss_weighting is None
-            else loss_weighting
-        ),
-        path="class-conditional Gaussian test policy",
-    )
-
-
-def test_conditional_strategy_rejects_composer_bound_to_another_process() -> None:
-    composer_process = _process()
-    strategy_process = _process()
-    model = LearnedVarianceToyClassConditionalDenoiser(
-        strategy_process,
-        "epsilon",
-    )
-    composer = _loss_composer(
-        composer_process,
-        variance=GaussianVarianceConfig(
-            mode="learned_range",
-            loss="rescaled_variational_bound",
-        ),
-    )
-
-    with pytest.raises(ValueError, match="bound to a different Process"):
-        ClassConditionalGaussianDenoisingTrainingStrategy(
-            model,
-            strategy_process,
-            composer,
-        )
-
-
 @pytest.mark.parametrize("prediction_type", ["epsilon", "x0", "v", "score"])
 def test_conditional_strategy_supports_all_gaussian_targets(
     prediction_type: PredictionType,
@@ -236,7 +184,8 @@ def test_conditional_strategy_supports_all_gaussian_targets(
     strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
         model,
         process,
-        _loss_composer(process, prediction_type=prediction_type),
+        MSEObjective(),
+        prediction_type=prediction_type,
     )
 
     output = strategy.training_step(_batch())
@@ -260,7 +209,8 @@ def test_conditional_strategy_uses_optional_prevalidated_model_path() -> None:
     strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
         model,
         process,
-        _loss_composer(process),
+        MSEObjective(),
+        prediction_type="epsilon",
     )
 
     strategy.training_step(_batch())
@@ -274,7 +224,8 @@ def test_training_applies_dropout_but_evaluation_never_drops_conditions() -> Non
     strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
         model,
         process,
-        _loss_composer(process),
+        MSEObjective(),
+        prediction_type="epsilon",
         condition_dropout=1.0,
     )
 
@@ -290,21 +241,17 @@ def test_training_applies_dropout_but_evaluation_never_drops_conditions() -> Non
 def test_learned_range_p2_metrics_use_prediction_head_and_batch_weight() -> None:
     process = _process()
     model = LearnedVarianceToyClassConditionalDenoiser(process, "epsilon")
-    strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
+    strategy = ClassConditionalP2GaussianDenoisingTrainingStrategy(
         model,
         process,
-        _loss_composer(
-            process,
-            variance=GaussianVarianceConfig(
-                mode="learned_range",
-                loss="rescaled_variational_bound",
-            ),
-            loss_weighting=P2GaussianSimpleLossWeighting(
-                k=1.0,
-                gamma=1.0,
-            ),
+        MSEObjective(),
+        variance=GaussianVarianceConfig(
+            mode="learned_range",
+            loss="rescaled_variational_bound",
         ),
         condition_dropout=1.0,
+        k=1.0,
+        gamma=1.0,
     )
 
     training = strategy.training_step(_batch())
@@ -340,7 +287,8 @@ def test_training_condition_dropout_is_sample_aligned(
     strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
         model,
         process,
-        _loss_composer(process),
+        MSEObjective(),
+        prediction_type="epsilon",
         condition_dropout=0.5,
     )
 
@@ -418,7 +366,8 @@ def test_conditional_strategy_strictly_validates_labels(
     strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
         ToyClassConditionalDenoiser(process, "epsilon"),
         process,
-        _loss_composer(process),
+        MSEObjective(),
+        prediction_type="epsilon",
     )
 
     with pytest.raises(error, match=message):
@@ -445,7 +394,8 @@ def test_condition_dropout_is_strictly_validated(
         ClassConditionalGaussianDenoisingTrainingStrategy(
             ToyClassConditionalDenoiser(process, "epsilon"),
             process,
-            _loss_composer(process),
+            MSEObjective(),
+            prediction_type="epsilon",
             condition_dropout=cast(float, value),
         )
 
@@ -500,20 +450,17 @@ def test_builder_composes_p2_learned_range_and_freezes_variance_recipe() -> None
     context = _builder_context(model, process, objective)
     context.params.update(
         {
-            "prediction_type": "epsilon",
             "condition_dropout": 0.1,
             "variance": {
                 "mode": "learned_range",
                 "loss": "rescaled_variational_bound",
             },
-            "loss_weighting": {
-                "name": "p2",
-                "params": {"k": 1.0, "gamma": 1.0},
-            },
+            "k": 1.0,
+            "gamma": 1.0,
         }
     )
 
-    plan = ClassConditionalGaussianDenoisingTrainingBuilder(context).build()
+    plan = ClassConditionalP2GaussianDenoisingTrainingBuilder(context).build()
     output = plan.strategy.training_step(_batch())
 
     assert plan.inference_recipe is not None
@@ -526,22 +473,20 @@ def test_builder_composes_p2_learned_range_and_freezes_variance_recipe() -> None
     assert output.diagnostics["timestep_loss_weight"].shape == (2,)
 
 
-def test_conditional_builder_rejects_incompatible_p2_before_model_call() -> None:
+def test_p2_builder_rejects_prediction_override_before_model_call() -> None:
     process = _process()
     model = ToyClassConditionalDenoiser(process, "x0")
     context = _builder_context(model, process, MSEObjective())
     context.params.update(
         {
             "prediction_type": "x0",
-            "loss_weighting": {
-                "name": "p2",
-                "params": {"k": 1.0, "gamma": 1.0},
-            },
+            "k": 1.0,
+            "gamma": 1.0,
         }
     )
 
-    with pytest.raises(ValueError, match="requires prediction_type='epsilon'"):
-        ClassConditionalGaussianDenoisingTrainingBuilder(context).build()
+    with pytest.raises(ValueError, match=r"unknown .* prediction_type"):
+        ClassConditionalP2GaussianDenoisingTrainingBuilder(context).build()
 
     assert model.seen_labels == []
 

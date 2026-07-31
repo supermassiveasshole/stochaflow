@@ -12,11 +12,6 @@ from .builder import (
     validate_training_plan,
 )
 from .builtin import SupervisedTrainingBuilder, SupervisedTrainingStrategy
-from .class_conditional_gaussian import (
-    ClassConditionalGaussianDenoisingTrainingBuilder,
-    ClassConditionalGaussianDenoisingTrainingStrategy,
-    ClassConditionalGaussianDiagnosticSemantics,
-)
 from .diagnostics import (
     BoundTrainingDiagnostic,
     ClassConditionalDiffusionQualityDiagnostic,
@@ -35,13 +30,19 @@ from .diagnostics import (
 )
 from .ema import ExponentialMovingAverage
 from .gaussian import (
+    ClassConditionalGaussianDenoisingTrainingBuilder,
+    ClassConditionalGaussianDenoisingTrainingStrategy,
+    ClassConditionalGaussianDiagnosticSemantics,
+    ClassConditionalP2GaussianDenoisingTrainingBuilder,
+    ClassConditionalP2GaussianDenoisingTrainingStrategy,
     GaussianDenoisingTrainingBuilder,
     GaussianDenoisingTrainingStrategy,
     GaussianDiagnosticSemantics,
+    P2GaussianDenoisingTrainingBuilder,
+    P2GaussianDenoisingTrainingStrategy,
     gaussian_training_target,
 )
 from .objectives import (
-    BatchReduciblePerSampleObjective,
     MSEObjective,
     PerSampleObjective,
     compute_objective,
@@ -72,12 +73,13 @@ from .trainer import Trainer
 __all__ = [
     "PRECISION_KINDS",
     "Batch",
-    "BatchReduciblePerSampleObjective",
     "BoundTrainingDiagnostic",
     "ClassConditionalDiffusionQualityDiagnostic",
     "ClassConditionalGaussianDenoisingTrainingBuilder",
     "ClassConditionalGaussianDenoisingTrainingStrategy",
     "ClassConditionalGaussianDiagnosticSemantics",
+    "ClassConditionalP2GaussianDenoisingTrainingBuilder",
+    "ClassConditionalP2GaussianDenoisingTrainingStrategy",
     "ContextAwareDiagnostic",
     "DeviceTransferableBatch",
     "DiagnosticBuildContext",
@@ -95,6 +97,8 @@ __all__ = [
     "ManagedTrainingModule",
     "MetricChannelProvider",
     "MetricUpdate",
+    "P2GaussianDenoisingTrainingBuilder",
+    "P2GaussianDenoisingTrainingStrategy",
     "PerSampleObjective",
     "PrecisionKind",
     "PrecisionRuntime",

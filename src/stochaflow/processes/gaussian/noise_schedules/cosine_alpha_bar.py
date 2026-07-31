@@ -1,4 +1,4 @@
-"""Cosine-alpha-bar variance-preserving schedules."""
+"""Gaussian-family cosine-alpha-bar variance-preserving schedules."""
 
 import math
 

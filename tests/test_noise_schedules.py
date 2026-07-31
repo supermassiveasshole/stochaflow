@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from stochaflow.processes import DiscreteGaussianProcess
-from stochaflow.processes.noise_schedules import (
+from stochaflow.processes.gaussian.noise_schedules import (
     CosineAlphaBarSchedule,
     DiscreteVPCoefficients,
     DiscreteVPSchedule,

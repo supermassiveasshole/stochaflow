@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import torch
 
-from stochaflow.sampling import (
+from stochaflow.sampling.grid import (
     save_image_grid,
     save_trajectory_gif,
     save_trajectory_grid,

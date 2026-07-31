@@ -1,20 +1,21 @@
-"""Model-free probability processes and mathematical capabilities."""
+"""Gaussian probability-process contracts and built-in implementations."""
 
-from .base import Process
-from .gaussian import (
-    CosineAlphaBarSchedule,
+from .contracts import (
     DiscreteGaussianDenoisingProcess,
-    DiscreteGaussianProcess,
+    GaussianLogVarianceBounds,
+    GaussianMarginalCoefficientSnapshot,
+    LearnedRangeGaussianVarianceProcess,
+    SelectedPairGaussianProcess,
+)
+from .discrete import DiscreteGaussianProcess
+from .noise_schedules import (
+    CosineAlphaBarSchedule,
     DiscreteVPCoefficients,
     DiscreteVPSchedule,
     DiscreteVPScheduleSnapshot,
-    GaussianLogVarianceBounds,
-    GaussianMarginalCoefficientSnapshot,
     GaussianNoiseSchedule,
     GaussianScales,
-    LearnedRangeGaussianVarianceProcess,
     LinearBetaSchedule,
-    SelectedPairGaussianProcess,
     TabulatedDiscreteVPSchedule,
 )
 
@@ -31,7 +32,6 @@ __all__ = [
     "GaussianScales",
     "LearnedRangeGaussianVarianceProcess",
     "LinearBetaSchedule",
-    "Process",
     "SelectedPairGaussianProcess",
     "TabulatedDiscreteVPSchedule",
 ]

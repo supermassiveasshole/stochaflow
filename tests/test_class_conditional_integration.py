@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import torch
 
-from stochaflow.training.class_conditional_gaussian import (
+from stochaflow.training.gaussian import (
     ClassConditionalGaussianDenoisingTrainingStrategy,
 )
 from stochaflow.utils.checkpoint import (

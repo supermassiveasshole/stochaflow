@@ -8,8 +8,8 @@ from typing import Protocol, cast, runtime_checkable
 
 import torch
 
-from .base import Process
-from .noise_schedules import GaussianScales
+from ..base import Process
+from .noise_schedules.base import GaussianScales
 
 
 @dataclass(frozen=True, slots=True)

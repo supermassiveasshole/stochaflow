@@ -6,24 +6,24 @@ from typing import Any, cast
 
 import torch
 
-from stochaflow.processes import (
+from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
     SelectedPairGaussianProcess,
 )
 from stochaflow.utils.registry import REGISTRIES
 
-from .dynamics import GenerativeDynamics
-from .gaussian import (
-    GaussianDenoisingDynamics,
-    GaussianPrediction,
-    GaussianTransition,
-    _validate_gaussian_prediction,
-)
-from .sampler import (
+from ..dynamics import GenerativeDynamics
+from ..sampler import (
     Sampler,
     SamplerResult,
     SamplingObservation,
     SamplingObserver,
+)
+from .dynamics import (
+    GaussianDenoisingDynamics,
+    GaussianPrediction,
+    GaussianTransition,
+    _validate_gaussian_prediction,
 )
 
 

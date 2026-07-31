@@ -91,7 +91,6 @@ from stochaflow.sampling import (
     normalize_gaussian_prediction,
 )
 from stochaflow.training import (
-    BatchReduciblePerSampleObjective,
     BoundTrainingDiagnostic,
     ContextAwareDiagnostic,
     DeviceTransferableBatch,
@@ -144,11 +143,6 @@ from stochaflow.training.diagnostics import (
     StepMetricProvider,
     TrajectoryProviderConfig,
 )
-from stochaflow.training.gaussian_weighting import (
-    GaussianSimpleLossContext,
-    GaussianSimpleLossWeighting,
-    register_gaussian_simple_loss_weighting,
-)
 from stochaflow.utils.config import (
     ComponentConfig,
     ConfigError,
@@ -184,7 +178,6 @@ __all__ = [
     "ArtifactVerificationEvent",
     "ArtifactVerificationObserver",
     "ArtifactVerificationPhase",
-    "BatchReduciblePerSampleObjective",
     "BoundTrainingDiagnostic",
     "ClassLabeledImageFileRecord",
     "ClassLabeledImageFolderArtifactPayload",
@@ -243,8 +236,6 @@ __all__ = [
     "GaussianNoiseSchedule",
     "GaussianPrediction",
     "GaussianScales",
-    "GaussianSimpleLossContext",
-    "GaussianSimpleLossWeighting",
     "GaussianTransition",
     "GenerativeDynamics",
     "ImageDataSource",
@@ -329,7 +320,6 @@ __all__ = [
     "normalize_gaussian_prediction",
     "parse_extension_plugin_provenance",
     "prepare_extension_plugins",
-    "register_gaussian_simple_loss_weighting",
     "validate_metric_configs",
     "validate_metric_spec",
     "validate_metric_updates",

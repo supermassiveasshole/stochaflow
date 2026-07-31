@@ -23,16 +23,6 @@ class PerSampleObjective(Protocol):
         ...
 
 
-@runtime_checkable
-class BatchReduciblePerSampleObjective(PerSampleObjective, Protocol):
-    """Objective capability with an explicit batch-reduction policy."""
-
-    def reduce_per_sample_loss(self, loss: torch.Tensor) -> torch.Tensor:
-        """Reduce one scalar loss per batch item to a scalar loss."""
-
-        ...
-
-
 def validate_per_sample_loss(
     value: object,
     *,
@@ -148,7 +138,6 @@ def compute_objective(
 
 
 __all__ = [
-    "BatchReduciblePerSampleObjective",
     "MSEObjective",
     "PerSampleObjective",
     "compute_objective",

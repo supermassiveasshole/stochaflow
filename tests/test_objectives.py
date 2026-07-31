@@ -7,7 +7,6 @@ import torch
 from torch import nn
 
 from stochaflow.training.objectives import (
-    BatchReduciblePerSampleObjective,
     MSEObjective,
     compute_objective,
     validate_per_sample_loss,
@@ -74,7 +73,6 @@ def test_mse_objective_uses_one_explicit_reduction_semantics(
 
     per_sample = objective.per_sample_loss(prediction, target)
 
-    assert isinstance(objective, BatchReduciblePerSampleObjective)
     assert torch.equal(per_sample, expected_per_sample)
     assert objective.reduce_per_sample_loss(per_sample).item() == pytest.approx(
         expected_scalar

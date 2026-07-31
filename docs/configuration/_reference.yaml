@@ -377,22 +377,37 @@ registries:
     config_path: training.name / training.params
     entries:
       class_conditional_gaussian_denoising:
-        description: "读取 `(Tensor, {\"class_label\": labels})` batch，训练满足 ClassConditionalDenoiser capability 的离散 Gaussian denoiser；可组合 fixed/learned_range variance 与 constant/P2 simple-loss weighting。"
+        description: "读取 `(Tensor, {\"class_label\": labels})` batch，训练满足 ClassConditionalDenoiser capability 的标准、未加权离散 Gaussian denoiser；可组合 prediction type 与 fixed/learned_range variance。"
         runtime_parameters: [context]
         inspect: context_parameters
         parameters:
           prediction_type: {description: "训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。"}
           condition_dropout: {description: "训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。"}
-          variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。"}
-          loss_weighting: {description: "Gaussian family-local registry declaration；省略字段使用 constant，显式声明必须是 `{name: <policy>, params: {...}}`。内置 P2 写作 `{name: p2, params: {k: <finite positive>, gamma: <finite non-negative>}}`，只支持 epsilon，不重归一化且不加权 learned-variance VB；P2/learned-range 要求 `BatchReduciblePerSampleObjective`，第三方 policy 名称必须 namespaced，旧 flat P2 参数会被拒绝。"}
+          variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C 和内置 MSE Objective；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。"}
+      class_conditional_p2_gaussian_denoising:
+        description: "读取 class-labeled batch，以固定 epsilon prediction 执行类条件 P2 Gaussian training；这是具体 TrainingBuilder/Strategy，不是标准 Builder 的 weighting option，并要求内置 MSE Objective。"
+        runtime_parameters: [context]
+        inspect: context_parameters
+        parameters:
+          condition_dropout: {description: "训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。"}
+          k: {description: "P2 `(k + SNR)^(-gamma)` 的 offset；默认 `1.0`，必须 finite 且大于 `0`。"}
+          gamma: {description: "P2 exponent；默认 `1.0`，必须 finite 且非负；`0` 使 simple-loss weight 严格退化为 `1`。"}
+          variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。"}
       gaussian_denoising:
-        description: 使用离散 Gaussian marginal 和指定 prediction target 训练无条件去噪模型；batch 必须为 Tensor 或 (Tensor, {})，并可组合 fixed/learned_range variance 与 constant/P2 simple-loss weighting。
+        description: 使用离散 Gaussian marginal 和指定 prediction target 训练标准、未加权的无条件去噪模型；batch 必须为 Tensor 或 (Tensor, {})，并可组合 fixed/learned_range variance。
         runtime_parameters: [context]
         inspect: context_parameters
         parameters:
           prediction_type: {description: "训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`；要求注入离散 Gaussian Process 和 Objective。"}
-          variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。"}
-          loss_weighting: {description: "Gaussian family-local registry declaration；省略字段使用 constant，显式声明必须是 `{name: <policy>, params: {...}}`。内置 P2 写作 `{name: p2, params: {k: <finite positive>, gamma: <finite non-negative>}}`，只支持 epsilon，不重归一化且不加权 learned-variance VB；P2/learned-range 要求 `BatchReduciblePerSampleObjective`，第三方 policy 名称必须 namespaced，旧 flat P2 参数会被拒绝。"}
+          variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C 和内置 MSE Objective；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。"}
+      p2_gaussian_denoising:
+        description: 使用离散 Gaussian marginal，以固定 epsilon prediction 执行无条件 P2 training；这是具体 TrainingBuilder/Strategy，不是标准 Builder 的 weighting option，并要求内置 MSE Objective。
+        runtime_parameters: [context]
+        inspect: context_parameters
+        parameters:
+          k: {description: "P2 `(k + SNR)^(-gamma)` 的 offset；默认 `1.0`，必须 finite 且大于 `0`。"}
+          gamma: {description: "P2 exponent；默认 `1.0`，必须 finite 且非负；`0` 使 simple-loss weight 严格退化为 `1`。"}
+          variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。"}
       supervised:
         description: 对标准 inputs/targets batch 执行模型 forward 与注入的 Objective。
         runtime_parameters: [context]

@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 
 from torch import nn
 
-from stochaflow.processes import Process
+from stochaflow.processes.base import Process
 from stochaflow.training.strategy import TrainingStrategy
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog

@@ -9,7 +9,9 @@ from typing import Any, Protocol, TypeVar
 
 import torch
 
-from stochaflow.processes import DiscreteGaussianDenoisingProcess
+from stochaflow.processes.gaussian.contracts import (
+    DiscreteGaussianDenoisingProcess,
+)
 from stochaflow.training.diagnostics.config import (
     ProviderSpec,
     SamplerProfileConfig,

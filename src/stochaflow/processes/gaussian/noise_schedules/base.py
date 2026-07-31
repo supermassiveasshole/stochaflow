@@ -1,4 +1,4 @@
-"""Abstract contracts for Gaussian forward marginal schedules."""
+"""Gaussian-family contracts for forward marginal schedules."""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
