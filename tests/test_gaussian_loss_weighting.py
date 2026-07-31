@@ -147,6 +147,8 @@ def test_hybrid_loss_matches_pinned_upstream_decoder_kl_and_rescaling() -> None:
 
     expected_constant = values["constant"]
     expected_p2 = values["p2_k1_gamma1"]
+    assert torch.equal(constant.target, noise)
+    assert torch.equal(p2.target, noise)
     assert constant.per_sample_simple_loss is not None
     assert constant.per_sample_variational_bound is not None
     assert constant.per_sample_loss is not None
@@ -254,6 +256,30 @@ def test_p2_loss_uses_raw_weights_without_batch_renormalization() -> None:
     )
     assert result.loss.item() == pytest.approx(expected_weights.mean().item())
     assert result.loss.item() != pytest.approx(1.0)
+
+
+def test_fixed_scalar_objective_computation_carries_training_target() -> None:
+    process = gaussian_process(2)
+    clean = torch.zeros(2, 1)
+    noise = torch.tensor([[0.25], [0.75]])
+    state_times = torch.tensor([1, 2])
+    noisy, _ = process.sample_marginal(clean, state_times, noise=noise)
+
+    result = compute_gaussian_training_loss(
+        objective=nn.MSELoss(),
+        process=process,
+        clean=clean,
+        noisy=noisy,
+        noise=noise,
+        state_times=state_times,
+        raw_model_output=torch.zeros_like(clean),
+        prediction_type="epsilon",
+        variance=GaussianVarianceConfig(),
+        loss_weighting=GaussianLossWeightingConfig(),
+    )
+
+    assert result.per_sample_simple_loss is None
+    assert torch.equal(result.target, noise)
 
 
 class AbsolutePerSampleObjective(nn.Module):

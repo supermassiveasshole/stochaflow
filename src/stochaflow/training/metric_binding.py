@@ -70,6 +70,7 @@ class TrainingMetricRuntime:
                 )
 
         engines: dict[TrainingMetricPhase, MetricEngine] = {}
+        metric_ids: dict[TrainingMetricPhase, frozenset[str]] = {}
         for phase in _PHASE_PREFIXES:
             specs = tuple(
                 MetricSpec(
@@ -83,7 +84,9 @@ class TrainingMetricRuntime:
             )
             if specs:
                 engines[phase] = MetricEngine(specs).to(device)
+                metric_ids[phase] = frozenset(spec.id for spec in specs)
         self._engines = engines
+        self._metric_ids = metric_ids
 
     @property
     def configured(self) -> bool:
@@ -95,6 +98,15 @@ class TrainingMetricRuntime:
         """Return whether the phase owns a metric engine."""
 
         return phase in self._engines
+
+    def has_metric(
+        self,
+        phase: TrainingMetricPhase,
+        metric_id: str,
+    ) -> bool:
+        """Return whether one metric id is configured for a phase."""
+
+        return metric_id in self._metric_ids.get(phase, frozenset())
 
     def reset_phase(self, phase: TrainingMetricPhase) -> None:
         """Reset the isolated state for one phase when it is configured."""

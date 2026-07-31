@@ -157,8 +157,15 @@ class PerfectTargetModel(nn.Module):
 class LearnedVarianceGaussianModel(nn.Module):
     """Return epsilon and learned-range interpolation heads."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        mean_value: float = 0.0,
+        variance_value: float = 0.0,
+    ) -> None:
         super().__init__()
+        self.mean_value = mean_value
+        self.variance_value = variance_value
         self.offset = nn.Parameter(torch.zeros(()))
 
     def forward(
@@ -167,8 +174,9 @@ class LearnedVarianceGaussianModel(nn.Module):
         model_time: torch.Tensor,
     ) -> torch.Tensor:
         del model_time
-        mean = torch.zeros_like(state) + self.offset
-        return torch.cat((mean, torch.zeros_like(mean)), dim=1)
+        mean = torch.full_like(state, self.mean_value) + self.offset
+        variance = torch.full_like(state, self.variance_value)
+        return torch.cat((mean, variance), dim=1)
 
 
 class DeclaredLayoutGaussianModel(nn.Module):
@@ -329,7 +337,10 @@ def test_unconditional_builder_composes_p2_learned_range_recipe() -> None:
     process = DeterministicGaussianProcess(
         {"name": "linear_beta", "params": {"num_timesteps": 4}}
     )
-    model = LearnedVarianceGaussianModel()
+    model = LearnedVarianceGaussianModel(
+        mean_value=0.25,
+        variance_value=-0.75,
+    )
     objective = MSEObjective()
 
     def model_factory(config: ComponentConfig) -> nn.Module:
@@ -368,6 +379,30 @@ def test_unconditional_builder_composes_p2_learned_range_recipe() -> None:
     }
     assert torch.isfinite(output.loss)
     assert output.diagnostics["per_sample_loss"].shape == (2,)
+    metric_prediction, metric_target = output.metric_updates[
+        "gaussian.prediction_target"
+    ].args
+    metric_clean, clean = output.metric_updates[
+        "gaussian.clean_reconstruction"
+    ].args
+    assert isinstance(metric_prediction, torch.Tensor)
+    assert isinstance(metric_target, torch.Tensor)
+    assert metric_prediction.shape == metric_target.shape == (2, 1, 2, 2)
+    assert metric_prediction.is_contiguous()
+    assert metric_target.is_contiguous()
+    assert torch.allclose(
+        metric_prediction,
+        torch.full_like(metric_prediction, 0.25),
+    )
+    assert torch.allclose(
+        metric_target,
+        torch.full_like(metric_target, 0.5),
+    )
+    assert isinstance(metric_clean, torch.Tensor)
+    assert isinstance(clean, torch.Tensor)
+    assert metric_clean.shape == clean.shape == (2, 1, 2, 2)
+    assert output.loss_aggregation_weight == 2
+    assert output.diagnostics["timestep_loss_weight"].sum().item() < 2.0
 
 
 @pytest.mark.parametrize(

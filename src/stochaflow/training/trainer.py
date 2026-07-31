@@ -338,6 +338,38 @@ def _epoch_metric_snapshot(
     return EpochMetricSnapshot(values=values, sources=sources)
 
 
+def _validate_best_tracking_monitor(
+    monitor: str,
+    *,
+    metric_runtime: TrainingMetricRuntime | None,
+    validation_available: bool,
+) -> None:
+    """Preflight semantic dependencies of one consumed monitor key."""
+
+    prefix, kind, *segments = monitor.split("/")
+    if prefix == "valid" and not validation_available:
+        raise ValueError(
+            f"best tracking monitor '{monitor}' requires a validation "
+            "dataloader"
+        )
+    if kind != "metrics":
+        return
+
+    metric_phase: TrainingMetricPhase = (
+        "train" if prefix == "train" else "validation"
+    )
+    metric_id = segments[0]
+    if metric_runtime is None or not metric_runtime.has_metric(
+        metric_phase,
+        metric_id,
+    ):
+        raise ValueError(
+            f"best tracking monitor '{monitor}' references metric id "
+            f"'{metric_id}' that is not configured for the "
+            f"{metric_phase} phase"
+        )
+
+
 def _checkpoint_metric_sources(
     snapshot: EpochMetricSnapshot,
 ) -> dict[str, dict[str, object]]:
@@ -1473,6 +1505,12 @@ class Trainer:
             should_track_best = True
         if should_track_best and early_stopping_monitor.startswith("test/"):
             raise ValueError("test metrics cannot be used for best tracking")
+        if should_track_best:
+            _validate_best_tracking_monitor(
+                early_stopping_monitor,
+                metric_runtime=self.metric_runtime,
+                validation_available=validation_dataloader is not None,
+            )
 
         history: list[dict[str, float]] = []
         if start_epoch == 1:

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import torch
 from torch import nn
+from torchmetrics import Metric
 
 from stochaflow.metrics import MetricConfig
 from stochaflow.processes import DiscreteGaussianProcess
@@ -18,10 +19,15 @@ from stochaflow.training import (
     Trainer,
     TrainingPlan,
 )
+from stochaflow.training.gaussian_loss import (
+    GaussianLossWeightingConfig,
+    GaussianVarianceConfig,
+)
 from stochaflow.training.metric_binding import TrainingMetricRuntime
 from stochaflow.training.precision import PrecisionRuntime
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.logging import ExperimentLogger
+from stochaflow.utils.registry import REGISTRIES
 
 
 class MetricRecordingLogger(ExperimentLogger):
@@ -68,6 +74,58 @@ class TinyGaussianDenoiser(nn.Module):
         return self.scale * state
 
 
+class TinyLearnedVarianceGaussianDenoiser(TinyGaussianDenoiser):
+    """Emit distinct prediction and learned-range variance heads."""
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+    ) -> torch.Tensor:
+        mean = super().forward(state, model_time)
+        variance = torch.full_like(mean, -0.5)
+        return torch.cat((mean, variance), dim=1)
+
+
+class MappingMeanAbsoluteErrorMetric(Metric):
+    """Return a dynamic mapping around one mean absolute error."""
+
+    total: torch.Tensor
+    count: torch.Tensor
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_state(
+            "total",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum",
+        )
+        self.add_state(
+            "count",
+            default=torch.tensor(0.0),
+            dist_reduce_fx="sum",
+        )
+
+    def update(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> None:
+        absolute_error = (prediction - target).abs()
+        self.total += absolute_error.sum()
+        self.count += absolute_error.numel()
+
+    def compute(self) -> dict[str, torch.Tensor]:
+        mean = self.total / self.count
+        return {"mae": mean, "twice": mean * 2.0}
+
+
+REGISTRIES.metrics.add(
+    "test.training_mapping_mae",
+    MappingMeanAbsoluteErrorMetric,
+)
+
+
 class SkipFirstOptimizerStep(PrecisionRuntime):
     """Simulate one overflow before allowing optimizer progress."""
 
@@ -100,6 +158,18 @@ class IncreasingTargetLoader:
             torch.tensor([[0.0]]),
             torch.tensor([[float(self.iterations)]]),
         )
+
+
+class IterationCountingLoader:
+    """Record whether semantic preflight allowed iteration to start."""
+
+    def __init__(self, batches: list[Any]) -> None:
+        self.batches = batches
+        self.iterations = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        yield from self.batches
 
 
 def build_metric_trainer(
@@ -508,6 +578,90 @@ def test_gaussian_phase_metrics_run_end_to_end_without_external_data(
     assert trainer.best_checkpoint_path == tmp_path / "checkpoints" / "best.pt"
 
 
+def test_learned_range_p2_metrics_aggregate_uneven_batches_by_samples(
+    tmp_path,
+) -> None:
+    process = DiscreteGaussianProcess(
+        {
+            "name": "linear_beta",
+            "params": {
+                "num_timesteps": 4,
+                "beta_start": 0.0001,
+                "beta_end": 0.02,
+            },
+        }
+    )
+    model = TinyLearnedVarianceGaussianDenoiser()
+    objective = MSEObjective()
+    strategy = GaussianDenoisingTrainingStrategy(
+        model,
+        process,
+        objective,
+        prediction_type="epsilon",
+        variance=GaussianVarianceConfig(
+            mode="learned_range",
+            loss="rescaled_variational_bound",
+        ),
+        loss_weighting=GaussianLossWeightingConfig(
+            name="p2",
+            k=1.0,
+            gamma=1.0,
+        ),
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
+    runtime = TrainingMetricRuntime(
+        [
+            MetricConfig(
+                id="prediction_mae",
+                name="mae",
+                channel="gaussian.prediction_target",
+                phases=["validation"],
+            )
+        ],
+        strategy,
+        device="cpu",
+    )
+    trainer = Trainer(
+        TrainingPlan(
+            strategy=strategy,
+            primary_model=model,
+            process=process,
+            objective=objective,
+        ),
+        optimizer,
+        device="cpu",
+        metric_runtime=runtime,
+    )
+    batches = [
+        torch.zeros(2, 1, 4, 4),
+        torch.zeros(1, 1, 4, 4),
+    ]
+
+    torch.manual_seed(29)
+    expected_outputs = [
+        strategy.evaluation_step(batch)
+        for batch in batches
+    ]
+    expected_loss = sum(
+        output.loss.item() * float(output.loss_aggregation_weight)
+        for output in expected_outputs
+    ) / 3.0
+    assert [
+        output.loss_aggregation_weight
+        for output in expected_outputs
+    ] == [2, 1]
+
+    torch.manual_seed(29)
+    result = trainer.evaluate_epoch(
+        batches,
+        show_progress=False,
+        log_metrics=False,
+    )
+
+    assert result["loss"] == pytest.approx(expected_loss)
+    assert math.isfinite(result["valid/metrics/prediction_mae"])
+
+
 def test_metric_compatibility_fails_at_training_composition_boundary(
     tmp_path,
 ) -> None:
@@ -527,6 +681,183 @@ def test_metric_compatibility_fails_at_training_composition_boundary(
             strategy,
             device="cpu",
         )
+
+
+def test_metric_runtime_reports_ids_by_phase(tmp_path) -> None:
+    trainer, _ = build_metric_trainer(
+        tmp_path,
+        declarations=metric_declarations(),
+    )
+    runtime = trainer.metric_runtime
+
+    assert runtime is not None
+    assert runtime.has_metric("train", "prediction_mae")
+    assert runtime.has_metric("validation", "prediction_mae")
+    assert runtime.has_metric("test", "prediction_mae")
+    assert not runtime.has_metric("validation", "missing")
+
+
+def test_unknown_metric_monitor_fails_before_loader_iteration(tmp_path) -> None:
+    trainer, _ = build_metric_trainer(
+        tmp_path,
+        declarations=metric_declarations(),
+    )
+    train = IterationCountingLoader(
+        [(torch.tensor([[0.0]]), torch.tensor([[1.0]]))]
+    )
+    validation = IterationCountingLoader(
+        [(torch.tensor([[0.0]]), torch.tensor([[2.0]]))]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"metric id 'typo'.*validation phase",
+    ):
+        trainer.fit(
+            train,
+            num_epochs=1,
+            validation_dataloader=validation,
+            show_progress=False,
+            early_stopping_monitor="valid/metrics/typo",
+            track_best=True,
+        )
+
+    assert train.iterations == 0
+    assert validation.iterations == 0
+
+
+def test_metric_monitor_phase_mismatch_fails_before_iteration(tmp_path) -> None:
+    trainer, _ = build_metric_trainer(
+        tmp_path,
+        declarations=[
+            MetricConfig(
+                id="prediction_mae",
+                name="mae",
+                channel="supervised.prediction_target",
+                phases=["train"],
+            )
+        ],
+    )
+    train = IterationCountingLoader(
+        [(torch.tensor([[0.0]]), torch.tensor([[1.0]]))]
+    )
+    validation = IterationCountingLoader(
+        [(torch.tensor([[0.0]]), torch.tensor([[2.0]]))]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"prediction_mae.*validation phase",
+    ):
+        trainer.fit(
+            train,
+            num_epochs=1,
+            validation_dataloader=validation,
+            show_progress=False,
+            early_stopping_monitor="valid/metrics/prediction_mae",
+            track_best=True,
+        )
+
+    assert train.iterations == 0
+    assert validation.iterations == 0
+
+
+def test_validation_monitor_requires_loader_before_training(tmp_path) -> None:
+    trainer, _ = build_metric_trainer(tmp_path, declarations=[])
+    train = IterationCountingLoader(
+        [(torch.tensor([[0.0]]), torch.tensor([[1.0]]))]
+    )
+
+    with pytest.raises(ValueError, match="requires a validation dataloader"):
+        trainer.fit(
+            train,
+            num_epochs=1,
+            show_progress=False,
+            early_stopping_monitor="valid/loss",
+            track_best=True,
+        )
+
+    assert train.iterations == 0
+
+
+def test_unconsumed_metric_monitor_skips_semantic_preflight(tmp_path) -> None:
+    trainer, _ = build_metric_trainer(tmp_path, declarations=[])
+    train = IterationCountingLoader(
+        [(torch.tensor([[0.0]]), torch.tensor([[1.0]]))]
+    )
+
+    history = trainer.fit(
+        train,
+        num_epochs=1,
+        show_progress=False,
+        early_stopping_monitor="valid/metrics/typo",
+        track_best=False,
+    )
+
+    assert train.iterations == 1
+    assert history[0]["train/loss"] == pytest.approx(1.0)
+
+
+def test_mapping_metric_subkey_passes_base_id_preflight(tmp_path) -> None:
+    trainer, _ = build_metric_trainer(
+        tmp_path,
+        declarations=[
+            MetricConfig(
+                id="scorecard",
+                name="test.training_mapping_mae",
+                channel="supervised.prediction_target",
+                phases=["validation"],
+            )
+        ],
+    )
+
+    history = trainer.fit(
+        [(torch.tensor([[0.0]]), torch.tensor([[1.0]]))],
+        num_epochs=1,
+        validation_dataloader=[
+            (torch.tensor([[0.0]]), torch.tensor([[2.0]]))
+        ],
+        show_progress=False,
+        early_stopping_monitor="valid/metrics/scorecard/mae",
+        track_best=True,
+    )
+
+    assert history[0]["valid/metrics/scorecard/mae"] == pytest.approx(2.0)
+    assert history[0]["valid/metrics/scorecard/twice"] == pytest.approx(4.0)
+    assert trainer.best_metric_value == pytest.approx(2.0)
+
+
+def test_missing_dynamic_metric_subkey_fails_after_compute(tmp_path) -> None:
+    trainer, _ = build_metric_trainer(
+        tmp_path,
+        declarations=[
+            MetricConfig(
+                id="scorecard",
+                name="test.training_mapping_mae",
+                channel="supervised.prediction_target",
+                phases=["validation"],
+            )
+        ],
+    )
+    train = IterationCountingLoader(
+        [(torch.tensor([[0.0]]), torch.tensor([[1.0]]))]
+    )
+    validation = IterationCountingLoader(
+        [(torch.tensor([[0.0]]), torch.tensor([[2.0]]))]
+    )
+
+    with pytest.raises(ValueError, match=r"scorecard/missing.*not found"):
+        trainer.fit(
+            train,
+            num_epochs=1,
+            validation_dataloader=validation,
+            show_progress=False,
+            early_stopping_monitor="valid/metrics/scorecard/missing",
+            track_best=True,
+        )
+
+    assert train.iterations == 1
+    assert validation.iterations == 1
 
 
 def test_test_phase_monitor_is_rejected_before_training(tmp_path) -> None:

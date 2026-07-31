@@ -14,6 +14,10 @@ from stochaflow.training.class_conditional_gaussian import (
     ClassConditionalGaussianDenoisingTrainingStrategy,
     ClassConditionalGaussianDiagnosticSemantics,
 )
+from stochaflow.training.gaussian_loss import (
+    GaussianLossWeightingConfig,
+    GaussianVarianceConfig,
+)
 from stochaflow.training.objectives import MSEObjective
 from stochaflow.utils.config import ComponentConfig
 
@@ -231,6 +235,50 @@ def test_training_applies_dropout_but_evaluation_never_drops_conditions() -> Non
     assert torch.equal(model.seen_labels[-1], torch.tensor([0, 2]))
     assert torch.all(training.diagnostics["condition_dropout_mask"])
     assert not torch.any(evaluation.diagnostics["condition_dropout_mask"])
+
+
+def test_learned_range_p2_metrics_use_prediction_head_and_batch_weight() -> None:
+    process = _process()
+    model = LearnedVarianceToyClassConditionalDenoiser(process, "epsilon")
+    strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
+        model,
+        process,
+        MSEObjective(),
+        condition_dropout=1.0,
+        variance=GaussianVarianceConfig(
+            mode="learned_range",
+            loss="rescaled_variational_bound",
+        ),
+        loss_weighting=GaussianLossWeightingConfig(
+            name="p2",
+            k=1.0,
+            gamma=1.0,
+        ),
+    )
+
+    training = strategy.training_step(_batch())
+    evaluation = strategy.evaluation_step(_batch())
+
+    assert torch.equal(model.seen_labels[-2], torch.tensor([3, 3]))
+    assert torch.equal(model.seen_labels[-1], torch.tensor([0, 2]))
+    for output in (training, evaluation):
+        prediction, target = output.metric_updates[
+            "gaussian.prediction_target"
+        ].args
+        reconstructed, clean = output.metric_updates[
+            "gaussian.clean_reconstruction"
+        ].args
+        assert isinstance(prediction, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        assert prediction.shape == target.shape == (2, 1, 2, 2)
+        assert prediction.is_contiguous()
+        assert target.is_contiguous()
+        assert torch.allclose(prediction, target)
+        assert isinstance(reconstructed, torch.Tensor)
+        assert isinstance(clean, torch.Tensor)
+        assert reconstructed.shape == clean.shape == (2, 1, 2, 2)
+        assert output.loss_aggregation_weight == 2
+        assert output.diagnostics["timestep_loss_weight"].sum().item() < 2.0
 
 
 def test_training_condition_dropout_is_sample_aligned(

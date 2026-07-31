@@ -173,6 +173,13 @@ namespace、周围空白和旧 alias，避免长训练直到首个 epoch 结束�
 无 validation loader 时，runner 只把默认的 `valid/loss` 回退为 `train/loss`；显式
 `train/metrics/...` 保持不变，显式 `valid/metrics/...` 则在训练前失败。
 
+当 best tracking 或 early stopping 实际启用时，`Trainer.fit()` 还会在 diagnostic、
+loader iteration 和 epoch loop 之前预检 monitor 的完整静态依赖：`valid/*` 必须存在
+validation loader，metric id 必须声明在对应 train/validation phase。flat mapping 的
+subkey 由 `Metric.compute()` 动态产生，因此 preflight 只验证 base id；完整 subkey
+继续在首个 epoch snapshot 中 fail closed。`track_best: false` 时 monitor 未被消费，
+不会触发这项语义检查。
+
 ### 6.2 W&B 保留 canonical path
 
 W&B backend 保留 `/`、`.`、`-` 和 `_`，只替换其他不支持字符，并在 sanitize 后 key
@@ -350,6 +357,8 @@ M0–M1 只承诺单进程 CPU/单 GPU 的正确结果。未来 M3 至少需要�
 - [x] step 与 epoch loss 使用不同 key；logger/history/checkpoint/monitor 共享 canonical
   epoch key。
 - [x] test-role observation 不能参与 best/early-stopping selection。
+- [x] 被消费的 monitor 在 loader iteration 前验证 validation loader、metric id 与
+  phase；动态 mapping subkey 在 compute 后验证。
 - [x] checkpoint 只保存完成 epoch 的 values/source metadata，不保存派生 metric state。
 - [x] retained MNIST/AFHQ configs 提供低成本 prediction/reconstruction proxy，且
   monitor 已迁移为 `valid/loss`。

@@ -186,8 +186,8 @@ class GaussianDenoisingTrainingStrategy(TrainingStrategy):
             metric_updates={
                 "gaussian.prediction_target": MetricUpdate(
                     args=(
-                        computation.prediction.model_output,
-                        computation.target,
+                        computation.prediction.model_output.contiguous(),
+                        computation.target.contiguous(),
                     )
                 ),
                 "gaussian.clean_reconstruction": MetricUpdate(
