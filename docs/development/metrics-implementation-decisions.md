@@ -3,7 +3,7 @@
 - 文档性质：feature branch 的维护者审查记录；不是稳定公共 API 文档
 - 审查基线：[Metrics 支持开发计划](metrics-support-plan.md)
 - 实现范围：M0–M4
-- 状态：实现、公开文档和本地 full branch verification 已收束；远端 CI 待推送确认
+- 状态：实现、公开文档、本地 full branch verification 与远端 CI 已收束
 - 记录日期：2026-07-31
 
 本文记录本次实现采用的责任边界、兼容性决策和已知限制。计划仍是需求依据；当计划中
@@ -519,7 +519,7 @@ distributed Trainer 语义。
 - [x] 本计划已在 `docs/development/` 原地归档；该目录不进入 Sphinx 发布。
 - [x] 本机完成全量 pytest、Ruff、Pyright、config reference、严格 Sphinx、package
   build 和短 Gaussian end-to-end run。
-- [ ] 远端支持平台矩阵 CI 待本次提交推送后确认。
+- [x] 远端支持平台矩阵 CI 的 6 个 jobs 全部通过。
 
 ## 13. 一手资料
 
@@ -572,6 +572,7 @@ test metric 路径。
 | `uv run sphinx-build -W --keep-going -b html ...` | 严格构建通过 |
 | `uv build` | wheel 与 source distribution 构建成功，包含 diagnostic binding |
 | built wheel import smoke | 从 wheel 导入 `stochaflow.training.diagnostics.binding` 成功 |
+| [GitHub Tests run 30608408085](https://github.com/supermassiveasshole/stochaflow/actions/runs/30608408085) | `bf12511` 的 Quality 与五个平台/Python 测试 jobs 全部通过 |
 
-这些结果不依赖 dog-specific 数据或外部下载。远端支持平台矩阵 CI 需要在本次提交推送后
-单独确认；在其通过前不声称 branch ready to merge。
+这些结果不依赖 dog-specific 数据或外部下载。远端支持平台矩阵 CI 已确认通过；当前
+branch 满足本计划的 merge gate。

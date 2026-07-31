@@ -3,7 +3,7 @@
 - 文档性质：已完成并原地归档的开发计划；`docs/development/` 不进入 Sphinx
   公开文档导航
 - 状态：M0–M4 已于 2026-07-31 在 feature branch 实现；本地 full branch verification
-  已通过，远端 CI 待本次提交推送后确认
+  与远端支持平台 CI 均已通过
 - 实现决策与自审：
   [Metrics M0–M4 实现决策与维护者审查记录](metrics-implementation-decisions.md)
 - 统一排期：
@@ -850,8 +850,7 @@ M3 已完成 built-in 与独立 extension metric 的声明矩阵：每个 TorchM
 - [x] 把稳定行为写入 Sphinx 公共文档。
 - [x] 本计划在 `docs/development/` 原地归档，且不从 Sphinx index 链接开发历史。
 
-实现清单和本地 branch closeout verification 已完成；远端 CI 仍需在本次提交推送后
-确认。
+实现清单、本地 branch closeout verification 与远端支持平台 CI 已完成。
 
 ## 10. 测试计划
 
@@ -951,8 +950,8 @@ uv build
   distributed Trainer 不在本计划承诺内；
 - [x] 本地 full pytest、Ruff、Pyright、config reference、严格 Sphinx、package build
   与短 Gaussian end-to-end smoke；
-- [ ] 远端 CI；此项是合并门禁，不回滚 M0–M4 的实现状态，但未通过前不能宣称
-  branch ready to merge。
+- [x] 远端 Tests CI：Quality、Ubuntu Python 3.12/3.14.6、Windows Python 3.14.6、
+  Apple Silicon macOS Python 3.14.6 与 Intel macOS Python 3.12 全部通过。
 
 ## 12. 明确不进入首版
 
