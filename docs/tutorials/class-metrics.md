@@ -285,15 +285,15 @@ trainer:
     enabled: true
     monitor: valid/metrics/class_recall/macro
     mode: max
-    missing: error
     patience: 8
     min_delta: 0.001
 ```
 
-这里使用 `missing: error`，因为 validation metric 每轮都应存在。`missing: skip` 只用于
-按 cadence 运行且尚未到期的 `diagnostics/...` monitor，不能用于
-`valid/metrics/...`。`test/metrics/class_recall/macro` 会在最终 test evaluation 中产生，
-但 test-role result 永远不能控制 best checkpoint。
+模型选择只接受 `valid/loss` 或 `valid/metrics/<id>[/<subkey>]`，因此这个 monitor 会在
+训练开始前核对 `class_recall` 已配置到 validation phase。若一个 validation epoch 没有
+产生该 key，训练会 fail closed。`test/metrics/class_recall/macro` 会在最终 test
+evaluation 中产生，但 test phase result 和 `diagnostics/...` 观测日志都不能控制 best
+checkpoint。
 
 运行：
 
@@ -313,7 +313,7 @@ import pytest
 import torch
 
 from class_eval.stochaflow_ext import metrics as metrics_module
-from stochaflow.extensions import (
+from stochaflow.metrics import (
     MetricEngine,
     MetricSpec,
     MetricUpdate,
@@ -364,7 +364,8 @@ validation loader 跑一个 epoch，断言 logger、history 和 checkpoint 使�
 `valid/metrics/class_recall/...` key。插件 entry-point name、distribution、version 和
 target 会写入 provenance；完整 metric declaration 与 channel 保存在 resolved config。
 checkpoint 不保存 extension 源码或 Metric runtime state，只保存完成 epoch 的 scalar
-snapshot 与 source metadata；跨环境恢复仍必须安装同一插件并由项目 lockfile 固定依赖。
+mapping；它不保存 metric payload 或逐 key source/provenance metadata。跨环境恢复仍必须
+安装同一插件并由项目 lockfile 固定依赖。
 
 相关契约与迁移边界见[扩展公共 API](../api/extensions.md#metrics)和
 [Checkpoint、配置权威与可移植性](../configuration/compatibility-and-migration.md)。

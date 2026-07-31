@@ -58,12 +58,14 @@ class RunSummary:
 class FinalSummary:
     """High-level metadata shown when a training run finishes."""
 
-    best_epoch: int
-    best_metric_name: str
+    best_epoch: int | None
+    best_metric_name: str | None
     best_metric_value: float | None
     test_loss: float | None
     stopped_early: bool
     best_checkpoint: str | Path | None
+    selected_checkpoint: str | Path | None
+    selected_checkpoint_kind: str | None
     output_dir: str | Path
     metrics_path: str | Path
     log_path: str | Path
@@ -200,12 +202,24 @@ class RichTrainingReporter:
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan", no_wrap=True)
         table.add_column(ratio=1, overflow="fold")
-        table.add_row("Best epoch", str(summary.best_epoch))
-        table.add_row("Best metric", summary.best_metric_name)
+        table.add_row(
+            "Best epoch",
+            "-" if summary.best_epoch is None else str(summary.best_epoch),
+        )
+        table.add_row("Best metric", summary.best_metric_name or "-")
         table.add_row("Best value", _format_loss(summary.best_metric_value))
         table.add_row("Test loss", _format_loss(summary.test_loss))
         table.add_row("Stopped early", str(summary.stopped_early))
         table.add_row("Best checkpoint", _format_path(summary.best_checkpoint))
+        if summary.selected_checkpoint is not None:
+            table.add_row(
+                "Selected checkpoint",
+                _format_path(summary.selected_checkpoint),
+            )
+            table.add_row(
+                "Selection kind",
+                summary.selected_checkpoint_kind or "-",
+            )
         table.add_row("Output", _format_path(summary.output_dir))
         table.add_row("Metrics", _format_path(summary.metrics_path))
         table.add_row("Log", _format_path(summary.log_path))

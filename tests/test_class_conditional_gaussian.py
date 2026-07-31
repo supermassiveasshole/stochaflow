@@ -247,7 +247,6 @@ def test_learned_range_p2_metrics_use_prediction_head_and_batch_weight() -> None
         MSEObjective(),
         variance=GaussianVarianceConfig(
             mode="learned_range",
-            loss="rescaled_variational_bound",
         ),
         condition_dropout=1.0,
         k=1.0,
@@ -276,7 +275,8 @@ def test_learned_range_p2_metrics_use_prediction_head_and_batch_weight() -> None
         assert isinstance(clean, torch.Tensor)
         assert reconstructed.shape == clean.shape == (2, 1, 2, 2)
         assert output.loss_aggregation_weight == 2
-        assert output.diagnostics["timestep_loss_weight"].sum().item() < 2.0
+        assert output.diagnostics["per_sample_loss"].shape == (2,)
+        assert "timestep_loss_weight" not in output.diagnostics
 
 
 def test_training_condition_dropout_is_sample_aligned(
@@ -453,7 +453,6 @@ def test_builder_composes_p2_learned_range_and_freezes_variance_recipe() -> None
             "condition_dropout": 0.1,
             "variance": {
                 "mode": "learned_range",
-                "loss": "rescaled_variational_bound",
             },
             "k": 1.0,
             "gamma": 1.0,
@@ -469,8 +468,9 @@ def test_builder_composes_p2_learned_range_and_freezes_variance_recipe() -> None
         "variance": {"mode": "learned_range"},
     }
     assert torch.isfinite(output.loss)
-    assert output.diagnostics["per_sample_variational_bound"].shape == (2,)
-    assert output.diagnostics["timestep_loss_weight"].shape == (2,)
+    assert output.diagnostics["per_sample_loss"].shape == (2,)
+    assert "per_sample_variational_bound" not in output.diagnostics
+    assert "timestep_loss_weight" not in output.diagnostics
 
 
 def test_p2_builder_rejects_prediction_override_before_model_call() -> None:
@@ -499,7 +499,6 @@ def test_p2_builder_rejects_prediction_override_before_model_call() -> None:
             {
                 "variance": {
                     "mode": "learned_range",
-                    "loss": "rescaled_variational_bound",
                 }
             },
             1,
@@ -537,7 +536,6 @@ def test_conditional_builder_accepts_declared_learned_range_layout() -> None:
         {
             "variance": {
                 "mode": "learned_range",
-                "loss": "rescaled_variational_bound",
             }
         }
     )

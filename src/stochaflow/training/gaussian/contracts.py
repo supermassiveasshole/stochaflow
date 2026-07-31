@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Literal, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import torch
 
-from stochaflow.families.gaussian import PredictionType
-
-VarianceMode = Literal["fixed", "learned_range"]
+from stochaflow.families.gaussian import PredictionType, VarianceMode
 
 
 @runtime_checkable

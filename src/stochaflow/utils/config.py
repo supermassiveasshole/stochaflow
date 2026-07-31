@@ -1,5 +1,6 @@
 """Centralized configuration schema and loading utilities."""
 
+import re
 from copy import deepcopy
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -8,10 +9,13 @@ from typing import Any, Union, cast, get_args, get_origin, get_type_hints
 
 import yaml
 
-from stochaflow.metrics.config import (
-    MetricConfig,
-    validate_metric_configs,
-    validate_training_monitor_key,
+from stochaflow.metrics.config import MetricSpec, validate_metric_spec
+
+TRAINING_METRIC_PHASES = frozenset({"train", "validation", "test"})
+_METRIC_TAG_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
+_VALIDATION_MONITOR_PATTERN = re.compile(
+    rf"^valid/(?:loss|metrics/{_METRIC_TAG_SEGMENT}"
+    rf"(?:/{_METRIC_TAG_SEGMENT})?)$"
 )
 
 
@@ -25,6 +29,92 @@ class ComponentConfig:
 
     name: str
     params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class TrainingMetricConfig:
+    """Flat training metric declaration composed into a task-neutral spec."""
+
+    id: str
+    name: str
+    channel: str
+    params: dict[str, Any] = field(default_factory=dict)
+    phases: list[str] = field(default_factory=lambda: ["validation"])
+
+    def to_metric_spec(self) -> MetricSpec:
+        """Return the task-neutral construction declaration."""
+
+        params = (
+            dict(self.params)
+            if type(cast(object, self.params)) is dict
+            else self.params
+        )
+        return MetricSpec(
+            id=self.id,
+            name=self.name,
+            channel=self.channel,
+            params=params,
+        )
+
+
+def validate_training_metric_configs(
+    configs: object,
+    *,
+    path: str = "metrics",
+) -> list[TrainingMetricConfig]:
+    """Validate flat training metric declarations."""
+
+    if not isinstance(configs, list):
+        raise TypeError(f"{path} must be a list")
+    declarations = cast(list[object], configs)
+    seen_ids: set[str] = set()
+    validated: list[TrainingMetricConfig] = []
+    for index, value in enumerate(declarations):
+        item_path = f"{path}[{index}]"
+        if not isinstance(value, TrainingMetricConfig):
+            raise TypeError(f"{item_path} must be a TrainingMetricConfig")
+        validate_metric_spec(value.to_metric_spec(), path=item_path)
+        phases = cast(object, value.phases)
+        if not isinstance(phases, list):
+            raise TypeError(f"{item_path}.phases must be a list")
+        if not phases:
+            raise ValueError(f"{item_path}.phases must not be empty")
+        seen_phases: set[str] = set()
+        for phase_index, phase in enumerate(phases):
+            if not isinstance(phase, str) or phase not in TRAINING_METRIC_PHASES:
+                raise ValueError(
+                    f"{item_path}.phases[{phase_index}] must be train, "
+                    "validation, or test"
+                )
+            if phase in seen_phases:
+                raise ValueError(
+                    f"{item_path}.phases contains duplicate phase {phase!r}"
+                )
+            seen_phases.add(phase)
+        if value.id in seen_ids:
+            raise ValueError(f"{path} contains duplicate metric id {value.id!r}")
+        seen_ids.add(value.id)
+        validated.append(value)
+    return validated
+
+
+def validate_training_monitor_key(
+    value: object,
+    *,
+    path: str = "training monitor",
+) -> str:
+    """Validate a validation-loss or validation-metric selection key."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{path} must be a non-empty string")
+    if value != value.strip():
+        raise ValueError(f"{path} must not contain surrounding whitespace")
+    if _VALIDATION_MONITOR_PATTERN.fullmatch(value) is None:
+        raise ValueError(
+            f"{path} must be 'valid/loss' or a canonical validation metric "
+            "key such as 'valid/metrics/prediction_mae'"
+        )
+    return value
 
 
 @dataclass(slots=True)
@@ -113,7 +203,6 @@ class EarlyStoppingConfig:
     enabled: bool = False
     monitor: str = "valid/loss"
     mode: str = "min"
-    missing: str = "error"
     patience: int = 10
     min_delta: float = 0.0
 
@@ -159,7 +248,7 @@ class StochaflowConfig:
     training: ComponentConfig
     objective: ComponentConfig | None = None
     process: ComponentConfig | None = None
-    metrics: list[MetricConfig] = field(default_factory=list)
+    metrics: list[TrainingMetricConfig] = field(default_factory=list)
     extensions: ExtensionsConfig = field(default_factory=ExtensionsConfig)
     optimizer: ComponentConfig = field(
         default_factory=lambda: ComponentConfig(
@@ -195,7 +284,7 @@ class StochaflowConfig:
             if not isinstance(cast(object, self.objective.params), dict):
                 raise ConfigError("objective.params must be a mapping")
         try:
-            validate_metric_configs(self.metrics)
+            validate_training_metric_configs(self.metrics)
         except (TypeError, ValueError) as exc:
             raise ConfigError(str(exc)) from exc
         plugins_value = cast(object, self.extensions.plugins)
@@ -279,10 +368,6 @@ class StochaflowConfig:
             raise ConfigError("trainer.max_grad_norm must be positive when provided")
         if self.trainer.early_stopping.mode not in {"min", "max"}:
             raise ConfigError("trainer.early_stopping.mode must be 'min' or 'max'")
-        if self.trainer.early_stopping.missing not in {"error", "skip"}:
-            raise ConfigError(
-                "trainer.early_stopping.missing must be 'error' or 'skip'"
-            )
         try:
             validate_training_monitor_key(
                 self.trainer.early_stopping.monitor,
@@ -290,16 +375,6 @@ class StochaflowConfig:
             )
         except (TypeError, ValueError) as exc:
             raise ConfigError(str(exc)) from exc
-        if (
-            self.trainer.early_stopping.missing == "skip"
-            and not self.trainer.early_stopping.monitor.startswith(
-                "diagnostics/"
-            )
-        ):
-            raise ConfigError(
-                "trainer.early_stopping.missing='skip' is only supported for "
-                "diagnostic metrics"
-            )
         if self.trainer.early_stopping.patience <= 0:
             raise ConfigError("trainer.early_stopping.patience must be positive")
         if self.trainer.early_stopping.min_delta < 0:

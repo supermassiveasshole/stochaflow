@@ -12,67 +12,15 @@ from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
 )
 
-from .contracts import VarianceMode
-
 
 @dataclass(frozen=True, slots=True)
 class GaussianLossComputation:
-    """One normalized prediction and its batch-aligned loss components."""
+    """One normalized prediction and its final training loss."""
 
     loss: torch.Tensor
     prediction: GaussianPrediction
     target: torch.Tensor
-    snr: torch.Tensor
-    timestep_loss_weight: torch.Tensor
-    per_sample_simple_loss: torch.Tensor | None
-    per_sample_weighted_simple_loss: torch.Tensor | None
-    per_sample_variational_bound: torch.Tensor | None
     per_sample_loss: torch.Tensor | None
-
-
-def split_gaussian_training_output(
-    value: object,
-    *,
-    state: torch.Tensor,
-    variance_mode: VarianceMode,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """Interpret the fixed or learned-range heads of a training model."""
-
-    if not isinstance(value, torch.Tensor):
-        raise TypeError("Gaussian model must return a Tensor")
-    if value.device != state.device:
-        raise ValueError("Gaussian model output must share the noisy state device")
-    if not torch.is_floating_point(value):
-        raise TypeError("Gaussian model output must be floating-point")
-    if variance_mode == "fixed":
-        if value.shape != state.shape:
-            raise ValueError(
-                "fixed-variance Gaussian model output must match the state shape"
-            )
-        return value, None
-    if state.ndim < 2:
-        raise ValueError(
-            "learned_range Gaussian states must include a channel dimension"
-        )
-    expected = (state.shape[0], state.shape[1] * 2, *state.shape[2:])
-    if value.shape != expected:
-        raise ValueError(
-            "learned_range Gaussian model output must have shape "
-            f"{expected}, got {tuple(value.shape)}"
-        )
-    return cast(tuple[torch.Tensor, torch.Tensor], value.chunk(2, dim=1))
-
-
-def gaussian_signal_to_noise_ratio(
-    process: DiscreteGaussianDenoisingProcess,
-    state_times: torch.Tensor,
-) -> torch.Tensor:
-    """Return cumulative VP signal-to-noise ratios at public state times."""
-
-    process = _validate_process(process)
-    state_times = process.validate_noisy_state_times(state_times)
-    scales = process.marginal_scales(state_times, state_times.size())
-    return scales.signal.square() / scales.noise.square()
 
 
 def gaussian_training_target(
@@ -127,49 +75,14 @@ def gaussian_training_target(
     return -noise / scales.noise
 
 
-def validate_gaussian_timestep_weights(
-    value: object,
-    *,
-    snr: torch.Tensor,
-) -> torch.Tensor:
-    """Validate one concrete Strategy's batch-aligned loss weights."""
-
-    if not isinstance(value, torch.Tensor):
-        raise TypeError("Gaussian timestep loss weights must be a Tensor")
-    if value.ndim != 1 or value.shape != snr.shape:
-        raise ValueError("Gaussian timestep loss weights must have shape [B]")
-    if not torch.is_floating_point(value):
-        raise TypeError("Gaussian timestep loss weights must be floating-point")
-    if value.device != snr.device:
-        raise ValueError("Gaussian timestep loss weights must share the SNR device")
-    if value.dtype != snr.dtype:
-        raise ValueError("Gaussian timestep loss weights must share the SNR dtype")
-    if not bool(torch.all(torch.isfinite(value))):
-        raise ValueError("Gaussian timestep loss weights must be finite")
-    if bool(torch.any(value < 0)):
-        raise ValueError("Gaussian timestep loss weights must be non-negative")
-    return value
-
-
 def gaussian_loss_diagnostics(
     computation: GaussianLossComputation,
 ) -> dict[str, torch.Tensor]:
-    """Detach standardized Gaussian loss diagnostics."""
+    """Detach the per-sample loss consumed by Gaussian diagnostics."""
 
-    diagnostics = {
-        "snr": computation.snr.detach(),
-        "timestep_loss_weight": computation.timestep_loss_weight.detach(),
-    }
-    for name in (
-        "per_sample_simple_loss",
-        "per_sample_weighted_simple_loss",
-        "per_sample_variational_bound",
-        "per_sample_loss",
-    ):
-        value = getattr(computation, name)
-        if value is not None:
-            diagnostics[name] = value.detach()
-    return diagnostics
+    if computation.per_sample_loss is None:
+        return {}
+    return {"per_sample_loss": computation.per_sample_loss.detach()}
 
 
 def validate_scalar_objective_loss(

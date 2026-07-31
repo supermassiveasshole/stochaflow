@@ -1,4 +1,4 @@
-"""Unconditional standard and P2 Gaussian training strategies."""
+"""Standard unconditional Gaussian training strategy and builder."""
 
 from __future__ import annotations
 
@@ -12,11 +12,9 @@ from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
 )
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
-from stochaflow.training.objectives import MSEObjective
 from stochaflow.utils.registry import REGISTRIES
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
-from .p2 import p2_timestep_loss_weights, validate_p2_parameters
 from .strategy import GaussianTrainingStrategyBase
 from .variance import GaussianVarianceConfig, parse_gaussian_variance
 
@@ -58,37 +56,6 @@ class GaussianDenoisingTrainingStrategy(GaussianTrainingStrategyBase):
         """Extract clean images using this strategy's batch semantics."""
 
         return _clean_samples(batch)
-
-
-class P2GaussianDenoisingTrainingStrategy(GaussianDenoisingTrainingStrategy):
-    """Train an epsilon-predicting Gaussian model with P2 weighting."""
-
-    def __init__(
-        self,
-        model: nn.Module,
-        process: DiscreteGaussianDenoisingProcess,
-        objective: MSEObjective,
-        *,
-        variance: GaussianVarianceConfig | None = None,
-        k: float = 1.0,
-        gamma: float = 1.0,
-    ) -> None:
-        objective_value = cast(object, objective)
-        if not isinstance(objective_value, MSEObjective):
-            raise TypeError("P2 Gaussian training requires MSEObjective")
-        validated_k, validated_gamma = validate_p2_parameters(k, gamma)
-        super().__init__(
-            model,
-            process,
-            objective_value,
-            prediction_type="epsilon",
-            variance=variance,
-        )
-        self.k = validated_k
-        self.gamma = validated_gamma
-
-    def _timestep_loss_weights(self, snr: torch.Tensor) -> torch.Tensor:
-        return p2_timestep_loss_weights(snr, k=self.k, gamma=self.gamma)
 
 
 @REGISTRIES.training_builders.register("gaussian_denoising")
@@ -165,44 +132,6 @@ class GaussianDenoisingTrainingBuilder(TrainingBuilder):
         )
 
 
-@REGISTRIES.training_builders.register("p2_gaussian_denoising")
-class P2GaussianDenoisingTrainingBuilder(GaussianDenoisingTrainingBuilder):
-    """Assemble unconditional epsilon prediction with P2 weighting."""
-
-    def build(self) -> TrainingPlan:
-        """Validate the P2 recipe and return its concrete strategy."""
-
-        params = dict(self.context.params)
-        variance = parse_gaussian_variance(
-            params.pop("variance", None),
-            path="training.params.variance",
-        )
-        k, gamma = validate_p2_parameters(
-            params.pop("k", 1.0),
-            params.pop("gamma", 1.0),
-        )
-        _reject_unknown(params, builder="p2_gaussian_denoising")
-        model, process, objective = self._components()
-        if not isinstance(objective, MSEObjective):
-            raise TypeError("p2_gaussian_denoising requires MSEObjective")
-        strategy = P2GaussianDenoisingTrainingStrategy(
-            model,
-            process,
-            objective,
-            variance=variance,
-            k=k,
-            gamma=gamma,
-        )
-        return self._plan(
-            strategy,
-            model=model,
-            process=process,
-            objective=objective,
-            prediction_type="epsilon",
-            variance=variance,
-        )
-
-
 def _clean_samples(batch: Any) -> torch.Tensor:
     if isinstance(batch, (tuple, list)):
         if len(batch) != 2:
@@ -239,6 +168,4 @@ def _reject_unknown(params: dict[str, Any], *, builder: str) -> None:
 __all__ = [
     "GaussianDenoisingTrainingBuilder",
     "GaussianDenoisingTrainingStrategy",
-    "P2GaussianDenoisingTrainingBuilder",
-    "P2GaussianDenoisingTrainingStrategy",
 ]

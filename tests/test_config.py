@@ -170,10 +170,8 @@ def test_load_mnist_train_config() -> None:
     assert config.trainer.num_epochs == 200
     assert not config.trainer.early_stopping.enabled
     assert config.trainer.early_stopping.monitor == "valid/loss"
-    assert config.trainer.early_stopping.missing == "error"
     assert config.trainer.early_stopping.patience == 7
     assert config.trainer.early_stopping.min_delta == 0.00001
-    assert config.to_dict()["trainer"]["early_stopping"]["missing"] == "error"
     assert [diagnostic.name for diagnostic in config.diagnostics] == [
         "diffusion_quality"
     ]
@@ -315,7 +313,7 @@ def test_config_rejects_legacy_epoch_monitor_keys(monitor: str) -> None:
 
     with pytest.raises(
         ConfigError,
-        match=r"monitor.*(?:whitespace|canonical epoch metric key)",
+        match=r"monitor.*(?:whitespace|canonical validation metric key)",
     ):
         load_config_dict(raw)
 
@@ -324,8 +322,10 @@ def test_config_rejects_legacy_epoch_monitor_keys(monitor: str) -> None:
     "monitor",
     [
         " valid/loss ",
+        "train/loss",
         "train/step/loss",
         "system/train/loss",
+        "diagnostics/quality/fid",
         "valid/metrics/id/nested/subkey",
     ],
 )
@@ -335,52 +335,20 @@ def test_config_rejects_noncanonical_epoch_monitor_keys(monitor: str) -> None:
 
     with pytest.raises(
         ConfigError,
-        match=r"monitor.*(?:whitespace|canonical epoch metric key)",
+        match=r"monitor.*(?:whitespace|canonical validation metric key)",
     ):
         load_config_dict(raw)
 
 
-@pytest.mark.parametrize("missing", ["ignore", "", 1])
-def test_config_rejects_invalid_early_stopping_missing_policy(
-    missing: object,
-) -> None:
-    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
-    raw["trainer"]["early_stopping"]["missing"] = missing
-
-    with pytest.raises(
-        ConfigError,
-        match=r"early_stopping\.missing must be 'error' or 'skip'",
-    ):
-        load_config_dict(raw)
-
-
-def test_config_restricts_skip_to_diagnostic_monitors() -> None:
+def test_config_rejects_removed_early_stopping_missing_policy() -> None:
     raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
     raw["trainer"]["early_stopping"]["missing"] = "skip"
 
     with pytest.raises(
         ConfigError,
-        match=r"missing='skip'.*only supported for diagnostic metrics",
+        match=r"unknown config field.*early_stopping\.missing",
     ):
         load_config_dict(raw)
-
-
-def test_config_serializes_diagnostic_skip_policy() -> None:
-    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
-    raw["trainer"]["early_stopping"].update(
-        {
-            "monitor": "diagnostics/quality/fid",
-            "missing": "skip",
-        }
-    )
-
-    config = load_config_dict(raw)
-
-    assert config.trainer.early_stopping.missing == "skip"
-    assert (
-        config.to_dict()["trainer"]["early_stopping"]["missing"]
-        == "skip"
-    )
 
 
 def test_config_without_metrics_keeps_backward_compatible_empty_default() -> None:

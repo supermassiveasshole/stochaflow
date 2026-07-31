@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import torch
 
+from stochaflow.families.gaussian import split_gaussian_model_output
 from stochaflow.models.conditioning import (
     ClassConditionalDenoiser,
     predict_prevalidated_class_conditioned,
@@ -403,7 +404,7 @@ class ClassifierFreeGuidancePredictor:
         self.model = model
         self.class_labels = class_labels
         self.guidance_scale = guidance_scale
-        self.variance_mode = variance_mode
+        self.variance_mode: VarianceMode = variance_mode
         self.counts = counts
 
     def __call__(
@@ -425,38 +426,45 @@ class ClassifierFreeGuidancePredictor:
         )
         if self.guidance_scale == 0.0:
             self.counts.unconditional_branches += 1
-            return self._predict(state, model_time, null_labels)
+            mean, variance = self._predict_heads(
+                state,
+                model_time,
+                null_labels,
+            )
+            return _join_gaussian_model_output(mean, variance)
         if self.guidance_scale == 1.0:
             self.counts.conditional_branches += 1
-            return self._predict(state, model_time, self.class_labels)
+            mean, variance = self._predict_heads(
+                state,
+                model_time,
+                self.class_labels,
+            )
+            return _join_gaussian_model_output(mean, variance)
         self.counts.conditional_branches += 1
         self.counts.unconditional_branches += 1
         doubled_state = torch.cat((state, state), dim=0)
         doubled_time = torch.cat((model_time, model_time), dim=0)
         doubled_labels = torch.cat((self.class_labels, null_labels), dim=0)
-        doubled_prediction = self._predict(
+        doubled_mean, doubled_variance = self._predict_heads(
             doubled_state,
             doubled_time,
             doubled_labels,
         )
-        conditional, unconditional = doubled_prediction.chunk(2, dim=0)
-        if self.variance_mode == "fixed":
-            return unconditional + self.guidance_scale * (
-                conditional - unconditional
-            )
-        conditional_mean, conditional_variance = conditional.chunk(2, dim=1)
-        unconditional_mean, _ = unconditional.chunk(2, dim=1)
+        conditional_mean, unconditional_mean = doubled_mean.chunk(2, dim=0)
         guided_mean = unconditional_mean + self.guidance_scale * (
             conditional_mean - unconditional_mean
         )
+        if doubled_variance is None:
+            return guided_mean
+        conditional_variance, _ = doubled_variance.chunk(2, dim=0)
         return torch.cat((guided_mean, conditional_variance), dim=1)
 
-    def _predict(
+    def _predict_heads(
         self,
         state: torch.Tensor,
         model_time: torch.Tensor,
         class_labels: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         self.counts.forward_calls += 1
         output = cast(
             object,
@@ -467,32 +475,20 @@ class ClassifierFreeGuidancePredictor:
                 class_labels,
             ),
         )
-        if not isinstance(output, torch.Tensor):
-            raise TypeError("class_conditional_denoising model must return a Tensor")
-        expected_shape = state.shape
-        if self.variance_mode == "learned_range":
-            if state.ndim < 2:
-                raise ValueError(
-                    "learned_range class-conditional state must include a "
-                    "channel dimension"
-                )
-            expected_shape = torch.Size(
-                (state.shape[0], state.shape[1] * 2, *state.shape[2:])
-            )
-        if output.shape != expected_shape:
-            raise ValueError(
-                "class_conditional_denoising model output has shape "
-                f"{tuple(output.shape)}, expected {tuple(expected_shape)}"
-            )
-        if output.device != state.device:
-            raise ValueError(
-                "class_conditional_denoising model output must share the state device"
-            )
-        if not torch.is_floating_point(output):
-            raise TypeError(
-                "class_conditional_denoising model output must be floating-point"
-            )
-        return output
+        return split_gaussian_model_output(
+            output,
+            state=state,
+            variance_mode=self.variance_mode,
+        )
+
+
+def _join_gaussian_model_output(
+    mean: torch.Tensor,
+    variance: torch.Tensor | None,
+) -> torch.Tensor:
+    if variance is None:
+        return mean
+    return torch.cat((mean, variance), dim=1)
 
 
 def _validate_denoiser(

@@ -4,8 +4,8 @@
 - 状态：Active
 - 制定日期：2026-07-29
 - 最近排期复核：2026-07-30
-- 当前工程优先项：A0/A1、修订后的 A2 class-aware example contract 与 Metrics
-  M0–M4 repository implementation 已关闭；下一步推进通用 Evaluation E0–E1
+- 当前工程优先项：A0/A1、修订后的 A2 class-aware example contract；下一步推进
+  通用 Evaluation E0–E1
 - 当前产品主线：pretrained image autoencoder + class-conditional latent diffusion
 - 当前 pixel-quality lane：corrected ADM + learned-range Gaussian + concrete P2 training
   已具备 algorithm/config substrate；quality evidence 尚未运行
@@ -23,7 +23,6 @@
 关闭当前基线
   -> ADM topology correctness cutover
   -> Train/Sample authority cutover
-  -> Metrics M0-M1
   -> learned-range Gaussian + exact P2 capability
   -> class-aware Evaluation
   -> pretrained AutoencoderKL provider
@@ -43,13 +42,13 @@
 - `Train/Sample authority cutover` 只执行
   [Hydra 迁移计划](hydra-configuration-composition-migration-plan.md)的 C0/C1。
   它先修正 plain YAML、checkpoint 和 sample authority，不依赖 Hydra runtime。
-- 当前下一项能力计划是 Metrics。B1 关闭后立即执行
-  [Metrics 计划](metrics-support-plan.md)的 M0–M1，先冻结 canonical epoch result、
-  monitor key 和 validation/test MetricEngine，再进入 latent asset 与 codec 实现。
-- Metrics M2–M4、Hydra H0–H3 和 Evaluation 的扩展 profile 不构成首个 AFHQ
-  latent correctness 的架构前置；它们按各自 gate 继续。
-- A1 core implementation 在 K0 后执行。目标硬件上的 capacity、吞吐与显存验证是
-  operational evidence，不是 A0/A1 或 Metrics 合并门槛。
+- Metrics 已作为正式框架能力关闭：task-neutral `MetricEngine`、Strategy channel、
+  phase-local runtime 和 validation-only selection 的当前契约见正式文档，不再维护
+  独立开发计划。下一项通用能力是 Evaluation E0–E1。
+- Hydra H0–H3 和 Evaluation 的扩展 profile 不构成首个 AFHQ latent correctness 的
+  架构前置；它们按各自 gate 继续。
+- 目标硬件上的 capacity、吞吐与显存验证是 operational evidence，不是 A0/A1 的
+  合并门槛。
 - prepared posterior、optimizer-step training 与 codec asset bundle 不阻塞 smoke，
   但阻塞正式多 checkpoint 长训练。
 - Stable Diffusion 不是被移除的 future idea，而是复用 latent substrate 的下一条
@@ -89,13 +88,11 @@ sample 尚未切换，因此 B1 仍是 P0 未完成 milestone。
 flowchart LR
     B0["B0 基线关闭"] --> ADM0["A0 ADM topology correctness"]
     ADM0 --> C1["C0/C1 Train/Sample authority"]
-    C1 --> K0["K0 Metrics M0-M1"]
-    K0 --> P2C["A1 learned variance + P2 capability"]
-    K0 --> LD2["LD2 pretrained AutoencoderKL"]
+    C1 --> P2C["A1 learned variance + P2 capability"]
+    C1 --> LD2["LD2 pretrained AutoencoderKL"]
     LD2 --> LD3
 
     P2C --> E01["Evaluation E0-E1 foundation"]
-    K0 --> E01
     E01 --> E23["Evaluation E2-E3 class-aware profiles"]
 
     LD3 --> P1["LD4A prepared posterior"]
@@ -116,8 +113,8 @@ flowchart LR
     DB --> SD["Stable Diffusion SD1-SD6"]
 ```
 
-Inference asset projection 已完成，不再作为未来节点。图中的 `K0 -> LD2` 表示本轮
-明确的实施顺序，不表示 codec 在架构上依赖 MetricEngine。A1 与 L0 也没有架构依赖。
+Inference asset projection 与 Metrics foundation 已完成，不再作为未来节点。图中的
+`C1 -> LD2` 表示本轮明确的实施顺序。A1 与 L0 没有架构依赖。
 三类 AFHQ 与 latent quality profile 都消费 Evaluation 基础，但使用不同
 subject/data/protocol，不能共享一个模糊 FID。
 
@@ -178,32 +175,6 @@ sample/decode 先接入现有 checkpoint schema，随后又被 C1 重写。
 
 退出条件：一份 train config 可被 DDPM/DDIM 多个 sample profile 消费；sample 文件
 没有 Builder，train 文件没有最终 sampler 或 writer。
-
-### K0 — Metrics Foundation（P1，1–2 个工程周）
-
-本 milestone 先执行 Metrics 计划的 M0–M1：
-
-- 为现有 loss、history、logger 和 monitor 行为增加 characterization tests；
-- 冻结 canonical metric key、`MetricSource`、`EpochMetricSnapshot`、
-  `MetricUpdate` 和显式 `loss_aggregation_weight` contract；
-- 决定 TorchMetrics 的 base dependency/extra 策略；
-- 实现 task-neutral `MetricEngine`、最小 registry/factory 与 train/validation/test
-  隔离 state；
-- 让内置 supervised/Gaussian Strategy 提供显式 channel；
-- 让 logger、history、checkpoint 和 monitor 消费同一 canonical epoch snapshot；
-- 将 retained MNIST/AFHQ config、配置参考和契约测试中的 `valid_loss` monitor
-  一次性迁移为 `valid/loss`，不保留 alias；
-- 完成最小 `mean`、`mse`、`mae` built-in 及独立 custom implementation contract
-  test。
-
-K0 不提前实现训练后 Evaluation，也不把 FID/KID、额外 sampling 或 image-space
-quality 塞进普通 validation loop。Metrics M2 的 diagnostic monitoring、M3 的完整
-extension/distributed readiness 与 M4 的正式文档/计划收束继续按后续 gate 执行。
-
-退出条件：validation/test metric 能由 Strategy channel 驱动并稳定进入同一
-snapshot、日志和 checkpoint 路径；只有 selection-eligible validation observation
-可以进入 best/early-stopping monitor；旧 metric key 或 checkpoint 不提供兼容迁移；
-retained MNIST/AFHQ 的训练数值行为保持不变。
 
 ### A1 — Learned-range Gaussian and P2 Capability（Done，2026-07-30）
 
@@ -376,15 +347,14 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 | [Sampling Request Config Refactor](sampling-request-config-refactor.md) | Done / 将被替代 | B1 | Hydra C1 | C1 后成为历史记录，不维持 v10 dual authority |
 | [Legacy Intel macOS Lifecycle](legacy-intel-macos-pytorch-test-lifecycle.md) | Done | Maintenance | 无 | Deprecated / best effort，不约束新 codec/DiT |
 | [Gaussian loss/P2 与 ADM topology](../framework.md) | Implemented | Done core | repository validation | 稳定 contract 已移入正式文档；单类别 reproduction lane 已取消 |
-| [Metrics](metrics-support-plan.md) | Queued foundation | P1 | A0/B1 后、L0 前 | 立即完成 Metrics M0–M1；M2–M4 按 diagnostic/extension 需求 |
-| [Latent Diffusion](latent-diffusion-support-plan.md) | Current product mainline | P1/P2 | A0 -> B1 -> K0/A1 -> L0–L3 | A1 是当前单人排期前置而非 codec 架构依赖 |
-| [Hydra Configuration Migration](hydra-configuration-composition-migration-plan.md) | Split | P0 + P2 + Later | C0/C1 -> K0 -> L1 -> H0-H3 | C0/C1 先行；H0-H3 在 L1 后；H4 延期 |
-| [Post-training Evaluation](post-training-evaluation-support-plan.md) | Formal-release gate | P2 | Metrics M0–M1 + shared inference projection | E0–E1 建立基础；E2–E3 扩展 class-aware 与 offline evaluation |
+| [Latent Diffusion](latent-diffusion-support-plan.md) | Current product mainline | P1/P2 | A0 -> B1/A1 -> L0–L3 | A1 是当前单人排期前置而非 codec 架构依赖 |
+| [Hydra Configuration Migration](hydra-configuration-composition-migration-plan.md) | Split | P0 + P2 + Later | C0/C1 -> L1 -> H0-H3 | C0/C1 先行；H0-H3 在 L1 后；H4 延期 |
+| [Post-training Evaluation](post-training-evaluation-support-plan.md) | Formal-release gate | P2 | 正式 Metrics API + shared inference projection | E0–E1 建立基础；E2–E3 扩展 class-aware 与 offline evaluation |
 | [Stable Diffusion Component-Native](stable-diffusion-component-native-support-plan.md) | Next product line | P3 | L2/L3 共享前置稳定 | SD1–SD6；SD7–SD8 后置 |
 | [Default Workflow and Pipeline](default-workflow-pipeline-support-plan.md) | Umbrella / promotion | P3/P4 | 真实 recipe 稳定 | 不阻塞 capability；R0 复用 Hydra H1 invocation seam |
 | [Extension Import Boundary](extension-import-boundary-and-activation-latency-plan.md) | Rebase required | P4 | C1/C2 后重新测量 | 当前 v10、Physics/KD DoD 失效；只做 codec 窄 import gate |
 | [Distributed Training and Inference](distributed-training-and-inference-support-plan.md) | Conditional | P4 | L3/S1 profiling 证明需要 | 先 D0 profiling；再决定 DDP/FSDP2 |
-| [Automated Model Tuning](automated-model-tuning-plan.md) | Later | Later | Metrics + Evaluation + stable baseline | 不优化尚未冻结的 codec/data/protocol |
+| [Automated Model Tuning](automated-model-tuning-plan.md) | Later | Later | 正式 Metrics API + Evaluation + stable baseline | 不优化尚未冻结的 codec/data/protocol |
 | [Consistency Distillation](consistency-distillation-support-plan.md) | Rebase required | Later | 主线稳定并重新选择案例 | 不再以已退出维护的 extension project 为实施入口 |
 | [Artifact Metadata, Provenance and Capacity](artifact-metadata-provenance-capacity-model-proposal.md) | Deferred | Deferred | 文档所列重复模式 gate | codec identity 只保存验证必需事实，不重开通用 descriptor |
 
@@ -431,11 +401,11 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
   `adm_unet` production config 的可复现结果。
 - P2 capability 的数值正确性由 epsilon、learned range、linear T=1000、uniform
   timestep 与 standard/P2 parity tests 固定；仓库不维护单类别 paper reproduction。
-- Metrics 的 `loss_aggregation_weight` 是 epoch统计权重；P2
-  `timestep_loss_weight` 是 timestep objective coefficient，两者不能共用字段。
+- Metrics 的 `loss_aggregation_weight` 只控制 epoch loss 报告；P2 timestep weighting
+  是具体 Strategy 的内部目标语义，不进入通用 Metrics 或 `TrainStepOutput` 字段。
 - AFHQ evaluation 同时报告 aggregate 和 cat/dog/wild per-class 结果。
-- Metrics M0–M1 在 latent 开发前冻结 canonical result、source 和 monitor contract；
-  它们不提前提供 codec-dependent image-space quality。
+- 正式 Metrics API 已冻结 Strategy channel、phase-local state 与 validation-only monitor；
+  它不提供 codec-dependent image-space quality，后者属于 Evaluation。
 - L1 可声明 experimental functional support，不声明规模或质量。
 - L3 前必须有结构化 reconstruction gate 和 decoded-generation evaluation。
 - latent prediction MSE 不能命名为 image reconstruction PSNR。
@@ -461,22 +431,20 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 1. `Close artifact/config baseline`
 2. `Correct ADM topology`
 3. `Separate train and sample authority`
-4. `Add metric contracts and canonical epoch results`
-5. `Add validation MetricEngine`
-6. `Add learned-range Gaussian training`
-7. `Add concrete P2 training and respaced DDPM`
-8. `Add post-training evaluation foundation`
-9. `Add P2 prediction and quality profiles`
-10. `Add pretrained AutoencoderKL codec`
-11. `Add AFHQ latent diffusion vertical slice`
-12. `Publish controlled AFHQ P2 evidence`
-13. `Add prepared posterior artifacts`
-14. `Add optimizer-step production lifecycle`
-15. `Deduplicate codec assets in run bundles`
-16. `Adopt Hydra for retained fresh-train configs`
-17. `Add The Met DiT baseline`
-18. `Add Stable Diffusion native sampling`
-19. `Add Stable Diffusion full fine-tuning`
+4. `Add learned-range Gaussian training`
+5. `Add concrete P2 training and respaced DDPM`
+6. `Add post-training evaluation foundation`
+7. `Add P2 prediction and quality profiles`
+8. `Add pretrained AutoencoderKL codec`
+9. `Add AFHQ latent diffusion vertical slice`
+10. `Publish controlled AFHQ P2 evidence`
+11. `Add prepared posterior artifacts`
+12. `Add optimizer-step production lifecycle`
+13. `Deduplicate codec assets in run bundles`
+14. `Adopt Hydra for retained fresh-train configs`
+15. `Add The Met DiT baseline`
+16. `Add Stable Diffusion native sampling`
+17. `Add Stable Diffusion full fine-tuning`
 
 每个切片都必须更新相应 development plan；只有稳定、已实现的用户行为进入公开文档。
 
@@ -487,8 +455,6 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 - A0 corrected topology在目标设备上即使 microbatch 1 仍无法执行；
 - A1 reference parity证明现有 Gaussian family boundary 无法在不污染 universal root
   的前提下表达 learned variance；
-- Metrics M1 的 TorchMetrics 平台兼容或依赖策略无法满足 Supported matrix，且窄
-  wrapper/extra 方案仍不能关闭；
 - L0 表明现有 inference asset projection 无法扩展到 self-contained codec recovery；
 - L1 表明 image-backed encode 成为 correctness 测试本身的主要瓶颈；
 - L2 表明 asset bundle 或 step-based loop 需要新的训练 loop family；

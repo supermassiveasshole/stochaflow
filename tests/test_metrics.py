@@ -6,7 +6,6 @@ import math
 import os
 import subprocess
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -15,18 +14,20 @@ import torch
 from torchmetrics import Metric
 
 from stochaflow.metrics import (
-    EpochMetricSnapshot,
-    MetricConfig,
     MetricEngine,
     MetricRuntimeError,
-    MetricSource,
     MetricSpec,
     MetricUpdate,
     build_metric,
-    detach_metric_update,
-    detach_metric_updates,
-    validate_metric_configs,
+)
+from stochaflow.metrics.contracts import (
+    prepare_metric_updates,
     validate_metric_updates,
+)
+from stochaflow.utils.config import (
+    TrainingMetricConfig,
+    validate_training_metric_configs,
+    validate_training_monitor_key,
 )
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog, RegistryError
 
@@ -174,9 +175,9 @@ def test_metric_update_validates_and_freezes_kwargs() -> None:
     assert dict(update.kwargs) == {"weight": 2}
     with pytest.raises(TypeError):
         cast(dict[str, Any], update.kwargs)["other"] = 3
-    with pytest.raises(TypeError, match="args must be a tuple"):
+    with pytest.raises(TypeError, match="args must be an exact tuple"):
         MetricUpdate(args=cast(Any, [1]))
-    with pytest.raises(TypeError, match="kwargs must be a mapping"):
+    with pytest.raises(TypeError, match="kwargs must be an exact dictionary"):
         MetricUpdate(kwargs=cast(Any, []))
     with pytest.raises(ValueError, match="non-empty"):
         MetricUpdate(kwargs={"": 1})
@@ -203,121 +204,14 @@ def test_recursive_detach_handles_nested_payloads_without_mutating_input() -> No
         kwargs={"metadata": (value,)},
     )
 
-    detached = detach_metric_update(update)
-    detached_mapping = detach_metric_updates({"channel": update})
+    prepared = prepare_metric_updates({"channel": update})
+    detached = prepared.values["channel"]
 
     args_value = cast(dict[str, list[torch.Tensor]], detached.args[0])
     kwargs_value = cast(tuple[torch.Tensor, ...], detached.kwargs["metadata"])
-    mapped_value = cast(
-        dict[str, list[torch.Tensor]],
-        detached_mapping["channel"].args[0],
-    )
     assert value.requires_grad
     assert not args_value["nested"][0].requires_grad
     assert not kwargs_value[0].requires_grad
-    assert not mapped_value["nested"][0].requires_grad
-
-
-@pytest.mark.parametrize(
-    ("source_factory", "message"),
-    [
-        (
-            lambda: MetricSource(
-                cast(Any, "unknown"),
-                "validation",
-                None,
-                False,
-            ),
-            "origin",
-        ),
-        (
-            lambda: MetricSource("system", "validation", None, False),
-            "system metric",
-        ),
-        (
-            lambda: MetricSource("phase", None, None, False),
-            "require a data_role",
-        ),
-        (
-            lambda: MetricSource("phase", "external", None, False),
-            "phase metric",
-        ),
-        (
-            lambda: MetricSource("phase", "test", None, True),
-            "cannot be selection eligible",
-        ),
-    ],
-)
-def test_metric_source_enforces_selection_and_role_invariants(
-    source_factory: Callable[[], MetricSource],
-    message: str,
-) -> None:
-    with pytest.raises((TypeError, ValueError), match=message):
-        source_factory()
-
-
-def test_metric_source_accepts_non_selectable_test_role() -> None:
-    source = MetricSource("phase", "test", None, False)
-
-    assert source.data_role == "test"
-
-
-def test_metric_source_and_snapshot_round_trip_as_read_only_metadata() -> None:
-    source = MetricSource(
-        origin="phase",
-        data_role="validation",
-        protocol_id="validation-v1",
-        selection_eligible=True,
-    )
-    snapshot = EpochMetricSnapshot(
-        values={"valid/loss": 1.25, "valid/metrics/mse": math.nan},
-        sources={
-            "valid/loss": source,
-            "valid/metrics/mse": source,
-        },
-    )
-
-    restored = EpochMetricSnapshot.from_dict(snapshot.to_dict())
-
-    assert restored.sources["valid/loss"] == source
-    assert restored.values["valid/loss"] == pytest.approx(1.25)
-    assert math.isnan(restored.values["valid/metrics/mse"])
-    with pytest.raises(TypeError):
-        cast(dict[str, float], restored.values)["new"] = 1.0
-    with pytest.raises(TypeError):
-        cast(dict[str, MetricSource], restored.sources)["new"] = source
-
-
-def test_snapshot_rejects_mismatched_keys_and_invalid_serialized_source() -> None:
-    source = MetricSource("phase", "validation", None, True)
-
-    with pytest.raises(ValueError, match="exactly match"):
-        EpochMetricSnapshot(
-            values={"valid/loss": 1.0},
-            sources={"valid/other": source},
-        )
-    with pytest.raises(TypeError, match="numeric"):
-        EpochMetricSnapshot(
-            values={"valid/loss": cast(Any, True)},
-            sources={"valid/loss": source},
-        )
-    with pytest.raises(ValueError, match="unknown extra"):
-        MetricSource.from_dict(
-            {
-                **source.to_dict(),
-                "extra": "value",
-            }
-        )
-
-
-def test_snapshot_rejects_phase_key_and_source_role_conflicts() -> None:
-    train_source = MetricSource("phase", "train", None, True)
-
-    with pytest.raises(ValueError, match="conflicts with data role"):
-        EpochMetricSnapshot(
-            values={"valid/loss": 1.0},
-            sources={"valid/loss": train_source},
-        )
 
 
 def test_metric_registry_reserves_native_torchmetrics_namespace() -> None:
@@ -330,13 +224,13 @@ def test_metric_registry_reserves_native_torchmetrics_namespace() -> None:
 
 def test_metric_config_validation_is_local_strict_and_detects_duplicates() -> None:
     configs = [
-        MetricConfig(
+        TrainingMetricConfig(
             id="reconstruction_mse",
             name="mse",
             channel="gaussian.clean_reconstruction",
             phases=["train", "validation"],
         ),
-        MetricConfig(
+        TrainingMetricConfig(
             id="prediction_mae",
             name="mae",
             channel="gaussian.prediction_target",
@@ -344,14 +238,21 @@ def test_metric_config_validation_is_local_strict_and_detects_duplicates() -> No
         ),
     ]
 
-    validate_metric_configs(configs)
+    validate_training_metric_configs(configs)
+    first_spec = configs[0].to_metric_spec()
+    assert first_spec == MetricSpec(
+        id="reconstruction_mse",
+        name="mse",
+        channel="gaussian.clean_reconstruction",
+    )
+    assert first_spec.params is not configs[0].params
 
     with pytest.raises(ValueError, match="duplicate metric id"):
-        validate_metric_configs([configs[0], configs[0]])
+        validate_training_metric_configs([configs[0], configs[0]])
     with pytest.raises(ValueError, match="duplicate phase"):
-        validate_metric_configs(
+        validate_training_metric_configs(
             [
-                MetricConfig(
+                TrainingMetricConfig(
                     id="mse",
                     name="mse",
                     channel="prediction",
@@ -360,9 +261,9 @@ def test_metric_config_validation_is_local_strict_and_detects_duplicates() -> No
             ]
         )
     with pytest.raises(ValueError, match="must match"):
-        validate_metric_configs(
+        validate_training_metric_configs(
             [
-                MetricConfig(
+                TrainingMetricConfig(
                     id="bad/id",
                     name="mse",
                     channel="prediction",
@@ -370,9 +271,9 @@ def test_metric_config_validation_is_local_strict_and_detects_duplicates() -> No
             ]
         )
     with pytest.raises(ValueError, match="train, validation, or test"):
-        validate_metric_configs(
+        validate_training_metric_configs(
             [
-                MetricConfig(
+                TrainingMetricConfig(
                     id="mse",
                     name="mse",
                     channel="prediction",
@@ -381,9 +282,9 @@ def test_metric_config_validation_is_local_strict_and_detects_duplicates() -> No
             ]
         )
     with pytest.raises(TypeError, match="params must be a mapping"):
-        validate_metric_configs(
+        validate_training_metric_configs(
             [
-                MetricConfig(
+                TrainingMetricConfig(
                     id="mse",
                     name="mse",
                     channel="prediction",
@@ -391,6 +292,32 @@ def test_metric_config_validation_is_local_strict_and_detects_duplicates() -> No
                 )
             ]
         )
+
+
+@pytest.mark.parametrize(
+    "monitor",
+    [
+        "valid/loss",
+        "valid/metrics/prediction_mae",
+        "valid/metrics/scorecard/mae",
+    ],
+)
+def test_training_monitor_accepts_only_validation_results(monitor: str) -> None:
+    assert validate_training_monitor_key(monitor) == monitor
+
+
+@pytest.mark.parametrize(
+    "monitor",
+    [
+        "train/loss",
+        "test/loss",
+        "diagnostics/quality/fid",
+        "valid/metrics/id/nested/subkey",
+    ],
+)
+def test_training_monitor_rejects_non_validation_results(monitor: str) -> None:
+    with pytest.raises(ValueError, match="valid/loss"):
+        validate_training_monitor_key(monitor)
 
 
 def test_metric_registry_requires_torchmetrics_base_and_factory_is_allowlisted() -> None:
@@ -643,7 +570,7 @@ def test_engine_reset_clears_successful_update_guard() -> None:
         engine.compute()
 
 
-def test_mean_rejects_nan_while_snapshot_preserves_non_finite_facts() -> None:
+def test_mean_rejects_nan() -> None:
     engine = MetricEngine([MetricSpec("average", "mean", "value")])
 
     with pytest.raises(
@@ -656,12 +583,6 @@ def test_mean_rejects_nan_while_snapshot_preserves_non_finite_facts() -> None:
     assert isinstance(error.value.__cause__, RuntimeError)
     assert "nan" in str(error.value.__cause__).lower()
 
-    source = MetricSource("phase", "validation", None, True)
-    snapshot = EpochMetricSnapshot(
-        {"valid/metrics/external": math.inf},
-        {"valid/metrics/external": source},
-    )
-    assert math.isinf(snapshot.values["valid/metrics/external"])
 
 
 def test_config_import_does_not_load_torchmetrics_or_register_builtins() -> None:

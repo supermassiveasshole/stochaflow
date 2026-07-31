@@ -21,8 +21,6 @@ from stochaflow.training.diagnostics.contracts import (
     ArtifactRecord,
     DenoiserArtifactContext,
     DenoiserArtifactProvider,
-    DiagnosticResult,
-    DiagnosticSourceRequest,
     FitStartEvent,
     ProviderValidationContext,
     ReconstructionCallable,
@@ -234,34 +232,6 @@ class GaussianQualityEngine[
         for spec in self.config.reference.metrics:
             DIAGNOSTIC_PROVIDERS.reference_metrics.resolve(spec.name)
 
-    @property
-    def metric_source_requests(self) -> tuple[DiagnosticSourceRequest, ...]:
-        """Describe independently governed epoch-result sources."""
-
-        config_descriptor = asdict(self.config)
-        requests = [
-            DiagnosticSourceRequest(
-                id="observation",
-                data_role="external",
-                protocol={
-                    "kind": "gaussian-quality-observation/v1",
-                    "config": config_descriptor,
-                },
-            )
-        ]
-        if self.config.reference.enabled:
-            requests.append(
-                DiagnosticSourceRequest(
-                    id="validation_quality",
-                    data_role="validation",
-                    protocol={
-                        "kind": "gaussian-quality-reference/v1",
-                        "config": config_descriptor,
-                    },
-                )
-            )
-        return tuple(requests)
-
     def _build_providers(
         self,
         category: str,
@@ -401,8 +371,8 @@ class GaussianQualityEngine[
     def on_train_epoch_end(
         self,
         event: TrainEpochEndEvent,
-    ) -> tuple[DiagnosticResult, ...] | None:
-        """Return source-separated results for due epoch providers."""
+    ) -> None:
+        """Emit due epoch observations and artifacts."""
 
         artifact_due = (
             event.epoch_index % self.config.cadence.artifact_every_epochs == 0
@@ -412,7 +382,7 @@ class GaussianQualityEngine[
             and event.epoch_index % self.config.reference.every_epochs == 0
         )
         if not artifact_due and not reference_due:
-            return None
+            return
         store = EpochArtifactStore(self.output_dir, event.epoch_index)
         error_count_before = self._error_count
         observation_metrics: dict[str, float] = {}
@@ -513,20 +483,15 @@ class GaussianQualityEngine[
                 **self.family.manifest_metadata(event),
             }
         )
-        results = [
-            DiagnosticResult(
-                source_id="observation",
-                metrics=scoped_observations,
+        metrics = {
+            **scoped_observations,
+            **scoped_validation_quality,
+        }
+        if metrics:
+            self.logger.log_metrics(
+                metrics,
+                step=event.trainer.global_step,
             )
-        ]
-        if reference_due:
-            results.append(
-                DiagnosticResult(
-                    source_id="validation_quality",
-                    metrics=scoped_validation_quality,
-                )
-            )
-        return tuple(results)
 
     def _run_denoiser_artifact_provider(
         self,

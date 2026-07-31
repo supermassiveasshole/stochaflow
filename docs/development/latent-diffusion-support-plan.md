@@ -9,7 +9,7 @@
 - 初始制定日期：2026-07-26
 - 本次修订日期：2026-07-30
 - 排期前置：Phase 1 已完成；先完成 A0 ADM topology correctness、B1/C1
-  Train/Sample authority、Metrics M0–M1 和 A1 learned-range/P2 core，再进入本计划
+  Train/Sample authority、正式 Metrics API 和 A1 learned-range/P2 core，再进入本计划
   Phase 2；这是当前单人实施顺序，不表示 codec 架构依赖 ADM、P2 或 MetricEngine，
   A2 长实验可与 Phase 2 并行
 - 当前主线：冻结的预训练图像 codec + conditional latent Gaussian diffusion
@@ -29,7 +29,7 @@
 - correctness/smoke：AFHQ-v2；它不再承担规模和最终质量证明
 - 关联计划：
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
-  [Metrics 支持开发计划](metrics-support-plan.md)、
+  [正式 Metrics 扩展 API](../api/extensions.md#metrics)、
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)、
   [正式 Gaussian loss 架构](../framework.md)
 

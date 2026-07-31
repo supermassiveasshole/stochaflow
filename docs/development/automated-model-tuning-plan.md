@@ -1,14 +1,14 @@
 # 自动化模型调优开发计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：Later，尚未进入实现；等待 stable latent baseline、Metrics、
-  Evaluation 与 reusable single-run seam
+- 状态：Later，尚未进入实现；等待 stable latent baseline、Evaluation 与 reusable
+  single-run seam
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25
 - 架构复核：2026-07-26；final test 改由独立 Evaluation Operation 执行
-- 前置工作：[Metrics 支持开发计划](metrics-support-plan.md)的 canonical epoch
-  snapshot 与 monitor contract
+- 已有基础：[正式 Metrics 扩展 API](../api/extensions.md#metrics)的 canonical validation
+  mapping 与 validation-only monitor contract
 - 关联工作：
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)
   负责选定 subject 的独立 final test、result 与 gate
@@ -21,8 +21,7 @@
 
 本计划中的“自动化模型调优”首先指 **hyperparameter optimization（HPO）**：在固定
 训练任务和数据协议下，自动提出多个配置、执行独立训练 run、根据 validation 或
-经过 source validation 的 diagnostic metric 选择和提前终止 trial，并保留完整可复现
-记录。
+validation phase metric 选择和提前终止 trial，并保留完整可复现记录。
 
 产品层可以把它放在 `AutoML` 能力域下，但首个交付必须明确标为“自动化调优/HPO”，
 而不是暗示已经覆盖 AutoML 的全部能力。完整 AutoML 通常还包含数据清洗、特征工程、
@@ -67,9 +66,9 @@
 - **首版单机顺序执行，每 trial 独立构建所有 runtime**。并行和 cluster 是 launcher
   能力，不等于 search algorithm；Ray engine 首先限制并发为 1，第二阶段再启用其
   local process/resource scheduling，同一 adapter 后续扩展到 cluster。
-- **validation/validation-role diagnostic metric 是目标，test 不是目标**。diagnostic
-  key 还必须带经 Builder 验证的 source/protocol metadata；test 只用于选定配置后的
-  最终一次独立 Evaluation，结果不反馈给当前 study，避免数据泄漏。
+- **只有 canonical validation loss/metric 可以成为训练型 study 目标，test 与
+  diagnostic 都不是目标**。test 只用于选定配置后的最终一次独立 Evaluation，结果不
+  反馈给当前 study；diagnostic 仍可记录观测，但不进入 suggestion 或 pruning。
 - **study resume 必须恢复同一研究问题**。base config、search space、objective、
   extension selection 和代码身份不允许静默变化；只允许增加 trial/timeout 等明确
   runtime budget。
@@ -88,7 +87,7 @@
 | 自动数据处理、特征工程、NAS、ensemble、部署 | 不属于本模块 | 不规划 |
 
 因此 Stochaflow 拥有的是“**黑盒 Trial 执行与实验编排**”：把合法参数变成一次可追踪
-训练，再把 canonical validation/diagnostic objective 和状态反馈给搜索 provider。
+训练，再把 canonical validation objective 和状态反馈给搜索 provider。
 这里的 trial objective execution 不是正式 final-test Evaluation Operation。搜索
 provider 拥有的是
 “**下一候选如何产生**”。搜索算法不得检查具体 model、Process、TrainingStrategy
@@ -115,18 +114,19 @@ sampler、pruner、storage 或 scheduler。若成熟 provider 已满足需求，
 | best/latest checkpoint 与 strict resume | trial 失败恢复和 artifact 选择基础 |
 | local/TensorBoard/W&B logger | trial-level observability |
 | run manifest 与 resolved config | study lineage 基础 |
-| diagnostic cadence/FID/KID | 生成任务可用的质量 objective 来源 |
+| diagnostic cadence/FID/KID | trial 的附加观测；不作为 selection/pruning objective |
 
 ### 2.2 必须先修的执行边界
 
 1. `run_experiment_from_args()` 同时解析 CLI、激活 extension、构建 DataLoaders、创建
    timestamp 目录、训练、测试、采样和终端输出。
 2. `_run_single_run()` 返回 `None`，`TrainingResult` 只含 best epoch/loss/checkpoint，
-   没有统一 epoch metric snapshots、最终状态或失败分类。
-3. `Trainer.fit()` 没有一个能报告 epoch result 并返回 continue/prune decision 的窄
+   没有统一 canonical epoch metric mapping、最终状态或失败分类。
+3. `Trainer.fit()` 没有一个能报告 canonical validation mapping 并返回
+   continue/prune decision 的窄
    observer；`TrainingDiagnostic` 不是控制接口。
-4. 当前 monitor 只能稳定读取 `train_loss/valid_loss`，diagnostic metrics 在选择之后
-   才产生。
+4. 当前 monitor 已限制为 `valid/loss` 或 `valid/metrics/...`；HPO 需要复用这条边界，
+   不能把 diagnostic 日志升级为控制输入。
 5. output directory 由 timestamp 临时生成，没有 study/trial 稳定身份。
 6. extension activation 是进程级固定状态；同一进程不能安全地在 trial 间切换完全
    不同的 plugin selection。
@@ -135,8 +135,8 @@ sampler、pruner、storage 或 scheduler。若成熟 provider 已满足需求，
 8. 训练结束默认执行 test 和 final sampling；大多数 HPO trial 不应付出这些成本，也
    不应反复读取 test。
 
-因此实现顺序必须是 Metrics snapshot -> reusable run executor -> tuning orchestration，
-不能先写一个循环调用 CLI 的脚本。
+因此实现顺序必须是 reusable run executor -> tuning orchestration，不能先写一个循环
+调用 CLI 的脚本。
 
 ## 3. 成熟方案调研
 
@@ -313,7 +313,7 @@ ASHA/HyperBand/Median/PBT 是 scheduler。不能把这三层都压成一个 `str
 | parameter-domain 数学表示与编码 | 从 tuning config 产生合法 config patch |
 | initial design（Random/Sobol 等） | trial/run 身份、seed、资源与隔离 |
 | GP/其他 surrogate、noise model、posterior | DataBuilder/TrainingBuilder/Trainer 生命周期 |
-| acquisition function 与 acquisition optimization | validation/diagnostic canonical objective |
+| acquisition function 与 acquisition optimization | canonical validation objective |
 | sequential/batch candidate generation | report/prune/fail/cancel 与 checkpoint |
 | BO state 序列化、算法 benchmark、regret 分析 | study resume、artifact lineage、provenance |
 
@@ -481,7 +481,7 @@ builder:
             deterministic_objective: false
 ```
 
-深度模型训练 objective 通常含初始化、batch 和 diagnostic sampling 噪声，因此
+深度模型训练 objective 通常含初始化和 batch 噪声，因此
 `deterministic_objective` 默认不得设为 `true`；只有评估函数确实确定且有测试证明时
 才允许覆盖。TPE 与 GP-BO 仅通过 sampler 配置切换，不改变 trial execution 语义。
 
@@ -495,8 +495,8 @@ builder:
    paths 写入 study directory；
 4. 记录 Stochaflow、Python、PyTorch、TorchMetrics、Optuna 和 extension 版本；在可
    发现时记录 VCS commit/dirty 状态，但不宣称版本号能证明源代码未变化；
-5. 冻结 objective 的 `MetricSource` data role、selection eligibility、protocol id
-   和 observation cadence；
+5. 冻结 objective 的 canonical validation key、direction 和对应 validation-phase
+   metric declaration；
 6. 计算不含 secret 的 canonical fingerprint；
 7. 后续 trial 只从冻结副本生成，不重新读取外部 base YAML。
 
@@ -511,7 +511,7 @@ resume 时，study directory/storage 是权威来源。允许覆盖：
 
 - parameter distributions/targets；
 - objective metric/direction；
-- objective source/protocol/cadence；
+- objective key/direction/declaration；
 - base model/data/training config；
 - extension identity；
 - study seed；
@@ -572,7 +572,7 @@ outputs/tuning/ddpm-mnist-baseline/
 └── best_trial.yaml
 ```
 
-`best_trial.yaml` 默认保存 trial id、params、objective、metric snapshot、checkpoint
+`best_trial.yaml` 默认保存 trial id、params、objective、canonical metric mapping、checkpoint
 pointer 和 config pointer，不复制或覆盖 trial checkpoint。若未来需要发布 artifact，
 使用显式 promotion command。
 
@@ -594,8 +594,8 @@ flowchart TB
     Request --> Executor["SingleRunExecutor"]
     Executor --> Data["DataBuilder"]
     Executor --> Training["TrainingBuilder + Trainer"]
-    Training --> Snapshot["Epoch metric snapshot"]
-    Snapshot --> Reporter["Engine metric/checkpoint reporter"]
+    Training --> Metrics["Canonical epoch metric mapping"]
+    Metrics --> Reporter["Engine metric/checkpoint reporter"]
     Reporter --> Adapter
     Executor --> Outcome["TrialOutcome + artifact pointers"]
     Outcome --> Adapter
@@ -611,7 +611,7 @@ flowchart TB
 | `StudyBackend` | 仅 native 路径的 ask/report/tell 与 storage | 复制 Ray controller |
 | `SearchSpace` | provider value 到 typed config patch | 运行 trial |
 | `SingleRunExecutor` | 一次普通 Stochaflow run | 跨 trial 选择 |
-| `TrialObserver` | 把 epoch snapshot 报给 engine，返回 continue/prune | 计算 task metric |
+| `TrialObserver` | 把 epoch report 报给 engine，返回 continue/prune | 计算 task metric |
 
 `StudyBackend` 不是所有 engine 都必须实现的公共抽象。若成熟 engine 已拥有
 Tuner/Searcher/Scheduler，就通过 `AutoMLEngineAdapter` 直接映射，不把它拆开后再
@@ -626,7 +626,7 @@ class CandidateGenerator(Protocol):
 batch suggestion、pending points、constraints、multi-objective 和 state persistence
 应作为独立 capability 协议逐项增加，不能把所有高级 BO 特性做成一组永远为
 `None` 的可选方法。adapter 负责把算法 observation 映射到 Stochaflow trial 状态；
-算法实现不读取 checkpoint、metric snapshot 或训练 config。
+算法实现不读取 checkpoint、完整 metric mapping 或训练 config。
 
 ### 6.2 核心 contracts
 
@@ -645,10 +645,10 @@ class TrialRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class EpochSnapshot:
+class TrialEpochReport:
     epoch: int
     global_step: int
-    metrics: EpochMetricSnapshot
+    metrics: Mapping[str, float]
     best_checkpoint: Path | None
 
 
@@ -658,22 +658,24 @@ class TrialDecision(Enum):
 
 
 class TrialObserver(Protocol):
-    def on_epoch_end(self, snapshot: EpochSnapshot) -> TrialDecision: ...
+    def on_epoch_end(self, report: TrialEpochReport) -> TrialDecision: ...
 
 
 @dataclass(frozen=True, slots=True)
 class TrialOutcome:
     status: Literal["complete", "pruned", "failed", "cancelled"]
     objective: float | None
-    final_snapshot: EpochSnapshot | None
+    final_report: TrialEpochReport | None
     best_checkpoint: Path | None
     output_dir: Path
     failure: FailureRecord | None
 ```
 
-`EpochMetricSnapshot` 直接复用 Metrics 计划的 values + typed source metadata；
-TrialObserver/TuningBuilder 在取 objective 时同时验证 data role、protocol 和
-selection eligibility，不能把它再次压扁成只剩数值的 mapping。
+`TrialEpochReport.metrics` 是 Training 已产生的 plain canonical scalar mapping。
+TrialObserver/TuningBuilder 只能从已冻结的 `valid/loss` 或
+`valid/metrics/<id>[/<subkey>]` 读取 objective；metric id 必须在 validation phase
+配置中存在。数据集和协议身份由 frozen base config、run manifest 与 checkpoint lineage
+记录，而不是附着在每个 scalar 上的 source metadata。
 
 lightweight-native `StudyBackend` 的最小能力：
 
@@ -747,9 +749,9 @@ def run_training(
 
 - run status；
 - final/best epoch；
-- canonical metric snapshots；
+- plain canonical epoch metric mappings；
 - selected checkpoint；
-- phase-test snapshot（若显式运行）；
+- phase-test metric mapping（若显式运行）；
 - 独立 EvaluationResult reference（通常仅在 study 结束后产生）；
 - sampling artifact（若显式运行）；
 - output directory 和 manifest paths；
@@ -770,8 +772,8 @@ dataset/cache，应由具体 DataBuilder 或未来窄 cache capability 提供；
 ```text
 train
 -> validation
--> due diagnostics
--> canonical snapshot
+-> canonical epoch metric mapping
+-> optional diagnostic logging/artifacts
 -> local best decision/checkpoint
 -> TrialObserver.report(objective, epoch)
 -> backend continue/prune
@@ -782,7 +784,7 @@ train
 规则：
 
 - resource step 首版严格使用 completed epoch；
-- objective 未到 diagnostic cadence 时不 report，不伪造或 carry-forward；
+- 每个完成 epoch 都必须产生 objective key，不伪造或 carry-forward；
 - 所有 trial 的 objective observation schedule 必须一致；
 - prune 是正常 terminal status，不记录为 exception；
 - pruned trial 是否保留 latest checkpoint 由 artifact policy 明确配置，默认保留最后
@@ -802,26 +804,14 @@ objective:
   direction: maximize
 ```
 
-或生成质量：
-
-```yaml
-objective:
-  metric: diagnostics/diffusion_quality/samplers/ddim_50/fid
-  direction: minimize
-```
-
 验证：
 
-- key 必须由 base config 的 validation metric 或 epoch diagnostic 声明；
-- TuningBuilder 必须读取 Metrics 计划的 `MetricSource`，而不是只检查 key prefix；
-- objective observation 必须满足 `data_role="validation"`；diagnostic 还必须
-  `selection_eligible=True` 并有固定 `protocol_id`；
-- `test/*`、任何 `data_role="test"` observation 和 prefix/source 冲突一律禁止；
+- key 只能是 `valid/loss` 或 base config 在 validation phase 声明的
+  `valid/metrics/<id>[/<subkey>]`；
+- `test/*`、`train/*`、`diagnostics/*` 和 `system/*` 一律禁止；
 - direction 必须显式写，不依赖 metric 名称猜测；
 - 若 TorchMetrics `higher_is_better` 与 direction 明确冲突，构建失败；
 - non-finite objective 使 trial failed，不自动变成极差有限值；
-- diagnostic objective 的 sample count、sampler、seed 和 cadence 在 study 内固定，不能
-  作为普通 search parameter，否则比较对象改变；
 - 首版只支持一个 scalar。Optuna pruning 本身不支持 multi-objective；Pareto 优化单独
   分阶段实现。
 
@@ -904,7 +894,7 @@ Ray path：
 Ray Searcher suggests config
 -> Stochaflow Trainable materializes TrialRequest
 -> SingleRunExecutor
--> tune.report(canonical snapshot, checkpoint)
+-> tune.report(canonical validation value, checkpoint)
 -> Ray TrialScheduler continues/stops/pauses
 -> ResultGrid + Stochaflow manifest
 ```
@@ -1036,16 +1026,15 @@ checkpoint 恢复一个候选的训练状态。不能拿另一个 trial 的 best
 
 ## 11. 防止数据泄漏与错误优化
 
-- objective 只能来自 validation phase，或 source metadata 已证明使用 validation
-  reference 且 selection-eligible 的固定 diagnostic protocol；
+- objective 只能来自 Training 的 canonical validation loss/metric mapping；
 - test loader 默认不在 trial 中执行；
 - study 结束后冻结唯一 `(checkpoint digest, weights, inference profile)`，再通过
   [独立 Evaluation Operation](post-training-evaluation-support-plan.md)运行一次
   final test acceptance；
 - 若需要 train+validation final refit，由具体 DataBuilder 提供新的明确 recipe/config；
   core 不合并任意 Dataset；
-- diagnostic FID/KID 的真实 reference split、sample count 和 preprocessing 写入
-  manifest；
+- diagnostic FID/KID 若启用，只作为 trial 观测写入日志和 manifest，不参与当前 study
+  的 suggestion、pruning 或 best-trial selection；
 - 不能同时调 sampler steps 和用该 sampler 的 FID 作为“模型质量”而不标记目标定义已
   改变；若确实要共同优化，这是 model+inference pipeline study，需在 study 名称和
   objective 中明确；
@@ -1055,9 +1044,9 @@ checkpoint 恢复一个候选的训练状态。不能拿另一个 trial 的 best
 
 ## 12. 实施阶段
 
-### 阶段 T0：Metrics 与 single-run seam
+### 阶段 T0：single-run seam
 
-1. 完成 Metrics 计划的 canonical epoch snapshot；
+1. 以当前 Training 的 plain canonical validation mapping 定义 epoch observer payload；
 2. 确认 latent codec、posterior artifact、dataset split、sample/evaluation protocol
    与正式 baseline 已冻结；
 3. 复用 Hydra H1 的 `TrainingInvocation`/`run_training_invocation()`；
@@ -1091,7 +1080,7 @@ stochaflow tune --resume outputs/tuning/ddpm-mnist-baseline
 3. Optuna TPE、Optuna GP、Ax/BayesOpt 和 ASHA profiles；
 4. BOHB 与配套 HyperBandForBOHB compatibility profile；
 5. GP-BO startup design、sequential capability 与兼容性验证；
-6. diagnostic cadence objective；
+6. diagnostic cadence observation logging（不进入 objective）；
 7. stale/non-finite/failure policy；
 8. ResultGrid/study summary 和 parameter importance/plot 数据导出。
 
@@ -1153,7 +1142,7 @@ stochaflow tune --resume outputs/tuning/ddpm-mnist-baseline
 ### SingleRunExecutor
 
 - 普通 CLI 与 library API 产生等价 resolved config/checkpoint；
-- observer 收到 validation/diagnostic 合并后的 snapshot；
+- observer 收到 plain canonical epoch mapping，并只从 validation key 读取 objective；
 - prune 后 state、logger 和 checkpoint 正常关闭；
 - trial 可跳过 phase test/final sample，且不能隐式触发 formal Evaluation；
 - arbitrary DataBuilder batch 不被 HPO 层检查；
@@ -1175,9 +1164,8 @@ stochaflow tune --resume outputs/tuning/ddpm-mnist-baseline
 - parallel completion order 被记录；
 - resource step 与 epoch/cadence 一致；
 - test metric 无法配置为 objective；
-- 使用 `diagnostics/...` key 但 `data_role="test"` 的 observation 仍被拒绝；
-- diagnostic objective 缺少 validation `protocol_id` 或
-  `selection_eligible=True` 时构建失败；
+- train/system/diagnostics key 无法配置为 objective；
+- validation metric id 未在 base config 的 validation phase 声明时构建失败；
 - local launcher 不超配 GPU slot。
 
 常规增量验证：
@@ -1200,7 +1188,7 @@ study 和一次中断/resume acceptance。
 - 一份独立 tuning config 能冻结 base config 并产生多个合法 trial configs；
 - 每个 trial 经过相同 registry、Builder、Trainer、checkpoint 和 extension provenance
   路径，不存在 core-only model shortcut；
-- objective 来自 canonical validation/epoch diagnostic scalar；
+- objective 来自 canonical validation loss/metric scalar；
 - phase test 默认不运行且不能参与 best trial；formal final-test Evaluation 不在 trial
   内执行；
 - study 完成后只对一个冻结 subject 运行独立 final-test Evaluation，result/gate 不反馈

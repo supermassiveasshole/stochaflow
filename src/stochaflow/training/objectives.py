@@ -11,7 +11,7 @@ from stochaflow.utils.registry import REGISTRIES
 
 @runtime_checkable
 class PerSampleObjective(Protocol):
-    """Optional capability for training policies and diagnostics."""
+    """Optional capability for diagnostics needing per-sample losses."""
 
     def per_sample_loss(
         self,
@@ -47,26 +47,6 @@ def validate_per_sample_loss(
     return value
 
 
-def validate_reduced_loss(
-    value: object,
-    *,
-    per_sample_loss: torch.Tensor,
-) -> torch.Tensor:
-    """Validate a floating-point scalar produced by a batch reducer."""
-
-    if not isinstance(value, torch.Tensor):
-        raise TypeError("objective batch reducer must return a Tensor")
-    if not torch.is_floating_point(value):
-        raise TypeError("objective batch reducer must return a floating-point Tensor")
-    if value.ndim != 0:
-        raise ValueError("objective batch reducer must return a scalar Tensor")
-    if value.device != per_sample_loss.device:
-        raise ValueError(
-            "objective batch reducer output must be on the per-sample loss device"
-        )
-    return value
-
-
 @REGISTRIES.objectives.register("mse")
 class MSEObjective(nn.Module):
     """Task-neutral mean-squared-error objective."""
@@ -82,7 +62,7 @@ class MSEObjective(nn.Module):
         prediction: torch.Tensor,
         target: torch.Tensor,
     ) -> torch.Tensor:
-        """Return batch-aligned MSE values for policies and diagnostics."""
+        """Return batch-aligned MSE values for diagnostics."""
 
         elementwise = F.mse_loss(prediction, target, reduction="none")
         if elementwise.ndim == 0:
@@ -92,21 +72,10 @@ class MSEObjective(nn.Module):
             return flattened.sum(dim=1)
         return flattened.mean(dim=1)
 
-    def reduce_per_sample_loss(self, loss: torch.Tensor) -> torch.Tensor:
-        """Reduce batch-aligned MSE values with the configured semantics."""
-
-        per_sample_loss = validate_per_sample_loss(loss, prediction=loss)
-        if self.reduction == "sum":
-            reduced = per_sample_loss.sum()
-        else:
-            reduced = per_sample_loss.mean()
-        return validate_reduced_loss(reduced, per_sample_loss=per_sample_loss)
-
     def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compare prediction and target with configured scalar reduction."""
 
-        per_sample_loss = self.per_sample_loss(prediction, target)
-        return self.reduce_per_sample_loss(per_sample_loss)
+        return F.mse_loss(prediction, target, reduction=self.reduction)
 
 
 def compute_objective(
@@ -142,5 +111,4 @@ __all__ = [
     "PerSampleObjective",
     "compute_objective",
     "validate_per_sample_loss",
-    "validate_reduced_loss",
 ]

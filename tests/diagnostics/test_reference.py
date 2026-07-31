@@ -11,7 +11,6 @@ import torch
 from stochaflow.training import (
     Trainer,
     TrainingPlan,
-    bind_training_diagnostic,
 )
 from stochaflow.training.diagnostics import DiffusionQualityDiagnostic
 from stochaflow.training.diagnostics.config import ReferencePipelineConfig
@@ -254,36 +253,14 @@ def test_reference_providers_cache_multibatch_real_features_and_score_profiles(
     )
     assert torch.equal(torch.random.get_rng_state(), rng_before)
 
-    results = diagnostic.on_train_epoch_end(epoch_event(runtime))
+    result = diagnostic.on_train_epoch_end(epoch_event(runtime))
 
-    assert results is not None
-    assert {result.source_id for result in results} == {
-        "observation",
-        "validation_quality",
-    }
-    requests = {
-        request.id: request
-        for request in diagnostic.metric_source_requests
-    }
-    assert requests["observation"].data_role == "external"
-    assert requests["validation_quality"].data_role == "validation"
-    result_by_source = {
-        result.source_id: result.metrics
-        for result in results
-    }
-    assert all(
-        key.endswith(("/fid", "/kid_mean", "/kid_std"))
-        for key in result_by_source["validation_quality"]
-    )
+    assert result is None
+    payload = logger.metrics[-1][1]
     assert any(
         key.endswith("/reference_fake_samples")
-        for key in result_by_source["observation"]
+        for key in payload
     )
-    payload = {
-        key: value
-        for result in results
-        for key, value in result.metrics.items()
-    }
     for profile_id in ("first", "second"):
         prefix = f"diagnostics/diffusion_quality/samplers/{profile_id}"
         assert payload[f"{prefix}/fid"] == 5.0
@@ -301,7 +278,7 @@ def test_reference_providers_cache_multibatch_real_features_and_score_profiles(
         assert metric.fake_count == 0
 
 
-def test_builtin_reference_cadence_warn_failure_and_best_checkpoint(
+def test_builtin_reference_diagnostic_is_observation_only(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -376,29 +353,12 @@ def test_builtin_reference_cadence_warn_failure_and_best_checkpoint(
         ),
         optimizer,
         device="cpu",
-        diagnostics=[
-            bind_training_diagnostic(
-                "diffusion_quality",
-                diagnostic,
-                protocol_provenance={
-                    "schema_version": 1,
-                    "data_config": {
-                        "name": "in_memory_reference_test",
-                        "params": {},
-                    },
-                    "data_artifacts": None,
-                    "extension_plugins": [],
-                },
-                data_iterables={"validation": loader},
-            )
-        ],
+        diagnostics=[diagnostic],
         logger=logger,
         checkpoint_manager=manager,
         checkpoint_dir=tmp_path / "checkpoints",
     )
-    fid_key = (
-        "diagnostics/diffusion_quality/samplers/healthy/fid"
-    )
+    fid_key = "diagnostics/diffusion_quality/samplers/healthy/fid"
     kid_mean_key = (
         "diagnostics/diffusion_quality/samplers/healthy/kid_mean"
     )
@@ -411,43 +371,29 @@ def test_builtin_reference_cadence_warn_failure_and_best_checkpoint(
         num_epochs=4,
         validation_dataloader=loader,
         show_progress=False,
-        early_stopping_monitor=fid_key,
-        early_stopping_mode="min",
-        monitor_missing="skip",
         track_best=True,
     )
 
     assert all(
-        key not in history[index]
-        for index in (0, 2)
+        key not in epoch_metrics
+        for epoch_metrics in history
         for key in (fid_key, kid_mean_key, kid_std_key)
     )
-    assert history[1][fid_key] == pytest.approx(9.0)
-    assert history[1][kid_mean_key] == pytest.approx(0.25)
-    assert history[1][kid_std_key] == pytest.approx(0.05)
-    assert history[3][fid_key] == pytest.approx(7.0)
-    assert history[3][kid_mean_key] == pytest.approx(0.25)
-    assert history[3][kid_std_key] == pytest.approx(0.05)
-    assert history[1][
-        "diagnostics/diffusion_quality/system/error_count"
-    ] == pytest.approx(1.0)
-    assert history[3][
-        "diagnostics/diffusion_quality/system/error_count"
-    ] == pytest.approx(2.0)
-    assert trainer_runtime.monitor_observations == 2
-    assert trainer_runtime.best_epoch == 4
-    assert trainer_runtime.best_metric_value == pytest.approx(7.0)
-    assert trainer_runtime.best_checkpoint_path == (
-        tmp_path / "checkpoints" / "best.pt"
-    )
+    diagnostic_logs = [
+        metrics for _, metrics in logger.metrics if fid_key in metrics
+    ]
+    assert [metrics[fid_key] for metrics in diagnostic_logs] == [9.0, 7.0]
+    assert all(metrics[kid_mean_key] == pytest.approx(0.25) for metrics in diagnostic_logs)
+    assert all(metrics[kid_std_key] == pytest.approx(0.05) for metrics in diagnostic_logs)
+    assert trainer_runtime.monitor_observations == 4
+    assert trainer_runtime.best_checkpoint_path is not None
 
     best = CheckpointManager.load_payload(
         tmp_path / "checkpoints" / "best.pt"
     )
-    assert best.get("epoch") == 4
     best_metrics = best.get("metrics")
     assert isinstance(best_metrics, dict)
-    assert best_metrics[fid_key] == pytest.approx(7.0)
+    assert fid_key not in best_metrics
     assert len(logger.text) == 2
     assert all(
         tag == "diagnostics/system/error"

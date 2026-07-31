@@ -11,7 +11,7 @@
   Deprecated / best effort，其 `torch==2.2.2` compatibility lane 保持
   single-process，不承诺本提案中的 distributed 能力，也不作为设计下限
 - 关联计划：
-  [Metrics 支持](metrics-support-plan.md)、
+  [正式 Metrics 扩展 API](../api/extensions.md#metrics)、
   [训练后 Evaluation 与 Benchmark](post-training-evaluation-support-plan.md)、
   [默认工作流与推理 Pipeline](default-workflow-pipeline-support-plan.md)、
   [Latent Diffusion](latent-diffusion-support-plan.md)、

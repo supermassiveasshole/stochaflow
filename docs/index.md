@@ -177,7 +177,7 @@ residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与�
 - [条件 Gaussian 超分辨率](tutorials/super-resolution.md)：从内置 SR 数据 recipe 到
   condition-aware 训练和复用 DDPM/DDIM 的完整组合。
 - [Checkpoint、配置权威与可移植性](configuration/compatibility-and-migration.md)：
-  checkpoint v11、canonical metric snapshot、fixed inference recipe、partial sample
+  checkpoint v11、canonical epoch metric mapping、fixed inference recipe、partial sample
   request 和跨环境恢复边界。
 - [扩展公共 API](api/extensions.md)：第三方 extension 的稳定 Python import surface。
 - [Sampling artifact 容量](configuration/sampling-capacity.md)：整体物化生命周期、

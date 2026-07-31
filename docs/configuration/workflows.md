@@ -109,8 +109,10 @@ skip-final-sample 和插件 version acceptance 等 invocation 事实进入独立
 | `sample --checkpoint <run-or-root>` | 递归查找最近修改的 `checkpoints/best.pt` | `<checkpoint-run>/samples/<timestamp>/` |
 
 `sample` 始终要求显式 `--checkpoint`；目录只是一种便利输入，会递归选择最近修改的
-`best.pt`。需要冻结精确 lineage 时应传 checkpoint 文件。`train --output-dir` 是新建
-timestamped run 的父目录，而 `sample --output-dir` 是本次 artifact 的最终目录。
+`best.pt`。没有 validation 的 run 不创建 best；对这类 run 采样时应显式传
+`checkpoints/latest.pt`，它表示 final checkpoint，而不是经过验证集选择的 best。需要冻结
+精确 lineage 时也应传 checkpoint 文件。`train --output-dir` 是新建 timestamped run 的
+父目录，而 `sample --output-dir` 是本次 artifact 的最终目录。
 sampling 目录总会写
 `resolved_sampling.yaml`；训练 run 总会写 `resolved_config.yaml` 和
 `run_manifest.yaml`。
@@ -122,7 +124,7 @@ sampling 目录总会写
 ```text
 outputs/<experiment>/<YYYYMMDD_HHMMSS>/
   checkpoints/
-    best.pt
+    best.pt        # 仅在启用 validation-based best tracking 时存在
     latest.pt
     epoch_XXXX.pt
   metrics.jsonl
@@ -150,8 +152,9 @@ metadata；sampling 的 `resolved_sampling.yaml` 根据最终 sampling config �
 保持声明顺序），不会递归解释 Builder/Process 的私有 `params`，也不表示 sampling
 invocation 实际构建了训练或数据组件。完整 config 仍是重建权威，摘要只用于审计。
 启用 TensorBoard、W&B、diagnostic 或 trajectory 后会增加对应子目录/artifact。
-`artifacts.checkpoint_every` 控制编号 checkpoint 的频率；`latest.pt` 和 `best.pt`
-按恢复与模型选择规则更新。
+`artifacts.checkpoint_every` 控制编号 checkpoint 的频率；`latest.pt` 在每个完成 epoch 后
+更新。`best.pt` 只由 `valid/loss` 或 `valid/metrics/<id>[/<subkey>]` 更新；没有 validation
+时默认关闭 best tracking，训练后的自动采样明确使用 final `latest.pt`。
 
 ## 恢复训练
 
@@ -193,7 +196,8 @@ YAML 顶层严格只允许 `diagnostics` 和 `logging`；至少应声明其中�
 但省略 `log_every`，因此沿用 checkpoint 的记录间隔。`diagnostics: []` 可显式关闭全部
 diagnostics；诊断组件和 logger 遵守只观测契约，不拥有 checkpoint-restored state。
 provider cache、错误计数、打开的文件和 TensorBoard writer 都会为本次 invocation
-重新创建。
+重新创建。diagnostic 只能写日志和 artifact；其 scalar 不进入 epoch history/checkpoint，
+也不能成为 best 或 early-stopping monitor。
 
 observability config 只在进程启动时读取和校验，不会监视文件变化或在训练中热加载。
 resume 仍创建新的兄弟 run，因此 local 日志和 TensorBoard event 文件写入新目录；它既不
@@ -223,15 +227,15 @@ workflow，不属于 `--resume`。
 每次 resume invocation 都创建新的 `exp_id` 和兄弟 run directory，而不是重开并覆盖旧
 输出。默认 output root 取原 resolved run directory 的父目录，`--output-dir` 可以覆盖；
 epoch/global step 与训练 state 连续，lineage 记录在新 run manifest 和 checkpoint metadata。
-严格恢复还延续 best metric 与 early-stopping wait；因此 `latest.pt` 或 epoch checkpoint 需要
-同一 `checkpoints/` 目录中的 `best.pt`。推荐直接传 run directory。单独移动一个
-`metadata.checkpoint_kind: best` 的 best checkpoint 仍可恢复；单独移动 latest/epoch 会因
-缺少全局 best 权重而拒绝，而不是把 latest 错当成 best。候选 best 的 epoch、metric、
-monitor、mode、resolved config 和 extension provenance 必须与所选 checkpoint 一致；因此
-已被未来 epoch 覆盖的 mutable `best.pt` 或来自另一 run 的同形状权重都不能用于恢复。通过
-校验且能载入当前资产拓扑的 inherited best 会在训练开始前原子物化到新 run 的
-`checkpoints/best.pt`，并记录当前 resolved config/provenance；后续恢复和 sampling 不依赖
-父 run。
+启用 validation-based best tracking 时，严格恢复还延续 best metric 与 early-stopping
+wait；因此这类 run 的 `latest.pt` 或 epoch checkpoint 需要同一 `checkpoints/` 目录中的
+`best.pt`。推荐直接传 run directory。候选 best 的 epoch、metric、monitor、mode、resolved
+config 和 extension provenance 必须与所选 checkpoint 一致；通过校验且能载入当前资产
+拓扑的 inherited best 会在训练开始前原子物化到新 run 的 `checkpoints/best.pt`。
+
+没有 validation 的 run 不保存 best selection state，也不依赖 `best.pt`；它的
+`latest.pt` 是 final checkpoint。显式请求 best tracking 或 early stopping 却没有
+validation DataLoader 会在训练循环前失败。
 Strict resume 还要求合法的 `epoch`、`global_step` 和 v11 RNG snapshot，并在 selected state
 与 inherited-best 全部验证后恢复 Python、NumPy、Torch CPU 及适用的 CUDA/MPS RNG。
 普通 checkpoint load 不修改全局 RNG。checkpoint-backed inference 不恢复 checkpoint
@@ -373,7 +377,8 @@ sample profile 只配置独立 inference request，不会改变训练 diagnostic
 
 Local logger 记录 artifact 路径，TensorBoard 和 W&B 同时显示 PNG。启用 KID/FID
 前需要 `uv sync --extra quality`，并且本次训练必须有 validation DataLoader。参考指标
-只用于监控，不参与 best checkpoint 或 early stopping。MPS 运行中，FID 会把 feature
+与其他 diagnostic scalar 一样只写入 logger/manifest，不进入 epoch history、checkpoint
+metrics、best checkpoint 或 early stopping。MPS 运行中，FID 会把 feature
 accumulation 与距离计算放到 CPU，以避开 MPS 不支持的 double-precision linear algebra；
 KID 仍使用配置的 runtime device。
 

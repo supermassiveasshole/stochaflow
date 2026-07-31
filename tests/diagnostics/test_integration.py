@@ -76,7 +76,7 @@ def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
     diagnostic.on_fit_start(fit_event(runtime))
     diagnostic.on_train_batch_end(batch_event(runtime))
 
-    results = diagnostic.on_train_epoch_end(epoch_event(runtime))
+    result = diagnostic.on_train_epoch_end(epoch_event(runtime))
 
     epoch_dir = tmp_path / "diagnostics" / "diffusion_quality" / "epoch_0001"
     manifest_path = epoch_dir / "manifest.yaml"
@@ -95,12 +95,8 @@ def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
     tags = {tag for tag, _, _, _ in logger.images}
     assert "diagnostics/samplers/ddpm_full/samples" in tags
     assert "diagnostics/samplers/ddim_2/trajectory" in tags
-    assert results is not None
-    combined = {
-        name
-        for result in results
-        for name in result.metrics
-    }
+    assert result is None
+    combined = set(logger.metrics[-1][1])
     assert (
         "diagnostics/diffusion_quality/samplers/ddpm_full/sampling_seconds"
         in combined
@@ -234,14 +230,10 @@ def test_warn_policy_isolates_profile_failure_and_records_manifest_error(tmp_pat
     torch.manual_seed(321)
     rng_before = torch.random.get_rng_state().clone()
 
-    results = diagnostic.on_train_epoch_end(epoch_event(runtime))
+    result = diagnostic.on_train_epoch_end(epoch_event(runtime))
 
-    assert results is not None
-    returned_metrics = {
-        key: value
-        for result in results
-        for key, value in result.metrics.items()
-    }
+    assert result is None
+    returned_metrics = logger.metrics[-1][1]
     assert (
         returned_metrics[
             "diagnostics/diffusion_quality/system/error_count"

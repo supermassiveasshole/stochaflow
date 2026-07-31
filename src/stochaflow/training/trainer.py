@@ -18,12 +18,6 @@ from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from stochaflow.metrics import (
-    EpochMetricSnapshot,
-    MetricSource,
-    detach_metric_updates,
-    validate_training_monitor_key,
-)
 from stochaflow.training.builder import (
     ManagedTrainingModule,
     TrainingPlan,
@@ -32,11 +26,7 @@ from stochaflow.training.builder import (
 from stochaflow.training.builder import (
     trainable_parameters as plan_trainable_parameters,
 )
-from stochaflow.training.diagnostics.binding import bind_training_diagnostic
 from stochaflow.training.diagnostics.contracts import (
-    BoundTrainingDiagnostic,
-    DiagnosticResult,
-    DiagnosticSourceProvider,
     FitStartEvent,
     TrainBatchEndEvent,
     TrainEpochEndEvent,
@@ -64,6 +54,7 @@ from stochaflow.utils.checkpoint import (
     inference_asset_descriptors_equal,
     inference_asset_descriptors_from_projections,
 )
+from stochaflow.utils.config import validate_training_monitor_key
 from stochaflow.utils.device import move_module_to_device
 from stochaflow.utils.iterables import try_length
 from stochaflow.utils.logging import ExperimentLogger, NullLogger
@@ -271,44 +262,21 @@ def _mean_accumulated_metrics(
     return result
 
 
-def _epoch_metric_snapshot(
+def _epoch_metrics(
     train_metrics: Mapping[str, float],
     validation_metrics: Mapping[str, float] | None,
     *,
     epoch: int,
-) -> EpochMetricSnapshot:
-    """Build one canonical, source-typed snapshot for a completed epoch."""
+) -> dict[str, float]:
+    """Build one canonical plain mapping for a completed epoch."""
 
     values: dict[str, float] = {
         "train/loss": float(train_metrics["loss"]),
         "system/trainer/epoch": float(epoch),
     }
-    sources: dict[str, MetricSource] = {}
-    train_source = MetricSource(
-        origin="phase",
-        data_role="train",
-        protocol_id=None,
-        selection_eligible=True,
-    )
-    validation_source = MetricSource(
-        origin="phase",
-        data_role="validation",
-        protocol_id=None,
-        selection_eligible=True,
-    )
-    system_source = MetricSource(
-        origin="system",
-        data_role=None,
-        protocol_id=None,
-        selection_eligible=False,
-    )
-    sources["train/loss"] = train_source
-    sources["system/trainer/epoch"] = system_source
-
     for name, value in train_metrics.items():
         if name.startswith("train/metrics/"):
             values[name] = float(value)
-            sources[name] = train_source
     train_system_names = {
         "num_batches",
         "micro_batches",
@@ -328,20 +296,16 @@ def _epoch_metric_snapshot(
         if name in train_metrics:
             key = f"system/train/{name}"
             values[key] = float(train_metrics[name])
-            sources[key] = system_source
 
     if validation_metrics is not None:
         values["valid/loss"] = float(validation_metrics["loss"])
-        sources["valid/loss"] = validation_source
         for name, value in validation_metrics.items():
             if name.startswith("valid/metrics/"):
                 values[name] = float(value)
-                sources[name] = validation_source
         for name in ("num_batches", "duration_seconds"):
             key = f"system/valid/{name}"
             values[key] = float(validation_metrics[name])
-            sources[key] = system_source
-    return EpochMetricSnapshot(values=values, sources=sources)
+    return values
 
 
 def _validate_best_tracking_monitor(
@@ -349,130 +313,33 @@ def _validate_best_tracking_monitor(
     *,
     metric_runtime: TrainingMetricRuntime | None,
     validation_available: bool,
-    diagnostic_bindings: Mapping[str, BoundTrainingDiagnostic],
 ) -> None:
-    """Preflight semantic dependencies of one consumed monitor key."""
+    """Preflight one validation-only best-selection monitor."""
 
-    prefix, kind, *segments = monitor.split("/")
-    if prefix == "diagnostics":
-        diagnostic_id = kind
-        if not validation_available:
-            raise ValueError(
-                f"best tracking monitor '{monitor}' requires a validation "
-                "dataloader"
-            )
-        binding = diagnostic_bindings.get(diagnostic_id)
-        if binding is None:
-            raise ValueError(
-                f"best tracking monitor '{monitor}' references diagnostic id "
-                f"'{diagnostic_id}' that is not configured"
-            )
-        eligible_sources = [
-            source
-            for source in binding.sources.values()
-            if source.metadata.selection_eligible
-        ]
-        if len(eligible_sources) != 1:
-            raise ValueError(
-                f"best tracking monitor '{monitor}' requires exactly one "
-                "composition-verified selection source"
-            )
-        source = eligible_sources[0]
-        if (
-            source.metadata.origin != "diagnostic"
-            or source.metadata.data_role != "validation"
-            or source.metadata.protocol_id
-            != f"sha256:{source.protocol_digest}"
-        ):
-            raise ValueError(
-                f"best tracking monitor '{monitor}' does not have a verified "
-                "validation protocol"
-            )
-        return
-    if prefix == "valid" and not validation_available:
+    if not validation_available:
         raise ValueError(
             f"best tracking monitor '{monitor}' requires a validation "
             "dataloader"
         )
+    prefix, kind, *segments = monitor.split("/")
+    if prefix != "valid":
+        raise ValueError(
+            "best tracking monitor must be 'valid/loss' or start with "
+            "'valid/metrics/'"
+        )
     if kind != "metrics":
         return
 
-    metric_phase: TrainingMetricPhase = (
-        "train" if prefix == "train" else "validation"
-    )
     metric_id = segments[0]
     if metric_runtime is None or not metric_runtime.has_metric(
-        metric_phase,
+        "validation",
         metric_id,
     ):
         raise ValueError(
             f"best tracking monitor '{monitor}' references metric id "
             f"'{metric_id}' that is not configured for the "
-            f"{metric_phase} phase"
+            "validation phase"
         )
-
-
-def _validate_diagnostic_source_iterables(
-    diagnostic_bindings: Iterable[BoundTrainingDiagnostic],
-    *,
-    train_dataloader: Iterable[Batch],
-    validation_dataloader: Iterable[Batch] | None,
-) -> None:
-    """Match declared phase sources to the exact iterables injected into fit."""
-
-    expected_by_role = {
-        "train": train_dataloader,
-        "validation": validation_dataloader,
-    }
-    for binding in diagnostic_bindings:
-        for source_id, source in binding.sources.items():
-            role = source.metadata.data_role
-            if role not in expected_by_role:
-                continue
-            expected = expected_by_role[role]
-            if expected is None:
-                raise ValueError(
-                    f"diagnostic {binding.id!r} source {source_id!r} requires "
-                    f"a {role} dataloader"
-                )
-            bound = binding.source_iterables[source_id]
-            if bound is not expected:
-                raise ValueError(
-                    f"diagnostic {binding.id!r} source {source_id!r} is bound "
-                    f"to a different {role} iterable than Trainer.fit received"
-                )
-
-
-def _diagnostic_monitor_source(
-    monitor: str,
-    diagnostic_bindings: Mapping[str, BoundTrainingDiagnostic],
-) -> tuple[str, str, MetricSource]:
-    """Resolve the one verified validation source consumed by a monitor."""
-
-    diagnostic_id = monitor.split("/", maxsplit=2)[1]
-    binding = diagnostic_bindings[diagnostic_id]
-    eligible_sources = [
-        source
-        for source in binding.sources.values()
-        if source.metadata.selection_eligible
-    ]
-    if len(eligible_sources) != 1:
-        raise RuntimeError(
-            f"diagnostic monitor '{monitor}' lost its verified source binding"
-        )
-    source = eligible_sources[0]
-    return diagnostic_id, source.id, source.metadata
-
-
-def _checkpoint_metric_sources(
-    snapshot: EpochMetricSnapshot,
-) -> dict[str, dict[str, object]]:
-    """Serialize snapshot source metadata for checkpoint provenance."""
-
-    return {
-        name: source.to_dict()
-        for name, source in snapshot.sources.items()
-    }
 
 
 def _validate_optimizer_parameters(
@@ -582,19 +449,16 @@ def _validate_checkpoint_training_config(
 
 @dataclass(frozen=True, slots=True)
 class MonitorPolicy:
-    """Complete identity and missing-value policy for one scalar monitor."""
+    """Complete identity and comparison policy for one scalar monitor."""
 
     metric: str
     mode: str
-    missing: str
     min_delta: float
 
     def __post_init__(self) -> None:
         validate_training_monitor_key(self.metric, path="monitor policy.metric")
         if self.mode not in {"min", "max"}:
             raise ValueError("monitor policy.mode must be 'min' or 'max'")
-        if self.missing not in {"error", "skip"}:
-            raise ValueError("monitor policy.missing must be 'error' or 'skip'")
         min_delta_value = cast(object, self.min_delta)
         if isinstance(min_delta_value, bool) or not isinstance(
             min_delta_value,
@@ -605,13 +469,6 @@ class MonitorPolicy:
             raise ValueError(
                 "monitor policy.min_delta must be finite and non-negative"
             )
-        if self.missing == "skip" and not self.metric.startswith(
-            "diagnostics/"
-        ):
-            raise ValueError(
-                "monitor policy.missing='skip' is only supported for "
-                "diagnostic metrics"
-            )
         object.__setattr__(self, "min_delta", float(self.min_delta))
 
     @classmethod
@@ -620,7 +477,7 @@ class MonitorPolicy:
 
         if not isinstance(value, Mapping):
             raise TypeError("training_loop.monitor_policy must be a mapping")
-        required = {"metric", "mode", "missing", "min_delta"}
+        required = {"metric", "mode", "min_delta"}
         if set(value) != required:
             missing = sorted(required - set(value))
             unknown = sorted(set(value) - required, key=str)
@@ -632,7 +489,6 @@ class MonitorPolicy:
         return cls(
             metric=value["metric"],
             mode=value["mode"],
-            missing=value["missing"],
             min_delta=value["min_delta"],
         )
 
@@ -642,7 +498,6 @@ class MonitorPolicy:
         return {
             "metric": self.metric,
             "mode": self.mode,
-            "missing": self.missing,
             "min_delta": self.min_delta,
         }
 
@@ -676,16 +531,6 @@ class TrainingFitState:
 
         return (
             self.monitor_policy.mode
-            if self.monitor_policy is not None
-            else None
-        )
-
-    @property
-    def missing(self) -> str | None:
-        """Return the missing-observation policy when tracking is enabled."""
-
-        return (
-            self.monitor_policy.missing
             if self.monitor_policy is not None
             else None
         )
@@ -905,9 +750,7 @@ class Trainer:
         lr_scheduler: LRScheduler | None = None,
         lr_scheduler_interval: str = "step",
         ema: ExponentialMovingAverage | None = None,
-        diagnostics: Iterable[
-            TrainingDiagnostic | BoundTrainingDiagnostic
-        ] | None = None,
+        diagnostics: Iterable[TrainingDiagnostic] | None = None,
         metric_runtime: TrainingMetricRuntime | None = None,
         max_grad_norm: float | None = None,
         logger: ExperimentLogger | None = None,
@@ -959,56 +802,15 @@ class Trainer:
         self.managed_modules: Mapping[str, ManagedTrainingModule] = MappingProxyType(
             managed_modules
         )
-        diagnostic_bindings: list[BoundTrainingDiagnostic] = []
+        diagnostic_instances: list[TrainingDiagnostic] = []
         for index, diagnostic in enumerate(diagnostics or ()):
             diagnostic_value = cast(object, diagnostic)
-            if isinstance(diagnostic_value, BoundTrainingDiagnostic):
-                binding = diagnostic_value
-            elif isinstance(diagnostic_value, TrainingDiagnostic):
-                if isinstance(diagnostic_value, DiagnosticSourceProvider):
-                    requests = cast(
-                        object,
-                        diagnostic_value.metric_source_requests,
-                    )
-                    if not isinstance(requests, tuple):
-                        raise TypeError(
-                            "DiagnosticSourceProvider.metric_source_requests "
-                            "must be a tuple"
-                        )
-                    if requests:
-                        raise ValueError(
-                            f"diagnostics[{index}] declares metric sources and "
-                            "must be supplied as a composition-bound "
-                            "BoundTrainingDiagnostic"
-                        )
-                binding = bind_training_diagnostic(
-                    type(diagnostic_value).__name__,
-                    diagnostic_value,
-                )
-            else:
+            if not isinstance(diagnostic_value, TrainingDiagnostic):
                 raise TypeError(
-                    f"diagnostics[{index}] must be a TrainingDiagnostic or "
-                    "BoundTrainingDiagnostic"
+                    f"diagnostics[{index}] must be a TrainingDiagnostic"
                 )
-            diagnostic_bindings.append(binding)
-        metric_diagnostic_ids = [
-            binding.id for binding in diagnostic_bindings if binding.sources
-        ]
-        if len(metric_diagnostic_ids) != len(set(metric_diagnostic_ids)):
-            raise ValueError(
-                "diagnostics that emit epoch metrics require unique ids"
-            )
-        self._diagnostic_bindings = tuple(diagnostic_bindings)
-        self._diagnostic_bindings_by_id = MappingProxyType(
-            {
-                binding.id: binding
-                for binding in self._diagnostic_bindings
-                if binding.sources
-            }
-        )
-        self.diagnostics = [
-            binding.diagnostic for binding in self._diagnostic_bindings
-        ]
+            diagnostic_instances.append(diagnostic_value)
+        self.diagnostics = tuple(diagnostic_instances)
         metric_runtime_value = cast(object, metric_runtime)
         if metric_runtime_value is not None and not isinstance(
             metric_runtime_value,
@@ -1148,9 +950,9 @@ class Trainer:
             global_step=global_step,
             epoch_index=epoch_index,
         )
-        for binding in self._diagnostic_bindings:
+        for diagnostic in self.diagnostics:
             with preserve_global_rng_state(self.device):
-                binding.diagnostic.on_train_batch_end(event)
+                diagnostic.on_train_batch_end(event)
 
     def _emit_fit_start_diagnostics(
         self,
@@ -1163,85 +965,31 @@ class Trainer:
             train_dataloader=train_dataloader,
             validation_dataloader=validation_dataloader,
         )
-        for binding in self._diagnostic_bindings:
+        for diagnostic in self.diagnostics:
             with preserve_global_rng_state(self.device):
-                binding.diagnostic.on_fit_start(event)
+                diagnostic.on_fit_start(event)
 
     def _emit_epoch_diagnostics(
         self,
         *,
         epoch_index: int,
-        snapshot: EpochMetricSnapshot,
-    ) -> tuple[EpochMetricSnapshot, frozenset[tuple[str, str]]]:
-        """Merge due diagnostic results into the canonical epoch snapshot."""
+        metrics: Mapping[str, float],
+    ) -> None:
+        """Notify observation-only diagnostics after one completed epoch."""
 
         event = TrainEpochEndEvent(
             trainer=self,
             epoch_index=epoch_index,
-            metrics=snapshot.values,
+            metrics=MappingProxyType(dict(metrics)),
         )
-        values = dict(snapshot.values)
-        sources = dict(snapshot.sources)
-        due_sources: set[tuple[str, str]] = set()
-        diagnostic_metrics: dict[str, float] = {}
-        for binding in self._diagnostic_bindings:
+        for diagnostic in self.diagnostics:
             with preserve_global_rng_state(self.device):
-                results = binding.diagnostic.on_train_epoch_end(event)
-            if results is None:
-                continue
-            if not isinstance(cast(object, results), tuple):
+                result = diagnostic.on_train_epoch_end(event)
+            if result is not None:
                 raise TypeError(
-                    f"diagnostic {binding.id!r} epoch result must be a tuple "
-                    "or None"
+                    f"diagnostic {type(diagnostic).__name__!r} "
+                    "on_train_epoch_end() must return None"
                 )
-            if not results:
-                raise ValueError(
-                    f"diagnostic {binding.id!r} must return None when no "
-                    "source is due"
-                )
-            seen_source_ids: set[str] = set()
-            for index, result in enumerate(results):
-                if not isinstance(cast(object, result), DiagnosticResult):
-                    raise TypeError(
-                        f"diagnostic {binding.id!r} result[{index}] must be "
-                        "a DiagnosticResult"
-                    )
-                if result.source_id in seen_source_ids:
-                    raise ValueError(
-                        f"diagnostic {binding.id!r} returned source "
-                        f"{result.source_id!r} more than once"
-                    )
-                seen_source_ids.add(result.source_id)
-                source = binding.sources.get(result.source_id)
-                if source is None:
-                    raise ValueError(
-                        f"diagnostic {binding.id!r} returned undeclared source "
-                        f"{result.source_id!r}"
-                    )
-                due_sources.add((binding.id, result.source_id))
-                expected_prefix = f"diagnostics/{binding.id}/"
-                for key, value in result.metrics.items():
-                    if not key.startswith(expected_prefix):
-                        raise ValueError(
-                            f"diagnostic {binding.id!r} metric {key!r} must "
-                            f"start with {expected_prefix!r}"
-                        )
-                    if key in values:
-                        raise ValueError(
-                            f"diagnostic metric {key!r} collides with another "
-                            "epoch metric"
-                        )
-                    values[key] = value
-                    sources[key] = source.metadata
-                    diagnostic_metrics[key] = value
-        merged = EpochMetricSnapshot(values=values, sources=sources)
-        if diagnostic_metrics:
-            with preserve_global_rng_state(self.device):
-                self.logger.log_metrics(
-                    diagnostic_metrics,
-                    step=self.global_step,
-                )
-        return merged, frozenset(due_sources)
 
     def _finish_optimizer_step(self) -> tuple[bool, float | None]:
         grad_norm: float | None = None
@@ -1278,7 +1026,7 @@ class Trainer:
         )
         loss_tensors: list[torch.Tensor] = []
         loss_aggregation_weights: list[float] = []
-        metric_update_values = []
+        metric_update_values: list[Any] = []
         metric_values: dict[str, list[float | torch.Tensor]] = {}
         final_batch: Batch = batches[-1]
         final_output: TrainStepOutput | None = None
@@ -1310,8 +1058,11 @@ class Trainer:
                     )
                 )
                 if collect_phase_metrics:
+                    assert self.metric_runtime is not None
                     metric_update_values.append(
-                        detach_metric_updates(output.metric_updates)
+                        self.metric_runtime.prepare_updates(
+                            output.metric_updates
+                        )
                     )
                 _accumulate_scalar_metrics(
                     metric_values,
@@ -1368,7 +1119,7 @@ class Trainer:
             ):
                 assert metric_phase is not None
                 for updates in metric_update_values:
-                    self.metric_runtime.update_phase(metric_phase, updates)
+                    self.metric_runtime.commit_phase(metric_phase, updates)
             if (
                 phase_profiler is not None
                 and optimizer_started_at is not None
@@ -1412,6 +1163,7 @@ class Trainer:
         max_batches: int | None = None,
         max_optimizer_steps: int | None = None,
         profile_phases: bool = False,
+        log_metrics: bool = True,
         reporter: Any | None = None,
     ) -> dict[str, float]:
         """Train for one epoch and return aggregate metrics."""
@@ -1688,7 +1440,8 @@ class Trainer:
             )
         if epoch_index is not None:
             logged_epoch_metrics["system/trainer/epoch"] = float(epoch_index)
-        self.logger.log_metrics(logged_epoch_metrics, step=self.global_step)
+        if log_metrics:
+            self.logger.log_metrics(logged_epoch_metrics, step=self.global_step)
         if optimizer_steps == 0 and skipped_optimizer_steps > 0:
             overflow_warning = (
                 "all optimizer windows were skipped in the training epoch; "
@@ -1858,7 +1611,6 @@ class Trainer:
         early_stopping_monitor: str = "valid/loss",
         early_stopping_mode: str = "min",
         early_stopping_min_delta: float = 0.0,
-        monitor_missing: str = "error",
         best_checkpoint_filename: str = "best.pt",
         reporter: Any | None = None,
         track_best: bool | None = None,
@@ -1886,7 +1638,6 @@ class Trainer:
         requested_monitor_policy = MonitorPolicy(
             metric=early_stopping_monitor,
             mode=early_stopping_mode,
-            missing=monitor_missing,
             min_delta=early_stopping_min_delta,
         )
         if early_stopping_patience is not None and track_best is False:
@@ -1896,19 +1647,11 @@ class Trainer:
         )
         if early_stopping_patience is not None:
             should_track_best = True
-        _validate_diagnostic_source_iterables(
-            self._diagnostic_bindings,
-            train_dataloader=dataloader,
-            validation_dataloader=validation_dataloader,
-        )
-        if should_track_best and early_stopping_monitor.startswith("test/"):
-            raise ValueError("test metrics cannot be used for best tracking")
         if should_track_best:
             _validate_best_tracking_monitor(
                 early_stopping_monitor,
                 metric_runtime=self.metric_runtime,
                 validation_available=validation_dataloader is not None,
-                diagnostic_bindings=self._diagnostic_bindings_by_id,
             )
         monitor_policy = (
             requested_monitor_policy if should_track_best else None
@@ -1955,6 +1698,7 @@ class Trainer:
                     epoch_index=epoch,
                     show_progress=show_progress,
                     max_batches=max_batches_per_epoch,
+                    log_metrics=False,
                     reporter=reporter,
                 )
                 validation_metrics: dict[str, float] | None = None
@@ -1965,6 +1709,7 @@ class Trainer:
                         show_progress=show_progress,
                         max_batches=max_validation_batches,
                         metric_prefix="valid",
+                        log_metrics=False,
                         reporter=reporter,
                     )
                 successful_updates = train_metrics.get(
@@ -1973,149 +1718,108 @@ class Trainer:
                 )
                 if successful_updates > 0:
                     self._step_lr_scheduler("epoch")
-                snapshot = _epoch_metric_snapshot(
+                epoch_metrics = _epoch_metrics(
                     train_metrics,
                     validation_metrics,
                     epoch=epoch,
                 )
-                snapshot, due_diagnostic_sources = (
-                    self._emit_epoch_diagnostics(
-                        epoch_index=epoch,
-                        snapshot=snapshot,
-                    )
+                self._emit_epoch_diagnostics(
+                    epoch_index=epoch,
+                    metrics=epoch_metrics,
                 )
-                history.append(dict(snapshot.values))
+                history.append(dict(epoch_metrics))
+                with preserve_global_rng_state(self.device):
+                    self.logger.log_metrics(
+                        epoch_metrics,
+                        step=self.global_step,
+                    )
 
                 status = "-"
                 if should_track_best:
                     assert monitor_policy is not None
-                    current_value = snapshot.values.get(
-                        monitor_policy.metric
-                    )
+                    current_value = epoch_metrics.get(monitor_policy.metric)
                     if current_value is None:
-                        if monitor_policy.missing == "error":
-                            raise ValueError(
-                                "best tracking monitor "
-                                f"'{monitor_policy.metric}' was not found in "
-                                "epoch metrics"
-                            )
-                        diagnostic_id, source_id, _ = (
-                            _diagnostic_monitor_source(
-                                monitor_policy.metric,
-                                self._diagnostic_bindings_by_id,
+                        raise ValueError(
+                            "best tracking monitor "
+                            f"'{monitor_policy.metric}' was not found in "
+                            "epoch metrics"
+                        )
+                    if not math.isfinite(float(current_value)):
+                        raise ValueError(
+                            "best tracking monitor "
+                            f"'{monitor_policy.metric}' is non-finite at "
+                            f"epoch {epoch}"
+                        )
+                    self.monitor_observations += 1
+                    improved = self._is_metric_improved(
+                        current=float(current_value),
+                        best=best_value,
+                        mode=monitor_policy.mode,
+                        min_delta=monitor_policy.min_delta,
+                    )
+                    if improved:
+                        best_value = float(current_value)
+                        self.observations_without_improvement = 0
+                        status = "BEST"
+                        self.best_epoch = epoch
+                        self.best_metric_value = best_value
+                        self.best_checkpoint_path = (
+                            self._save_named_checkpoint(
+                                best_checkpoint_filename,
+                                epoch=epoch,
+                                metrics=epoch_metrics,
+                                metadata={
+                                    **self.checkpoint_metadata,
+                                    "checkpoint_kind": "best",
+                                    "monitor": monitor_policy.metric,
+                                    "mode": monitor_policy.mode,
+                                    "min_delta": monitor_policy.min_delta,
+                                },
                             )
                         )
-                        if (
-                            diagnostic_id,
-                            source_id,
-                        ) in due_diagnostic_sources:
-                            raise ValueError(
-                                "best tracking monitor "
-                                f"'{monitor_policy.metric}' was due at epoch "
-                                f"{epoch} but its diagnostic returned no value"
+                        with preserve_global_rng_state(self.device):
+                            self.logger.log_metrics(
+                                {
+                                    "best/epoch": float(epoch),
+                                    f"best/{monitor_policy.metric}": (
+                                        best_value
+                                    ),
+                                },
+                                step=self.global_step,
                             )
-                        status = "SKIP"
                     else:
-                        source = snapshot.sources[monitor_policy.metric]
-                        if monitor_policy.metric.startswith("diagnostics/"):
-                            _, _, expected_source = (
-                                _diagnostic_monitor_source(
-                                    monitor_policy.metric,
-                                    self._diagnostic_bindings_by_id,
-                                )
+                        self.observations_without_improvement += 1
+                        if early_stopping_patience is not None:
+                            status = (
+                                "WAIT "
+                                f"{self.observations_without_improvement}/"
+                                f"{early_stopping_patience}"
                             )
-                            if source != expected_source:
-                                raise ValueError(
-                                    "best tracking monitor "
-                                    f"'{monitor_policy.metric}' source does not "
-                                    "match its verified binding"
-                                )
-                        elif (
-                            not source.selection_eligible
-                            or source.data_role == "test"
+                        if (
+                            early_stopping_patience is not None
+                            and self.observations_without_improvement
+                            >= early_stopping_patience
                         ):
-                            raise ValueError(
-                                "best tracking monitor "
-                                f"'{monitor_policy.metric}' is not selection "
-                                "eligible"
+                            self.stopped_early = True
+                            status = "EARLY STOP"
+                            early_stopping_text = (
+                                f"stopped at epoch {epoch}; best_epoch="
+                                f"{self.best_epoch}; monitor="
+                                f"{monitor_policy.metric}; best="
+                                f"{self.best_metric_value}; observations="
+                                f"{self.monitor_observations}"
                             )
-                        if not math.isfinite(float(current_value)):
-                            raise ValueError(
-                                "best tracking monitor "
-                                f"'{monitor_policy.metric}' is non-finite at "
-                                f"epoch {epoch}"
+                            self.logger.log_text(
+                                "early_stopping",
+                                early_stopping_text,
+                                step=self.global_step,
                             )
-                        self.monitor_observations += 1
-                        improved = self._is_metric_improved(
-                            current=float(current_value),
-                            best=best_value,
-                            mode=monitor_policy.mode,
-                            min_delta=monitor_policy.min_delta,
-                        )
-                        if improved:
-                            best_value = float(current_value)
-                            self.observations_without_improvement = 0
-                            status = "BEST"
-                            self.best_epoch = epoch
-                            self.best_metric_value = best_value
-                            self.best_checkpoint_path = (
-                                self._save_named_checkpoint(
-                                    best_checkpoint_filename,
-                                    epoch=epoch,
-                                    snapshot=snapshot,
-                                    metadata={
-                                        **self.checkpoint_metadata,
-                                        "checkpoint_kind": "best",
-                                        "monitor": monitor_policy.metric,
-                                        "mode": monitor_policy.mode,
-                                        "missing": monitor_policy.missing,
-                                        "min_delta": monitor_policy.min_delta,
-                                    },
+                            if reporter is not None:
+                                reporter.on_early_stopping(
+                                    early_stopping_text
                                 )
-                            )
-                            with preserve_global_rng_state(self.device):
-                                self.logger.log_metrics(
-                                    {
-                                        "best/epoch": float(epoch),
-                                        f"best/{monitor_policy.metric}": (
-                                            best_value
-                                        ),
-                                    },
-                                    step=self.global_step,
-                                )
-                        else:
-                            self.observations_without_improvement += 1
-                            if early_stopping_patience is not None:
-                                status = (
-                                    "WAIT "
-                                    f"{self.observations_without_improvement}/"
-                                    f"{early_stopping_patience}"
-                                )
-                            if (
-                                early_stopping_patience is not None
-                                and self.observations_without_improvement
-                                >= early_stopping_patience
-                            ):
-                                self.stopped_early = True
-                                status = "EARLY STOP"
-                                early_stopping_text = (
-                                    f"stopped at epoch {epoch}; best_epoch="
-                                    f"{self.best_epoch}; monitor="
-                                    f"{monitor_policy.metric}; best="
-                                    f"{self.best_metric_value}; observations="
-                                    f"{self.monitor_observations}"
-                                )
-                                self.logger.log_text(
-                                    "early_stopping",
-                                    early_stopping_text,
-                                    step=self.global_step,
-                                )
-                                if reporter is not None:
-                                    reporter.on_early_stopping(
-                                        early_stopping_text
-                                    )
-                self._maybe_save_checkpoint(epoch, snapshot)
-                self._save_latest_checkpoint(epoch, snapshot)
+                self._maybe_save_checkpoint(epoch, epoch_metrics)
+                self._save_latest_checkpoint(epoch, epoch_metrics)
                 if reporter is not None:
                     with preserve_global_rng_state(self.device):
                         reporter.on_epoch_end(
@@ -2145,16 +1849,6 @@ class Trainer:
                         )
                 if self.stopped_early:
                     break
-            if (
-                should_track_best
-                and monitor_policy is not None
-                and monitor_policy.missing == "skip"
-                and self.monitor_observations == 0
-            ):
-                raise ValueError(
-                    f"best tracking monitor '{monitor_policy.metric}' produced "
-                    "no observations during the fit"
-                )
         finally:
             if close_logger:
                 self.logger.close()
@@ -2179,7 +1873,7 @@ class Trainer:
     def _maybe_save_checkpoint(
         self,
         epoch: int,
-        snapshot: EpochMetricSnapshot,
+        metrics: Mapping[str, float],
     ) -> None:
         """Save an epoch checkpoint when checkpointing is configured."""
 
@@ -2194,14 +1888,14 @@ class Trainer:
         self._save_checkpoint(
             checkpoint_path,
             epoch=epoch,
-            snapshot=snapshot,
+            metrics=metrics,
             metadata=self.checkpoint_metadata,
         )
 
     def _save_latest_checkpoint(
         self,
         epoch: int,
-        snapshot: EpochMetricSnapshot,
+        metrics: Mapping[str, float],
     ) -> None:
         """Save a stable latest checkpoint after every completed epoch."""
 
@@ -2210,7 +1904,7 @@ class Trainer:
         self._save_named_checkpoint(
             "latest.pt",
             epoch=epoch,
-            snapshot=snapshot,
+            metrics=metrics,
             metadata={**self.checkpoint_metadata, "checkpoint_kind": "latest"},
         )
 
@@ -2219,7 +1913,7 @@ class Trainer:
         filename: str,
         *,
         epoch: int,
-        snapshot: EpochMetricSnapshot,
+        metrics: Mapping[str, float],
         metadata: dict[str, Any],
     ) -> Path:
         """Save a checkpoint with a stable filename in the checkpoint directory."""
@@ -2231,7 +1925,7 @@ class Trainer:
         return self._save_checkpoint(
             self.checkpoint_dir / filename,
             epoch=epoch,
-            snapshot=snapshot,
+            metrics=metrics,
             metadata=metadata,
         )
 
@@ -2240,7 +1934,7 @@ class Trainer:
         checkpoint_path: Path,
         *,
         epoch: int,
-        snapshot: EpochMetricSnapshot,
+        metrics: Mapping[str, float],
         metadata: dict[str, Any],
     ) -> Path:
         """Save a checkpoint using the trainer's common runtime metadata."""
@@ -2252,10 +1946,9 @@ class Trainer:
             epoch=epoch,
             global_step=self.global_step,
             config=self.checkpoint_config,
-            metrics=dict(snapshot.values),
+            metrics=dict(metrics),
             metadata={
                 **metadata,
-                "metric_sources": _checkpoint_metric_sources(snapshot),
                 "training_loop": self._fit_state_dict(),
             },
         )

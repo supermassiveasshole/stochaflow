@@ -416,7 +416,7 @@ def test_conditional_quality_warns_without_successful_batch_and_keeps_sampling(
         FitStartEvent(runtime, train_dataloader=[], validation_dataloader=None)
     )
 
-    results = diagnostic.on_train_epoch_end(
+    result = diagnostic.on_train_epoch_end(
         TrainEpochEndEvent(runtime, epoch_index=1, metrics={})
     )
 
@@ -441,12 +441,8 @@ def test_conditional_quality_warns_without_successful_batch_and_keeps_sampling(
         }
     ]
     assert manifest["profiles"][0]["model_evaluations"]["forward_calls"] > 0
-    assert results is not None
-    returned_metrics = {
-        key: value
-        for result in results
-        for key, value in result.metrics.items()
-    }
+    assert result is None
+    returned_metrics = logger.metrics[-1][1]
     assert (
         returned_metrics[
             "diagnostics/class_conditional_diffusion_quality/system/error_count"

@@ -361,7 +361,6 @@ def test_p2_builder_composes_learned_range_recipe() -> None:
             params={
                 "variance": {
                     "mode": "learned_range",
-                    "loss": "rescaled_variational_bound",
                 },
                 "k": 1.0,
                 "gamma": 1.0,
@@ -407,7 +406,7 @@ def test_p2_builder_composes_learned_range_recipe() -> None:
     assert isinstance(clean, torch.Tensor)
     assert metric_clean.shape == clean.shape == (2, 1, 2, 2)
     assert output.loss_aggregation_weight == 2
-    assert output.diagnostics["timestep_loss_weight"].sum().item() < 2.0
+    assert "timestep_loss_weight" not in output.diagnostics
 
 
 @pytest.mark.parametrize(
@@ -418,7 +417,6 @@ def test_p2_builder_composes_learned_range_recipe() -> None:
             {
                 "variance": {
                     "mode": "learned_range",
-                    "loss": "rescaled_variational_bound",
                 }
             },
             1,
@@ -483,7 +481,6 @@ def test_unconditional_builder_accepts_declared_learned_range_layout() -> None:
             params={
                 "variance": {
                     "mode": "learned_range",
-                    "loss": "rescaled_variational_bound",
                 }
             },
             primary_model=model,

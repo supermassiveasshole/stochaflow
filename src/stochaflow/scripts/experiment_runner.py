@@ -5,7 +5,6 @@ import gc
 import hashlib
 import math
 import warnings
-from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -21,7 +20,6 @@ from stochaflow.data import (
     build_data_loaders,
 )
 from stochaflow.data.artifact_io import MAX_ARTIFACT_VERIFICATION_WORKERS
-from stochaflow.metrics import EpochMetricSnapshot, MetricDataRole
 from stochaflow.sampling.runtime import run_sampling
 from stochaflow.scripts.artifact_reporting import (
     RichArtifactVerificationReporter,
@@ -165,10 +163,13 @@ class ExperimentRunOptions:
 class TrainingResult:
     """Selected model state and summary values after fitting."""
 
-    best_epoch: int
-    best_metric_name: str
+    final_epoch: int
+    best_epoch: int | None
+    best_metric_name: str | None
     best_metric_value: float | None
     best_checkpoint: Path | None
+    selected_checkpoint: Path | None
+    selected_checkpoint_kind: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,16 +365,8 @@ def _batch_size(loader: object) -> int | None:
     return None
 
 
-def _resolve_monitor(config: StochaflowConfig, loaders: DataLoaders) -> str:
-    monitor = config.trainer.early_stopping.monitor
-    if loaders.validation is None:
-        if monitor == "valid/loss":
-            return "train/loss"
-        if monitor.startswith("valid/"):
-            raise ValueError(
-                f"monitor {monitor!r} requires a validation loader"
-            )
-    return monitor
+def _resolve_monitor(config: StochaflowConfig) -> str:
+    return config.trainer.early_stopping.monitor
 
 
 def _resolve_resume_checkpoint(
@@ -831,6 +824,31 @@ def _restore_training_state(
     return start_epoch
 
 
+def _checkpoint_epoch_metrics(
+    value: object,
+    *,
+    path: str,
+) -> dict[str, float]:
+    """Validate one plain, finite epoch-metric checkpoint mapping."""
+
+    if type(value) is not dict:
+        raise TypeError(f"{path} must be an exact dictionary")
+    metrics: dict[str, float] = {}
+    for key, raw_value in cast(dict[object, object], value).items():
+        if not isinstance(key, str) or not key:
+            raise TypeError(f"{path} keys must be non-empty strings")
+        if isinstance(raw_value, bool) or not isinstance(
+            raw_value,
+            (int, float),
+        ):
+            raise TypeError(f"{path}[{key!r}] must be numeric")
+        number = float(raw_value)
+        if not math.isfinite(number):
+            raise ValueError(f"{path}[{key!r}] must be finite")
+        metrics[key] = number
+    return metrics
+
+
 def _parse_strict_resume_state(
     payload: CheckpointState,
     *,
@@ -859,51 +877,15 @@ def _parse_strict_resume_state(
     fit_state = TrainingFitState.from_mapping(
         metadata_mapping.get("training_loop")
     )
-    snapshot = EpochMetricSnapshot.from_dict(
-        {
-            "values": payload.get("metrics"),
-            "sources": metadata_mapping.get("metric_sources"),
-        },
-        path="strict resume checkpoint metric snapshot",
+    metrics = _checkpoint_epoch_metrics(
+        payload.get("metrics"),
+        path="strict resume checkpoint metrics",
     )
     monitor = fit_state.monitor
-    if monitor is not None:
-        if monitor not in snapshot.values:
-            if fit_state.missing != "skip":
-                raise ValueError(
-                    f"strict resume metric snapshot is missing monitor {monitor!r}"
-                )
-        else:
-            monitor_source = snapshot.sources[monitor]
-            if (
-                not monitor_source.selection_eligible
-                or monitor_source.data_role == "test"
-            ):
-                raise ValueError(
-                    "strict resume monitor source must be selection eligible "
-                    "and must not use test data"
-                )
-            if monitor.startswith("diagnostics/"):
-                protocol_id = monitor_source.protocol_id
-                protocol_digest = (
-                    protocol_id.removeprefix("sha256:")
-                    if isinstance(protocol_id, str)
-                    and protocol_id.startswith("sha256:")
-                    else ""
-                )
-                if (
-                    monitor_source.data_role != "validation"
-                    or len(protocol_digest) != 64
-                    or protocol_digest != protocol_digest.lower()
-                    or any(
-                        character not in "0123456789abcdef"
-                        for character in protocol_digest
-                    )
-                ):
-                    raise ValueError(
-                        "strict resume diagnostic monitor source must use "
-                        "validation data and a sha256 protocol identity"
-                    )
+    if monitor is not None and monitor not in metrics:
+        raise ValueError(
+            f"strict resume checkpoint metrics are missing monitor {monitor!r}"
+        )
     return cast(int, epoch), cast(int, global_step), rng_state
 
 
@@ -1040,28 +1022,14 @@ def _validate_inherited_best(
                 f"inherited best checkpoint '{source}' does not belong to the "
                 f"selected checkpoint history: {field} mismatch"
             )
-    metrics = cast(object, payload.get("metrics"))
-    metric_sources = cast(object, candidate_metadata.get("metric_sources"))
-    snapshot = EpochMetricSnapshot.from_dict(
-        {
-            "values": metrics,
-            "sources": metric_sources,
-        },
+    metrics = _checkpoint_epoch_metrics(
+        payload.get("metrics"),
         path=f"inherited best checkpoint '{source}' metric snapshot",
     )
-    if not _same_metric(snapshot.values.get(monitor), best_metric):
+    if not _same_metric(metrics.get(monitor), best_metric):
         raise ValueError(
             f"inherited best checkpoint '{source}' does not contain the "
             f"recorded best metric '{monitor}'"
-        )
-    monitor_source = snapshot.sources[monitor]
-    if (
-        not monitor_source.selection_eligible
-        or monitor_source.data_role == "test"
-    ):
-        raise ValueError(
-            f"inherited best checkpoint '{source}' monitor source is not "
-            "selection eligible"
         )
 
 
@@ -1221,7 +1189,9 @@ def _fit_and_select_best(
     """Fit one run, restore its selected checkpoint, and summarize it."""
 
     early_stopping = config.trainer.early_stopping
-    monitor = _resolve_monitor(config, loaders)
+    monitor = _resolve_monitor(config)
+    if early_stopping.enabled and loaders.validation is None:
+        raise ValueError("early stopping requires a validation dataloader")
     history = training.trainer.fit(
         loaders.train,
         num_epochs=options.num_epochs,
@@ -1239,27 +1209,49 @@ def _fit_and_select_best(
         ),
         early_stopping_monitor=monitor,
         early_stopping_mode=early_stopping.mode,
-        monitor_missing=early_stopping.missing,
         early_stopping_min_delta=early_stopping.min_delta,
         reporter=reporter,
-        track_best=True,
+        track_best=loaders.validation is not None,
     )
     if not history:
         raise RuntimeError("trainer returned no epoch history")
 
     final_epoch = start_epoch + len(history) - 1
-    best_checkpoint = training.trainer.best_checkpoint_path
-    best_epoch = training.trainer.best_epoch or final_epoch
+    validation_available = loaders.validation is not None
+    best_checkpoint = (
+        training.trainer.best_checkpoint_path
+        if validation_available
+        else None
+    )
+    best_epoch = training.trainer.best_epoch if validation_available else None
+    best_metric_name = monitor if validation_available else None
+    best_metric_value = (
+        training.trainer.best_metric_value
+        if validation_available
+        else None
+    )
+    selected_checkpoint = best_checkpoint
+    selected_checkpoint_kind = "best" if best_checkpoint is not None else None
     if best_checkpoint is not None:
         training.checkpoint_manager.load(
             best_checkpoint,
             map_location=training.trainer.device,
         )
+    elif not validation_available:
+        checkpoint_dir = training.trainer.checkpoint_dir
+        if checkpoint_dir is not None:
+            final_checkpoint = Path(checkpoint_dir) / "latest.pt"
+            if final_checkpoint.is_file():
+                selected_checkpoint = final_checkpoint
+                selected_checkpoint_kind = "final"
     return TrainingResult(
+        final_epoch=final_epoch,
         best_epoch=best_epoch,
-        best_metric_name=monitor,
-        best_metric_value=training.trainer.best_metric_value,
+        best_metric_name=best_metric_name,
+        best_metric_value=best_metric_value,
         best_checkpoint=best_checkpoint,
+        selected_checkpoint=selected_checkpoint,
+        selected_checkpoint_kind=selected_checkpoint_kind,
     )
 
 
@@ -1350,15 +1342,9 @@ def _run_single_run(
             data_artifacts.to_dict() if data_artifacts is not None else None
         ),
     }
-    diagnostic_data_iterables: dict[MetricDataRole, Iterable[Any]] = {
-        "train": loaders.train,
-    }
-    if loaders.validation is not None:
-        diagnostic_data_iterables["validation"] = loaders.validation
     training = build_training_components(
         config,
         checkpoint_metadata=checkpoint_metadata,
-        diagnostic_data_iterables=diagnostic_data_iterables,
     )
     selected_components = selected_component_identities(
         config,
@@ -1432,9 +1418,10 @@ def _run_single_run(
                     "sampling.run_after_training requires the TrainingPlan to "
                     "provide an inference recipe"
                 )
-            if result.best_checkpoint is None:
+            if result.selected_checkpoint is None:
                 raise RuntimeError(
-                    "post-training sampling requires a selected best checkpoint"
+                    "post-training sampling requires a selected best or final "
+                    "checkpoint"
                 )
             sampling_device = str(training.trainer.device)
             logger.close()
@@ -1446,7 +1433,7 @@ def _run_single_run(
             elif sampling_device.startswith("mps"):
                 torch.mps.empty_cache()
             sampling_result = run_sampling(
-                checkpoint=result.best_checkpoint,
+                checkpoint=result.selected_checkpoint,
                 output_dir=Path(config.experiment.output_dir) / "samples" / "final",
                 device_name=sampling_device,
             )
@@ -1461,6 +1448,8 @@ def _run_single_run(
                 test_loss=test_loss,
                 stopped_early=stopped_early,
                 best_checkpoint=result.best_checkpoint,
+                selected_checkpoint=result.selected_checkpoint,
+                selected_checkpoint_kind=result.selected_checkpoint_kind,
                 output_dir=config.experiment.output_dir,
                 metrics_path=metrics_path,
                 log_path=log_path,

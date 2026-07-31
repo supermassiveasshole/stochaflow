@@ -3,8 +3,6 @@
 from .class_conditional import (
     ClassConditionalGaussianDenoisingTrainingBuilder,
     ClassConditionalGaussianDenoisingTrainingStrategy,
-    ClassConditionalP2GaussianDenoisingTrainingBuilder,
-    ClassConditionalP2GaussianDenoisingTrainingStrategy,
 )
 from .contracts import (
     ClassConditionalGaussianDiagnosticSemantics,
@@ -12,11 +10,15 @@ from .contracts import (
     VarianceMode,
 )
 from .loss import gaussian_training_target
+from .p2 import (
+    ClassConditionalP2GaussianDenoisingTrainingBuilder,
+    ClassConditionalP2GaussianDenoisingTrainingStrategy,
+    P2GaussianDenoisingTrainingBuilder,
+    P2GaussianDenoisingTrainingStrategy,
+)
 from .unconditional import (
     GaussianDenoisingTrainingBuilder,
     GaussianDenoisingTrainingStrategy,
-    P2GaussianDenoisingTrainingBuilder,
-    P2GaussianDenoisingTrainingStrategy,
 )
 from .variance import GaussianVarianceConfig
 

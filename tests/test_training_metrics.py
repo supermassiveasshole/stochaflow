@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torchmetrics import Metric
 
-from stochaflow.metrics import MetricConfig, MetricUpdate
+from stochaflow.metrics import MetricUpdate
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.training import (
     GaussianDenoisingTrainingStrategy,
@@ -24,6 +24,7 @@ from stochaflow.training.gaussian import GaussianVarianceConfig
 from stochaflow.training.metric_binding import TrainingMetricRuntime
 from stochaflow.training.precision import PrecisionRuntime
 from stochaflow.utils.checkpoint import CheckpointManager
+from stochaflow.utils.config import TrainingMetricConfig
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
 
@@ -226,7 +227,7 @@ class IterationCountingLoader:
 def build_metric_trainer(
     tmp_path,
     *,
-    declarations: list[MetricConfig],
+    declarations: list[TrainingMetricConfig],
     accumulate_grad_batches: int = 1,
     precision: PrecisionRuntime | None = None,
 ) -> tuple[Trainer, MetricRecordingLogger]:
@@ -269,11 +270,11 @@ def build_metric_trainer(
     )
 
 
-def metric_declarations() -> list[MetricConfig]:
+def metric_declarations() -> list[TrainingMetricConfig]:
     """Return one declaration shared across all three training phases."""
 
     return [
-        MetricConfig(
+        TrainingMetricConfig(
             id="prediction_mae",
             name="mae",
             channel="supervised.prediction_target",
@@ -317,13 +318,7 @@ def test_phase_metrics_share_canonical_history_logger_and_checkpoint_keys(
     assert "metrics" in payload
     assert payload["metrics"] == history[0]
     assert "metadata" in payload
-    sources = payload["metadata"]["metric_sources"]
-    assert sources["valid/metrics/prediction_mae"] == {
-        "origin": "phase",
-        "data_role": "validation",
-        "protocol_id": None,
-        "selection_eligible": True,
-    }
+    assert "metric_sources" not in payload["metadata"]
 
 
 def test_test_metric_state_is_isolated_from_train_and_validation(tmp_path) -> None:
@@ -383,7 +378,7 @@ def test_train_metrics_include_every_microbatch_in_accumulation_window(
     trainer, _ = build_metric_trainer(
         tmp_path,
         declarations=[
-            MetricConfig(
+            TrainingMetricConfig(
                 id="prediction_mae",
                 name="mae",
                 channel="supervised.prediction_target",
@@ -410,7 +405,7 @@ def test_train_metrics_exclude_skipped_optimizer_windows(tmp_path) -> None:
     trainer, _ = build_metric_trainer(
         tmp_path,
         declarations=[
-            MetricConfig(
+            TrainingMetricConfig(
                 id="prediction_mae",
                 name="mae",
                 channel="supervised.prediction_target",
@@ -441,7 +436,7 @@ def test_validation_only_metrics_add_no_train_payload_retention(
     trainer, _ = build_metric_trainer(
         tmp_path,
         declarations=[
-            MetricConfig(
+            TrainingMetricConfig(
                 id="prediction_mae",
                 name="mae",
                 channel="supervised.prediction_target",
@@ -454,8 +449,10 @@ def test_validation_only_metrics_add_no_train_payload_retention(
         del args, kwargs
         raise AssertionError("validation-only metrics detached train payloads")
 
+    assert trainer.metric_runtime is not None
     monkeypatch.setattr(
-        "stochaflow.training.trainer.detach_metric_updates",
+        trainer.metric_runtime,
+        "prepare_updates",
         unexpected_detach,
     )
     trainer.train_epoch(
@@ -470,7 +467,7 @@ def test_configured_metrics_preserve_custom_evaluation_prefix(
     trainer, logger = build_metric_trainer(
         tmp_path,
         declarations=[
-            MetricConfig(
+            TrainingMetricConfig(
                 id="prediction_mae",
                 name="mae",
                 channel="supervised.prediction_target",
@@ -520,7 +517,7 @@ def test_best_checkpoint_supports_max_mode_custom_accuracy(tmp_path) -> None:
     trainer, _ = build_metric_trainer(
         tmp_path,
         declarations=[
-            MetricConfig(
+            TrainingMetricConfig(
                 id="binary_accuracy",
                 name="test.training_binary_accuracy",
                 channel="supervised.prediction_target",
@@ -590,13 +587,13 @@ def test_gaussian_phase_metrics_run_end_to_end_without_external_data(
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     runtime = TrainingMetricRuntime(
         [
-            MetricConfig(
+            TrainingMetricConfig(
                 id="prediction_mae",
                 name="mae",
                 channel="gaussian.prediction_target",
                 phases=["validation", "test"],
             ),
-            MetricConfig(
+            TrainingMetricConfig(
                 id="clean_reconstruction_mse",
                 name="mse",
                 channel="gaussian.clean_reconstruction",
@@ -675,15 +672,12 @@ def test_learned_range_p2_metrics_aggregate_uneven_batches_by_samples(
         model,
         process,
         objective,
-        variance=GaussianVarianceConfig(
-            mode="learned_range",
-            loss="rescaled_variational_bound",
-        ),
+        variance=GaussianVarianceConfig(mode="learned_range"),
     )
     optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
     runtime = TrainingMetricRuntime(
         [
-            MetricConfig(
+            TrainingMetricConfig(
                 id="prediction_mae",
                 name="mae",
                 channel="gaussian.prediction_target",
@@ -744,7 +738,7 @@ def test_metric_compatibility_fails_at_training_composition_boundary(
     with pytest.raises(ValueError, match="not provided"):
         TrainingMetricRuntime(
             [
-                MetricConfig(
+                TrainingMetricConfig(
                     id="bad",
                     name="mae",
                     channel="custom.missing",
@@ -825,7 +819,7 @@ def test_metric_monitor_phase_mismatch_fails_before_iteration(tmp_path) -> None:
     trainer, _ = build_metric_trainer(
         tmp_path,
         declarations=[
-            MetricConfig(
+            TrainingMetricConfig(
                 id="prediction_mae",
                 name="mae",
                 channel="supervised.prediction_target",
@@ -897,7 +891,7 @@ def test_mapping_metric_subkey_passes_base_id_preflight(tmp_path) -> None:
     trainer, _ = build_metric_trainer(
         tmp_path,
         declarations=[
-            MetricConfig(
+            TrainingMetricConfig(
                 id="scorecard",
                 name="test.training_mapping_mae",
                 channel="supervised.prediction_target",
@@ -926,7 +920,7 @@ def test_missing_dynamic_metric_subkey_fails_after_compute(tmp_path) -> None:
     trainer, _ = build_metric_trainer(
         tmp_path,
         declarations=[
-            MetricConfig(
+            TrainingMetricConfig(
                 id="scorecard",
                 name="test.training_mapping_mae",
                 channel="supervised.prediction_target",
@@ -955,13 +949,13 @@ def test_missing_dynamic_metric_subkey_fails_after_compute(tmp_path) -> None:
     assert validation.iterations == 1
 
 
-def test_test_phase_monitor_is_rejected_before_training(tmp_path) -> None:
+def test_non_validation_monitor_is_rejected_before_training(tmp_path) -> None:
     trainer, _ = build_metric_trainer(
         tmp_path,
         declarations=metric_declarations(),
     )
 
-    with pytest.raises(ValueError, match="test metrics cannot be used"):
+    with pytest.raises(ValueError, match="valid/loss"):
         trainer.fit(
             [(torch.tensor([[0.0]]), torch.tensor([[1.0]]))],
             num_epochs=1,

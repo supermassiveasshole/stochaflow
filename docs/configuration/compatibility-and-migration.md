@@ -57,8 +57,8 @@ checkpoint 不能 strict resume，也不能作为 `stochaflow sample` 的输入�
 
 训练 checkpoint 保存：
 
-- format version、epoch/global step、resolved config、canonical epoch metrics 与
-  `metadata.metric_sources`；
+- format version、epoch/global step、resolved config 与一个普通的 canonical epoch
+  metrics mapping；
 - primary model，以及存在时的 Process、Objective 和按名称声明的 managed auxiliary
   module state；
 - optimizer/scheduler 的 concrete class identity 与 state；
@@ -69,8 +69,7 @@ checkpoint 不能 strict resume，也不能作为 `stochaflow sample` 的输入�
   否则严格保存 `{schema_version: 1, name, contract}`；
 - Python、NumPy、Torch CPU 及可用 CUDA/MPS 的 epoch-boundary RNG snapshot；
 - 完整 `metadata.training_loop`，包括是否启用 best tracking、monitor
-  `metric/mode/missing/min_delta`、patience、最佳值，以及按 observation 计数的
-  early-stopping state；
+  `metric/mode/min_delta`、patience、最佳值，以及 early-stopping wait state；
 - extension provenance、lineage、`selected_components` 和可选 data artifact bindings。
 
 每个 non-empty inference asset descriptor 将一个 slot 一对一绑定到
@@ -86,10 +85,9 @@ groups、scheduler、EMA 与可选资产拓扑，再加载 state；后期 load h
 已触及的 runtime 对象会回滚到恢复前快照。strict resume 因而是完整恢复，不是
 weights-only warm start。
 
-strict resume 还会在修改 runtime 前解析完整 epoch metric snapshot、逐 key source
-metadata 与 training-loop state。恢复后的 best-tracking policy、missing policy 和
-patience 必须与继续运行时完全一致；不能通过 resume 把已保存的 observation counter
-重解释为另一套 early-stopping 规则。
+strict resume 还会在修改 runtime 前解析完整 epoch metrics mapping 与 training-loop
+state。恢复后的 best-tracking policy 和 patience 必须与继续运行时完全一致；不能通过
+resume 把已保存的 wait counter 重解释为另一套 early-stopping 规则。
 
 可选资产按“存在性 + state”严格配对：runtime 有 Process/Objective 时 checkpoint 必须有
 对应 state，runtime 没有时 payload 也不能含该 key。辅助资产名称、
@@ -99,37 +97,43 @@ checkpoint 的完整 `DataArtifactBindings`。
 
 ### Canonical metric key 是 breaking boundary
 
-v11 checkpoint、logger、history 和 monitor 只使用以下 canonical epoch key：
+训练 fit 完成 epoch 后，history、checkpoint 与 epoch logger 共享同一个 plain metrics
+mapping，使用以下 canonical key：
 
-- phase loss：`train/loss`、`valid/loss`、`test/loss`；
-- stateful phase metric：
-  `train|valid|test/metrics/<id>[/<subkey>]`；
-- verified diagnostic metric：
-  `diagnostics/<diagnostic-id>/<metric...>`；
+- `train/loss` 与 `train/metrics/<id>[/<subkey>]`；
+- 有 validation DataLoader 时的 `valid/loss` 与
+  `valid/metrics/<id>[/<subkey>]`；
 - runtime observation：`system/<scope>/<metric...>`，不能用于模型选择。
 
+fit 后的 test evaluation 另外向 logger 写入 `test/loss` 与
+`test/metrics/<id>[/<subkey>]`，不回写已经完成的训练 checkpoint。
+
+diagnostic 可以另外向 logger 写入 `diagnostics/<diagnostic-id>/<metric...>`，并生成图片、
+manifest 等 artifact；这些 observation 不进入 epoch history 或 checkpoint metrics。
+
 旧 `train_loss`、`valid_loss` 及其他 underscore alias 没有 reader、双写或迁移路径。
-配置加载和 checkpoint snapshot 解析都会拒绝非 canonical key；不要通过修改 JSONL、
-YAML 或 checkpoint metadata 尝试混用旧名称。test-role metric 即使 key 合法，也不能控制
-best checkpoint 或 early stopping。
+当前 writer/logger 不生成这些 alias，monitor 配置也会拒绝它们。checkpoint metrics 不是
+用户可编辑的迁移表面；不要通过修改 JSONL、YAML 或 checkpoint metadata 尝试混用旧名称。
 
-### Diagnostic monitor 的 missing 语义
+### Validation-only 模型选择
 
-`trainer.early_stopping.missing` 支持 `error` 与 `skip`：
+best checkpoint 与 early stopping 的 monitor 只允许：
 
-- `error` 是默认值；本 epoch 找不到 monitor 时立即失败；
-- `skip` 只允许 `diagnostics/...` monitor，并且只在已验证 source 按 cadence **尚未到期**
-  时跳过本次选择；
-- source 已到期但 callback 没有返回被监控 key、返回失败、source id 不匹配或 metric
-  非有限值时仍然失败，不能用上一次值、零或 `NaN` 代替；
-- 整个 fit 没有产生任何 monitor observation 时失败，避免一次没有真正评估的训练被标记为
-  成功；
-- patience 按“已经观察到但没有改进”的次数累计；cadence skip 不增加 wait counter。
+- `valid/loss`；
+- `valid/metrics/<id>[/<subkey>]`，其中 `<id>` 必须在 validation phase 配置。
 
-diagnostic 只有 composition 验证过的 validation source 才有 selection 资格。checkpoint
-同时保存其 `data_role=validation`、`selection_eligible=true` 与
-`protocol_id=sha256:<digest>`；external sampler statistics、耗时、artifact 以及任何
-test-role 结果都不能成为 monitor。
+train、test、system 与 `diagnostics/...` 指标都不能控制模型选择。启用 best tracking 或
+early stopping 时必须提供 validation DataLoader，并且 monitor 缺失或非有限时立即失败；
+框架不复用旧值，也没有 cadence skip 或缺失值跳过策略。
+
+没有 validation DataLoader 时，Trainer 默认关闭 best tracking，不创建或伪造 best
+metric/epoch/checkpoint；显式请求 best tracking 或 early stopping 会在训练循环开始前失败。
+该路径仍逐 epoch 保存 `latest.pt`，训练后的自动采样可以明确使用这个 final/latest
+checkpoint，但它不是 best checkpoint。
+
+TrainingDiagnostic 是只观测回调：它可以写 logger 与 artifact，epoch callback 必须返回
+`None`，也不能修改收到的只读 epoch metrics。diagnostic 不参与 history、checkpoint、best
+tracking、early stopping 或 strict-resume selection state。
 
 ### Gaussian inference recipe
 
@@ -164,11 +168,10 @@ resume config/state 边界，不能通过 observability overlay 改写。
 
 ### v10 到 v11 是 breaking migration
 
-v11 把 canonical metric snapshot、逐结果 source metadata、完整 monitor policy 和
-observation-based early-stopping counter 固化为 strict-resume schema。v10 没有这些完整
-事实，框架无法可靠判断旧 best 值来自 train、validation、test 还是 external diagnostic，
-也无法把 epoch wait counter 无歧义地转换成 observation counter。因此没有 v10 reader、
-alias、dual write 或自动迁移；升级方式是以 v11 启动 fresh run。
+v11 把 canonical plain epoch metrics、validation-only monitor policy 和完整
+early-stopping state 固化为 strict-resume schema。v10 没有这些完整事实，框架无法可靠
+恢复当前 selection state。因此没有 v10 reader、alias、dual write 或自动迁移；升级方式
+是以 v11 启动 fresh run。
 
 更早的 v10 曾把训练时确定的 inference composition 从用户可改写的 sampling 配置中移出。
 v11 保留该 authority boundary，但旧 sampling 文件仍不能直接使用：
@@ -194,12 +197,11 @@ v11 不保存：
 - Dataset、DataLoader、iterator、worker、PyTorch data sampler 或 partition runtime
   state；
 - epoch 中间尚未 step 的 gradients、accumulation window 或 DataLoader cursor；
-- epoch 中间的 Metric state；只保存完成 epoch 的 canonical scalar snapshot 与 source
-  metadata；
+- epoch 中间的 Metric state；只保存完成 epoch 的 canonical scalar mapping；
 - Sampler、Observer、solver history、sampling trajectory 等临时采样状态；
 - TrainingDiagnostic/ExperimentLogger 实例、diagnostic 自有 cache/counter、打开的日志
-  文件或 TensorBoard writer/event 文件；best/early-stopping 的 monitor observation
-  counters 则属于上述 `metadata.training_loop`；
+  文件或 TensorBoard writer/event 文件；best/early-stopping state 则属于上述
+  `metadata.training_loop`；
 - 用户私有 generator、数据集、网络资源或输出目录内容。
 
 CPU/CUDA/MPS RNG snapshot 只覆盖相应全局 generator，不扩展 DataLoader worker 或用户
@@ -341,9 +343,9 @@ force；name/distribution/target identity 不匹配会失败。即使 provenance
    CLI 所用 Python 声明相同 entry point。缺失插件错误会显示当前 `sys.executable`。
 2. 使用项目自己的 lockfile/environment specification 固定 Python、PyTorch、extension
    及其原生依赖。checkpoint 不承担环境快照职责。
-3. strict resume 优先复制整个 run directory。latest/epoch checkpoint 还依赖同一
-   `checkpoints/` 目录中的、经过 lineage 校验的 `best.pt`；单独的
-   `metadata.checkpoint_kind: best` checkpoint 才可独立恢复。
+3. strict resume 优先复制整个 run directory。启用了 best tracking 的 latest/epoch
+   checkpoint 还依赖同一 `checkpoints/` 目录中经过 lineage 校验的 `best.pt`；没有
+   validation、因而未启用 best tracking 的 run 不产生这项依赖。
 4. 同步数据、模型外部资产和配置中引用的文件。相对 data/output 路径与 Builder 私有
    path 都以目标进程启动 cwd 解释；必要时从项目根运行并显式覆盖 output dir。
 5. 核对 device/backend。strict resume 若恢复 CUDA/MPS RNG，目标 backend 必须可用；

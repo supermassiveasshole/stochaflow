@@ -2,7 +2,6 @@
 
 # Import built-ins before the orchestrator can resolve its default provider set.
 from . import providers as providers
-from .binding import bind_training_diagnostic, bind_training_diagnostics
 from .class_conditional_quality import (
     ClassConditionalDiffusionQualityDiagnostic,
     DiagnosticClassAllocation,
@@ -19,14 +18,10 @@ from .config import (
 )
 from .contracts import (
     ArtifactRecord,
-    BoundTrainingDiagnostic,
     ContextAwareDiagnostic,
     DenoiserArtifactContext,
     DenoiserArtifactProvider,
     DiagnosticBuildContext,
-    DiagnosticResult,
-    DiagnosticSourceProvider,
-    DiagnosticSourceRequest,
     FitStartEvent,
     ProviderValidationContext,
     ReferenceMetricProvider,
@@ -39,7 +34,6 @@ from .contracts import (
     TrainBatchEndEvent,
     TrainEpochEndEvent,
     TrainingDiagnostic,
-    VerifiedMetricSource,
 )
 from .diffusion_quality import DiffusionQualityDiagnostic
 from .registry import DIAGNOSTIC_PROVIDERS, DiagnosticProviderCatalog
@@ -47,7 +41,6 @@ from .registry import DIAGNOSTIC_PROVIDERS, DiagnosticProviderCatalog
 __all__ = [
     "DIAGNOSTIC_PROVIDERS",
     "ArtifactRecord",
-    "BoundTrainingDiagnostic",
     "ClassConditionalDiffusionQualityDiagnostic",
     "ContextAwareDiagnostic",
     "DenoiserArtifactContext",
@@ -56,10 +49,7 @@ __all__ = [
     "DiagnosticCadenceConfig",
     "DiagnosticClassAllocation",
     "DiagnosticProviderCatalog",
-    "DiagnosticResult",
     "DiagnosticSamplingConfig",
-    "DiagnosticSourceProvider",
-    "DiagnosticSourceRequest",
     "DiffusionQualityConfig",
     "DiffusionQualityDiagnostic",
     "FitStartEvent",
@@ -79,8 +69,5 @@ __all__ = [
     "TrainEpochEndEvent",
     "TrainingDiagnostic",
     "TrajectoryProviderConfig",
-    "VerifiedMetricSource",
-    "bind_training_diagnostic",
-    "bind_training_diagnostics",
     "providers",
 ]

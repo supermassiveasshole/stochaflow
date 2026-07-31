@@ -8,15 +8,21 @@ from typing import Literal, cast
 import torch
 
 from stochaflow.metrics import (
-    MetricConfig,
     MetricEngine,
-    MetricSpec,
     MetricUpdate,
-    validate_metric_configs,
 )
+from stochaflow.metrics.contracts import (
+    PreparedMetricUpdates,
+    prepare_metric_updates,
+)
+from stochaflow.metrics.runtime import _commit_prepared_metric_updates
 from stochaflow.training.strategy import (
     MetricChannelProvider,
     TrainingStrategy,
+)
+from stochaflow.utils.config import (
+    TrainingMetricConfig,
+    validate_training_metric_configs,
 )
 
 type TrainingMetricPhase = Literal["train", "validation", "test"]
@@ -33,12 +39,12 @@ class TrainingMetricRuntime:
 
     def __init__(
         self,
-        configs: list[MetricConfig],
+        configs: list[TrainingMetricConfig],
         strategy: TrainingStrategy,
         *,
         device: torch.device | str,
     ) -> None:
-        declarations = validate_metric_configs(configs)
+        declarations = validate_training_metric_configs(configs)
         if declarations:
             strategy_value = cast(object, strategy)
             if not isinstance(strategy_value, MetricChannelProvider):
@@ -73,12 +79,7 @@ class TrainingMetricRuntime:
         metric_ids: dict[TrainingMetricPhase, frozenset[str]] = {}
         for phase in _PHASE_PREFIXES:
             specs = tuple(
-                MetricSpec(
-                    id=declaration.id,
-                    name=declaration.name,
-                    channel=declaration.channel,
-                    params=dict(declaration.params),
-                )
+                declaration.to_metric_spec()
                 for declaration in declarations
                 if phase in declaration.phases
             )
@@ -126,6 +127,25 @@ class TrainingMetricRuntime:
         engine = self._engines.get(phase)
         if engine is not None:
             engine.update(updates)
+
+    def prepare_updates(
+        self,
+        updates: Mapping[str, MetricUpdate],
+    ) -> PreparedMetricUpdates:
+        """Detach one training-step payload before its optimizer commit point."""
+
+        return prepare_metric_updates(updates)
+
+    def commit_phase(
+        self,
+        phase: TrainingMetricPhase,
+        updates: PreparedMetricUpdates,
+    ) -> None:
+        """Commit a prepared payload after its optimizer window succeeds."""
+
+        engine = self._engines.get(phase)
+        if engine is not None:
+            _commit_prepared_metric_updates(engine, updates)
 
     def compute_phase(
         self,

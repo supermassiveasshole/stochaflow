@@ -1,4 +1,4 @@
-"""Class-conditional standard and P2 Gaussian training strategies."""
+"""Standard class-conditional Gaussian training strategy and builder."""
 
 from __future__ import annotations
 
@@ -18,11 +18,9 @@ from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
 )
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
-from stochaflow.training.objectives import MSEObjective
 from stochaflow.utils.registry import REGISTRIES
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
-from .p2 import p2_timestep_loss_weights, validate_p2_parameters
 from .strategy import GaussianTrainingStrategyBase
 from .variance import GaussianVarianceConfig, parse_gaussian_variance
 
@@ -139,41 +137,6 @@ class ClassConditionalGaussianDenoisingTrainingStrategy(
         return _class_conditional_batch(batch, num_classes=self.num_classes)[0]
 
 
-class ClassConditionalP2GaussianDenoisingTrainingStrategy(
-    ClassConditionalGaussianDenoisingTrainingStrategy
-):
-    """Train a class-conditional epsilon predictor with P2 weighting."""
-
-    def __init__(
-        self,
-        model: ClassConditionalDenoiser,
-        process: DiscreteGaussianDenoisingProcess,
-        objective: MSEObjective,
-        *,
-        variance: GaussianVarianceConfig | None = None,
-        condition_dropout: float = 0.0,
-        k: float = 1.0,
-        gamma: float = 1.0,
-    ) -> None:
-        objective_value = cast(object, objective)
-        if not isinstance(objective_value, MSEObjective):
-            raise TypeError("class-conditional P2 training requires MSEObjective")
-        validated_k, validated_gamma = validate_p2_parameters(k, gamma)
-        super().__init__(
-            model,
-            process,
-            objective_value,
-            prediction_type="epsilon",
-            variance=variance,
-            condition_dropout=condition_dropout,
-        )
-        self.k = validated_k
-        self.gamma = validated_gamma
-
-    def _timestep_loss_weights(self, snr: torch.Tensor) -> torch.Tensor:
-        return p2_timestep_loss_weights(snr, k=self.k, gamma=self.gamma)
-
-
 @REGISTRIES.training_builders.register("class_conditional_gaussian_denoising")
 class ClassConditionalGaussianDenoisingTrainingBuilder(TrainingBuilder):
     """Assemble standard class-conditional Gaussian training."""
@@ -260,58 +223,6 @@ class ClassConditionalGaussianDenoisingTrainingBuilder(TrainingBuilder):
                     "variance": {"mode": variance.mode},
                 },
             ),
-        )
-
-
-@REGISTRIES.training_builders.register(
-    "class_conditional_p2_gaussian_denoising"
-)
-class ClassConditionalP2GaussianDenoisingTrainingBuilder(
-    ClassConditionalGaussianDenoisingTrainingBuilder
-):
-    """Assemble class-conditional epsilon prediction with P2 weighting."""
-
-    def build(self) -> TrainingPlan:
-        """Validate the P2 recipe and return its concrete strategy."""
-
-        params = dict(self.context.params)
-        condition_dropout = _condition_dropout(
-            params.pop("condition_dropout", 0.0),
-            path="training.params.condition_dropout",
-        )
-        variance = parse_gaussian_variance(
-            params.pop("variance", None),
-            path="training.params.variance",
-        )
-        k, gamma = validate_p2_parameters(
-            params.pop("k", 1.0),
-            params.pop("gamma", 1.0),
-        )
-        _reject_unknown(
-            params,
-            builder="class_conditional_p2_gaussian_denoising",
-        )
-        model, process, objective = self._components()
-        if not isinstance(objective, MSEObjective):
-            raise TypeError(
-                "class_conditional_p2_gaussian_denoising requires MSEObjective"
-            )
-        strategy = ClassConditionalP2GaussianDenoisingTrainingStrategy(
-            model,
-            process,
-            objective,
-            variance=variance,
-            condition_dropout=condition_dropout,
-            k=k,
-            gamma=gamma,
-        )
-        return self._plan(
-            strategy,
-            model=cast(nn.Module, model),
-            process=process,
-            objective=objective,
-            prediction_type="epsilon",
-            variance=variance,
         )
 
 
@@ -431,6 +342,4 @@ def _reject_unknown(params: dict[str, Any], *, builder: str) -> None:
 __all__ = [
     "ClassConditionalGaussianDenoisingTrainingBuilder",
     "ClassConditionalGaussianDenoisingTrainingStrategy",
-    "ClassConditionalP2GaussianDenoisingTrainingBuilder",
-    "ClassConditionalP2GaussianDenoisingTrainingStrategy",
 ]

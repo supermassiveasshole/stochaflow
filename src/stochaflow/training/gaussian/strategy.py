@@ -10,8 +10,10 @@ import torch
 from torch import nn
 
 from stochaflow.families.gaussian import (
+    GaussianPrediction,
     PredictionType,
     normalize_gaussian_prediction,
+    split_gaussian_model_output,
 )
 from stochaflow.metrics.contracts import MetricUpdate
 from stochaflow.processes.gaussian.contracts import (
@@ -20,9 +22,8 @@ from stochaflow.processes.gaussian.contracts import (
 )
 from stochaflow.training.objectives import (
     MSEObjective,
-    PerSampleObjective,
+    compute_objective,
     validate_per_sample_loss,
-    validate_reduced_loss,
 )
 from stochaflow.training.strategy import TrainingStrategy, TrainStepOutput
 
@@ -30,10 +31,7 @@ from .contracts import VarianceMode
 from .loss import (
     GaussianLossComputation,
     gaussian_loss_diagnostics,
-    gaussian_signal_to_noise_ratio,
     gaussian_training_target,
-    split_gaussian_training_output,
-    validate_gaussian_timestep_weights,
     validate_scalar_objective_loss,
 )
 from .variance import (
@@ -154,9 +152,6 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
     ) -> torch.Tensor:
         """Invoke one task-specific model signature."""
 
-    def _timestep_loss_weights(self, snr: torch.Tensor) -> torch.Tensor:
-        return torch.ones_like(snr)
-
     def _step(
         self,
         batch: Any,
@@ -223,7 +218,76 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
         state_times: torch.Tensor,
         raw_model_output: object,
     ) -> GaussianLossComputation:
-        mean_output, variance_values = split_gaussian_training_output(
+        mean_output, variance_values, prediction, target = (
+            self._prediction_and_target(
+                clean=clean,
+                noisy=noisy,
+                noise=noise,
+                state_times=state_times,
+                raw_model_output=raw_model_output,
+            )
+        )
+        objective = self.objective
+        if variance_values is None:
+            loss, per_sample = compute_objective(
+                objective,
+                prediction.model_output,
+                target,
+            )
+            loss = validate_scalar_objective_loss(
+                loss,
+                prediction=prediction.model_output,
+            )
+            return GaussianLossComputation(
+                loss=loss,
+                prediction=prediction,
+                target=target,
+                per_sample_loss=per_sample,
+            )
+
+        if not isinstance(objective, MSEObjective):
+            raise TypeError("learned-range Gaussian training requires MSEObjective")
+        per_sample_simple = validate_per_sample_loss(
+            objective.per_sample_loss(prediction.model_output, target),
+            prediction=prediction.model_output,
+        )
+        variational_bound = validate_per_sample_loss(
+            learned_range_variational_bound(
+                self.process,
+                clean=clean,
+                noisy=noisy,
+                state_times=state_times,
+                mean_output=mean_output,
+                variance_values=variance_values,
+                prediction_type=self.prediction_type,
+            ),
+            prediction=prediction.model_output,
+        ).to(dtype=per_sample_simple.dtype)
+        per_sample_loss = per_sample_simple + variational_bound
+        return GaussianLossComputation(
+            loss=_reduce_mse_per_sample(objective, per_sample_loss),
+            prediction=prediction,
+            target=target,
+            per_sample_loss=per_sample_loss,
+        )
+
+    def _prediction_and_target(
+        self,
+        *,
+        clean: torch.Tensor,
+        noisy: torch.Tensor,
+        noise: torch.Tensor,
+        state_times: torch.Tensor,
+        raw_model_output: object,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        GaussianPrediction,
+        torch.Tensor,
+    ]:
+        """Normalize one raw output and construct its configured target."""
+
+        mean_output, variance_values = split_gaussian_model_output(
             raw_model_output,
             state=noisy,
             variance_mode=self.variance.mode,
@@ -243,75 +307,22 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
             state_times=state_times,
             prediction_type=self.prediction_type,
         )
-        snr = gaussian_signal_to_noise_ratio(self.process, state_times)
-        weights = validate_gaussian_timestep_weights(
-            self._timestep_loss_weights(snr),
-            snr=snr,
-        )
-        objective = self.objective
-        if not isinstance(objective, MSEObjective):
-            if variance_values is not None:
-                raise TypeError(
-                    "learned-range Gaussian training requires MSEObjective"
-                )
-            loss = validate_scalar_objective_loss(
-                objective(prediction.model_output, target),
-                prediction=prediction.model_output,
-            )
-            per_sample: torch.Tensor | None = None
-            if isinstance(objective, PerSampleObjective):
-                per_sample = validate_per_sample_loss(
-                    objective.per_sample_loss(prediction.model_output, target),
-                    prediction=prediction.model_output,
-                )
-            return GaussianLossComputation(
-                loss=loss,
-                prediction=prediction,
-                target=target,
-                snr=snr,
-                timestep_loss_weight=weights,
-                per_sample_simple_loss=per_sample,
-                per_sample_weighted_simple_loss=per_sample,
-                per_sample_variational_bound=None,
-                per_sample_loss=per_sample,
-            )
+        return mean_output, variance_values, prediction, target
 
-        per_sample_simple = validate_per_sample_loss(
-            objective.per_sample_loss(prediction.model_output, target),
-            prediction=prediction.model_output,
-        )
-        weighted_simple = weights.to(dtype=per_sample_simple.dtype) * per_sample_simple
-        variational_bound: torch.Tensor | None = None
-        per_sample_loss = weighted_simple
-        if variance_values is not None:
-            variational_bound = validate_per_sample_loss(
-                learned_range_variational_bound(
-                    self.process,
-                    clean=clean,
-                    noisy=noisy,
-                    state_times=state_times,
-                    mean_output=mean_output,
-                    variance_values=variance_values,
-                    prediction_type=self.prediction_type,
-                ),
-                prediction=prediction.model_output,
-            ).to(dtype=per_sample_simple.dtype)
-            per_sample_loss = weighted_simple + variational_bound
-        loss = validate_reduced_loss(
-            objective.reduce_per_sample_loss(per_sample_loss),
-            per_sample_loss=per_sample_loss,
-        )
-        return GaussianLossComputation(
-            loss=loss,
-            prediction=prediction,
-            target=target,
-            snr=snr,
-            timestep_loss_weight=weights,
-            per_sample_simple_loss=per_sample_simple,
-            per_sample_weighted_simple_loss=weighted_simple,
-            per_sample_variational_bound=variational_bound,
-            per_sample_loss=per_sample_loss,
-        )
+
+def _reduce_mse_per_sample(
+    objective: MSEObjective,
+    per_sample_loss: torch.Tensor,
+) -> torch.Tensor:
+    """Apply one concrete MSE Objective's configured batch reduction."""
+
+    per_sample_loss = validate_per_sample_loss(
+        per_sample_loss,
+        prediction=per_sample_loss,
+    )
+    if objective.reduction == "sum":
+        return per_sample_loss.sum()
+    return per_sample_loss.mean()
 
 
 __all__: list[str] = []

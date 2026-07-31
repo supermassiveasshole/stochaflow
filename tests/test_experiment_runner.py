@@ -6,7 +6,7 @@ from argparse import Namespace
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -22,7 +22,6 @@ from stochaflow.data import (
     DataArtifactIdentity,
     DataLoaders,
 )
-from stochaflow.metrics import EpochMetricSnapshot
 from stochaflow.scripts import experiment_runner
 from stochaflow.scripts.cli import build_argument_parser
 from stochaflow.training import (
@@ -222,7 +221,6 @@ def _training_loop_state(
     stopped_early: bool = False,
     monitor: str | None = None,
     mode: str = "min",
-    missing: str = "error",
     min_delta: float = 0.0,
     early_stopping_patience: int | None = None,
 ) -> dict[str, Any]:
@@ -247,7 +245,6 @@ def _training_loop_state(
             {
                 "metric": monitor,
                 "mode": mode,
-                "missing": missing,
                 "min_delta": min_delta,
             }
             if monitor is not None
@@ -271,9 +268,6 @@ def _best_payload(
         "observations_without_improvement": 0,
         "stopped_early": False,
     }
-    data_role = (
-        "train" if str(monitor).startswith("train/") else "validation"
-    )
     return {
         "format_version": CHECKPOINT_FORMAT_VERSION,
         "precision_kind": "fp32",
@@ -289,14 +283,6 @@ def _best_payload(
         "metadata": {
             "extension_plugins": [],
             "checkpoint_kind": "best",
-            "metric_sources": {
-                monitor: {
-                    "origin": "phase",
-                    "data_role": data_role,
-                    "protocol_id": None,
-                    "selection_eligible": True,
-                }
-            },
             "training_loop": best_snapshot_loop,
         },
     }
@@ -310,7 +296,6 @@ def _strict_resume_fields(*, epoch: int, global_step: int) -> CheckpointState:
         "metrics": {},
         "metadata": {
             "training_loop": _training_loop_state(),
-            "metric_sources": {},
         },
     }
 
@@ -331,7 +316,6 @@ def _write_training_checkpoint(
         "extension_plugins": [],
         "checkpoint_kind": "latest",
         "training_loop": _training_loop_state(),
-        "metric_sources": {},
         **({} if metadata is None else metadata),
     }
     torch.save(
@@ -446,18 +430,14 @@ def test_runner_uses_canonical_validation_loss_when_validation_is_available(
 
     assert trainer.fit_kwargs["validation_dataloader"] is not None
     assert trainer.fit_kwargs["early_stopping_monitor"] == "valid/loss"
-    assert trainer.fit_kwargs["monitor_missing"] == "error"
+    assert trainer.fit_kwargs["track_best"] is True
     assert trainer.fit_kwargs["num_epochs"] == config.trainer.num_epochs
     assert build_kwargs["checkpoint_metadata"]["extension_plugins"] == []
-    assert build_kwargs["diagnostic_data_iterables"]["train"] is loaders.train
-    assert (
-        build_kwargs["diagnostic_data_iterables"]["validation"]
-        is loaders.validation
-    )
+    assert "diagnostic_data_iterables" not in build_kwargs
     assert logger.closed
 
 
-def test_runner_uses_canonical_train_loss_and_skips_test_without_validation(
+def test_runner_disables_best_and_skips_test_without_validation(
     monkeypatch,
     tmp_path,
 ):
@@ -479,49 +459,28 @@ def test_runner_uses_canonical_train_loss_and_skips_test_without_validation(
     )
 
     assert trainer.fit_kwargs["validation_dataloader"] is None
-    assert trainer.fit_kwargs["early_stopping_monitor"] == "train/loss"
+    assert trainer.fit_kwargs["early_stopping_monitor"] == "valid/loss"
+    assert trainer.fit_kwargs["track_best"] is False
     assert trainer.evaluate_calls == 0
     assert logger.closed
 
 
-def test_runner_preserves_explicit_train_metric_without_validation(
-    monkeypatch,
-    tmp_path,
-):
+def test_resolve_monitor_returns_validated_configuration_value() -> None:
     config = load_config(MNIST_TRAIN_CONFIG)
-    config.experiment.output_dir = str(tmp_path)
-    config.experiment.exp_id = "test"
-    config.metrics[0].phases.append("train")
-    config.trainer.early_stopping.monitor = "train/metrics/prediction_mae"
-    trainer = RecordingTrainer()
-    logger = RecordingLogger()
-    monkeypatch.setattr(
-        experiment_runner,
-        "build_training_components",
-        lambda config, **kwargs: _training_components(trainer, logger),
-    )
+    config.trainer.early_stopping.monitor = "valid/metrics/prediction_mae"
 
-    _run_single(
-        config,
-        _loaders(),
-        _options(config),
-    )
-
-    assert (
-        trainer.fit_kwargs["early_stopping_monitor"]
-        == "train/metrics/prediction_mae"
+    assert experiment_runner._resolve_monitor(config) == (
+        "valid/metrics/prediction_mae"
     )
 
 
-def test_runner_passes_diagnostic_missing_policy_to_trainer(
+def test_runner_does_not_pass_removed_missing_policy_to_trainer(
     monkeypatch,
     tmp_path,
 ) -> None:
     config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
-    config.trainer.early_stopping.monitor = "diagnostics/quality/fid"
-    config.trainer.early_stopping.missing = "skip"
     trainer = RecordingTrainer()
     logger = RecordingLogger()
     monkeypatch.setattr(
@@ -536,17 +495,18 @@ def test_runner_passes_diagnostic_missing_policy_to_trainer(
         _options(config),
     )
 
-    assert trainer.fit_kwargs["monitor_missing"] == "skip"
+    assert "monitor_missing" not in trainer.fit_kwargs
 
 
-def test_runner_rejects_explicit_validation_metric_without_validation() -> None:
+def test_resolve_monitor_does_not_depend_on_loader_availability() -> None:
     config = load_config(MNIST_TRAIN_CONFIG)
     config.trainer.early_stopping.monitor = (
         "valid/metrics/prediction_mae"
     )
 
-    with pytest.raises(ValueError, match="requires a validation loader"):
-        experiment_runner._resolve_monitor(config, _loaders())
+    assert experiment_runner._resolve_monitor(config) == (
+        "valid/metrics/prediction_mae"
+    )
 
 
 def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
@@ -630,7 +590,7 @@ def test_runner_persists_effective_enabled_progress_override(
 
     _run_single(
         config,
-        _loaders(),
+        _loaders(validation=True),
         _options(config, args),
     )
 
@@ -666,12 +626,50 @@ def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):
 
     _run_single(
         config,
-        _loaders(),
+        _loaders(validation=True),
         _options(config, args),
     )
 
     assert observed["checkpoint"] == trainer.best_checkpoint_path
     assert observed["output_dir"] == tmp_path / "samples" / "final"
+    assert logger.closed
+
+
+def test_runner_samples_final_checkpoint_without_validation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = _load_mnist_config_with_final_sampling()
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "test"
+    trainer = RecordingTrainer()
+    trainer.best_epoch = None
+    trainer.best_metric_value = None
+    checkpoint_dir = tmp_path / "checkpoints"
+    trainer.checkpoint_dir = checkpoint_dir
+    checkpoint_dir.mkdir(parents=True)
+    final_checkpoint = checkpoint_dir / "latest.pt"
+    final_checkpoint.touch()
+    logger = RecordingLogger()
+    observed = {}
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "run_sampling",
+        lambda **kwargs: observed.update(kwargs)
+        or SimpleNamespace(artifacts={"samples": tmp_path / "samples.png"}),
+    )
+    args = _args()
+    args.skip_final_sample = False
+
+    _run_single(config, _loaders(), _options(config, args))
+
+    assert observed["checkpoint"] == final_checkpoint
+    assert trainer.fit_kwargs["track_best"] is False
     assert logger.closed
 
 
@@ -907,7 +905,7 @@ def test_strict_resume_rejects_sibling_best_from_future_epoch(tmp_path):
     ("field", "value"),
     [
         ("best_metric_value", 0.25),
-        ("monitor", "train/loss"),
+        ("monitor", "valid/metrics/other"),
         ("mode", "max"),
     ],
 )
@@ -1236,13 +1234,13 @@ def test_strict_resume_rejects_missing_or_invalid_progress(
         )
 
 
-def test_strict_resume_validates_metric_snapshot_without_inherited_best() -> None:
+def test_strict_resume_rejects_non_numeric_epoch_metrics() -> None:
     payload = _strict_resume_fields(epoch=1, global_step=2)
-    payload["metrics"] = {"train/loss": 0.5}
+    payload["metrics"] = cast(Any, {"train/loss": "invalid"})
 
     with pytest.raises(
-        ValueError,
-        match=r"sources must exactly match values",
+        TypeError,
+        match=r"metrics\['train/loss'\] must be numeric",
     ):
         experiment_runner._parse_strict_resume_state(
             payload,
@@ -1250,7 +1248,7 @@ def test_strict_resume_validates_metric_snapshot_without_inherited_best() -> Non
         )
 
 
-def test_strict_resume_requires_error_policy_monitor_in_current_snapshot() -> None:
+def test_strict_resume_requires_monitor_in_current_metrics() -> None:
     payload = _strict_resume_fields(epoch=1, global_step=2)
     metadata = _checkpoint_metadata(payload)
     metadata["training_loop"] = _training_loop_state(
@@ -1264,23 +1262,21 @@ def test_strict_resume_requires_error_policy_monitor_in_current_snapshot() -> No
         )
 
 
-def test_strict_resume_allows_skipped_diagnostic_observation() -> None:
+def test_strict_resume_rejects_diagnostic_monitor_policy() -> None:
     payload = _strict_resume_fields(epoch=1, global_step=2)
     metadata = _checkpoint_metadata(payload)
     metadata["training_loop"] = _training_loop_state(
         monitor="diagnostics/quality/fid",
-        missing="skip",
     )
 
-    epoch, global_step, _ = experiment_runner._parse_strict_resume_state(
-        payload,
-        require_cuda_compatibility=False,
-    )
+    with pytest.raises(ValueError, match="canonical validation metric key"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
 
-    assert (epoch, global_step) == (1, 2)
 
-
-def test_strict_resume_rejects_ineligible_current_monitor_source() -> None:
+def test_strict_resume_ignores_removed_metric_source_metadata() -> None:
     payload = _strict_resume_fields(epoch=1, global_step=2)
     payload["metrics"] = {"valid/loss": 0.5}
     metadata = _checkpoint_metadata(payload)
@@ -1296,17 +1292,15 @@ def test_strict_resume_rejects_ineligible_current_monitor_source() -> None:
         }
     }
 
-    with pytest.raises(
-        ValueError,
-        match=r"monitor source must be selection eligible",
-    ):
-        experiment_runner._parse_strict_resume_state(
-            payload,
-            require_cuda_compatibility=False,
-        )
+    epoch, global_step, _ = experiment_runner._parse_strict_resume_state(
+        payload,
+        require_cuda_compatibility=False,
+    )
+
+    assert (epoch, global_step) == (1, 2)
 
 
-def test_strict_resume_requires_verified_diagnostic_monitor_source() -> None:
+def test_strict_resume_does_not_accept_diagnostic_source_provenance() -> None:
     monitor = "diagnostics/quality/fid"
     payload = _strict_resume_fields(epoch=1, global_step=2)
     payload["metrics"] = {monitor: 12.5}
@@ -1323,10 +1317,7 @@ def test_strict_resume_requires_verified_diagnostic_monitor_source() -> None:
         }
     }
 
-    with pytest.raises(
-        ValueError,
-        match=r"validation data and a sha256 protocol identity",
-    ):
+    with pytest.raises(ValueError, match="canonical validation metric key"):
         experiment_runner._parse_strict_resume_state(
             payload,
             require_cuda_compatibility=False,
@@ -1502,7 +1493,7 @@ def test_trainer_isolates_each_diagnostic_rng_callback(
     else:
         trainer._emit_epoch_diagnostics(
             epoch_index=1,
-            snapshot=EpochMetricSnapshot(values={}, sources={}),
+            metrics={},
         )
 
     assert random.getstate() == python_state
@@ -1578,8 +1569,9 @@ def test_strict_resume_from_best_isolates_post_checkpoint_logger_rng(
     uninterrupted.fit(
         loader,
         num_epochs=2,
+        validation_dataloader=loader,
         show_progress=False,
-        early_stopping_monitor="train/loss",
+        early_stopping_monitor="valid/loss",
         track_best=True,
     )
     expected_state = {
@@ -1595,8 +1587,9 @@ def test_strict_resume_from_best_isolates_post_checkpoint_logger_rng(
     interrupted.fit(
         loader,
         num_epochs=1,
+        validation_dataloader=loader,
         show_progress=False,
-        early_stopping_monitor="train/loss",
+        early_stopping_monitor="valid/loss",
         track_best=True,
     )
     checkpoint = tmp_path / "interrupted-best" / "best.pt"
@@ -1621,8 +1614,9 @@ def test_strict_resume_from_best_isolates_post_checkpoint_logger_rng(
         loader,
         num_epochs=2,
         start_epoch=start_epoch,
+        validation_dataloader=loader,
         show_progress=False,
-        early_stopping_monitor="train/loss",
+        early_stopping_monitor="valid/loss",
         track_best=True,
     )
 

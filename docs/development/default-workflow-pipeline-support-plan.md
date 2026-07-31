@@ -10,7 +10,7 @@
   2026-07-28 将 Latent Diffusion 与 Stable Diffusion 分为两个关联能力计划；
   2026-07-29 作为非阻塞 umbrella/promotion plan 重新排期
 - 关联计划：
-  [Metrics 支持](metrics-support-plan.md)、
+  [正式 Metrics 扩展 API](../api/extensions.md#metrics)、
   [训练后 Evaluation 与 Benchmark](post-training-evaluation-support-plan.md)、
   [Latent Diffusion](latent-diffusion-support-plan.md)、
   [Stable Diffusion Component-Native](stable-diffusion-component-native-support-plan.md)、
@@ -511,16 +511,18 @@ class TrainingRunOutcome:
     best_checkpoint: Path | None
     latest_checkpoint: Path | None
     best_epoch: int | None
-    metric_snapshot: EpochMetricSnapshot
-    phase_test_snapshot: EpochMetricSnapshot | None
+    final_metrics: Mapping[str, float]
+    phase_test_metrics: Mapping[str, float] | None
     evaluation_results: tuple[EvaluationResultReference, ...]
     sampling_results: tuple[SamplingResultReference, ...]
     manifest_path: Path
 ```
 
-`EpochMetricSnapshot` 复用 Metrics 计划的 values + typed source metadata；不能在
-TrainingRunOutcome、Workflow 或 AutoML 边界重新压扁为裸 scalar mapping，否则
-`diagnostics/...` 无法证明实际使用的是 validation 还是 test reference。
+`final_metrics` 和 `phase_test_metrics` 复用 Training 当前产生的 plain canonical scalar
+mapping。best checkpoint 与 early stopping 仍只读取 `valid/loss` 或
+`valid/metrics/...`；diagnostic 日志不进入这些 mapping。正式 Evaluation 不复用逐 key
+Training metadata，而是在自己的 `EvaluationResult` 中冻结 subject、dataset、split、
+protocol 和 result identity。
 
 ```python
 def run_training(
@@ -540,7 +542,7 @@ def run_training(
 - DataBuilder 每个 run 正常重建，不缓存任意 Dataset；
 - failure 仍抛出有类型的异常；outcome 不伪装失败为成功；
 - reporter 只展示，不能拥有训练状态；
-- AutoML observer/pruning 与未来 Workflow 共用同一 epoch snapshot，不复制 loop。
+- AutoML observer/pruning 与未来 Workflow 共用同一 plain epoch report，不复制 loop。
 
 ### 7.2 operation 不合并成一个 `run(kind=...)`
 
@@ -581,7 +583,7 @@ TrainingRunOutcome.selected checkpoint
 默认不随每次训练自动执行重型 benchmark。若 Recipe 提供
 `post_training_evaluation` convenience，它必须调用公共 `run_evaluation()`，并把
 result reference 嵌入 TrainingRunOutcome；不能在 training runner 复制 evaluator。
-当前训练末尾的 test loss 只称 `phase_test_snapshot`，不等同于 formal benchmark。
+当前训练末尾的 test loss/metrics 只称 `phase_test_metrics`，不等同于 formal benchmark。
 
 ## 8. Task-specific inference Pipeline
 
@@ -1200,14 +1202,14 @@ PSNR 单点牺牲其生成目标后仍称为胜出。
 
 ## 12. Metrics、diagnostic 与 validation
 
-本节服从[Metrics 支持计划](metrics-support-plan.md)的语义：
+本节服从[正式 Metrics 扩展 API](../api/extensions.md#metrics)的语义：
 
 - Objective：可微、参与优化的 scalar；
 - Metric：跨 batch 累积的只读统计；
 - Diagnostic：额外 forward/sampling/reference cache/artifact 的 probe；
 - Validation：训练生命周期中的开发 phase，可产生 loss 与普通 metrics；
 - Evaluation：冻结 subject/data/protocol 的独立 operation；
-- Monitor：从统一 epoch snapshot 中选择 checkpoint/early stopping 依据；
+- Monitor：只从 canonical validation mapping 中选择 checkpoint/early stopping 依据；
 - Gate：对不可变 EvaluationResult 应用 promotion/acceptance 政策。
 
 Metric 是 Validation、Diagnostic 和 Evaluation 的横向依赖。一次 EvaluationRun
@@ -1266,9 +1268,11 @@ quality。建议：
 - 对训练后冻结 checkpoint 独立运行时属于 Evaluation；
 - Metric 算法和 preprocessing profile 应复用，不能复制两套 PSNR/FID 定义。
 
-当 Metrics 计划支持 epoch diagnostic result 进入统一 snapshot 后，训练期结果才允许
-显式成为 best-checkpoint monitor；被选择为 monitor 时 cadence/missing semantics
-必须明确。正式 test Evaluation 永不反向参与该 monitor。
+训练期 diagnostic 只记录日志和 artifact，不能成为 best-checkpoint monitor。若完整
+restore quality 未来需要参与候选选择，应由显式 validation
+`EvaluationResult`/`SelectionRecord` 冻结 subject、data 与 protocol；它不借用 diagnostic
+cadence，也不改变 Training 当前 validation-only monitor 契约。正式 test Evaluation
+永不反向参与 selection。
 
 ### 12.3 Consistency profile
 
@@ -1513,7 +1517,7 @@ reference project：
 
 ### Stage SR1：Metrics 与 evaluation integration
 
-依赖 Metrics 计划至少完成 validation MetricEngine，并依赖
+复用当前 validation MetricEngine，并依赖
 [Evaluation 计划](post-training-evaluation-support-plan.md)的独立 operation vertical
 slice：
 
@@ -1523,16 +1527,16 @@ slice：
 - checkpoint raw/EMA 与 inference profile identity；
 - paired prediction artifact 与 sample manifest；
 - comparison artifacts；
-- unified monitor key；
+- validation-only monitor key；
 - formal EvaluationResult/metric manifest。
 
 退出条件：
 
-- validation、diagnostic 和 benchmark 的同名指标使用同一 preprocessing profile；
+- validation、diagnostic 和 benchmark 的同名算法显式记录各自 preprocessing profile；
 - best checkpoint 可显式监控一个可用 metric；
-- cadence missing policy 可测试；
+- diagnostic cadence 不影响 checkpoint selection；
 - final test 只消费唯一冻结 checkpoint，不参与 selection；
-- phase test snapshot 不冒充完整 SR benchmark。
+- phase test metric mapping 不冒充完整 SR benchmark。
 
 ### Stage SR2：Conditional Gaussian SR
 
@@ -1685,7 +1689,7 @@ binding；不支持 arbitrary DAG/cache/remote scheduler。
 
 - train fresh/resume；
 - best/latest checkpoint paths；
-- validation/phase-test snapshot；
+- validation/phase-test metric mappings；
 - final sample on/off；
 - post-training evaluation on/off 只调用公共 operation；
 - null/custom reporter；
@@ -1698,7 +1702,7 @@ binding；不支持 arbitrary DAG/cache/remote scheduler。
 - checkpoint raw/EMA resolved identity；
 - test 只消费一个冻结 subject；
 - validation selection 与 final test 隔离；
-- phase snapshot 与 formal EvaluationResult 不混名；
+- phase metric mapping 与 formal EvaluationResult 不混名；
 - prediction/sample IDs、count 与 completeness；
 - live/offline replay；
 - protocol digest 与 comparison compatibility；
@@ -1738,8 +1742,8 @@ binding；不支持 arbitrary DAG/cache/remote scheduler。
 - LPIPS normalization/backbone metadata；
 - FID/KID state/reset/reference cache；
 - stochastic samples-per-input 与 aggregation；
-- diagnostic result 在 checkpoint selection 前可见；
-- missing cadence 不错误增加 early-stopping patience。
+- diagnostic observation 只进入日志/artifact，不进入 checkpoint selection；
+- diagnostic cadence 不改变 early-stopping patience。
 
 ### 16.7 Consistency
 
@@ -1769,7 +1773,8 @@ binding；不支持 arbitrary DAG/cache/remote scheduler。
 - Process 保持 model-free；
 - direct transform 不伪造 Sampler；
 - runner 不按 recipe/task name 分支；
-- Metric 是 validation/diagnostic/evaluation 的共享统计依赖，不拥有 task lifecycle；
+- MetricEngine 是 Training validation 与未来 Evaluation 的共享统计依赖，不拥有 task
+  lifecycle；diagnostic provider 只产生观测日志/artifact；
 - core batch/config 不新增通用 condition/image/teacher 字段；
 - 多 optimizer 方法明确进入新 loop family；
 - 独立 extension implementation 验证公开 contract。

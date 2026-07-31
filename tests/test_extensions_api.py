@@ -149,7 +149,6 @@ class InstalledExtensionEntryPoint:
 def test_public_extension_contracts_reexport_runtime_types() -> None:
     expected = {
         "DIAGNOSTIC_PROVIDERS": diagnostics.DIAGNOSTIC_PROVIDERS,
-        "TRAINING_METRIC_PHASES": metrics.TRAINING_METRIC_PHASES,
         "ArtifactRecord": diagnostics.ArtifactRecord,
         "ArtifactVerificationEvent": data.ArtifactVerificationEvent,
         "ArtifactVerificationObserver": data.ArtifactVerificationObserver,
@@ -161,7 +160,6 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "ClassLabeledImageFolderArtifactPayload": (
             data.ClassLabeledImageFolderArtifactPayload
         ),
-        "BoundTrainingDiagnostic": training.BoundTrainingDiagnostic,
         "DataArtifact": data.DataArtifact,
         "DataArtifactBinding": data.DataArtifactBinding,
         "DataArtifactBindings": data.DataArtifactBindings,
@@ -185,13 +183,9 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "DiagnosticBuildContext": training.DiagnosticBuildContext,
         "DiagnosticCadenceConfig": diagnostics.DiagnosticCadenceConfig,
         "DiagnosticProviderCatalog": diagnostics.DiagnosticProviderCatalog,
-        "DiagnosticResult": training.DiagnosticResult,
         "DiagnosticSamplingConfig": diagnostics.DiagnosticSamplingConfig,
-        "DiagnosticSourceProvider": training.DiagnosticSourceProvider,
-        "DiagnosticSourceRequest": training.DiagnosticSourceRequest,
         "DeviceTransferableBatch": training.DeviceTransferableBatch,
         "DiffusionQualityConfig": diagnostics.DiffusionQualityConfig,
-        "EpochMetricSnapshot": metrics.EpochMetricSnapshot,
         "ExperimentLogger": logging.ExperimentLogger,
         "ExtensionActivationError": plugins.ExtensionActivationError,
         "ExtensionActivationPlan": plugins.ExtensionActivationPlan,
@@ -233,15 +227,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "ManagedDataArtifactBuild": data.ManagedDataArtifactBuild,
         "MSEObjective": training.MSEObjective,
         "ManagedTrainingModule": training.ManagedTrainingModule,
-        "MetricConfig": metrics.MetricConfig,
         "MetricChannelProvider": training.MetricChannelProvider,
-        "MetricDataRole": metrics.MetricDataRole,
-        "MetricEngine": metrics.MetricEngine,
-        "MetricOrigin": metrics.MetricOrigin,
-        "MetricPayloadDetachable": metrics.MetricPayloadDetachable,
-        "MetricRuntimeError": metrics.MetricRuntimeError,
-        "MetricSource": metrics.MetricSource,
-        "MetricSpec": metrics.MetricSpec,
         "MetricUpdate": metrics.MetricUpdate,
         "PerSampleObjective": training.PerSampleObjective,
         "PredictionType": sampling.PredictionType,
@@ -291,20 +277,13 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
             data.TorchvisionImageArtifactPayload
         ),
         "TrajectoryObserver": sampling.TrajectoryObserver,
-        "VerifiedMetricSource": training.VerifiedMetricSource,
         "TabulatedDiscreteVPSchedule": processes.TabulatedDiscreteVPSchedule,
         "activate_extension_plugins": plugins.activate_extension_plugins,
-        "bind_training_diagnostic": training.bind_training_diagnostic,
-        "bind_training_diagnostics": training.bind_training_diagnostics,
-        "build_metric": metrics.build_metric,
         "canonical_artifact_digest": data.canonical_artifact_digest,
         "canonical_artifact_json_bytes": (
             data.canonical_artifact_json_bytes
         ),
         "compute_objective": training.compute_objective,
-        "detach_metric_update": metrics.detach_metric_update,
-        "detach_metric_updates": metrics.detach_metric_updates,
-        "detach_metric_value": metrics.detach_metric_value,
         "extension_plugin_provenance_to_dicts": (
             plugins.extension_plugin_provenance_to_dicts
         ),
@@ -314,12 +293,6 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "prepare_extension_plugins": plugins.prepare_extension_plugins,
         "gaussian_training_target": training.gaussian_training_target,
         "normalize_gaussian_prediction": sampling.normalize_gaussian_prediction,
-        "validate_metric_configs": metrics.validate_metric_configs,
-        "validate_metric_spec": metrics.validate_metric_spec,
-        "validate_metric_updates": metrics.validate_metric_updates,
-        "validate_training_monitor_key": (
-            metrics.validate_training_monitor_key
-        ),
     }
 
     assert set(public.__all__) == set(expected)
@@ -338,6 +311,30 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "ManagedDataArtifactIdentity",
         "ReferencedDataArtifact",
         "ReferencedDataArtifactIdentity",
+        "BoundTrainingDiagnostic",
+        "DiagnosticResult",
+        "DiagnosticSourceProvider",
+        "DiagnosticSourceRequest",
+        "EpochMetricSnapshot",
+        "MetricConfig",
+        "MetricDataRole",
+        "MetricEngine",
+        "MetricOrigin",
+        "MetricPayloadDetachable",
+        "MetricRuntimeError",
+        "MetricSource",
+        "MetricSpec",
+        "VerifiedMetricSource",
+        "bind_training_diagnostic",
+        "bind_training_diagnostics",
+        "build_metric",
+        "detach_metric_update",
+        "detach_metric_updates",
+        "detach_metric_value",
+        "validate_metric_configs",
+        "validate_metric_spec",
+        "validate_metric_updates",
+        "validate_training_monitor_key",
     ):
         assert not hasattr(public, removed)
     assert not hasattr(registry.REGISTRIES, "data_pipelines")
@@ -411,14 +408,14 @@ for index, component_registry in enumerate(registries):
     )
 
 
-def test_plugin_strategy_drives_registered_metric_with_declared_provenance() -> None:
+def test_plugin_strategy_drives_registered_metric() -> None:
     strategy = ExtensionVectorStrategy()
     assert isinstance(strategy, public.MetricChannelProvider)
     assert strategy.metric_channels == frozenset({"example.vector_pair"})
 
-    engine = public.MetricEngine(
+    engine = metrics.MetricEngine(
         (
-            public.MetricSpec(
+            metrics.MetricSpec(
                 id="relative_l2",
                 name=EXTENSION_METRIC_NAME,
                 channel="example.vector_pair",
@@ -446,41 +443,6 @@ def test_plugin_strategy_drives_registered_metric_with_declared_provenance() -> 
     values = engine.compute(reset=True)
     assert values == {"relative_l2": pytest.approx(5.0 / 6.0)}
 
-    snapshot = public.EpochMetricSnapshot(
-        values={"valid/metrics/relative_l2": values["relative_l2"]},
-        sources={
-            "valid/metrics/relative_l2": public.MetricSource(
-                origin="phase",
-                data_role="validation",
-                protocol_id=None,
-                selection_eligible=True,
-            )
-        },
-    )
-    provenance = public.ExtensionPluginProvenance(
-        name="vector-metrics",
-        distribution="vector-metrics-extension",
-        version="1.4.0",
-        target="vector_metrics.stochaflow_ext",
-    )
-    checkpoint_metadata = {
-        "extension_plugins": public.extension_plugin_provenance_to_dicts(
-            (provenance,)
-        ),
-        "metric_sources": snapshot.to_dict()["sources"],
-    }
-
-    assert public.parse_extension_plugin_provenance(
-        checkpoint_metadata["extension_plugins"]
-    ) == (provenance,)
-    assert checkpoint_metadata["metric_sources"] == {
-        "valid/metrics/relative_l2": {
-            "origin": "phase",
-            "data_role": "validation",
-            "protocol_id": None,
-            "selection_eligible": True,
-        }
-    }
 
 
 def test_selected_plugin_metric_runs_and_persists_installed_provenance(
@@ -713,8 +675,8 @@ def test_metric_ddp_declaration_matrix_has_explicit_additive_reduction(
 ) -> None:
     """Audit reduction declarations without claiming distributed Trainer support."""
 
-    metric = public.build_metric(
-        public.MetricSpec(
+    metric = metrics.build_metric(
+        metrics.MetricSpec(
             id="contract",
             name=metric_name,
             channel="contract.payload",

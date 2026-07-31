@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import cast
 
 import torch
 
-from stochaflow.families.gaussian import PredictionType, normalize_gaussian_prediction
+from stochaflow.families.gaussian import (
+    PredictionType,
+    interpolate_gaussian_log_variance,
+    normalize_gaussian_prediction,
+)
 from stochaflow.models.denoising import DenoiserChannelLayout
 from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
@@ -17,15 +21,12 @@ from stochaflow.processes.gaussian.contracts import (
 
 from .contracts import VarianceMode
 
-VarianceLossName = Literal["rescaled_variational_bound"]
-
 
 @dataclass(frozen=True, slots=True)
 class GaussianVarianceConfig:
-    """Validated Gaussian model-variance and hybrid-loss recipe."""
+    """Validated Gaussian model-output variance mode."""
 
     mode: VarianceMode = "fixed"
-    loss: VarianceLossName | None = None
 
     def __post_init__(self) -> None:
         """Fail closed when constructed outside the YAML parser."""
@@ -33,15 +34,6 @@ class GaussianVarianceConfig:
         if self.mode not in ("fixed", "learned_range"):
             raise ValueError(
                 "GaussianVarianceConfig.mode must be fixed or learned_range"
-            )
-        if self.mode == "fixed":
-            if self.loss is not None:
-                raise ValueError("fixed Gaussian variance cannot define a loss")
-            return
-        if self.loss != "rescaled_variational_bound":
-            raise ValueError(
-                "learned_range Gaussian variance requires "
-                "loss='rescaled_variational_bound'"
             )
 
 
@@ -64,18 +56,10 @@ def parse_gaussian_variance(
         return GaussianVarianceConfig()
     if mode != "learned_range":
         raise ValueError(f"{path}.mode must be fixed or learned_range")
-    unknown = sorted(set(value) - {"mode", "loss"})
+    unknown = sorted(set(value) - {"mode"})
     if unknown:
         raise ValueError(f"unknown {path} field(s): " + ", ".join(unknown))
-    loss = value.get("loss")
-    if loss != "rescaled_variational_bound":
-        raise ValueError(
-            f"{path}.loss must be rescaled_variational_bound for learned_range"
-        )
-    return GaussianVarianceConfig(
-        mode="learned_range",
-        loss="rescaled_variational_bound",
-    )
+    return GaussianVarianceConfig(mode="learned_range")
 
 
 def validate_gaussian_model_output_layout(
@@ -127,8 +111,11 @@ def learned_range_log_variance(
         target_times,
         variance_values.size(),
     )
-    fraction = (variance_values + 1.0) / 2.0
-    return fraction * bounds.upper + (1.0 - fraction) * bounds.lower
+    return interpolate_gaussian_log_variance(
+        variance_values,
+        lower=bounds.lower,
+        upper=bounds.upper,
+    )
 
 
 def learned_range_variational_bound(

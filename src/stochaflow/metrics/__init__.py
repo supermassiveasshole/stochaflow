@@ -1,36 +1,17 @@
-"""Task-neutral metric contracts with lazy construction/runtime exports.
-
-Configuration loading imports this package, so TorchMetrics-backed construction
-modules must remain lazy. Built-ins are imported when the runtime factory module
-is loaded, not during configuration-only imports.
-"""
+"""Task-neutral metric declarations, payloads, construction, and runtime."""
 
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-from stochaflow.metrics.config import (
-    TRAINING_METRIC_PHASES,
-    MetricConfig,
-    MetricSpec,
-    validate_metric_configs,
-    validate_metric_spec,
-    validate_training_monitor_key,
-)
-from stochaflow.metrics.contracts import (
-    EpochMetricSnapshot,
-    MetricDataRole,
-    MetricOrigin,
-    MetricPayloadDetachable,
-    MetricSource,
-    MetricUpdate,
-    detach_metric_update,
-    detach_metric_updates,
-    detach_metric_value,
-    validate_metric_updates,
-)
+from stochaflow.metrics.config import MetricSpec
+from stochaflow.metrics.contracts import MetricUpdate
 
 if TYPE_CHECKING:
-    from stochaflow.metrics.builtin import ErrorOnNanMeanMetric
+    from stochaflow.metrics.builtin import (
+        ErrorOnNanMeanMetric,
+        SingleOutputMeanAbsoluteError,
+        SingleOutputMeanSquaredError,
+    )
     from stochaflow.metrics.factory import build_metric
     from stochaflow.metrics.runtime import MetricEngine, MetricRuntimeError
 
@@ -38,6 +19,14 @@ _LAZY_METRIC_EXPORTS = {
     "ErrorOnNanMeanMetric": (
         "stochaflow.metrics.builtin",
         "ErrorOnNanMeanMetric",
+    ),
+    "SingleOutputMeanAbsoluteError": (
+        "stochaflow.metrics.builtin",
+        "SingleOutputMeanAbsoluteError",
+    ),
+    "SingleOutputMeanSquaredError": (
+        "stochaflow.metrics.builtin",
+        "SingleOutputMeanSquaredError",
     ),
     "MetricEngine": ("stochaflow.metrics.runtime", "MetricEngine"),
     "MetricRuntimeError": (
@@ -67,24 +56,12 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    "TRAINING_METRIC_PHASES",
-    "EpochMetricSnapshot",
     "ErrorOnNanMeanMetric",
-    "MetricConfig",
-    "MetricDataRole",
     "MetricEngine",
-    "MetricOrigin",
-    "MetricPayloadDetachable",
     "MetricRuntimeError",
-    "MetricSource",
     "MetricSpec",
     "MetricUpdate",
+    "SingleOutputMeanAbsoluteError",
+    "SingleOutputMeanSquaredError",
     "build_metric",
-    "detach_metric_update",
-    "detach_metric_updates",
-    "detach_metric_value",
-    "validate_metric_configs",
-    "validate_metric_spec",
-    "validate_metric_updates",
-    "validate_training_monitor_key",
 ]

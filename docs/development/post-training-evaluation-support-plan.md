@@ -1,14 +1,14 @@
 # 训练后 Evaluation 与 Benchmark 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：尚未进入实现；E0–E1 在 Metrics M0–M1 后推进，E2–E3 扩展
+- 状态：尚未进入实现；E0–E1 复用现有 Metrics API，E2–E3 扩展
   prediction artifact、FID/KID 与 class-aware Gaussian profile
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-26
 - 本次排期修订日期：2026-07-29
 - 前置工作：
-  [Metrics 支持开发计划](metrics-support-plan.md)的 `MetricUpdate`、`MetricEngine`
+  [正式 Metrics 扩展 API](../api/extensions.md#metrics)的 `MetricUpdate`、`MetricEngine`
   与 canonical result contract
 - 关联计划：
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
@@ -40,13 +40,14 @@
    增加 `run_evaluation(EvaluationRunRequest) -> EvaluationRunOutcome` 和
    `stochaflow evaluate`；不实现 `run(kind=...)`，也不把它塞进
    `SamplingBuilder`、`TrainingDiagnostic` 或 `Metric`。
-2. **Metric 是 Evaluation 的可复用统计依赖，不是 Evaluation 本身。**
-   架构层面 Metric 横向服务 training validation、diagnostic、post-training
-   evaluation 和 AutoML；产品结果层面，一次 `EvaluationRun` 包含若干 metric
-   实例和结果。二者是“消费关系”，不是互相替代的继承或严格包含关系。
-3. **Validation、Diagnostic 与独立 Evaluation 都应支持 Metrics。**
-   同一个 PSNR/FID 算法可以出现在三个上下文中；上下文决定它能否参与 checkpoint
-   selection、何时运行、使用哪个 split 和产生什么 provenance，不应复制三套指标。
+2. **MetricEngine 是 Evaluation 可复用的统计依赖，不是 Evaluation 本身。**
+   当前 Training validation 已通过 phase-local MetricEngine 产生 plain canonical
+   mapping；未来 `EvaluationRun` 可以复用 `MetricSpec`、Registry/factory 和
+   MetricEngine，但必须另外拥有 subject、dataset、protocol、artifact 与 result identity。
+3. **Validation、Diagnostic 与独立 Evaluation 的职责不同。**
+   同一个 PSNR/FID 算法可以被不同上下文调用，但 Training diagnostic 只记录日志和
+   artifact，不产生 selection-eligible result。Training 模型选择只消费 validation
+   phase mapping；未来 Evaluation 的决策资格由其显式 purpose/result contract 管理。
 4. **正式 test 只接受一个已经冻结的 subject。**
    test 结果永不反馈到 checkpoint selection、early stopping、HPO suggestion 或
    pruning。若需要在训练后比较多个 checkpoint，应在 validation split 上生成
@@ -90,8 +91,8 @@ both”应按三条轴回答：
 
 - Metric 必须是独立统计能力；
 - validation 可以把配置的 Metric 作为模型选择依据；
-- diagnostic 可以消费同一个 Metric 算法，执行额外 sampling/restore/reference
-  计算，并按 cadence 把 scalar 返回统一 snapshot；
+- diagnostic 可以调用同一个底层算法执行额外 sampling/restore/reference 计算，但只把
+  scalar 写入观测日志；
 - 独立 Evaluation 也消费同一 MetricEngine，但拥有自己的 subject、数据、协议、
   artifact 与 manifest；
 - 一个数值只有被 monitor/selection/gate **显式引用**时才成为决策依据，不能因为
@@ -119,7 +120,7 @@ both”应按三条轴回答：
 ```text
 每 N 个训练 epoch 在固定 validation reference 上运行
     -> Diagnostic context
-    -> 可以显式成为 validation monitor
+    -> 只记录观测日志与 artifact，不能成为 validation monitor
 
 训练结束后，对冻结 checkpoint 在 held-out test protocol 上运行
     -> Evaluation context
@@ -154,7 +155,7 @@ validation split 混淆。
 | `InferenceModelProvider` | sampling 已有 raw/EMA 只读权重投影经验 |
 | `SamplingBuilder` 与 `run_sampling()` | 独立 operation、overlay、manifest、structured result 的先例 |
 | diagnostics runtime | RNG、eval mode、EMA 临时切换和 reference cache 的实现经验 |
-| Metrics 计划 | `MetricUpdate`、MetricEngine、canonical key 与 collision/finite policy |
+| 正式 Metrics API | `MetricUpdate`、MetricEngine、canonical key 与 collision/finite policy |
 | registry/extension activation | 自定义 EvaluationBuilder 与 metric 的构造边界 |
 
 这些能力应被复用，但不能直接把 training 或 diagnostic callback lifecycle 伪造成
@@ -166,23 +167,23 @@ validation split 混淆。
 
 - 进入 module eval mode 和 `torch.no_grad()`；
 - 调用 `TrainingStrategy.evaluation_step()`；
-- 只累加 `output.loss`；
-- 忽略 `TrainStepOutput.metrics`、`diagnostics` 和未来 `metric_updates`；
-- 对每个 batch mean 等权平均，无法保证 sample-weighted 正确；
-- 只返回 `loss`、`num_batches` 和 duration。
+- 按 `loss_aggregation_weight` 聚合 `output.loss`；
+- 把 `metric_updates` 交给对应 validation/test phase 的隔离 MetricEngine；
+- 返回 loss、batch/duration facts 和配置得到的 canonical phase metric mapping；
+- 不把 diagnostic 日志合并进 phase mapping。
 
 训练 epoch 当前近似顺序是：
 
 ```text
 train
--> validation loss
--> best / early-stop decision
+-> validation loss/metric mapping
+-> epoch diagnostic logging/artifacts
+-> best / early-stop decision from validation mapping
 -> checkpoint
--> epoch diagnostic
 ```
 
-Metrics 计划需要把 diagnostic 提前并合入 canonical snapshot，但即使完成该改造，
-它仍只解决**训练上下文**的 phase/diagnostic reporting，不等于独立 benchmark。
+当前边界有意不把 diagnostic 日志合入 canonical phase mapping。Training 的 validation
+mapping 只解决**训练上下文**的模型选择，仍不等于独立 benchmark。
 
 ### 3.3 当前训练后路径
 
@@ -248,7 +249,7 @@ post-training evaluation 由新的 operation 管理。
 [TorchMetrics](https://lightning.ai/docs/torchmetrics/latest/pages/overview.html)
 的稳定价值是 `update/compute/reset`、device state 和 distributed reduction。
 train/validation/test 必须使用隔离状态。它不选择 checkpoint、数据 split 或模型调用，
-这与 Metrics 计划的横向 subsystem 结论一致。
+这与当前 task-neutral Metrics subsystem 的边界一致。
 
 ### 4.3 Transformers 与 Hugging Face Evaluate：任务适配与 suite
 
@@ -381,7 +382,7 @@ periodic/best checkpoints
 - test 上比较 raw/EMA、多个 NFE、tile 或 checkpoint 后再挑最好，属于数据泄漏；
 - 若 final test 暴露实现错误，应把旧 result 标记 invalid 并升级 protocol version，
   不能静默调参后覆盖；
-- test result 不进入 Training snapshot、HPO engine 或下一轮 suggestion；
+- test result 不进入 Training canonical mapping、HPO engine 或下一轮 suggestion；
 - benchmark 可包含多个预先声明的 inference cases，但不能事后选择其中 test 最优者
   冒充唯一 final model。
 
@@ -650,27 +651,24 @@ purpose 不会演变成一个让 Runner 按模式执行任务数学的枚举。
 
 ### 7.3 Config 中的 Metric declaration
 
-Metrics 计划的 training 配置还需要 `phases`，独立 evaluation 没有 phase binding。
-实现前应提取共享的数据化部分：
+当前 `stochaflow.metrics.MetricSpec` 已经是 task-neutral 的数据化声明；Training 配置层
+通过组合添加 `phases`，独立 Evaluation 不需要 phase binding。Evaluation 应直接复用
+`MetricSpec`、Registry/factory 和 MetricEngine，不建立第二个 `EvaluationMetric`
+层次：
 
 ```python
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class MetricSpec:
     id: str
     name: str
     channel: str
-    params: Mapping[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class TrainingMetricBinding:
-    metric: MetricSpec
-    phases: tuple[str, ...]
+    params: dict[str, Any]
 ```
 
-精确 YAML 可保持当前简洁写法，但 factory、registry resolver、scalar flatten、
-non-finite 与 provenance contract 必须由 training 和 evaluation 共用，不能复制
-`EvaluationMetric` 子系统。
+精确 YAML 可保持简洁写法。factory、registry resolver、scalar flatten、payload 和
+non-finite contract 由 Training 和 Evaluation 共用；Evaluation 自己的 dataset、split、
+metric preprocessing/version 与 protocol identity 则写入 Evaluation manifest/result，
+不能附着为 Training scalar mapping 的逐 key metadata。
 
 ## 8. Subject resolution 与 checkpoint 投影
 
@@ -845,7 +843,7 @@ class EvaluationStepOutput:
 说明：
 
 - `metric_update_groups` 允许同一 batch 对 set metric 先后提交 reference/generated
-  payload；每组仍复用 Metrics 计划的普通 channel mapping；
+  payload；每组仍复用正式 Metrics API 的普通 channel mapping；
 - channel 的 args/kwargs 由 task contract 决定，Runner 不理解 `real=True`、
   prediction、target 或 condition；
 - `num_examples` 显式给出，Runner 不从任意 batch 猜 shape；
@@ -909,14 +907,14 @@ EvaluationBuilder 消费它并添加 metric/reference/completeness。对于 dire
 
 ### 10.1 共用 MetricEngine
 
-EvaluationRunner 使用 Metrics 计划中的同一构造和 runtime contract：
+EvaluationRunner 使用正式 Metrics API 的同一构造和 runtime contract：
 
 - Stochaflow 少量 built-in metric 走 `REGISTRIES.metrics`；
-- allowlisted `torchmetrics.*` 走 native-provider resolver；
 - extension metric 走同一 registry；
-- 每个 EvaluationRun 构造独立 state，不能与 training/diagnostic/其他 run 共享；
+- 每个 EvaluationRun 构造独立 state，不能与 Training 或其他 run 共享；
 - `reset -> update* -> compute -> publish` 严格成对；
-- canonical scalar flatten、collision、NaN/Inf 和 direction metadata 逻辑共用；
+- canonical scalar flatten、collision 与 NaN/Inf 逻辑共用；direction 属于 Evaluation
+  config/result policy；
 - metric 不进入 optimizer、checkpoint managed asset 或 model mode lifecycle。
 
 Evaluation canonical keys：
@@ -927,7 +925,7 @@ eval/measurements/<measurement-id>[/<subkey>]
 eval/system/...
 ```
 
-`valid/*`、`test/*` 保留给 training phase snapshot。EvaluationResult 单独记录
+`valid/*`、`test/*` 保留给 training phase mapping。EvaluationResult 单独记录
 `data.split` 和 `purpose`，不通过 key prefix 暗示治理语义。
 
 ### 10.2 Paired 与 distribution metric 不要求万能签名
@@ -1192,18 +1190,18 @@ gate:
 
 ### 13.1 Training phase profile
 
-用途：保持现有 train/validation/test convenience，同时补齐 Metrics 计划。
+用途：保持现有 train/validation/test convenience，并与 formal EvaluationResult 分离。
 
 内容：
 
 - objective/loss 的显式 weighting；
 - Strategy 的普通 MetricUpdate；
-- validation/test canonical snapshot；
+- validation/test canonical metric mapping；
 - selected raw/EMA 语义若在 run 结束评估；
 - 无完整 sampler、gallery 或 distribution reference cache。
 
 当前 train 命令默认 test 行为可暂时保留兼容，但应改名为
-`phase_test_snapshot`，不能把一个 `float test_loss` 宣称为完整 benchmark。
+`phase_test_metrics`，不能把一个 `float test_loss` 宣称为完整 benchmark。
 
 ### 13.2 Paired super-resolution profile
 
@@ -1473,23 +1471,24 @@ sampling_artifacts: Mapping[str, Path]
 迁移为：
 
 ```text
-phase_test_snapshot: EpochMetricSnapshot | None
+phase_test_metrics: Mapping[str, float] | None
 evaluation_results: tuple[EvaluationResultReference, ...]
 sampling_results: tuple[SamplingResultReference, ...]
 ```
 
-phase snapshot 与 formal result 名称不同，避免使用者误以为一个 test loss 已完成全部
-task benchmark。
+phase metric mapping 与 formal result 名称不同，避免使用者误以为一个 test loss/metric
+mapping 已完成全部 task benchmark。只有 `EvaluationResult` 冻结 subject、dataset、
+protocol、completeness 和 result identity。
 
 ### 14.4 AutoML
 
 AutoML/HPO trial：
 
 - 默认不运行 test Evaluation；
-- suggestion/pruning 只消费 validation/diagnostic canonical metric；
-- 若完整 restore quality 是 objective，它必须使用固定 validation evaluation/
-  diagnostic protocol；
-- trial 间 protocol、sample plan、metric version 和 budget 一致；
+- suggestion/pruning 只消费 Training 的 canonical validation loss/metric mapping；
+- diagnostic 日志不进入 suggestion、pruning 或 best-trial selection；
+- 若未来完整 restore quality 需要参与候选选择，应由独立 validation Evaluation result
+  明确 dataset/protocol/result identity，并与 Training 型 study 分开设计；
 - study 选出配置后，冻结唯一 subject；
 - final test 通过独立 Evaluation Operation 执行一次；
 - final test/gate 结果不反馈给现有 study；
@@ -1559,9 +1558,10 @@ outputs/evaluations/<evaluation-id>/
 
 ### Stage E0：语义、结果与 phase metric 基础
 
-依赖 Metrics 计划的前置 contract。
+复用已经实现的 `MetricSpec`、`MetricUpdate`、MetricEngine 和 validation-only selection
+contract。
 
-排期：Metrics M0–M1 与 P2/ADM A1 core 后启动。现有 inference asset projection
+排期：P2/ADM A1 core 后启动。现有 inference asset projection
 已经可供 checkpoint subject resolver 复用；pretrained codec 接入后再增加
 codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
 
@@ -1569,17 +1569,16 @@ codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
 
 - 本计划评审通过；
 - 冻结 Metric/Diagnostic/Evaluation/Selection/Gate 术语；
-- `MetricSpec` 可被 training/evaluation 构造共用；
-- `Trainer.evaluate_epoch()` 消费普通 MetricUpdate；
-- phase loss 支持显式 weighting；
-- train/validation/test 独立 metric state；
-- `phase_test_snapshot` 替代单一 `test_loss` 的新内部结果。
+- Evaluation 构造复用现有 `MetricSpec`/MetricEngine；
+- structured training outcome 使用 `phase_test_metrics` plain mapping，不再只暴露
+  `test_loss`；
+- Evaluation request/result 明确拥有 dataset、protocol 与 result identity。
 
 退出条件：
 
 - validation/test 能报告普通自定义 Metric；
 - phase metrics 不与 formal benchmark 混名；
-- test snapshot 不参与 monitor/HPO；
+- test phase mapping 不参与 monitor/HPO；
 - focused Metrics/Trainer tests 通过。
 
 ### Stage E1：独立 checkpoint Evaluation vertical slice

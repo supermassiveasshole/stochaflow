@@ -545,41 +545,54 @@ def test_fit_tracks_best_checkpoint_without_early_stopping(tmp_path) -> None:
     assert best_checkpoint_path.exists()
 
 
-def test_fit_can_track_best_train_loss_without_validation(tmp_path) -> None:
+def test_fit_without_validation_disables_best_tracking_by_default(tmp_path) -> None:
     trainer = _make_trainer(tmp_path)
 
-    trainer.fit(
+    history = trainer.fit(
         _make_loader(),
         num_epochs=1,
         show_progress=False,
-        early_stopping_monitor="train/loss",
-        track_best=True,
     )
 
-    assert trainer.best_epoch == 1
-    assert trainer.best_metric_value is not None
-    best_checkpoint_path = trainer.best_checkpoint_path
-    assert best_checkpoint_path is not None
-    assert best_checkpoint_path == tmp_path / "checkpoints" / "best.pt"
-    assert best_checkpoint_path.exists()
+    assert history[0]["train/loss"] > 0.0
+    assert trainer.best_epoch is None
+    assert trainer.best_metric_value is None
+    assert trainer.best_checkpoint_path is None
+    assert not (tmp_path / "checkpoints" / "best.pt").exists()
 
 
-def test_fit_early_stopping_enables_train_loss_tracking_without_validation(
+def test_fit_rejects_explicit_best_tracking_without_validation_before_loop(
     tmp_path,
 ) -> None:
     trainer = _make_trainer(tmp_path)
-
-    trainer.fit(
-        _make_loader(),
-        num_epochs=1,
-        show_progress=False,
-        early_stopping_patience=1,
-        early_stopping_monitor="train/loss",
+    trainer.train_epoch = lambda *args, **kwargs: pytest.fail(
+        "training loop must not start"
     )
 
-    assert trainer.best_epoch == 1
-    assert trainer.best_metric_value is not None
-    assert trainer.best_checkpoint_path == tmp_path / "checkpoints" / "best.pt"
+    with pytest.raises(ValueError, match="requires a validation dataloader"):
+        trainer.fit(
+            _make_loader(),
+            num_epochs=1,
+            show_progress=False,
+            track_best=True,
+        )
+
+
+def test_fit_rejects_early_stopping_without_validation_before_loop(
+    tmp_path,
+) -> None:
+    trainer = _make_trainer(tmp_path)
+    trainer.train_epoch = lambda *args, **kwargs: pytest.fail(
+        "training loop must not start"
+    )
+
+    with pytest.raises(ValueError, match="requires a validation dataloader"):
+        trainer.fit(
+            _make_loader(),
+            num_epochs=1,
+            show_progress=False,
+            early_stopping_patience=1,
+        )
 
 
 def test_fit_resume_preserves_best_and_early_stopping_wait(tmp_path) -> None:
@@ -598,7 +611,6 @@ def test_fit_resume_preserves_best_and_early_stopping_wait(tmp_path) -> None:
             "monitor_policy": {
                 "metric": "valid/loss",
                 "mode": "min",
-                "missing": "error",
                 "min_delta": 0.0,
             },
             "early_stopping_patience": 2,
@@ -647,7 +659,6 @@ def test_fit_resume_preserves_best_and_early_stopping_wait(tmp_path) -> None:
         "monitor_policy": {
             "metric": "valid/loss",
             "mode": "min",
-            "missing": "error",
             "min_delta": 0.0,
         },
         "early_stopping_patience": 2,
@@ -673,7 +684,6 @@ def test_restore_fit_state_rejects_non_finite_best_metric(
                 "monitor_policy": {
                     "metric": "valid/loss",
                     "mode": "min",
-                    "missing": "error",
                     "min_delta": 0.0,
                 },
                 "early_stopping_patience": None,

@@ -10,18 +10,16 @@ from stochaflow.training.objectives import (
     MSEObjective,
     compute_objective,
     validate_per_sample_loss,
-    validate_reduced_loss,
 )
 
 
-class CountingReducibleObjective(nn.Module):
-    """Reducible Objective that records which semantic path was evaluated."""
+class CountingPerSampleObjective(nn.Module):
+    """Objective that records scalar and optional diagnostic evaluation."""
 
     def __init__(self) -> None:
         super().__init__()
         self.forward_calls = 0
         self.per_sample_calls = 0
-        self.reducer_calls = 0
 
     def forward(
         self,
@@ -38,11 +36,6 @@ class CountingReducibleObjective(nn.Module):
     ) -> torch.Tensor:
         self.per_sample_calls += 1
         return (prediction - target).abs().flatten(1).mean(dim=1)
-
-    def reduce_per_sample_loss(self, loss: torch.Tensor) -> torch.Tensor:
-        self.reducer_calls += 1
-        return loss.mean()
-
 
 class ScalarObjective(nn.Module):
     """Objective exposing only the ordinary scalar contract."""
@@ -62,7 +55,7 @@ class ScalarObjective(nn.Module):
         ("sum", torch.tensor([4.0, 20.0]), 24.0),
     ],
 )
-def test_mse_objective_uses_one_explicit_reduction_semantics(
+def test_mse_objective_preserves_scalar_and_per_sample_reduction_semantics(
     reduction: str,
     expected_per_sample: torch.Tensor,
     expected_scalar: float,
@@ -74,14 +67,11 @@ def test_mse_objective_uses_one_explicit_reduction_semantics(
     per_sample = objective.per_sample_loss(prediction, target)
 
     assert torch.equal(per_sample, expected_per_sample)
-    assert objective.reduce_per_sample_loss(per_sample).item() == pytest.approx(
-        expected_scalar
-    )
     assert objective(prediction, target).item() == pytest.approx(expected_scalar)
 
 
 def test_compute_objective_preserves_forward_as_the_generic_scalar_authority() -> None:
-    objective = CountingReducibleObjective()
+    objective = CountingPerSampleObjective()
     prediction = torch.tensor([[1.0, 3.0], [2.0, 6.0]])
     target = torch.zeros_like(prediction)
 
@@ -92,7 +82,6 @@ def test_compute_objective_preserves_forward_as_the_generic_scalar_authority() -
     assert torch.equal(per_sample, torch.tensor([2.0, 4.0]))
     assert objective.forward_calls == 1
     assert objective.per_sample_calls == 1
-    assert objective.reducer_calls == 0
 
 
 def test_compute_objective_preserves_scalar_only_objective_support() -> None:
@@ -157,38 +146,3 @@ def test_validate_per_sample_loss_allows_autocast_promoted_dtype() -> None:
     )
 
     assert result is per_sample_loss
-
-
-@pytest.mark.parametrize(
-    ("value_factory", "error_type", "match"),
-    [
-        (lambda: 1.0, TypeError, "must return a Tensor"),
-        (
-            lambda: torch.tensor(1),
-            TypeError,
-            "must return a floating-point Tensor",
-        ),
-        (
-            lambda: torch.ones(1),
-            ValueError,
-            "must return a scalar Tensor",
-        ),
-        (
-            lambda: torch.ones((), device="meta"),
-            ValueError,
-            "must be on the per-sample loss device",
-        ),
-    ],
-)
-def test_validate_reduced_loss_rejects_invalid_outputs(
-    value_factory: Callable[[], object],
-    error_type: type[Exception],
-    match: str,
-) -> None:
-    per_sample_loss = torch.ones(2)
-
-    with pytest.raises(error_type, match=match):
-        validate_reduced_loss(
-            value_factory(),
-            per_sample_loss=per_sample_loss,
-        )

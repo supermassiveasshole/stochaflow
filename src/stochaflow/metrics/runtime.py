@@ -16,8 +16,8 @@ from stochaflow.metrics.config import (
 )
 from stochaflow.metrics.contracts import (
     MetricUpdate,
-    detach_metric_update,
-    validate_metric_updates,
+    PreparedMetricUpdates,
+    prepare_metric_updates,
 )
 from stochaflow.metrics.factory import build_metric
 
@@ -117,10 +117,18 @@ class MetricEngine:
             self._successful_updates = 0
 
     def update(self, updates: Mapping[str, MetricUpdate]) -> None:
-        """Dispatch detached channel payloads without interpreting their semantics."""
+        """Prepare and immediately commit one channel payload mapping."""
 
-        validated = validate_metric_updates(updates)
-        missing = sorted(self.required_channels - set(validated))
+        self._update_prepared(prepare_metric_updates(updates))
+
+    def _update_prepared(self, updates: PreparedMetricUpdates) -> None:
+        """Commit payloads already detached for deferred optimizer semantics."""
+
+        updates_value = cast(object, updates)
+        if not isinstance(updates_value, PreparedMetricUpdates):
+            raise TypeError("prepared metric updates must be PreparedMetricUpdates")
+        values = updates_value.values
+        missing = sorted(self.required_channels - set(values))
         if missing:
             raise MetricRuntimeError(
                 "metric updates are missing bound channel(s): "
@@ -128,7 +136,7 @@ class MetricEngine:
             )
         with torch.no_grad():
             for channel, metric_ids in self._channels.items():
-                update = detach_metric_update(validated[channel])
+                update = values[channel]
                 for metric_id in metric_ids:
                     try:
                         self._metrics[metric_id].update(
@@ -181,6 +189,15 @@ class MetricEngine:
         for metric in self._metrics.values():
             metric.to(device)
         return self
+
+
+def _commit_prepared_metric_updates(
+    engine: MetricEngine,
+    updates: PreparedMetricUpdates,
+) -> None:
+    """Commit prepared payloads through the internal trusted runtime path."""
+
+    engine._update_prepared(updates)
 
 
 __all__ = ["MetricEngine", "MetricRuntimeError"]

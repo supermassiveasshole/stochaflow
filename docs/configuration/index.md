@@ -307,7 +307,6 @@ training:
     gamma: 1.0
     variance:
       mode: learned_range
-      loss: rescaled_variational_bound
 
 objective:
   name: mse
@@ -315,7 +314,9 @@ objective:
 ```
 
 模型的前 `C` channels 是 epsilon prediction，后 `C` channels 是 variance
-interpolation values。hybrid loss 为 P2-weighted per-sample simple loss 加未被 P2
+interpolation values。共享的 process-free Gaussian family math 负责校验/拆分该 raw
+output，并使用 Process 提供的 bounds 做插值；Training 与 Sampling 不各自复制这套
+model-output 数学。hybrid loss 为 P2-weighted per-sample simple loss 加未被 P2
 加权的 `0.001 ×` 完整 VLB；uniform single-timestep estimator 将它实现为
 `T / 1000 ×` sampled VB term，而不是再额外乘一次 `0.001`。VB 的
 mean/prediction branch 会 detach。
@@ -328,12 +329,16 @@ P2 权重精确为
 改用单步 alpha。
 
 P2 Builder 固定 `prediction_type: epsilon`，并拒绝其他 prediction 参数。P2 与
-learned-range 的内置实现都要求 `MSEObjective`；不建立通用 Objective reducer 契约。
+learned-range 的内置实现都要求 `MSEObjective`；普通 fixed-variance Strategy 把 scalar
+reduction 完整交给 Objective，而 P2/learned-range 的逐样本组合与 batch reduction 是
+具体 Gaussian Strategy 对内置 MSE 的私有语义，不建立通用 Objective reducer 契约。
 `MSEObjective` 的 `mean` 是 feature mean + batch mean，`sum` 是 feature sum + batch
-sum，因此 `gamma: 0` 在两种 reduction 下都让 simple-loss 部分严格等价于相应的未加权
-MSE；learned-range VB 仍按原语义相加且不被 P2 加权。diagnostic 中的
-`timestep_loss_weight` 是这个 timestep-dependent 训练系数；未来或项目级指标使用的
-`loss_aggregation_weight` 只控制 batch 统计聚合，不参与 autograd。
+sum；`gamma: 0` 直接使用标准 Strategy 路径，因此两种 reduction 下都严格等价于相应的
+未加权 MSE。learned-range VB 仍按原语义相加且不被 P2 加权。
+
+标准与 P2 Strategy 不把 SNR 或内部 timestep coefficient 发布为 diagnostic；可用时只
+报告最终 `per_sample_loss`。`loss_aggregation_weight` 只控制 batch 的 epoch 统计聚合，
+不参与 autograd，也不是 P2 coefficient。
 
 类条件 P2 配置使用相同的 `k`、`gamma` 和 `variance`，并额外接受
 `condition_dropout`：
@@ -370,9 +375,8 @@ generalized `eta` transition，并在 learned-range checkpoint 上明确忽略 v
 class-conditional learned-range CFG 只 guide prediction half。scale 0/1 返回完整
 unconditional/conditional `2C` output；其他 scale 保留 conditional variance half。
 `prediction_type` 与 `variance.mode` 写入 checkpoint inference recipe，独立 sample
-request 不可覆盖。P2 Builder identity、`k/gamma` 与 variance-loss recipe 是
-training/resume facts，不应
-放进 sample profile。
+request 不可覆盖。P2 Builder identity、`k/gamma` 与 `variance.mode` 是
+training/resume facts，不应放进 sample profile。
 
 ## 配置层次
 

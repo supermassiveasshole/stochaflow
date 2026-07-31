@@ -48,7 +48,7 @@ diagnostic 与 logger 不恢复运行时状态：resume 会创建新的兄弟 ru
 TensorBoard event 文件。旧 run/event 不会被热加载、重开或续写。把 TensorBoard
 `--logdir` 指向共同的 experiment output root，即可把恢复前后的两个时间戳 run 放在
 同一页面比较。生效配置、overlay 文件 SHA-256 和显式 logging 字段都会固化到新 run
-manifest 与 checkpoint metadata，便于确认曲线使用的监控协议。
+manifest 与 checkpoint metadata，便于确认曲线使用的观测配置。
 
 ## 启动训练和 TensorBoard
 
@@ -97,6 +97,11 @@ uv run tensorboard `
 建议对 loss 使用适度平滑，但比较最低点和尾段趋势时同时查看原始曲线。学习率曲线
 不应开启过强平滑，否则 warmup 拐点会被掩盖。
 
+best checkpoint 与 early stopping 只能使用 `valid/loss` 或
+`valid/metrics/<id>[/<subkey>]`。没有 validation DataLoader 时默认不创建 best；训练结束
+后的自动采样使用 `latest.pt` 作为 final checkpoint，并明确区别于 best。显式启用 early
+stopping 却没有 validation 会在训练循环开始前失败。
+
 启用了 `diffusion_quality` diagnostic 后：
 
 - **Images** 会显示 `diagnostics/denoiser/reconstruction` 以及各 sampler profile 的
@@ -105,7 +110,7 @@ uv run tensorboard `
   样本多样性等 `diagnostics/...` 指标；
 - **Text** 中的 `config` 是本次运行解析后的配置，适合核对实验差异。
 
-MNIST 默认监控协议使用 EMA 权重、固定 seed 和确定性 DDIM-50，每 10 轮生成同一组
+MNIST 默认观测配置使用 EMA 权重、固定 seed 和确定性 DDIM-50，每 10 轮生成同一组
 32 个潜变量对应的样本网格。这样相邻 checkpoint 的变化来自模型本身，而不是随机初始
 噪声。训练期间每 100 step 还会记录：
 
@@ -119,9 +124,14 @@ MNIST 默认监控协议使用 EMA 权重、固定 seed 和确定性 DDIM-50，�
 这些指标不能可靠判断生成图是否像一个合法数字。生成质量仍需结合固定样本网格判断，
 不能只看训练 loss 或样本均值/方差。
 
-训练配置中的普通 phase metrics 会在完整 validation epoch 上聚合，并在恢复 best
-checkpoint 后对 test split 再计算一次；对应 test tag 使用 `test/metrics/...`。它们与
-按 cadence 运行、可能产出图像 artifact 的 `diagnostics/...` 是两条独立通道。
+这些 diagnostic scalar 只写入 logger；图片、manifest 等写入 artifact 目录。它们不会
+进入 epoch history 或 checkpoint metrics，也不能控制 best checkpoint、early stopping
+或 strict-resume selection state。
+
+训练配置中的普通 phase metrics 会在完整 validation epoch 上聚合；有 validation 时会
+恢复 best checkpoint 后再对 test split 计算一次，没有 validation 时则保留 final model
+state。对应 test tag 使用 `test/metrics/...`。phase metrics 与按 cadence 运行、可能产出
+图像 artifact 的 `diagnostics/...` 是两条独立通道。
 
 ## 常见问题
 

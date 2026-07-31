@@ -138,16 +138,12 @@ def test_external_module_registers_every_provider_type_without_orchestrator_chan
     )
     diagnostic.on_train_batch_end(batch_event(runtime))
 
-    results = diagnostic.on_train_epoch_end(epoch_event(runtime))
+    result = diagnostic.on_train_epoch_end(epoch_event(runtime))
 
     all_metrics = {key for _, payload in logger.metrics for key in payload}
     assert "diagnostics/diffusion_quality/custom/step" in all_metrics
-    assert results is not None
-    returned_metrics = {
-        key
-        for result in results
-        for key in result.metrics
-    }
+    assert result is None
+    returned_metrics = set(logger.metrics[-1][1])
     assert (
         "diagnostics/diffusion_quality/samplers/ddpm/custom"
         in returned_metrics

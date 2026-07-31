@@ -10,8 +10,6 @@ import torch
 
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
-    DiagnosticResult,
-    DiagnosticSourceRequest,
     FitStartEvent,
     ReconstructionCallable,
     TrainBatchEndEvent,
@@ -157,12 +155,6 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
         self.sampler_artifacts = self._engine.sampler_artifacts
 
     @property
-    def metric_source_requests(self) -> tuple[DiagnosticSourceRequest, ...]:
-        """Expose source requests for composition-time verification."""
-
-        return self._engine.metric_source_requests
-
-    @property
     def _reference_suite(self) -> ReferenceMetricSuite | None:
         return self._engine._reference_suite
 
@@ -179,10 +171,10 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
     def on_train_epoch_end(
         self,
         event: TrainEpochEndEvent,
-    ) -> tuple[DiagnosticResult, ...] | None:
-        """Return due epoch results from the shared engine."""
+    ) -> None:
+        """Emit due epoch observations and artifacts."""
 
-        return self._engine.on_train_epoch_end(event)
+        self._engine.on_train_epoch_end(event)
 
 
 __all__ = ["DiffusionQualityDiagnostic"]

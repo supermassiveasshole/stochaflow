@@ -59,22 +59,28 @@ class embedding 和一个 CFG null class。旧 stage-level skip/Spatial Transfor
 ## Gaussian layer ownership、P2 与 variance
 
 Gaussian 代码按 framework layer 组织，而不是放入一个能够编排 Process、Training 和
-Sampling 的横向 family 模块。各 layer 的 `gaussian/` 子包只拥有该 layer 的职责；唯一
-跨层共享的是 process-free prediction kernel：`PredictionType`、`GaussianPrediction` 和
-只接收 Tensor/scales 的 `normalize_gaussian_prediction()`。
+Sampling 的横向 family 模块。各 layer 的 `gaussian/` 子包只拥有该 layer 的职责；跨层
+共享仅限 process-free Gaussian family math：prediction 参数化与 raw model-output
+布局。前者包括 `PredictionType`、`GaussianPrediction` 和只接收 Tensor/scales 的
+`normalize_gaussian_prediction()`；后者包括 `VarianceMode`、固定/learned-range 输出
+拆分和 learned-range log-variance 插值。两组函数都只接收 Tensor、shape 或 bounds，
+不接收完整 Process。
 
 | 职责 | 唯一所有者 |
 | --- | --- |
-| epsilon/x0/v/score 的纯 Tensor 转换 | process-free Gaussian prediction kernel |
+| epsilon/x0/v/score 的纯 Tensor 转换 | process-free Gaussian family math |
+| fixed/learned-range model-output 拆分与 bounds 插值 | process-free Gaussian family math |
 | marginal scales、时间域、schedule、posterior 与 learned-range bounds | `processes.gaussian` |
-| batch 解释、时间采样、model-output layout、training target、SNR、loss/VB 和 model 调用 | 具体 `training.gaussian` `TrainingStrategy` |
+| batch 解释、时间采样、training target、SNR、loss/VB 和 model 调用 | 具体 `training.gaussian` `TrainingStrategy` |
 | denoised clipping、Dynamics、model adapter 与 solver semantics | `sampling.gaussian` |
 | recipe 参数解析、资产兼容性与 inference recipe 固化 | 对应的 Gaussian `TrainingBuilder` / `SamplingBuilder` |
 | scalar Objective 与可选逐样本报告能力 | Objective 自身 |
 
 这条 layer-first 约定防止 Training 导入 Sampling，也防止 Process 获得 model、Objective
-或 batch 语义。纯 prediction kernel 不知道 Process/time、variance head、裁剪、P2、VB、
-Objective 或 registry。目录是实现归属而不是新的公共导入面；extension 仍从
+或 batch 语义。family math 只解释 prediction Tensor、`C`/`2C` layout 和给定 bounds 的
+插值，不知道 Process/time、裁剪、P2、VB、Objective 或 registry。Training 与 Sampling
+分别取得 Process-owned bounds 后调用同一插值函数；Sampling 的 clipping、CFG 和 solver
+语义仍留在 Sampling。目录是实现归属而不是新的公共导入面；extension 仍从
 `stochaflow.extensions` 导入稳定契约。
 
 P2 是一个具体训练 recipe，即“兼容的 epsilon model + P2 TrainingStrategy”的组合，不是
@@ -105,25 +111,25 @@ TrainingStrategy，并由带项目 namespace 的 TrainingBuilder 注册和组合
 P2 Strategy 使用 cumulative marginal SNR：
 `(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)`。它按样本计算 MSE，只对 simple loss
 应用权重，不进行 batch renormalization。`MSEObjective(reduction="mean")` 对 feature 和
-batch 都取 mean；`sum` 对两者都取 sum，因此 `gamma=0` 在两种 reduction 下都严格保持
-未加权 identity。这里调用的是内置 `MSEObjective` 的具体 reduction 行为，不要求其他
-Objective 实现通用 reducer contract。
+batch 都取 mean；`sum` 对两者都取 sum。P2 的 batch reduction 是该具体 Strategy 对
+内置 `MSEObjective` 的私有协作，不是公共 Objective reducer contract；`gamma=0` 直接
+委托标准 Strategy，因此两种 reduction 下都严格保持未加权 identity。
 
 Variance 同样由所选 Gaussian Strategy 拥有：
 
 - `variance: {mode: fixed}` 是默认路径，模型输出 `C` channels，不计算 VB；
-- `variance: {mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出
-  `[prediction(C), variance(C)]`。variance head 在 selected-pair posterior 与 forward
+- `variance: {mode: learned_range}` 要求模型输出
+  `[prediction(C), variance(C)]`。该 mode 唯一确定内置 detached-mean VB 语义，没有第二个
+  loss 配置字段。variance head 在 selected-pair posterior 与 forward
   log-variance bounds 之间插值；hybrid loss 定义为 simple loss 加 `0.001 ×` 完整 VLB，
-  在 uniform single-timestep estimator 中实现为 `T / 1000 ×` sampled VB term，并使用
-  detached mean/prediction branch；
+  在 uniform single-timestep estimator 中实现为 `T / 1000 ×` sampled VB term；
 - P2 与 learned-range 组合仍只权重 simple loss，VB 保持未加权。
 
 内置 UNet/ADM 和任何实现 `DenoiserChannelLayout` 的 extension model 会在 Builder 组合时
 预检 `C`/`2C` 声明；不公开静态 channel layout 的外部 model 仍可组合，并在第一批 raw
-output shape 校验中 fail closed。训练 diagnostic 中的 `timestep_loss_weight` 是实际优化
-目标的 timestep 系数；`loss_aggregation_weight` 只表示 batch 对 epoch 报告的权重，不
-参与 autograd。
+output shape 校验中 fail closed。标准与 P2 Strategy 都不把 SNR 或内部 timestep 系数
+发布为 diagnostic；可用时只报告最终 `per_sample_loss`。`loss_aggregation_weight` 只表示
+batch 对 epoch 报告的统计权重，不参与 autograd，也不是 P2 coefficient。
 
 learned-range class-conditional sampling 中，CFG 只外推 prediction half。scale 0 与 1
 分别返回完整 unconditional/conditional `2C` output；其他 scale 使用 guided prediction
@@ -325,6 +331,38 @@ backward 属于新的训练循环 family，不应被塞入通用 Strategy mode�
 标准 PyTorch optimizer 与 LR scheduler 通过受限原生 target 构造，`params` 直接传给
 当前 PyTorch 版本；Stochaflow 不复制上游构造参数和默认值。第三方子类仍可注册到对应
 Registry。
+
+## Metrics、模型选择、Diagnostics 与 Evaluation
+
+`stochaflow.metrics` 是任务无关的状态化计算层。`MetricSpec` 描述构造和 channel
+binding，`MetricUpdate` 携带 Strategy 已解释过的不透明 `args`/`kwargs`，
+`MetricEngine` 只负责构造、update、compute、reset 和 device lifecycle。它不知道
+train/validation/test、batch schema、checkpoint、monitor、Diagnostic 或 Evaluation。
+
+Training 在自己的配置与 runtime 边界把一个 metric declaration 绑定到 train、
+validation 或 test phase，并为每个 phase 创建隔离的 engine。`channel` 只是 Strategy
+生产的 payload 路由键，不是 metric 名称，也不定义通用 prediction/target/label schema；
+多个 metric 可以消费同一个 channel。`TrainStepOutput.metrics` 仍是 Strategy 已经算好的
+低成本 step scalar，`metric_updates` 则驱动跨完整 epoch 聚合的状态化 metric。训练 phase
+的 update 只在 optimizer lifecycle 成功后提交；validation/test 在成功 evaluation step
+后提交。
+
+每个完成的训练 epoch 只形成一个普通 canonical `dict[str, float]`。history、epoch
+logger、checkpoint metrics 和模型选择消费同一份字典，不再维护逐 key source/provenance
+对象。best checkpoint 与 early stopping 只接受 `valid/loss` 或
+`valid/metrics/<id>[/<subkey>]`；train、test、system、step 和 diagnostic observation
+都不能参与选择。没有 validation loader 时不产生 best，训练后 inference 若启用则明确
+选择 final `latest.pt`，不能把 train loss 伪装成 validation selection。
+
+`TrainingDiagnostic` 是训练期 observation hook。它适合低频、昂贵、需要采样或不能由
+普通 validation metric 表达的内容，并自行写 logger 与 artifacts；callback 返回 `None`，
+其 observation 不进入 epoch history、checkpoint metrics、best 或 early stopping。
+Diagnostic 可以读取 validation batch 做观察，但这种读取不等于正式 Evaluation。
+
+正式 Evaluation 是冻结训练 subject 后的独立生命周期，负责 dataset/protocol、按类别与
+aggregate 结果以及正式 test artifacts。该层尚未作为通用框架能力实现；实现时应复用
+任务无关 `MetricEngine`，而不是让 Metrics 依赖 Evaluation，或让 training Diagnostic
+冒充 Evaluation。
 
 ## Checkpoint inference 与采样组合边界
 

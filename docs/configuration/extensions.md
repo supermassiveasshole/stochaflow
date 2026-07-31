@@ -693,7 +693,6 @@ trainer:
     enabled: true
     monitor: valid/metrics/class_recall/macro
     mode: max
-    missing: error
     patience: 8
     min_delta: 0.001
 ```
@@ -707,7 +706,7 @@ trainer:
 插件 entry-point name、distribution、version 与 target 会进入 resolved config/run
 manifest/checkpoint provenance；metric declaration 与 channel 也保存在完整 resolved
 config 中。checkpoint 不保存 Python class/source 或 Metric runtime state，只保存完成
-epoch 的 canonical scalar snapshot 与 source metadata。strict resume 因而要求同一插件
+epoch 的 canonical scalar mapping。strict resume 因而要求同一插件
 identity/version policy 和同一 metric/Strategy 配置，但仍需由项目 lockfile 固定
 TorchMetrics 及其他依赖。
 

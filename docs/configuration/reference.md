@@ -196,7 +196,7 @@ Process 构造参数；模型、condition 和 sampler 不进入此处。
 (config-field-path-metrics)=
 ### `metrics`
 
-从 Strategy 声明的 task-specific channel 聚合 train、validation 或 test phase 指标；未声明时保持现有 Strategy 兼容。
+从 Strategy 声明的不透明 task-specific channel 聚合 train、validation 或 test phase 指标；每个 phase 使用独立状态，未声明时保持现有 Strategy 兼容。
 
 - 类型：`list[mapping]`
 - 必填：否
@@ -406,7 +406,7 @@ checkpoint-bound inference 的可覆盖请求默认值，以及训练后是否�
 (config-field-path-sampling-run-after-training)=
 ### `sampling.run_after_training`
 
-训练完成并恢复 selected best checkpoint 后是否运行其固化 inference recipe。
+训练完成后是否用已选择 checkpoint 运行其固化 inference recipe；有 validation 时选择 best，无 validation 时选择 final latest checkpoint。
 
 - 类型：`bool`
 - 必填：否
@@ -554,7 +554,7 @@ diagnostic 构造参数；logger 与 output_dir 由运行时注入；需要采�
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{accumulate_grad_batches: 1, device: cpu, early_stopping: {enabled: false, min_delta: 0.0, missing: error, mode: min, monitor: valid/loss, patience: 10}, max_grad_norm: null, num_epochs: 1, precision: fp32, show_progress: true}`
+- 默认值：`{accumulate_grad_batches: 1, device: cpu, early_stopping: {enabled: false, min_delta: 0.0, mode: min, monitor: valid/loss, patience: 10}, max_grad_norm: null, num_epochs: 1, precision: fp32, show_progress: true}`
 
 (config-field-path-trainer-num-epochs)=
 ### `trainer.num_epochs`
@@ -624,26 +624,27 @@ Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{enabled: false, min_delta: 0.0, missing: error, mode: min, monitor: valid/loss, patience: 10}`
+- 默认值：`{enabled: false, min_delta: 0.0, mode: min, monitor: valid/loss, patience: 10}`
 
 (config-field-path-trainer-early-stopping-enabled)=
 ### `trainer.early_stopping.enabled`
 
-是否启用提前停止。
+是否启用基于 validation monitor 的提前停止。
 
 - 类型：`bool`
 - 必填：否
 - 默认值：`false`
+- 关联：启用时必须存在 validation loader；无 validation 时 best tracking 默认关闭。
 
 (config-field-path-trainer-early-stopping-monitor)=
 ### `trainer.early_stopping.monitor`
 
-需要监控的 canonical epoch 指标，例如 valid/loss、valid/metrics/prediction_mae 或 diagnostics/diffusion_quality/samplers/ddim_50/fid。
+用于 best checkpoint 与 early stopping 的 validation epoch 指标，例如 valid/loss 或 valid/metrics/prediction_mae。
 
 - 类型：`str`
 - 必填：否
 - 默认值：`valid/loss`
-- 约束：接受 train/valid/test phase key 或 diagnostics/<diagnostic-id>/...；system、step、周围空白和旧别名被拒绝，test-role 指标随后在 selection 语义检查中被拒绝。
+- 约束：只接受 valid/loss 或 valid/metrics/<id>[/<subkey>]；train、test、system、step、diagnostic、周围空白和旧别名均被拒绝。
 
 (config-field-path-trainer-early-stopping-mode)=
 ### `trainer.early_stopping.mode`
@@ -655,25 +656,15 @@ min 表示越小越好，max 表示越大越好。
 - 默认值：`min`
 - 约束：min 或 max。
 
-(config-field-path-trainer-early-stopping-missing)=
-### `trainer.early_stopping.missing`
-
-monitor 缺席时的策略；error 立即失败，skip 仅用于尚未到 cadence 的 diagnostic metric。
-
-- 类型：`str`
-- 必填：否
-- 默认值：`error`
-- 约束：error 或 skip；skip 仅允许 diagnostics/... monitor，已到 cadence 但未返回值仍失败。
-
 (config-field-path-trainer-early-stopping-patience)=
 ### `trainer.early_stopping.patience`
 
-指标无足够改善时容忍的有效 observation 数；低频 diagnostic 未到 cadence 的 epoch 不计数。
+validation monitor 连续无足够改善时容忍的 epoch 数。
 
 - 类型：`int`
 - 必填：否
 - 默认值：`10`
-- 约束：正整数。
+- 约束：正整数；启用 early stopping 时必须存在 validation loader。
 
 (config-field-path-trainer-early-stopping-min-delta)=
 ### `trainer.early_stopping.min_delta`
@@ -756,7 +747,7 @@ logger 构造参数；output_dir 与 run_name 由运行时注入。
 (config-field-path-artifacts-checkpoint-every)=
 ### `artifacts.checkpoint_every`
 
-每隔多少个 epoch 保存编号 checkpoint；best 与 latest 仍按各自规则更新。
+每隔多少个 epoch 保存编号 checkpoint；latest 每轮更新，best 仅在 validation tracking 启用时更新。
 
 - 类型：`int`
 - 必填：否
@@ -1179,7 +1170,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | --- | --- |
 | `prediction_type` | 训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。 |
 | `condition_dropout` | 训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。 |
-| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C 和内置 MSE Objective；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
+| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C 和内置 MSE Objective；该具体 Strategy 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
 
 (config-component-training_builders-class-conditional-p2-gaussian-denoising)=
 #### `class_conditional_p2_gaussian_denoising`
@@ -1193,7 +1184,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | `condition_dropout` | 训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。 |
 | `k` | P2 `(k + SNR)^(-gamma)` 的 offset；默认 `1.0`，必须 finite 且大于 `0`。 |
 | `gamma` | P2 exponent；默认 `1.0`，必须 finite 且非负；`0` 使 simple-loss weight 严格退化为 `1`。 |
-| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。 |
+| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。 |
 
 (config-component-training_builders-gaussian-denoising)=
 #### `gaussian_denoising`
@@ -1205,7 +1196,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | 参数 | 含义与约束 |
 | --- | --- |
 | `prediction_type` | 训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`；要求注入离散 Gaussian Process 和 Objective。 |
-| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C 和内置 MSE Objective；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
+| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C 和内置 MSE Objective；该具体 Strategy 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
 
 (config-component-training_builders-p2-gaussian-denoising)=
 #### `p2_gaussian_denoising`
@@ -1218,7 +1209,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | --- | --- |
 | `k` | P2 `(k + SNR)^(-gamma)` 的 offset；默认 `1.0`，必须 finite 且大于 `0`。 |
 | `gamma` | P2 exponent；默认 `1.0`，必须 finite 且非负；`0` 使 simple-loss weight 严格退化为 `1`。 |
-| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。 |
+| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。 |
 
 (config-component-training_builders-supervised)=
 #### `supervised`

@@ -76,8 +76,13 @@ class PluginScaledGaussianStrategy(TrainingStrategy):
             raise TypeError("plugin Gaussian model must return a Tensor")
         per_sample = self.objective.per_sample_loss(prediction, batch)
         weighted = per_sample * self.scale
+        loss = (
+            weighted.sum()
+            if self.objective.reduction == "sum"
+            else weighted.mean()
+        )
         return TrainStepOutput(
-            loss=self.objective.reduce_per_sample_loss(weighted),
+            loss=loss,
             diagnostics={
                 "timestep_loss_weight": torch.full_like(
                     per_sample,
