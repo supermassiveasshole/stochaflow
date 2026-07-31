@@ -37,11 +37,11 @@ def _normalize_metrics(metrics: dict[str, Any]) -> dict[str, int | float | str |
 
 
 def _sanitize_wandb_key(name: str) -> str:
-    """Convert metric names into a W&B-safe identifier."""
+    """Preserve canonical metric paths while replacing unsupported characters."""
 
     sanitized = []
     for char in name:
-        if char.isalnum() or char == "_":
+        if char.isalnum() or char in "_/.-":
             sanitized.append(char)
         else:
             sanitized.append("_")
@@ -320,6 +320,8 @@ class WandbLogger(ExperimentLogger):
         sanitized = {
             _sanitize_wandb_key(name): value for name, value in normalized.items()
         }
+        if len(sanitized) != len(normalized):
+            raise ValueError("W&B metric key sanitization produced a collision")
         self._wandb.log(sanitized, step=step)
 
     def log_text(self, tag: str, text: str, *, step: int | None = None) -> None:

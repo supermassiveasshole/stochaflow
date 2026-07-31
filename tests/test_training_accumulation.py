@@ -458,16 +458,16 @@ def test_epoch_logs_explicit_accumulation_throughput_and_timing_metrics() -> Non
     assert metrics["non_finite_loss_count"] == 0.0
     assert metrics["non_finite_gradient_count"] == 0.0
     epoch_log = next(
-        item for item in logger.metrics if "train/epoch_micro_batches" in item
+        item for item in logger.metrics if "system/train/micro_batches" in item
     )
-    assert epoch_log["train/epoch_micro_batches"] == 3.0
-    assert epoch_log["train/epoch_optimizer_steps"] == 2.0
-    assert epoch_log["train/optimizer_steps_per_second"] > 0.0
-    assert epoch_log["train/epoch_data_wait_seconds"] >= 0.0
-    assert epoch_log["train/epoch_compute_seconds"] > 0.0
-    assert epoch_log["train/epoch_forward_seconds"] > 0.0
-    assert epoch_log["train/epoch_backward_seconds"] > 0.0
-    assert epoch_log["train/epoch_optimizer_seconds"] > 0.0
+    assert epoch_log["system/train/micro_batches"] == 3.0
+    assert epoch_log["system/train/optimizer_steps"] == 2.0
+    assert epoch_log["system/train/optimizer_steps_per_second"] > 0.0
+    assert epoch_log["system/train/data_wait_seconds"] >= 0.0
+    assert epoch_log["system/train/compute_seconds"] > 0.0
+    assert epoch_log["system/train/forward_seconds"] > 0.0
+    assert epoch_log["system/train/backward_seconds"] > 0.0
+    assert epoch_log["system/train/optimizer_seconds"] > 0.0
 
 
 def test_epoch_can_stop_after_successful_optimizer_step_budget() -> None:
@@ -722,10 +722,10 @@ def test_window_metrics_average_each_key_by_its_appearance_count() -> None:
     step_metrics = next(
         metrics
         for metrics in logger.metrics
-        if "train/strategy/shared" in metrics
+        if "train/step/strategy/shared" in metrics
     )
-    assert step_metrics["train/strategy/shared"] == 2.0
-    assert step_metrics["train/strategy/first_only"] == 4.0
+    assert step_metrics["train/step/strategy/shared"] == 2.0
+    assert step_metrics["train/step/strategy/first_only"] == 4.0
 
 
 def test_window_metric_sum_does_not_overflow_source_scalar_dtype() -> None:
@@ -743,9 +743,9 @@ def test_window_metric_sum_does_not_overflow_source_scalar_dtype() -> None:
     step_metrics = next(
         metrics
         for metrics in logger.metrics
-        if "train/strategy/large_half" in metrics
+        if "train/step/strategy/large_half" in metrics
     )
-    assert step_metrics["train/strategy/large_half"] == 40_000.0
+    assert step_metrics["train/step/strategy/large_half"] == 40_000.0
 
 
 def test_invalid_metric_fails_before_optimizer_lifecycle_commits() -> None:

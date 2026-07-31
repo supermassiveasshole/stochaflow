@@ -50,6 +50,7 @@ class GaussianLossComputation:
 
     loss: torch.Tensor
     prediction: GaussianPrediction
+    target: torch.Tensor
     snr: torch.Tensor
     timestep_loss_weight: torch.Tensor
     per_sample_simple_loss: torch.Tensor | None
@@ -257,6 +258,7 @@ def compute_gaussian_training_loss(
         return GaussianLossComputation(
             loss=scalar_simple,
             prediction=prediction,
+            target=target,
             snr=snr,
             timestep_loss_weight=weights,
             per_sample_simple_loss=None,
@@ -291,6 +293,7 @@ def compute_gaussian_training_loss(
     return GaussianLossComputation(
         loss=loss,
         prediction=prediction,
+        target=target,
         snr=snr,
         timestep_loss_weight=weights,
         per_sample_simple_loss=per_sample_simple,

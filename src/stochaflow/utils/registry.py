@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from importlib import import_module
 from typing import Any, TypeVar, cast
 
 from torch import nn
@@ -14,6 +15,15 @@ U = TypeVar("U")
 
 class RegistryError(ValueError):
     """Raised when a registry operation fails."""
+
+
+def _torchmetrics_metric_type() -> type[Any]:
+    """Resolve the required metric base only when the registry is first used."""
+
+    metric_type = getattr(import_module("torchmetrics"), "Metric", None)
+    if not isinstance(metric_type, type):
+        raise RegistryError("torchmetrics.Metric is not available")
+    return metric_type
 
 
 def _component_name(component: object) -> str:
@@ -36,10 +46,17 @@ class Registry[T](Mapping[str, T]):
         kind: str,
         *,
         expected_type: type[Any] | None = None,
+        expected_type_resolver: Callable[[], type[Any]] | None = None,
         reserved_prefixes: Sequence[str] = (),
     ) -> None:
+        if expected_type is not None and expected_type_resolver is not None:
+            raise ValueError(
+                "registry expected_type and expected_type_resolver are "
+                "mutually exclusive"
+            )
         self.kind = kind
         self._expected_type = expected_type
+        self._expected_type_resolver = expected_type_resolver
         self._reserved_prefixes = tuple(reserved_prefixes)
         self._components: dict[str, T] = {}
 
@@ -55,6 +72,7 @@ class Registry[T](Mapping[str, T]):
     def require_base(self, expected_type: type[Any]) -> None:
         """Require subsequently registered components to inherit a base class."""
 
+        self._resolve_expected_type()
         if self._expected_type is not None and self._expected_type is not expected_type:
             raise RegistryError(
                 f"{self.kind} registry already requires "
@@ -72,7 +90,19 @@ class Registry[T](Mapping[str, T]):
             )
         self._expected_type = expected_type
 
+    def _resolve_expected_type(self) -> None:
+        if self._expected_type is not None or self._expected_type_resolver is None:
+            return
+        expected_type = self._expected_type_resolver()
+        if not isinstance(cast(object, expected_type), type):
+            raise RegistryError(
+                f"{self.kind} expected-type resolver must return a class"
+            )
+        self._expected_type = expected_type
+        self._expected_type_resolver = None
+
     def _validate(self, component: T) -> None:
+        self._resolve_expected_type()
         if self._expected_type is None:
             return
         if not isinstance(component, type) or not issubclass(
@@ -173,6 +203,11 @@ class RegistryCatalog:
         self.objectives: Registry[type[Any]] = Registry(
             "objective",
             expected_type=nn.Module,
+        )
+        self.metrics: Registry[type[Any]] = Registry(
+            "metric",
+            expected_type_resolver=_torchmetrics_metric_type,
+            reserved_prefixes=("torchmetrics.",),
         )
         self.optimizers: Registry[type[Optimizer]] = Registry(
             "optimizer",

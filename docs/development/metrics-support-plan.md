@@ -1,9 +1,10 @@
 # Metrics 支持开发计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：P1 queued foundation；A0 ADM topology correctness 与 B1 Train/Sample
-  authority cutover 完成后立即执行 M0–M1，并在 pretrained codec 与 AFHQ latent
-  vertical slice 前关闭
+- 状态：M0–M1 已于 2026-07-31 在 feature branch 实现并进入维护者验证；M2–M4
+  仍待后续里程碑
+- 实现决策与自审：
+  [Metrics M0–M1 实现决策与维护者审查记录](metrics-implementation-decisions.md)
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25

@@ -16,6 +16,12 @@ from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
+from stochaflow.metrics import (
+    EpochMetricSnapshot,
+    MetricSource,
+    detach_metric_updates,
+    validate_training_monitor_key,
+)
 from stochaflow.training.builder import (
     ManagedTrainingModule,
     TrainingPlan,
@@ -31,6 +37,10 @@ from stochaflow.training.diagnostics.contracts import (
     TrainingDiagnostic,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
+from stochaflow.training.metric_binding import (
+    TrainingMetricPhase,
+    TrainingMetricRuntime,
+)
 from stochaflow.training.precision import (
     PrecisionRuntime,
     build_precision_runtime,
@@ -40,6 +50,7 @@ from stochaflow.training.strategy import (
     DeviceTransferableBatch,
     ScalarMetric,
     TrainStepOutput,
+    loss_aggregation_weight_to_float,
     validate_train_step_output,
 )
 from stochaflow.utils.checkpoint import (
@@ -254,6 +265,90 @@ def _mean_accumulated_metrics(
     return result
 
 
+def _epoch_metric_snapshot(
+    train_metrics: Mapping[str, float],
+    validation_metrics: Mapping[str, float] | None,
+    *,
+    epoch: int,
+) -> EpochMetricSnapshot:
+    """Build one canonical, source-typed snapshot for a completed epoch."""
+
+    values: dict[str, float] = {
+        "train/loss": float(train_metrics["loss"]),
+        "system/epoch": float(epoch),
+    }
+    sources: dict[str, MetricSource] = {}
+    train_source = MetricSource(
+        origin="phase",
+        data_role="train",
+        protocol_id=None,
+        selection_eligible=True,
+    )
+    validation_source = MetricSource(
+        origin="phase",
+        data_role="validation",
+        protocol_id=None,
+        selection_eligible=True,
+    )
+    system_source = MetricSource(
+        origin="system",
+        data_role=None,
+        protocol_id=None,
+        selection_eligible=False,
+    )
+    sources["train/loss"] = train_source
+    sources["system/epoch"] = system_source
+
+    for name, value in train_metrics.items():
+        if name.startswith("train/metrics/"):
+            values[name] = float(value)
+            sources[name] = train_source
+    train_system_names = {
+        "num_batches",
+        "micro_batches",
+        "optimizer_steps",
+        "skipped_optimizer_steps",
+        "optimizer_steps_per_second",
+        "data_wait_seconds",
+        "compute_seconds",
+        "duration_seconds",
+        "forward_seconds",
+        "backward_seconds",
+        "optimizer_seconds",
+        "non_finite_loss_count",
+        "non_finite_gradient_count",
+    }
+    for name in train_system_names:
+        if name in train_metrics:
+            key = f"system/train/{name}"
+            values[key] = float(train_metrics[name])
+            sources[key] = system_source
+
+    if validation_metrics is not None:
+        values["valid/loss"] = float(validation_metrics["loss"])
+        sources["valid/loss"] = validation_source
+        for name, value in validation_metrics.items():
+            if name.startswith("valid/metrics/"):
+                values[name] = float(value)
+                sources[name] = validation_source
+        for name in ("num_batches", "duration_seconds"):
+            key = f"system/valid/{name}"
+            values[key] = float(validation_metrics[name])
+            sources[key] = system_source
+    return EpochMetricSnapshot(values=values, sources=sources)
+
+
+def _checkpoint_metric_sources(
+    snapshot: EpochMetricSnapshot,
+) -> dict[str, dict[str, object]]:
+    """Serialize snapshot source metadata for checkpoint provenance."""
+
+    return {
+        name: source.to_dict()
+        for name, source in snapshot.sources.items()
+    }
+
+
 def _validate_optimizer_parameters(
     optimizer: Optimizer,
     expected_parameters: tuple[nn.Parameter, ...],
@@ -408,6 +503,10 @@ class TrainingFitState:
             raise TypeError(
                 "training_loop.best_metric_value must be numeric or null"
             )
+        if best_metric is not None and not math.isfinite(float(best_metric)):
+            raise ValueError(
+                "training_loop.best_metric_value must be finite or null"
+            )
         if (best_epoch is None) != (best_metric is None):
             raise ValueError(
                 "training_loop best_epoch and best_metric_value must both be null "
@@ -471,6 +570,7 @@ class OptimizerWindowResult:
     """One complete automatic optimizer-update attempt."""
 
     microbatch_losses: tuple[float, ...]
+    loss_aggregation_weights: tuple[float, ...]
     metrics: Mapping[str, float]
     final_batch: Batch
     final_output: TrainStepOutput
@@ -484,6 +584,25 @@ class OptimizerWindowResult:
         """Return the equally weighted mean of micro-batch scalar losses."""
 
         return sum(self.microbatch_losses) / len(self.microbatch_losses)
+
+    @property
+    def weighted_loss_sum(self) -> float:
+        """Return the detached weighted loss numerator for epoch reporting."""
+
+        return sum(
+            loss * weight
+            for loss, weight in zip(
+                self.microbatch_losses,
+                self.loss_aggregation_weights,
+                strict=True,
+            )
+        )
+
+    @property
+    def loss_aggregation_weight(self) -> float:
+        """Return the detached epoch aggregation denominator contribution."""
+
+        return sum(self.loss_aggregation_weights)
 
 
 class Trainer:
@@ -509,6 +628,7 @@ class Trainer:
         lr_scheduler_interval: str = "step",
         ema: ExponentialMovingAverage | None = None,
         diagnostics: Iterable[TrainingDiagnostic] | None = None,
+        metric_runtime: TrainingMetricRuntime | None = None,
         max_grad_norm: float | None = None,
         logger: ExperimentLogger | None = None,
         log_every: int = 100,
@@ -560,6 +680,15 @@ class Trainer:
             managed_modules
         )
         self.diagnostics = list(diagnostics or [])
+        metric_runtime_value = cast(object, metric_runtime)
+        if metric_runtime_value is not None and not isinstance(
+            metric_runtime_value,
+            TrainingMetricRuntime,
+        ):
+            raise TypeError(
+                "metric_runtime must be TrainingMetricRuntime or None"
+            )
+        self.metric_runtime = metric_runtime
         self.max_grad_norm = max_grad_norm
         self.logger = logger or NullLogger()
         self.log_every = log_every
@@ -724,10 +853,18 @@ class Trainer:
         batches: tuple[Batch, ...],
         *,
         phase_profiler: TrainingPhaseProfiler | None = None,
+        metric_phase: TrainingMetricPhase | None = None,
     ) -> OptimizerWindowResult:
         if not batches:
             raise ValueError("an accumulation window must contain a batch")
+        collect_phase_metrics = (
+            metric_phase is not None
+            and self.metric_runtime is not None
+            and self.metric_runtime.has_phase(metric_phase)
+        )
         loss_tensors: list[torch.Tensor] = []
+        loss_aggregation_weights: list[float] = []
+        metric_update_values = []
         metric_values: dict[str, list[float | torch.Tensor]] = {}
         final_batch: Batch = batches[-1]
         final_output: TrainStepOutput | None = None
@@ -753,6 +890,15 @@ class Trainer:
                         forward_started_at,
                     )
                 loss_tensors.append(output.loss.detach().clone())
+                loss_aggregation_weights.append(
+                    loss_aggregation_weight_to_float(
+                        output.loss_aggregation_weight
+                    )
+                )
+                if collect_phase_metrics:
+                    metric_update_values.append(
+                        detach_metric_updates(output.metric_updates)
+                    )
                 _accumulate_scalar_metrics(
                     metric_values,
                     output.metrics,
@@ -802,6 +948,14 @@ class Trainer:
             )
             succeeded, grad_norm = self._finish_optimizer_step()
             if (
+                succeeded
+                and collect_phase_metrics
+                and self.metric_runtime is not None
+            ):
+                assert metric_phase is not None
+                for updates in metric_update_values:
+                    self.metric_runtime.update_phase(metric_phase, updates)
+            if (
                 phase_profiler is not None
                 and optimizer_started_at is not None
             ):
@@ -816,6 +970,7 @@ class Trainer:
             gradients_finite = math.isfinite(grad_norm)
         return OptimizerWindowResult(
             microbatch_losses=losses,
+            loss_aggregation_weights=tuple(loss_aggregation_weights),
             metrics=metrics,
             final_batch=final_batch,
             final_output=final_output,
@@ -883,6 +1038,7 @@ class Trainer:
         )
 
         total_loss = 0.0
+        total_loss_aggregation_weight = 0.0
         num_batches = 0
         optimizer_steps = 0
         skipped_optimizer_steps = 0
@@ -900,6 +1056,12 @@ class Trainer:
         )
         self._set_module_modes(training=True)
         self.optimizer.zero_grad(set_to_none=True)
+        has_train_metrics = (
+            self.metric_runtime is not None
+            and self.metric_runtime.has_phase("train")
+        )
+        if has_train_metrics and self.metric_runtime is not None:
+            self.metric_runtime.reset_phase("train")
         try:
             while True:
                 data_wait_started_at = time.perf_counter()
@@ -913,14 +1075,17 @@ class Trainer:
                 result = self._run_accumulation_window(
                     window,
                     phase_profiler=phase_profiler,
+                    metric_phase="train",
                 )
                 compute_seconds += time.perf_counter() - compute_started_at
-                total_loss += sum(result.microbatch_losses)
+                total_loss += result.weighted_loss_sum
+                total_loss_aggregation_weight += (
+                    result.loss_aggregation_weight
+                )
                 non_finite_loss_count += result.non_finite_loss_count
                 non_finite_gradient_count += (
                     result.non_finite_gradient_count
                 )
-                batch_offset = num_batches
                 num_batches += len(result.microbatch_losses)
                 if result.succeeded:
                     optimizer_steps += 1
@@ -938,14 +1103,14 @@ class Trainer:
                     and self.global_step % self.log_every == 0
                 ):
                     metrics = {
-                        "train/loss": result.loss,
+                        "train/step/loss": result.loss,
                         "train/epoch": (
                             float(epoch_index) if epoch_index is not None else 0.0
                         ),
                     }
                     metrics.update(
                         {
-                            f"train/strategy/{name}": value
+                            f"train/step/strategy/{name}": value
                             for name, value in result.metrics.items()
                         }
                     )
@@ -958,21 +1123,34 @@ class Trainer:
                         )
                     self.logger.log_metrics(metrics, step=self.global_step)
                 if progress_reporter is not None:
-                    running_total = total_loss - sum(
-                        result.microbatch_losses
+                    running_total = (
+                        total_loss - result.weighted_loss_sum
+                    )
+                    running_weight = (
+                        total_loss_aggregation_weight
+                        - result.loss_aggregation_weight
                     )
                     step_before_window = self.global_step - int(
                         result.succeeded
                     )
-                    for index, batch_loss in enumerate(
-                        result.microbatch_losses,
+                    for index, (batch_loss, batch_weight) in enumerate(
+                        zip(
+                            result.microbatch_losses,
+                            result.loss_aggregation_weights,
+                            strict=True,
+                        ),
                         start=1,
                     ):
-                        running_total += batch_loss
+                        running_total += batch_loss * batch_weight
+                        running_weight += batch_weight
                         progress_reporter.on_batch_end(
                             phase="train",
                             loss=batch_loss,
-                            avg_loss=running_total / (batch_offset + index),
+                            avg_loss=(
+                                running_total / running_weight
+                                if running_weight > 0.0
+                                else batch_loss
+                            ),
                             lr=_first_lr(self.optimizer),
                             global_step=(
                                 self.global_step
@@ -987,6 +1165,10 @@ class Trainer:
                 del result
                 if reached_optimizer_limit:
                     break
+        except BaseException:
+            if has_train_metrics and self.metric_runtime is not None:
+                self.metric_runtime.reset_phase("train")
+            raise
         finally:
             if progress_reporter is not None:
                 progress_reporter.on_phase_end()
@@ -1005,13 +1187,19 @@ class Trainer:
             phase_timings = None
         if num_batches == 0:
             raise ValueError("dataloader yielded no batches")
+        if total_loss_aggregation_weight <= 0.0:
+            if has_train_metrics and self.metric_runtime is not None:
+                self.metric_runtime.reset_phase("train")
+            raise ValueError(
+                "training epoch loss aggregation weight must be positive"
+            )
         optimizer_steps_per_second = (
             optimizer_steps / duration_seconds
             if duration_seconds > 0.0
             else 0.0
         )
         epoch_metrics = {
-            "loss": total_loss / num_batches,
+            "loss": total_loss / total_loss_aggregation_weight,
             "num_batches": float(num_batches),
             "micro_batches": float(num_batches),
             "optimizer_steps": float(optimizer_steps),
@@ -1021,6 +1209,13 @@ class Trainer:
             "compute_seconds": compute_seconds,
             "duration_seconds": duration_seconds,
         }
+        if has_train_metrics and self.metric_runtime is not None:
+            if optimizer_steps > 0:
+                epoch_metrics.update(
+                    self.metric_runtime.compute_phase("train", reset=True)
+                )
+            else:
+                self.metric_runtime.reset_phase("train")
         if phase_timings is not None:
             epoch_metrics.update(phase_timings)
             epoch_metrics["non_finite_loss_count"] = float(
@@ -1030,48 +1225,55 @@ class Trainer:
                 non_finite_gradient_count
             )
         logged_epoch_metrics = {
-            "train/epoch_loss": epoch_metrics["loss"],
-            "train/epoch_batches": epoch_metrics["num_batches"],
-            "train/epoch_micro_batches": epoch_metrics["micro_batches"],
-            "train/epoch_optimizer_steps": epoch_metrics["optimizer_steps"],
-            "train/epoch_skipped_optimizer_steps": epoch_metrics[
+            "train/loss": epoch_metrics["loss"],
+            "system/train/num_batches": epoch_metrics["num_batches"],
+            "system/train/micro_batches": epoch_metrics["micro_batches"],
+            "system/train/optimizer_steps": epoch_metrics["optimizer_steps"],
+            "system/train/skipped_optimizer_steps": epoch_metrics[
                 "skipped_optimizer_steps"
             ],
-            "train/optimizer_steps_per_second": epoch_metrics[
+            "system/train/optimizer_steps_per_second": epoch_metrics[
                 "optimizer_steps_per_second"
             ],
-            "train/epoch_data_wait_seconds": epoch_metrics[
+            "system/train/data_wait_seconds": epoch_metrics[
                 "data_wait_seconds"
             ],
-            "train/epoch_compute_seconds": epoch_metrics["compute_seconds"],
-            "train/epoch_duration_seconds": epoch_metrics["duration_seconds"],
+            "system/train/compute_seconds": epoch_metrics["compute_seconds"],
+            "system/train/duration_seconds": epoch_metrics["duration_seconds"],
         }
+        logged_epoch_metrics.update(
+            {
+                name: value
+                for name, value in epoch_metrics.items()
+                if name.startswith("train/metrics/")
+            }
+        )
         if phase_timings is not None:
             logged_epoch_metrics.update(
                 {
-                    "train/epoch_forward_seconds": epoch_metrics[
+                    "system/train/forward_seconds": epoch_metrics[
                         "forward_seconds"
                     ],
-                    "train/epoch_backward_seconds": epoch_metrics[
+                    "system/train/backward_seconds": epoch_metrics[
                         "backward_seconds"
                     ],
-                    "train/epoch_optimizer_seconds": epoch_metrics[
+                    "system/train/optimizer_seconds": epoch_metrics[
                         "optimizer_seconds"
                     ],
-                    "train/epoch_non_finite_loss_count": epoch_metrics[
+                    "system/train/non_finite_loss_count": epoch_metrics[
                         "non_finite_loss_count"
                     ],
-                    "train/epoch_non_finite_gradient_count": epoch_metrics[
+                    "system/train/non_finite_gradient_count": epoch_metrics[
                         "non_finite_gradient_count"
                     ],
                 }
             )
         if self.precision.grad_scaler is not None:
-            logged_epoch_metrics["train/epoch_loss_scale"] = (
+            logged_epoch_metrics["system/train/loss_scale"] = (
                 self.precision.grad_scaler.get_scale()
             )
         if epoch_index is not None:
-            logged_epoch_metrics["train/epoch"] = float(epoch_index)
+            logged_epoch_metrics["system/epoch"] = float(epoch_index)
         self.logger.log_metrics(logged_epoch_metrics, step=self.global_step)
         if optimizer_steps == 0 and skipped_optimizer_steps > 0:
             overflow_warning = (
@@ -1105,6 +1307,16 @@ class Trainer:
 
         if max_batches is not None and max_batches <= 0:
             raise ValueError("max_batches must be positive when provided")
+        metric_phase_by_prefix: dict[str, TrainingMetricPhase] = {
+            "valid": "validation",
+            "test": "test",
+        }
+        metric_phase = metric_phase_by_prefix.get(metric_prefix)
+        has_phase_metrics = (
+            self.metric_runtime is not None
+            and metric_phase is not None
+            and self.metric_runtime.has_phase(metric_phase)
+        )
 
         progress_reporter = reporter
         if progress_reporter is not None:
@@ -1123,8 +1335,12 @@ class Trainer:
 
         self._set_module_modes(training=False)
         total_loss = 0.0
+        total_loss_aggregation_weight = 0.0
         num_batches = 0
         started_at = time.perf_counter()
+        if has_phase_metrics and self.metric_runtime is not None:
+            assert metric_phase is not None
+            self.metric_runtime.reset_phase(metric_phase)
         try:
             with torch.no_grad():
                 for batch in iterator:
@@ -1137,9 +1353,23 @@ class Trainer:
                             )
                         )
                     batch_loss = float(output.loss.detach().item())
-                    total_loss += batch_loss
+                    batch_weight = loss_aggregation_weight_to_float(
+                        output.loss_aggregation_weight
+                    )
+                    total_loss += batch_loss * batch_weight
+                    total_loss_aggregation_weight += batch_weight
+                    if has_phase_metrics and self.metric_runtime is not None:
+                        assert metric_phase is not None
+                        self.metric_runtime.update_phase(
+                            metric_phase,
+                            output.metric_updates,
+                        )
                     num_batches += 1
-                    running_loss = total_loss / num_batches
+                    running_loss = (
+                        total_loss / total_loss_aggregation_weight
+                        if total_loss_aggregation_weight > 0.0
+                        else batch_loss
+                    )
                     if progress_reporter is not None:
                         progress_reporter.on_batch_end(
                             phase=metric_prefix,
@@ -1148,28 +1378,54 @@ class Trainer:
                             lr=_first_lr(self.optimizer),
                             global_step=self.global_step,
                         )
+        except BaseException:
+            if has_phase_metrics and self.metric_runtime is not None:
+                assert metric_phase is not None
+                self.metric_runtime.reset_phase(metric_phase)
+            raise
         finally:
             if progress_reporter is not None:
                 progress_reporter.on_phase_end()
 
         if num_batches == 0:
             raise ValueError("dataloader yielded no batches")
+        if total_loss_aggregation_weight <= 0.0:
+            if has_phase_metrics and self.metric_runtime is not None:
+                assert metric_phase is not None
+                self.metric_runtime.reset_phase(metric_phase)
+            raise ValueError(
+                "evaluation epoch loss aggregation weight must be positive"
+            )
 
         epoch_metrics = {
-            "loss": total_loss / num_batches,
+            "loss": total_loss / total_loss_aggregation_weight,
             "num_batches": float(num_batches),
             "duration_seconds": time.perf_counter() - started_at,
         }
+        if has_phase_metrics and self.metric_runtime is not None:
+            assert metric_phase is not None
+            epoch_metrics.update(
+                self.metric_runtime.compute_phase(metric_phase, reset=True)
+            )
         if log_metrics:
             logged_epoch_metrics = {
-                f"{metric_prefix}/epoch_loss": epoch_metrics["loss"],
-                f"{metric_prefix}/epoch_batches": epoch_metrics["num_batches"],
-                f"{metric_prefix}/epoch_duration_seconds": epoch_metrics[
+                f"{metric_prefix}/loss": epoch_metrics["loss"],
+                f"system/{metric_prefix}/num_batches": epoch_metrics[
+                    "num_batches"
+                ],
+                f"system/{metric_prefix}/duration_seconds": epoch_metrics[
                     "duration_seconds"
                 ],
             }
+            logged_epoch_metrics.update(
+                {
+                    name: value
+                    for name, value in epoch_metrics.items()
+                    if name.startswith(f"{metric_prefix}/metrics/")
+                }
+            )
             if epoch_index is not None:
-                logged_epoch_metrics[f"{metric_prefix}/epoch"] = float(epoch_index)
+                logged_epoch_metrics["system/epoch"] = float(epoch_index)
             self.logger.log_metrics(logged_epoch_metrics, step=self.global_step)
         return epoch_metrics
 
@@ -1185,7 +1441,7 @@ class Trainer:
         start_epoch: int = 1,
         close_logger: bool = True,
         early_stopping_patience: int | None = None,
-        early_stopping_monitor: str = "valid_loss",
+        early_stopping_monitor: str = "valid/loss",
         early_stopping_mode: str = "min",
         early_stopping_min_delta: float = 0.0,
         best_checkpoint_filename: str = "best.pt",
@@ -1204,6 +1460,10 @@ class Trainer:
             raise ValueError("early_stopping_mode must be 'min' or 'max'")
         if early_stopping_min_delta < 0:
             raise ValueError("early_stopping_min_delta must be non-negative")
+        validate_training_monitor_key(
+            early_stopping_monitor,
+            path="early_stopping_monitor",
+        )
         if early_stopping_patience is not None and track_best is False:
             raise ValueError("early stopping requires best tracking")
         should_track_best = (
@@ -1211,6 +1471,8 @@ class Trainer:
         )
         if early_stopping_patience is not None:
             should_track_best = True
+        if should_track_best and early_stopping_monitor.startswith("test/"):
+            raise ValueError("test metrics cannot be used for best tracking")
 
         history: list[dict[str, float]] = []
         if start_epoch == 1:
@@ -1245,14 +1507,14 @@ class Trainer:
             for epoch in range(start_epoch, num_epochs + 1):
                 if reporter is not None:
                     reporter.on_epoch_start(epoch, num_epochs)
-                metrics = self.train_epoch(
+                train_metrics = self.train_epoch(
                     dataloader,
                     epoch_index=epoch,
                     show_progress=show_progress,
                     max_batches=max_batches_per_epoch,
                     reporter=reporter,
                 )
-                metrics["train_loss"] = metrics["loss"]
+                validation_metrics: dict[str, float] | None = None
                 if validation_dataloader is not None:
                     validation_metrics = self.evaluate_epoch(
                         validation_dataloader,
@@ -1262,29 +1524,42 @@ class Trainer:
                         metric_prefix="valid",
                         reporter=reporter,
                     )
-                    metrics = {
-                        **metrics,
-                        "valid_loss": validation_metrics["loss"],
-                        "valid_num_batches": validation_metrics["num_batches"],
-                        "valid_duration_seconds": validation_metrics[
-                            "duration_seconds"
-                        ],
-                    }
-                successful_updates = metrics.get(
+                successful_updates = train_metrics.get(
                     "optimizer_steps",
-                    metrics["num_batches"],
+                    train_metrics["num_batches"],
                 )
                 if successful_updates > 0:
                     self._step_lr_scheduler("epoch")
-                history.append(metrics)
+                snapshot = _epoch_metric_snapshot(
+                    train_metrics,
+                    validation_metrics,
+                    epoch=epoch,
+                )
+                history.append(dict(snapshot.values))
 
                 status = "-"
                 if should_track_best:
-                    current_value = metrics.get(early_stopping_monitor)
+                    current_value = snapshot.values.get(
+                        early_stopping_monitor
+                    )
                     if current_value is None:
                         raise ValueError(
                             f"best tracking monitor '{early_stopping_monitor}' "
                             "was not found in epoch metrics"
+                        )
+                    source = snapshot.sources[early_stopping_monitor]
+                    if (
+                        not source.selection_eligible
+                        or source.data_role == "test"
+                    ):
+                        raise ValueError(
+                            f"best tracking monitor '{early_stopping_monitor}' "
+                            "is not selection eligible"
+                        )
+                    if not math.isfinite(float(current_value)):
+                        raise ValueError(
+                            f"best tracking monitor '{early_stopping_monitor}' "
+                            f"is non-finite at epoch {epoch}"
                         )
                     improved = self._is_metric_improved(
                         current=float(current_value),
@@ -1302,7 +1577,7 @@ class Trainer:
                         self.best_checkpoint_path = self._save_named_checkpoint(
                             best_checkpoint_filename,
                             epoch=epoch,
-                            metrics=metrics,
+                            snapshot=snapshot,
                             metadata={
                                 **self.checkpoint_metadata,
                                 "checkpoint_kind": "best",
@@ -1347,26 +1622,37 @@ class Trainer:
                             )
                             if reporter is not None:
                                 reporter.on_early_stopping(early_stopping_text)
-                self._maybe_save_checkpoint(epoch, metrics)
-                self._save_latest_checkpoint(epoch, metrics)
-                self._emit_epoch_diagnostics(epoch_index=epoch, metrics=metrics)
+                self._maybe_save_checkpoint(epoch, snapshot)
+                self._save_latest_checkpoint(epoch, snapshot)
+                self._emit_epoch_diagnostics(
+                    epoch_index=epoch,
+                    metrics=dict(snapshot.values),
+                )
                 if reporter is not None:
                     with preserve_global_rng_state(self.device):
                         reporter.on_epoch_end(
                             epoch=epoch,
                             total_epochs=num_epochs,
-                            train_loss=metrics["loss"],
-                            valid_loss=metrics.get("valid_loss"),
-                            best_valid_loss=best_value,
-                            lr=_first_lr(self.optimizer),
-                            train_batches=int(metrics["num_batches"]),
-                            valid_batches=(
-                                int(metrics["valid_num_batches"])
-                                if "valid_num_batches" in metrics
+                            train_loss=train_metrics["loss"],
+                            valid_loss=(
+                                validation_metrics["loss"]
+                                if validation_metrics is not None
                                 else None
                             ),
-                            epoch_time=metrics["duration_seconds"]
-                            + metrics.get("valid_duration_seconds", 0.0),
+                            best_metric_value=best_value,
+                            lr=_first_lr(self.optimizer),
+                            train_batches=int(train_metrics["num_batches"]),
+                            valid_batches=(
+                                int(validation_metrics["num_batches"])
+                                if validation_metrics is not None
+                                else None
+                            ),
+                            epoch_time=train_metrics["duration_seconds"]
+                            + (
+                                validation_metrics["duration_seconds"]
+                                if validation_metrics is not None
+                                else 0.0
+                            ),
                             status=status,
                         )
                 if self.stopped_early:
@@ -1392,7 +1678,11 @@ class Trainer:
             return current < best - min_delta
         return current > best + min_delta
 
-    def _maybe_save_checkpoint(self, epoch: int, metrics: dict[str, float]) -> None:
+    def _maybe_save_checkpoint(
+        self,
+        epoch: int,
+        snapshot: EpochMetricSnapshot,
+    ) -> None:
         """Save an epoch checkpoint when checkpointing is configured."""
 
         if self.checkpoint_manager is None or self.checkpoint_every is None:
@@ -1406,11 +1696,15 @@ class Trainer:
         self._save_checkpoint(
             checkpoint_path,
             epoch=epoch,
-            metrics=metrics,
+            snapshot=snapshot,
             metadata=self.checkpoint_metadata,
         )
 
-    def _save_latest_checkpoint(self, epoch: int, metrics: dict[str, float]) -> None:
+    def _save_latest_checkpoint(
+        self,
+        epoch: int,
+        snapshot: EpochMetricSnapshot,
+    ) -> None:
         """Save a stable latest checkpoint after every completed epoch."""
 
         if self.checkpoint_manager is None:
@@ -1418,7 +1712,7 @@ class Trainer:
         self._save_named_checkpoint(
             "latest.pt",
             epoch=epoch,
-            metrics=metrics,
+            snapshot=snapshot,
             metadata={**self.checkpoint_metadata, "checkpoint_kind": "latest"},
         )
 
@@ -1427,7 +1721,7 @@ class Trainer:
         filename: str,
         *,
         epoch: int,
-        metrics: dict[str, float],
+        snapshot: EpochMetricSnapshot,
         metadata: dict[str, Any],
     ) -> Path:
         """Save a checkpoint with a stable filename in the checkpoint directory."""
@@ -1439,7 +1733,7 @@ class Trainer:
         return self._save_checkpoint(
             self.checkpoint_dir / filename,
             epoch=epoch,
-            metrics=metrics,
+            snapshot=snapshot,
             metadata=metadata,
         )
 
@@ -1448,7 +1742,7 @@ class Trainer:
         checkpoint_path: Path,
         *,
         epoch: int,
-        metrics: dict[str, float],
+        snapshot: EpochMetricSnapshot,
         metadata: dict[str, Any],
     ) -> Path:
         """Save a checkpoint using the trainer's common runtime metadata."""
@@ -1460,6 +1754,10 @@ class Trainer:
             epoch=epoch,
             global_step=self.global_step,
             config=self.checkpoint_config,
-            metrics=metrics,
-            metadata={**metadata, "training_loop": self._fit_state_dict()},
+            metrics=dict(snapshot.values),
+            metadata={
+                **metadata,
+                "metric_sources": _checkpoint_metric_sources(snapshot),
+                "training_loop": self._fit_state_dict(),
+            },
         )

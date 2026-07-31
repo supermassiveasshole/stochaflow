@@ -72,7 +72,7 @@ class RecordingTrainer:
     def fit(self, dataloader, **kwargs):
         del dataloader
         self.fit_kwargs = kwargs
-        return [{"loss": 0.5, "train_loss": 0.5, "num_batches": 1.0}]
+        return [{"loss": 0.5, "train/loss": 0.5, "num_batches": 1.0}]
 
     def evaluate_epoch(self, dataloader, **kwargs):
         del dataloader, kwargs
@@ -224,6 +224,9 @@ def _best_payload(
         "epochs_without_improvement": 0,
         "stopped_early": False,
     }
+    data_role = (
+        "train" if str(monitor).startswith("train/") else "validation"
+    )
     return {
         "format_version": CHECKPOINT_FORMAT_VERSION,
         "precision_kind": "fp32",
@@ -239,6 +242,14 @@ def _best_payload(
         "metadata": {
             "extension_plugins": [],
             "checkpoint_kind": "best",
+            "metric_sources": {
+                monitor: {
+                    "origin": "phase",
+                    "data_role": data_role,
+                    "protocol_id": None,
+                    "selection_eligible": True,
+                }
+            },
             "training_loop": best_snapshot_loop,
         },
     }
@@ -361,7 +372,10 @@ def _run_single(
     )
 
 
-def test_runner_uses_valid_loss_when_validation_is_available(monkeypatch, tmp_path):
+def test_runner_uses_canonical_validation_loss_when_validation_is_available(
+    monkeypatch,
+    tmp_path,
+):
     config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
@@ -387,13 +401,16 @@ def test_runner_uses_valid_loss_when_validation_is_available(monkeypatch, tmp_pa
     )
 
     assert trainer.fit_kwargs["validation_dataloader"] is not None
-    assert trainer.fit_kwargs["early_stopping_monitor"] == "valid_loss"
+    assert trainer.fit_kwargs["early_stopping_monitor"] == "valid/loss"
     assert trainer.fit_kwargs["num_epochs"] == config.trainer.num_epochs
     assert build_kwargs["checkpoint_metadata"]["extension_plugins"] == []
     assert logger.closed
 
 
-def test_runner_uses_train_loss_and_skips_test_without_validation(monkeypatch, tmp_path):
+def test_runner_uses_canonical_train_loss_and_skips_test_without_validation(
+    monkeypatch,
+    tmp_path,
+):
     config = load_config(MNIST_TRAIN_CONFIG)
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
@@ -412,9 +429,48 @@ def test_runner_uses_train_loss_and_skips_test_without_validation(monkeypatch, t
     )
 
     assert trainer.fit_kwargs["validation_dataloader"] is None
-    assert trainer.fit_kwargs["early_stopping_monitor"] == "train_loss"
+    assert trainer.fit_kwargs["early_stopping_monitor"] == "train/loss"
     assert trainer.evaluate_calls == 0
     assert logger.closed
+
+
+def test_runner_preserves_explicit_train_metric_without_validation(
+    monkeypatch,
+    tmp_path,
+):
+    config = load_config(MNIST_TRAIN_CONFIG)
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "test"
+    config.metrics[0].phases.append("train")
+    config.trainer.early_stopping.monitor = "train/metrics/prediction_mae"
+    trainer = RecordingTrainer()
+    logger = RecordingLogger()
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+
+    _run_single(
+        config,
+        _loaders(),
+        _options(config),
+    )
+
+    assert (
+        trainer.fit_kwargs["early_stopping_monitor"]
+        == "train/metrics/prediction_mae"
+    )
+
+
+def test_runner_rejects_explicit_validation_metric_without_validation() -> None:
+    config = load_config(MNIST_TRAIN_CONFIG)
+    config.trainer.early_stopping.monitor = (
+        "valid/metrics/prediction_mae"
+    )
+
+    with pytest.raises(ValueError, match="requires a validation loader"):
+        experiment_runner._resolve_monitor(config, _loaders())
 
 
 def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
@@ -620,7 +676,7 @@ def test_runner_rejects_checkpoint_at_target_epoch(monkeypatch, tmp_path):
         "best_metric_value": 0.5,
         "epochs_without_improvement": 0,
         "stopped_early": False,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     loaded = SimpleNamespace(
@@ -668,7 +724,7 @@ def test_strict_resume_requires_sibling_best_for_latest_checkpoint(tmp_path):
         "best_metric_value": 0.5,
         "epochs_without_improvement": 0,
         "stopped_early": False,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     loaded = SimpleNamespace(
@@ -701,7 +757,7 @@ def test_strict_resume_recognizes_renamed_best_from_metadata(tmp_path):
         "best_metric_value": 0.5,
         "epochs_without_improvement": 0,
         "stopped_early": False,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     loaded = SimpleNamespace(
@@ -741,7 +797,7 @@ def test_strict_resume_rejects_sibling_best_from_future_epoch(tmp_path):
         "best_metric_value": 0.5,
         "epochs_without_improvement": 1,
         "stopped_early": False,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     future_loop = {
@@ -786,7 +842,7 @@ def test_strict_resume_rejects_sibling_best_from_future_epoch(tmp_path):
     ("field", "value"),
     [
         ("best_metric_value", 0.25),
-        ("monitor", "train_loss"),
+        ("monitor", "train/loss"),
         ("mode", "max"),
     ],
 )
@@ -802,7 +858,7 @@ def test_strict_resume_rejects_mismatched_sibling_best_identity(
         "best_metric_value": 0.5,
         "epochs_without_improvement": 1,
         "stopped_early": False,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     candidate_loop = {**selected_loop, field: value}
@@ -861,7 +917,7 @@ def test_strict_resume_rejects_noncanonical_best_snapshot_state(
         "best_metric_value": 0.5,
         "epochs_without_improvement": 0,
         "stopped_early": False,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     selected = _best_payload(loop_state, epoch=2)
@@ -878,7 +934,7 @@ def test_strict_resume_rejects_noncanonical_best_snapshot_state(
             selected_payload=selected,
             best_epoch=1,
             best_metric=0.5,
-            monitor="valid_loss",
+            monitor="valid/loss",
             mode="min",
         )
 
@@ -898,7 +954,7 @@ def test_strict_resume_rejects_sibling_from_another_run(
         "best_metric_value": 0.5,
         "epochs_without_improvement": 1,
         "stopped_early": False,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     selected_payload = _best_payload(loop_state, epoch=2)
@@ -968,7 +1024,7 @@ def test_strict_resume_materializes_matching_sibling_best_in_new_run(tmp_path):
         "best_metric_value": 0.5,
         "epochs_without_improvement": 1,
         "stopped_early": False,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     loaded = SimpleNamespace(
@@ -1064,7 +1120,7 @@ def test_strict_resume_rejects_terminal_early_stopping_state(tmp_path):
         "best_metric_value": 0.5,
         "epochs_without_improvement": 2,
         "stopped_early": True,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     loaded = SimpleNamespace(
@@ -1367,7 +1423,7 @@ def test_strict_resume_from_best_isolates_post_checkpoint_logger_rng(
         loader,
         num_epochs=2,
         show_progress=False,
-        early_stopping_monitor="train_loss",
+        early_stopping_monitor="train/loss",
         track_best=True,
     )
     expected_state = {
@@ -1384,7 +1440,7 @@ def test_strict_resume_from_best_isolates_post_checkpoint_logger_rng(
         loader,
         num_epochs=1,
         show_progress=False,
-        early_stopping_monitor="train_loss",
+        early_stopping_monitor="train/loss",
         track_best=True,
     )
     checkpoint = tmp_path / "interrupted-best" / "best.pt"
@@ -1410,7 +1466,7 @@ def test_strict_resume_from_best_isolates_post_checkpoint_logger_rng(
         num_epochs=2,
         start_epoch=start_epoch,
         show_progress=False,
-        early_stopping_monitor="train_loss",
+        early_stopping_monitor="train/loss",
         track_best=True,
     )
 
@@ -1722,7 +1778,7 @@ def test_strict_resume_preflights_sibling_best_before_any_run_side_effect(
         "best_metric_value": 0.5,
         "epochs_without_improvement": 1,
         "stopped_early": False,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
     selected = _best_payload(loop_state, epoch=2)

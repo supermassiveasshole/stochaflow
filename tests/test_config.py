@@ -115,6 +115,31 @@ def test_load_mnist_train_config() -> None:
         },
     }
     assert config.training.params == {"prediction_type": "v"}
+    assert [
+        {
+            "id": metric.id,
+            "name": metric.name,
+            "channel": metric.channel,
+            "phases": metric.phases,
+            "params": metric.params,
+        }
+        for metric in config.metrics
+    ] == [
+        {
+            "id": "prediction_mae",
+            "name": "mae",
+            "channel": "gaussian.prediction_target",
+            "phases": ["validation", "test"],
+            "params": {},
+        },
+        {
+            "id": "clean_reconstruction_mse",
+            "name": "mse",
+            "channel": "gaussian.clean_reconstruction",
+            "phases": ["validation", "test"],
+            "params": {},
+        },
+    ]
     assert config.optimizer.name == "torch.optim.Adam"
     assert config.optimizer.params == {
         "lr": 0.0003,
@@ -144,6 +169,7 @@ def test_load_mnist_train_config() -> None:
     assert [writer.name for writer in config.sampling.writers] == ["tensor"]
     assert config.trainer.num_epochs == 200
     assert not config.trainer.early_stopping.enabled
+    assert config.trainer.early_stopping.monitor == "valid/loss"
     assert config.trainer.early_stopping.patience == 7
     assert config.trainer.early_stopping.min_delta == 0.00001
     assert [diagnostic.name for diagnostic in config.diagnostics] == [
@@ -277,6 +303,82 @@ def test_config_rejects_duplicate_extension_plugins() -> None:
     raw["extensions"] = {"plugins": ["example", "example"]}
 
     with pytest.raises(ConfigError, match="duplicate entry-point name 'example'"):
+        load_config_dict(raw)
+
+
+@pytest.mark.parametrize("monitor", ["train_loss", "valid_loss"])
+def test_config_rejects_legacy_epoch_monitor_keys(monitor: str) -> None:
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    raw["trainer"]["early_stopping"]["monitor"] = monitor
+
+    with pytest.raises(
+        ConfigError,
+        match=r"monitor.*(?:whitespace|canonical epoch metric key)",
+    ):
+        load_config_dict(raw)
+
+
+@pytest.mark.parametrize(
+    "monitor",
+    [
+        " valid/loss ",
+        "train/step/loss",
+        "system/train/loss",
+        "test/loss",
+        "diagnostics/quality/fid",
+        "valid/metrics/id/nested/subkey",
+    ],
+)
+def test_config_rejects_noncanonical_epoch_monitor_keys(monitor: str) -> None:
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    raw["trainer"]["early_stopping"]["monitor"] = monitor
+
+    with pytest.raises(
+        ConfigError,
+        match=r"monitor.*(?:whitespace|canonical epoch metric key)",
+    ):
+        load_config_dict(raw)
+
+
+def test_config_without_metrics_keeps_backward_compatible_empty_default() -> None:
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    raw.pop("metrics")
+
+    config = load_config_dict(raw)
+
+    assert config.metrics == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("id", "invalid/id", r"metrics\[0\]\.id must match"),
+        ("phases", [], r"metrics\[0\]\.phases must not be empty"),
+        (
+            "phases",
+            ["validation", "validation"],
+            "contains duplicate phase",
+        ),
+        ("phases", ["predict"], r"metrics\[0\]\.phases\[0\]"),
+    ],
+)
+def test_config_rejects_invalid_metric_declarations(
+    field: str,
+    value: Any,
+    message: str,
+) -> None:
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    raw["metrics"][0][field] = value
+
+    with pytest.raises(ConfigError, match=message):
+        load_config_dict(raw)
+
+
+def test_config_rejects_duplicate_metric_ids() -> None:
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    raw["metrics"][1]["id"] = raw["metrics"][0]["id"]
+
+    with pytest.raises(ConfigError, match="duplicate metric id"):
         load_config_dict(raw)
 
 

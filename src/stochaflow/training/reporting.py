@@ -59,7 +59,8 @@ class FinalSummary:
     """High-level metadata shown when a training run finishes."""
 
     best_epoch: int
-    best_valid_loss: float | None
+    best_metric_name: str
+    best_metric_value: float | None
     test_loss: float | None
     stopped_early: bool
     best_checkpoint: str | Path | None
@@ -171,7 +172,7 @@ class RichTrainingReporter:
         total_epochs: int,
         train_loss: float,
         valid_loss: float | None,
-        best_valid_loss: float | None,
+        best_metric_value: float | None,
         lr: float | None,
         train_batches: int,
         valid_batches: int | None,
@@ -183,7 +184,7 @@ class RichTrainingReporter:
             f"{epoch}/{total_epochs}",
             _format_loss(train_loss),
             _format_loss(valid_loss),
-            _format_loss(best_valid_loss),
+            _format_loss(best_metric_value),
             "-" if lr is None else f"{lr:.2e}",
             str(train_batches),
             "-" if valid_batches is None else str(valid_batches),
@@ -200,7 +201,8 @@ class RichTrainingReporter:
         table.add_column(style="cyan", no_wrap=True)
         table.add_column(ratio=1, overflow="fold")
         table.add_row("Best epoch", str(summary.best_epoch))
-        table.add_row("Best loss", _format_loss(summary.best_valid_loss))
+        table.add_row("Best metric", summary.best_metric_name)
+        table.add_row("Best value", _format_loss(summary.best_metric_value))
         table.add_row("Test loss", _format_loss(summary.test_loss))
         table.add_row("Stopped early", str(summary.stopped_early))
         table.add_row("Best checkpoint", _format_path(summary.best_checkpoint))

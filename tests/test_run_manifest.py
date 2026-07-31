@@ -69,6 +69,7 @@ def test_selected_components_are_top_level_identities_only() -> None:
             "project.diagnostic-b",
             "project.diagnostic-a",
         ],
+        "metrics": [],
     }
 
 

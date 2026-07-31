@@ -52,6 +52,22 @@ _LOCK = (
     / "resources"
     / "afhq-v2.lock.yaml"
 )
+_EXPECTED_IMAGE_METRICS = [
+    {
+        "id": "prediction_mae",
+        "name": "mae",
+        "channel": "gaussian.prediction_target",
+        "phases": ["validation", "test"],
+        "params": {},
+    },
+    {
+        "id": "clean_reconstruction_mse",
+        "name": "mse",
+        "channel": "gaussian.clean_reconstruction",
+        "phases": ["validation", "test"],
+        "params": {},
+    },
+]
 
 
 def _raw(path: Path) -> dict[str, Any]:
@@ -84,11 +100,27 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
     declaration = tomllib.loads(
         (_SHOWCASE / "pyproject.toml").read_text(encoding="utf-8")
     )
+    locked_packages = tomllib.loads(
+        (_SHOWCASE / "uv.lock").read_text(encoding="utf-8")
+    )["package"]
+    locked_stochaflow = next(
+        package
+        for package in locked_packages
+        if package["name"] == "stochaflow"
+    )
 
     assert "class_labeled_image" in REGISTRIES.data_builders.names()
     assert "afhq-v2.class-images" not in REGISTRIES.data_builders.names()
     assert "afhq-v2.official" in IMAGE_DATA_SOURCES.names()
     assert (_SHOWCASE / "uv.lock").is_file()
+    assert "torchmetrics" in {
+        dependency["name"]
+        for dependency in locked_stochaflow["dependencies"]
+    }
+    assert [
+        dependency["name"]
+        for dependency in locked_stochaflow["optional-dependencies"]["quality"]
+    ] == ["torch-fidelity"]
     assert declaration["project"]["name"] == "stochaflow-afhq-v2"
     assert declaration["project"]["entry-points"]["stochaflow.extensions"] == {
         "stochaflow-afhq-v2": "stochaflow_afhq_v2.stochaflow_ext"
@@ -191,8 +223,10 @@ def test_afhq_production_configs_parse_and_follow_pipeline_contract() -> None:
                 "condition_dropout": 0.1,
             },
         }
+        assert raw["metrics"] == _EXPECTED_IMAGE_METRICS
         assert raw["trainer"]["precision"] == "bf16-mixed"
         assert raw["trainer"]["num_epochs"] == 200
+        assert raw["trainer"]["early_stopping"]["monitor"] == "valid/loss"
         assert raw["artifacts"]["checkpoint_every"] == 5
         assert raw["sampling"]["run_after_training"] is True
         assert raw["sampling"]["sampler"]["name"] == "ddim"
@@ -333,6 +367,8 @@ def test_afhq_smoke_config_is_bounded_and_uses_the_real_data_contract() -> None:
     assert raw["trainer"]["precision"] == "fp32"
     assert raw["trainer"]["accumulate_grad_batches"] == 2
     assert raw["trainer"]["num_epochs"] == 1
+    assert raw["trainer"]["early_stopping"]["monitor"] == "valid/loss"
+    assert raw["metrics"] == _EXPECTED_IMAGE_METRICS
     assert raw["lr_scheduler"]["params"]["total_steps"] == 2
     assert raw["model"] == {
         "name": "adm_unet",

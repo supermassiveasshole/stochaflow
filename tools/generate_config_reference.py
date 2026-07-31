@@ -33,6 +33,7 @@ REGISTRY_NAMES = (
     "sampling_builders",
     "training_builders",
     "objectives",
+    "metrics",
     "optimizers",
     "lr_schedulers",
     "loggers",

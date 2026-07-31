@@ -83,6 +83,8 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "ManagedDataArtifactBuild": data.ManagedDataArtifactBuild,
         "MSEObjective": training.MSEObjective,
         "ManagedTrainingModule": training.ManagedTrainingModule,
+        "MetricChannelProvider": training.MetricChannelProvider,
+        "MetricUpdate": training.MetricUpdate,
         "PerSampleObjective": training.PerSampleObjective,
         "PredictionType": sampling.PredictionType,
         "Process": processes.Process,

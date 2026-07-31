@@ -1,0 +1,88 @@
+"""Task-neutral metric contracts with lazy construction/runtime exports.
+
+Configuration loading imports this package, so TorchMetrics-backed construction
+modules must remain lazy. Built-ins are imported when the runtime factory module
+is loaded, not during configuration-only imports.
+"""
+
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
+from stochaflow.metrics.config import (
+    TRAINING_METRIC_PHASES,
+    MetricConfig,
+    MetricSpec,
+    validate_metric_configs,
+    validate_metric_spec,
+    validate_training_monitor_key,
+)
+from stochaflow.metrics.contracts import (
+    EpochMetricSnapshot,
+    MetricDataRole,
+    MetricOrigin,
+    MetricSource,
+    MetricUpdate,
+    detach_metric_update,
+    detach_metric_updates,
+    detach_metric_value,
+    validate_metric_updates,
+)
+
+if TYPE_CHECKING:
+    from stochaflow.metrics.builtin import ErrorOnNanMeanMetric
+    from stochaflow.metrics.factory import build_metric
+    from stochaflow.metrics.runtime import MetricEngine, MetricRuntimeError
+
+_LAZY_METRIC_EXPORTS = {
+    "ErrorOnNanMeanMetric": (
+        "stochaflow.metrics.builtin",
+        "ErrorOnNanMeanMetric",
+    ),
+    "MetricEngine": ("stochaflow.metrics.runtime", "MetricEngine"),
+    "MetricRuntimeError": (
+        "stochaflow.metrics.runtime",
+        "MetricRuntimeError",
+    ),
+    "build_metric": ("stochaflow.metrics.factory", "build_metric"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Load TorchMetrics-backed exports only when explicitly requested."""
+
+    target = _LAZY_METRIC_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute_name = target
+    value = getattr(import_module(module_name), attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """Include lazy public exports in interactive discovery."""
+
+    return sorted(set(globals()).union(_LAZY_METRIC_EXPORTS))
+
+
+__all__ = [
+    "TRAINING_METRIC_PHASES",
+    "EpochMetricSnapshot",
+    "ErrorOnNanMeanMetric",
+    "MetricConfig",
+    "MetricDataRole",
+    "MetricEngine",
+    "MetricOrigin",
+    "MetricRuntimeError",
+    "MetricSource",
+    "MetricSpec",
+    "MetricUpdate",
+    "build_metric",
+    "detach_metric_update",
+    "detach_metric_updates",
+    "detach_metric_value",
+    "validate_metric_configs",
+    "validate_metric_spec",
+    "validate_metric_updates",
+    "validate_training_monitor_key",
+]

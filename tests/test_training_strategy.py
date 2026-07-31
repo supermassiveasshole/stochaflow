@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -11,11 +11,16 @@ from torch import nn
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.sampling import PredictionType
 from stochaflow.training import (
+    ClassConditionalGaussianDenoisingTrainingStrategy,
     GaussianDenoisingTrainingBuilder,
     GaussianDenoisingTrainingStrategy,
+    MetricChannelProvider,
+    MetricUpdate,
     MSEObjective,
+    SupervisedTrainingStrategy,
     TrainStepOutput,
     gaussian_training_target,
+    loss_aggregation_weight_to_float,
     validate_train_step_output,
 )
 from stochaflow.training.builder import TrainingBuilderContext
@@ -46,11 +51,71 @@ from stochaflow.utils.config import ComponentConfig
             ),
             "real numeric",
         ),
+        (
+            TrainStepOutput(
+                torch.tensor(1.0),
+                metric_updates={"": MetricUpdate()},
+            ),
+            "metric update channels",
+        ),
+        (
+            TrainStepOutput(
+                torch.tensor(1.0),
+                metric_updates={"valid.channel": cast(MetricUpdate, object())},
+            ),
+            "must be MetricUpdate",
+        ),
+        (
+            TrainStepOutput(torch.tensor(1.0), loss_aggregation_weight=True),
+            "real numeric scalar",
+        ),
+        (
+            TrainStepOutput(torch.tensor(1.0), loss_aggregation_weight=-1),
+            "non-negative",
+        ),
+        (
+            TrainStepOutput(torch.tensor(1.0), loss_aggregation_weight=float("inf")),
+            "finite",
+        ),
+        (
+            TrainStepOutput(
+                torch.tensor(1.0),
+                loss_aggregation_weight=torch.ones(2),
+            ),
+            "scalar Tensor",
+        ),
+        (
+            TrainStepOutput(
+                torch.tensor(1.0),
+                loss_aggregation_weight=torch.tensor(1.0 + 2.0j),
+            ),
+            "real numeric",
+        ),
     ],
 )
 def test_train_step_output_validation(value: Any, message: str) -> None:
     with pytest.raises((TypeError, ValueError), match=message):
         validate_train_step_output(value)
+
+
+def test_train_step_output_accepts_zero_and_detached_tensor_weights() -> None:
+    tensor_weight = torch.tensor(3.0, requires_grad=True)
+    output = TrainStepOutput(
+        loss=torch.tensor(2.0, requires_grad=True),
+        metric_updates={"valid.channel": MetricUpdate(args=(torch.tensor(1.0),))},
+        loss_aggregation_weight=tensor_weight,
+    )
+
+    validated = validate_train_step_output(output)
+
+    assert validated is output
+    assert loss_aggregation_weight_to_float(tensor_weight) == 3.0
+    assert loss_aggregation_weight_to_float(0) == 0.0
+    assert validated.loss.item() == 2.0
+    assert validated.loss.requires_grad
+    validated.loss.backward()
+    assert validated.loss.grad is not None
+    assert validated.loss.grad.item() == 1.0
 
 
 class DeterministicGaussianProcess(DiscreteGaussianProcess):
@@ -124,6 +189,47 @@ class DeclaredLayoutGaussianModel(nn.Module):
         return state + self.offset
 
 
+class PerfectConditionalTargetModel(PerfectTargetModel):
+    @property
+    def num_classes(self) -> int:
+        return 3
+
+    @property
+    def null_class_id(self) -> int:
+        return self.num_classes
+
+    def predict_class_conditioned(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+        class_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        assert class_labels.shape == model_time.shape
+        return self.forward(state, model_time)
+
+
+def test_supervised_strategy_declares_and_emits_metric_channel() -> None:
+    model = nn.Linear(2, 1, bias=False)
+    objective = MSEObjective()
+    strategy = SupervisedTrainingStrategy(model, objective)
+    inputs = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    targets = torch.tensor([[0.5], [1.0], [1.5]])
+
+    output = strategy.training_step((inputs, targets))
+
+    assert isinstance(strategy, MetricChannelProvider)
+    assert strategy.metric_channels == frozenset(
+        ("supervised.prediction_target",)
+    )
+    prediction, metric_target = output.metric_updates[
+        "supervised.prediction_target"
+    ].args
+    assert isinstance(prediction, torch.Tensor)
+    assert metric_target is targets
+    assert output.loss_aggregation_weight == 3
+    assert torch.equal(output.loss, (prediction - targets).square().mean())
+
+
 @pytest.mark.parametrize("prediction_type", ["epsilon", "x0", "v", "score"])
 def test_gaussian_strategy_supports_all_prediction_targets(
     prediction_type: PredictionType,
@@ -150,6 +256,57 @@ def test_gaussian_strategy_supports_all_prediction_targets(
         output.diagnostics["predicted_clean"],
         output.diagnostics["clean_samples"],
     )
+    assert isinstance(strategy, MetricChannelProvider)
+    assert strategy.metric_channels == frozenset(
+        (
+            "gaussian.prediction_target",
+            "gaussian.clean_reconstruction",
+        )
+    )
+    model_output, target = output.metric_updates[
+        "gaussian.prediction_target"
+    ].args
+    predicted_clean, clean = output.metric_updates[
+        "gaussian.clean_reconstruction"
+    ].args
+    assert torch.allclose(model_output, target)
+    assert torch.allclose(predicted_clean, clean)
+    assert output.loss_aggregation_weight == 2
+
+
+def test_class_conditional_gaussian_strategy_emits_shared_gaussian_channels() -> None:
+    process = DeterministicGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 4}}
+    )
+    model = PerfectConditionalTargetModel(process, "epsilon", clean_value=0.25)
+    strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
+        model,
+        process,
+        MSEObjective(),
+        prediction_type="epsilon",
+    )
+    clean = torch.full((2, 1, 2, 2), 0.25)
+    labels = torch.tensor([0, 2])
+
+    output = strategy.evaluation_step((clean, {"class_label": labels}))
+
+    assert isinstance(strategy, MetricChannelProvider)
+    assert strategy.metric_channels == frozenset(
+        (
+            "gaussian.prediction_target",
+            "gaussian.clean_reconstruction",
+        )
+    )
+    model_output, target = output.metric_updates[
+        "gaussian.prediction_target"
+    ].args
+    predicted_clean, metric_clean = output.metric_updates[
+        "gaussian.clean_reconstruction"
+    ].args
+    assert torch.allclose(model_output, target)
+    assert torch.allclose(predicted_clean, metric_clean)
+    assert metric_clean is clean
+    assert output.loss_aggregation_weight == 2
 
 
 def test_gaussian_strategy_rejects_unhandled_conditions() -> None:

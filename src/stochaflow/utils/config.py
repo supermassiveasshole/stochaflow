@@ -8,6 +8,12 @@ from typing import Any, Union, cast, get_args, get_origin, get_type_hints
 
 import yaml
 
+from stochaflow.metrics.config import (
+    MetricConfig,
+    validate_metric_configs,
+    validate_training_monitor_key,
+)
+
 
 class ConfigError(ValueError):
     """Raised when a config file does not match the expected schema."""
@@ -105,7 +111,7 @@ class EarlyStoppingConfig:
     """Validation-based early stopping policy."""
 
     enabled: bool = False
-    monitor: str = "valid_loss"
+    monitor: str = "valid/loss"
     mode: str = "min"
     patience: int = 10
     min_delta: float = 0.0
@@ -152,6 +158,7 @@ class StochaflowConfig:
     training: ComponentConfig
     objective: ComponentConfig | None = None
     process: ComponentConfig | None = None
+    metrics: list[MetricConfig] = field(default_factory=list)
     extensions: ExtensionsConfig = field(default_factory=ExtensionsConfig)
     optimizer: ComponentConfig = field(
         default_factory=lambda: ComponentConfig(
@@ -186,6 +193,10 @@ class StochaflowConfig:
                 raise ConfigError("objective.name must be a non-empty registry name")
             if not isinstance(cast(object, self.objective.params), dict):
                 raise ConfigError("objective.params must be a mapping")
+        try:
+            validate_metric_configs(self.metrics)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(str(exc)) from exc
         plugins_value = cast(object, self.extensions.plugins)
         if plugins_value is not None and not isinstance(plugins_value, list):
             raise ConfigError("extensions.plugins must be a list or null")
@@ -267,6 +278,13 @@ class StochaflowConfig:
             raise ConfigError("trainer.max_grad_norm must be positive when provided")
         if self.trainer.early_stopping.mode not in {"min", "max"}:
             raise ConfigError("trainer.early_stopping.mode must be 'min' or 'max'")
+        try:
+            validate_training_monitor_key(
+                self.trainer.early_stopping.monitor,
+                path="trainer.early_stopping.monitor",
+            )
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(str(exc)) from exc
         if self.trainer.early_stopping.patience <= 0:
             raise ConfigError("trainer.early_stopping.patience must be positive")
         if self.trainer.early_stopping.min_delta < 0:

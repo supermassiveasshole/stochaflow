@@ -46,10 +46,13 @@ from .reporting import FinalSummary, RichTrainingReporter, RunSummary
 from .strategy import (
     Batch,
     DeviceTransferableBatch,
+    MetricChannelProvider,
+    MetricUpdate,
     ReferenceImageBatchSemantics,
     ScalarMetric,
     TrainingStrategy,
     TrainStepOutput,
+    loss_aggregation_weight_to_float,
     validate_train_step_output,
 )
 from .trainer import Trainer
@@ -73,6 +76,8 @@ __all__ = [
     "InferenceAssetProjection",
     "MSEObjective",
     "ManagedTrainingModule",
+    "MetricChannelProvider",
+    "MetricUpdate",
     "PerSampleObjective",
     "PrecisionKind",
     "PrecisionRuntime",
@@ -96,6 +101,7 @@ __all__ = [
     "build_training_plan",
     "compute_objective",
     "gaussian_training_target",
+    "loss_aggregation_weight_to_float",
     "trainable_parameters",
     "training_module_roots",
     "validate_precision_support",

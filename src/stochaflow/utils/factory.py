@@ -22,6 +22,7 @@ from stochaflow.training import (
     trainable_parameters,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
+from stochaflow.training.metric_binding import TrainingMetricRuntime
 from stochaflow.training.optimization import build_lr_scheduler, build_optimizer
 from stochaflow.utils.checkpoint import (
     CheckpointManager,
@@ -45,6 +46,7 @@ from stochaflow.utils.sampling_recipe import resolve_sampling_recipe_params
 
 BUILTIN_COMPONENT_MODULES = (
     "stochaflow.data",
+    "stochaflow.metrics.builtin",
     "stochaflow.models",
     "stochaflow.processes",
     "stochaflow.sampling",
@@ -78,6 +80,7 @@ class TrainingComponents:
     precision: PrecisionRuntime
     logger: ExperimentLogger
     diagnostics: list[TrainingDiagnostic]
+    metric_runtime: TrainingMetricRuntime
     checkpoint_manager: CheckpointManager
     trainer: Trainer
 
@@ -303,6 +306,11 @@ def build_training_components(
         logger=logger,
         output_dir=config.experiment.output_dir,
     )
+    metric_runtime = TrainingMetricRuntime(
+        config.metrics,
+        plan.strategy,
+        device=device,
+    )
     trainer = Trainer(
         plan=plan,
         optimizer=optimizer,
@@ -317,6 +325,7 @@ def build_training_components(
         max_grad_norm=config.trainer.max_grad_norm,
         logger=logger,
         diagnostics=diagnostics,
+        metric_runtime=metric_runtime,
         log_every=config.logging.log_every,
         checkpoint_manager=checkpoint_manager,
         checkpoint_dir=f"{config.experiment.output_dir}/checkpoints",
@@ -338,6 +347,7 @@ def build_training_components(
         precision=precision,
         logger=logger,
         diagnostics=diagnostics,
+        metric_runtime=metric_runtime,
         checkpoint_manager=checkpoint_manager,
         trainer=trainer,
     )

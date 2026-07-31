@@ -20,6 +20,7 @@ dependencies = [
     # routed through tool.uv.sources below.
     "torch>=2.11,<3; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "torchvision>=0.26,<1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchmetrics>=1.9,<2",
     "rich>=13.9",
     # Torch 2.2.2 wheels were built against NumPy 1.x on Intel Macs.
     "numpy>=1.26,<2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
@@ -38,7 +39,6 @@ wandb = [
     "wandb>=0.17",
 ]
 quality = [
-    "torchmetrics>=1.9,<2",
     "torch-fidelity>=0.3,<1",
 ]
 dev = [

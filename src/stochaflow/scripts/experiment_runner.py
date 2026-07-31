@@ -20,6 +20,7 @@ from stochaflow.data import (
     build_data_loaders,
 )
 from stochaflow.data.artifact_io import MAX_ARTIFACT_VERIFICATION_WORKERS
+from stochaflow.metrics import EpochMetricSnapshot
 from stochaflow.sampling.runtime import run_sampling
 from stochaflow.scripts.artifact_reporting import (
     RichArtifactVerificationReporter,
@@ -164,7 +165,8 @@ class TrainingResult:
     """Selected model state and summary values after fitting."""
 
     best_epoch: int
-    best_loss: float | None
+    best_metric_name: str
+    best_metric_value: float | None
     best_checkpoint: Path | None
 
 
@@ -362,9 +364,15 @@ def _batch_size(loader: object) -> int | None:
 
 
 def _resolve_monitor(config: StochaflowConfig, loaders: DataLoaders) -> str:
+    monitor = config.trainer.early_stopping.monitor
     if loaders.validation is None:
-        return "train_loss"
-    return config.trainer.early_stopping.monitor
+        if monitor == "valid/loss":
+            return "train/loss"
+        if monitor.startswith("valid/"):
+            raise ValueError(
+                f"monitor {monitor!r} requires a validation loader"
+            )
+    return monitor
 
 
 def _resolve_resume_checkpoint(
@@ -980,13 +988,27 @@ def _validate_inherited_best(
                 f"selected checkpoint history: {field} mismatch"
             )
     metrics = cast(object, payload.get("metrics"))
-    if (
-        not isinstance(metrics, dict)
-        or not _same_metric(metrics.get(monitor), best_metric)
-    ):
+    metric_sources = cast(object, candidate_metadata.get("metric_sources"))
+    snapshot = EpochMetricSnapshot.from_dict(
+        {
+            "values": metrics,
+            "sources": metric_sources,
+        },
+        path=f"inherited best checkpoint '{source}' metric snapshot",
+    )
+    if not _same_metric(snapshot.values.get(monitor), best_metric):
         raise ValueError(
             f"inherited best checkpoint '{source}' does not contain the "
             f"recorded best metric '{monitor}'"
+        )
+    monitor_source = snapshot.sources[monitor]
+    if (
+        not monitor_source.selection_eligible
+        or monitor_source.data_role == "test"
+    ):
+        raise ValueError(
+            f"inherited best checkpoint '{source}' monitor source is not "
+            "selection eligible"
         )
 
 
@@ -1146,6 +1168,7 @@ def _fit_and_select_best(
     """Fit one run, restore its selected checkpoint, and summarize it."""
 
     early_stopping = config.trainer.early_stopping
+    monitor = _resolve_monitor(config, loaders)
     history = training.trainer.fit(
         loaders.train,
         num_epochs=options.num_epochs,
@@ -1161,7 +1184,7 @@ def _fit_and_select_best(
         early_stopping_patience=(
             early_stopping.patience if early_stopping.enabled else None
         ),
-        early_stopping_monitor=_resolve_monitor(config, loaders),
+        early_stopping_monitor=monitor,
         early_stopping_mode=early_stopping.mode,
         early_stopping_min_delta=early_stopping.min_delta,
         reporter=reporter,
@@ -1180,7 +1203,8 @@ def _fit_and_select_best(
         )
     return TrainingResult(
         best_epoch=best_epoch,
-        best_loss=training.trainer.best_metric_value,
+        best_metric_name=monitor,
+        best_metric_value=training.trainer.best_metric_value,
         best_checkpoint=best_checkpoint,
     )
 
@@ -1372,7 +1396,8 @@ def _run_single_run(
         reporter.on_run_end(
             FinalSummary(
                 best_epoch=result.best_epoch,
-                best_valid_loss=result.best_loss,
+                best_metric_name=result.best_metric_name,
+                best_metric_value=result.best_metric_value,
                 test_loss=test_loss,
                 stopped_early=stopped_early,
                 best_checkpoint=result.best_checkpoint,

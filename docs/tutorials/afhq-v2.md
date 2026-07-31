@@ -323,9 +323,13 @@ production 使用 `device: auto`。当它选中 CUDA 时，`bf16-mixed` 要求
 CPU BF16 autocast 可用但不代表适合 production 吞吐。需要 FP16 的 CUDA 主机必须显式
 选择 `fp16-mixed`；该模式只支持 CUDA 并使用 GradScaler。
 
-训练流程每 epoch 执行 validation，以 `valid_loss` 选择 best checkpoint。fit 结束后先恢复
-best，再执行 official test。Stochaflow 当前没有独立的 `validate` CLI；不能把 sampling
-或 sample statistics 当作模型 validation，也不能把当前 diagnostic 冒充正式 FID/KID。
+训练流程每 epoch 执行 validation，以 `valid/loss` 选择 best checkpoint，并聚合
+`valid/metrics/prediction_mae` 与
+`valid/metrics/clean_reconstruction_mse`。fit 结束后先恢复 best，再在 official test
+上计算对应的 `test/metrics/...`。这些指标分别衡量 Gaussian 预测目标误差和由当前噪声
+状态恢复干净图像的误差，不是 FID/KID 等生成分布质量指标。Stochaflow 当前没有独立的
+`validate` CLI；不能把 sampling 或 sample statistics 当作模型 validation，也不能把
+当前 diagnostic 冒充正式 FID/KID。
 
 ## 日志、diagnostic 与 checkpoint
 

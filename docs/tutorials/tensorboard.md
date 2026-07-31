@@ -85,12 +85,14 @@ uv run tensorboard `
 
 | 指标 | 含义 | 使用建议 |
 | --- | --- | --- |
-| `train/epoch_loss` | 每个训练轮次的平均损失 | 看长期下降趋势，不要只看单个 batch |
-| `valid/epoch_loss` | 验证集平均损失 | 用于发现过拟合和选择 checkpoint |
-| `best/valid_loss` | 当前最佳验证损失 | 应随有效改进阶梯式下降 |
+| `train/loss` | 每个训练轮次的平均损失 | 看长期下降趋势，不要只看单个 batch |
+| `valid/loss` | 验证集平均损失 | 用于发现过拟合和选择 checkpoint |
+| `best/valid/loss` | 当前最佳验证损失 | 应随有效改进阶梯式下降 |
 | `train/lr/group_0` | 第一个参数组的学习率 | 核对 warmup 和 cosine 曲线是否符合配置 |
-| `train/loss` | 按 `log_every` 记录的 batch 损失 | 波动较大，适合发现突发异常或 NaN |
-| `train/epoch_duration_seconds` | 单轮训练耗时 | 对比吞吐变化和数据加载瓶颈 |
+| `train/step/loss` | 按 `log_every` 记录的 batch 损失 | 波动较大，适合发现突发异常或 NaN |
+| `system/train/duration_seconds` | 单轮训练耗时 | 对比吞吐变化和数据加载瓶颈 |
+| `valid/metrics/prediction_mae` | 验证集上的预测目标 MAE | 补充观察去噪预测误差，不代替生成质量评价 |
+| `valid/metrics/clean_reconstruction_mse` | 验证集上的干净图像重建 MSE | 观察由当前噪声状态恢复 `x0` 的误差 |
 
 建议对 loss 使用适度平滑，但比较最低点和尾段趋势时同时查看原始曲线。学习率曲线
 不应开启过强平滑，否则 warmup 拐点会被掩盖。
@@ -116,6 +118,10 @@ MNIST 默认监控协议使用 EMA 权重、固定 seed 和确定性 DDIM-50，�
 写入量大且不利于跨 epoch 比较。MNIST 配置也不默认启用基于 ImageNet 特征的 KID/FID，
 这些指标不能可靠判断生成图是否像一个合法数字。生成质量仍需结合固定样本网格判断，
 不能只看训练 loss 或样本均值/方差。
+
+训练配置中的普通 phase metrics 会在完整 validation epoch 上聚合，并在恢复 best
+checkpoint 后对 test split 再计算一次；对应 test tag 使用 `test/metrics/...`。它们与
+按 cadence 运行、可能产出图像 artifact 的 `diagnostics/...` 是两条独立通道。
 
 ## 常见问题
 

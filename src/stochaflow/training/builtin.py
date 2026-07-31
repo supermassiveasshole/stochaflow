@@ -5,6 +5,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from stochaflow.metrics import MetricUpdate
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
 from stochaflow.training.objectives import compute_objective
 from stochaflow.training.strategy import TrainingStrategy, TrainStepOutput
@@ -17,6 +18,12 @@ class SupervisedTrainingStrategy(TrainingStrategy):
     def __init__(self, model: nn.Module, objective: nn.Module) -> None:
         self.model = model
         self.objective = objective
+
+    @property
+    def metric_channels(self) -> frozenset[str]:
+        """Return the supervised prediction/target update channel."""
+
+        return frozenset(("supervised.prediction_target",))
 
     def training_step(self, batch: Any) -> TrainStepOutput:
         """Run one supervised forward and objective computation."""
@@ -34,7 +41,16 @@ class SupervisedTrainingStrategy(TrainingStrategy):
             prediction_value,
             target_value,
         )
-        return TrainStepOutput(loss=loss)
+        batch_size = prediction_value.shape[0] if prediction_value.ndim > 0 else 1
+        return TrainStepOutput(
+            loss=loss,
+            metric_updates={
+                "supervised.prediction_target": MetricUpdate(
+                    args=(prediction_value, target_value)
+                )
+            },
+            loss_aggregation_weight=batch_size,
+        )
 
 
 @REGISTRIES.training_builders.register("supervised")

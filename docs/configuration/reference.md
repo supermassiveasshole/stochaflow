@@ -191,6 +191,61 @@ Process 构造参数；模型、condition 和 sampler 不进入此处。
 - 必填：否
 - 默认值：`{}`
 
+## `metrics`
+
+(config-field-path-metrics)=
+### `metrics`
+
+从 Strategy 声明的 task-specific channel 聚合 train、validation 或 test phase 指标；未声明时保持现有 Strategy 兼容。
+
+- 类型：`list[mapping]`
+- 必填：否
+- 默认值：`[]`
+
+(config-field-path-metrics-item-id)=
+### `metrics[].id`
+
+本次配置内唯一且可安全用于 canonical metric tag 的稳定标识。
+
+- 类型：`str`
+- 必填：是
+- 约束：以 ASCII 字母或数字开头，其余字符只允许 ASCII 字母、数字、下划线、点或连字符，且整份配置中不得重复。
+
+(config-field-path-metrics-item-name)=
+### `metrics[].name`
+
+metrics Registry 中的 Metric 构造名称。
+
+- 类型：`str`
+- 必填：是
+
+(config-field-path-metrics-item-channel)=
+### `metrics[].channel`
+
+TrainingStrategy 公开的 metric update channel；其 payload contract 由该 Strategy 定义。
+
+- 类型：`str`
+- 必填：是
+
+(config-field-path-metrics-item-params)=
+### `metrics[].params`
+
+只传给 Metric constructor 的关键字参数；不会与 Strategy 产生的 runtime update 参数合并。
+
+- 类型：`mapping[str, any]`
+- 必填：否
+- 默认值：`{}`
+
+(config-field-path-metrics-item-phases)=
+### `metrics[].phases`
+
+为该 declaration 分别构造独立 Metric 实例的训练 phase 列表。
+
+- 类型：`list[str]`
+- 必填：否
+- 默认值：`[validation]`
+- 约束：只允许 train、validation、test，至少一项且不得重复。
+
 ## `extensions`
 
 (config-field-path-extensions)=
@@ -499,7 +554,7 @@ diagnostic 构造参数；logger 与 output_dir 由运行时注入；需要采�
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{accumulate_grad_batches: 1, device: cpu, early_stopping: {enabled: false, min_delta: 0.0, mode: min, monitor: valid_loss, patience: 10}, max_grad_norm: null, num_epochs: 1, precision: fp32, show_progress: true}`
+- 默认值：`{accumulate_grad_batches: 1, device: cpu, early_stopping: {enabled: false, min_delta: 0.0, mode: min, monitor: valid/loss, patience: 10}, max_grad_norm: null, num_epochs: 1, precision: fp32, show_progress: true}`
 
 (config-field-path-trainer-num-epochs)=
 ### `trainer.num_epochs`
@@ -569,7 +624,7 @@ Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{enabled: false, min_delta: 0.0, mode: min, monitor: valid_loss, patience: 10}`
+- 默认值：`{enabled: false, min_delta: 0.0, mode: min, monitor: valid/loss, patience: 10}`
 
 (config-field-path-trainer-early-stopping-enabled)=
 ### `trainer.early_stopping.enabled`
@@ -583,11 +638,12 @@ Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。
 (config-field-path-trainer-early-stopping-monitor)=
 ### `trainer.early_stopping.monitor`
 
-需要监控的 epoch 指标名，例如 valid_loss 或 train_loss。
+需要监控的 canonical epoch 指标，例如 valid/loss、train/loss 或 valid/metrics/prediction_mae。
 
 - 类型：`str`
 - 必填：否
-- 默认值：`valid_loss`
+- 默认值：`valid/loss`
+- 约束：接受 train/valid loss 或 phase metric（可带一个 flat subkey）；拒绝 step、system、test、diagnostic namespace、周围空白与旧别名。
 
 (config-field-path-trainer-early-stopping-mode)=
 ### `trainer.early_stopping.mode`
@@ -1154,6 +1210,40 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | 参数 | 含义与约束 |
 | --- | --- |
 | `reduction` | MSE 标量聚合方式；支持 mean 或 sum。 |
+
+(config-registry-name-metrics)=
+### `metrics`
+
+从 Strategy channel 聚合一个隔离 phase 内的只读统计状态；Metric 不属于 trainable asset，也不进入 optimizer 或 checkpoint state。
+
+- 基类/契约：`torchmetrics.Metric`
+- 配置位置：`metrics[].name / metrics[].params`
+
+(config-component-metrics-mean)=
+#### `mean`
+
+对显式 scalar/weight update 计算均值；固定对 NaN 报错，Inf 作为 non-finite observation 保留。
+
+`params` 可传 TorchMetrics Metric 的通用关键字，但 `nan_strategy` 只能省略或设为 `error`。
+
+(config-component-metrics-mse)=
+#### `mse`
+
+对 prediction-target update 聚合 mean squared error。
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `squared` | true 返回 MSE，false 返回其平方根。 |
+| `num_outputs` | 同时聚合的输出数量；默认 1。 |
+
+(config-component-metrics-mae)=
+#### `mae`
+
+对 prediction-target update 聚合 mean absolute error。
+
+| 参数 | 含义与约束 |
+| --- | --- |
+| `num_outputs` | 同时聚合的输出数量；默认 1。 |
 
 (config-registry-name-optimizers)=
 ### `optimizers`

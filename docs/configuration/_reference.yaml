@@ -26,6 +26,12 @@ fields:
   objective: {description: 可选训练目标函数的 Registry 声明；具体 TrainingBuilder 决定是否需要。}
   objective.name: {description: objectives Registry 名称。}
   objective.params: {description: 目标函数构造参数。}
+  metrics: {description: 从 Strategy 声明的 task-specific channel 聚合 train、validation 或 test phase 指标；未声明时保持现有 Strategy 兼容。}
+  "metrics[].id": {description: 本次配置内唯一且可安全用于 canonical metric tag 的稳定标识。, constraints: 以 ASCII 字母或数字开头，其余字符只允许 ASCII 字母、数字、下划线、点或连字符，且整份配置中不得重复。}
+  "metrics[].name": {description: metrics Registry 中的 Metric 构造名称。}
+  "metrics[].channel": {description: TrainingStrategy 公开的 metric update channel；其 payload contract 由该 Strategy 定义。}
+  "metrics[].phases": {description: 为该 declaration 分别构造独立 Metric 实例的训练 phase 列表。, constraints: 只允许 train、validation、test，至少一项且不得重复。}
+  "metrics[].params": {description: 只传给 Metric constructor 的关键字参数；不会与 Strategy 产生的 runtime update 参数合并。}
   optimizer: {description: 原生 PyTorch optimizer target 或 optimizers Registry 扩展声明。}
   optimizer.name: {description: 受限 torch.optim.<Class> target，或第三方 optimizers Registry 名称。}
   optimizer.params: {description: 原样透传给 optimizer 构造器的关键字参数；trainable parameters 由运行时注入。}
@@ -64,7 +70,7 @@ fields:
   trainer.show_progress: {description: 是否显示 Rich 进度条。, cli: "train --progress / --no-progress"}
   trainer.early_stopping: {description: 基于 epoch 指标的提前停止策略。}
   trainer.early_stopping.enabled: {description: 是否启用提前停止。}
-  trainer.early_stopping.monitor: {description: 需要监控的 epoch 指标名，例如 valid_loss 或 train_loss。}
+  trainer.early_stopping.monitor: {description: 需要监控的 canonical epoch 指标，例如 valid/loss、train/loss 或 valid/metrics/prediction_mae。, constraints: 接受 train/valid loss 或 phase metric（可带一个 flat subkey）；拒绝 step、system、test、diagnostic namespace、周围空白与旧别名。}
   trainer.early_stopping.mode: {description: min 表示越小越好，max 表示越大越好。, constraints: min 或 max。}
   trainer.early_stopping.patience: {description: 指标无足够改善时容忍的 epoch 数。, constraints: 正整数。}
   trainer.early_stopping.min_delta: {description: 被视为改善所需的最小绝对差值。, constraints: 非负数。}
@@ -402,6 +408,25 @@ registries:
         description: 可跨 supervised、Gaussian 和自定义 Strategy 复用的均方误差。
         parameters:
           reduction: {description: MSE 标量聚合方式；支持 mean 或 sum。}
+
+  metrics:
+    description: 从 Strategy channel 聚合一个隔离 phase 内的只读统计状态；Metric 不属于 trainable asset，也不进入 optimizer 或 checkpoint state。
+    base: torchmetrics.Metric
+    config_path: metrics[].name / metrics[].params
+    entries:
+      mean:
+        description: 对显式 scalar/weight update 计算均值；固定对 NaN 报错，Inf 作为 non-finite observation 保留。
+        parameters: {}
+        parameter_note: "`params` 可传 TorchMetrics Metric 的通用关键字，但 `nan_strategy` 只能省略或设为 `error`。"
+      mse:
+        description: 对 prediction-target update 聚合 mean squared error。
+        parameters:
+          squared: {description: true 返回 MSE，false 返回其平方根。}
+          num_outputs: {description: 同时聚合的输出数量；默认 1。}
+      mae:
+        description: 对 prediction-target update 聚合 mean absolute error。
+        parameters:
+          num_outputs: {description: 同时聚合的输出数量；默认 1。}
 
   optimizers:
     description: 构建第三方 PyTorch Optimizer 扩展；标准 torch.optim 类通过受限原生 provider 解析，不复制为 Registry entry。

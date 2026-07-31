@@ -89,7 +89,7 @@ GitHub [v0.1.0 Release](https://github.com/supermassiveasshole/stochaflow/releas
 
 | 安装方式 | 能力 |
 | --- | --- |
-| `stochaflow` | 核心 runtime、TensorBoard logger 和 CLI |
+| `stochaflow` | 核心 runtime、phase metrics、TensorBoard logger 和 CLI |
 | `stochaflow[wandb]` | W&B logger |
 | `stochaflow[quality]` | KID/FID diagnostic |
 | `stochaflow[docs]` | 本地构建文档与研究图表 |
@@ -149,6 +149,11 @@ test loss 为 **0.07363**。DDPM-1000、DDIM-50 样本与完整轨迹见
 request options 和 writers；checkpoint 继续提供固化的 inference recipe。训练配置启用
 逐 step warmup-cosine LR scheduler、EMA、TensorBoard 和固定 seed 的 DDIM-50
 `diffusion_quality` 对照。diagnostics 属于训练配置，不会由 sample profile 改写。
+顶层 `metrics` 则消费 TrainingStrategy 明确公开的 channel，在 train、validation 或
+test phase 内聚合普通标量；每个 declaration、每个 phase 都使用独立 Metric 状态。
+它不解释通用 batch schema，也不接管需要额外采样、参考数据或 artifact 的
+`diagnostics`。`torchmetrics` 因此属于基础安装，`quality` extra 仍只补充 KID/FID
+所需依赖。
 该对照每 100 step 记录 timestep 分桶损失、噪声对齐统计，
 并在 5 个固定噪声时刻记录 `x0` 重建 MSE/PSNR；每 10 轮用 EMA 生成固定的 32 张
 样本网格。轨迹动画默认关闭，以减少 I/O 和视觉噪声。reference KID/FID 也默认关闭：

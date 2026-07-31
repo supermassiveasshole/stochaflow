@@ -380,9 +380,9 @@ def test_cuda_fp16_epoch_logs_current_loss_scale() -> None:
     epoch_metrics = next(
         metrics
         for metrics in logger.metrics
-        if "train/epoch_loss_scale" in metrics
+        if "system/train/loss_scale" in metrics
     )
-    assert epoch_metrics["train/epoch_loss_scale"] == scaler.get_scale()
+    assert epoch_metrics["system/train/loss_scale"] == scaler.get_scale()
 
 
 @pytest.mark.skipif(
@@ -572,8 +572,8 @@ def test_cuda_fp16_partial_window_overflow_resume_preserves_rng_and_state(
     )
     first_epoch = history[0]
 
-    assert first_epoch["optimizer_steps"] == 1.0
-    assert first_epoch["skipped_optimizer_steps"] == 1.0
+    assert first_epoch["system/train/optimizer_steps"] == 1.0
+    assert first_epoch["system/train/skipped_optimizer_steps"] == 1.0
     assert uninterrupted.global_step == 1
     checkpoint = tmp_path / "uninterrupted-partial" / "latest.pt"
     assert checkpoint.is_file()

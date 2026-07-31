@@ -93,7 +93,7 @@ def test_trainer_runs_forward_backward_and_optimizer_step_on_mps() -> None:
     torch.mps.synchronize()
 
     assert trainer.global_step == 1
-    assert history[0]["num_batches"] == 1
+    assert history[0]["system/train/num_batches"] == 1
     assert model.scale.device.type == "mps"
     assert model.scale.detach().cpu().item() != 0.0
 

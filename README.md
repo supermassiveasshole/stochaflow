@@ -382,8 +382,9 @@ Pyright. Optional extras are independent:
 | `docs` | Sphinx and documentation tooling |
 | `dev` | Tests, linting, and type checking |
 
-TensorBoard is part of the base installation. To build a local wheel and source
-distribution:
+TensorBoard and the TorchMetrics-backed phase metric runtime are part of the
+base installation; `quality` only adds KID/FID dependencies. To build a local
+wheel and source distribution:
 
 ```bash
 uv build

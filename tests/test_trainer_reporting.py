@@ -482,12 +482,14 @@ def test_strategy_metrics_use_a_nonconflicting_namespace(tmp_path) -> None:
     )
     trainer.train_epoch(_make_loader(), show_progress=False, max_batches=1)
     batch_metrics = next(
-        metrics for metrics in logger.metrics if "train/strategy/loss" in metrics
+        metrics
+        for metrics in logger.metrics
+        if "train/step/strategy/loss" in metrics
     )
 
-    assert batch_metrics["train/strategy/loss"] == 123.0
-    assert batch_metrics["train/strategy/epoch"] == 456.0
-    assert batch_metrics["train/loss"] != 123.0
+    assert batch_metrics["train/step/strategy/loss"] == 123.0
+    assert batch_metrics["train/step/strategy/epoch"] == 456.0
+    assert batch_metrics["train/step/loss"] != 123.0
 
 
 def test_fit_reports_epoch_summary_when_progress_bars_are_disabled(tmp_path) -> None:
@@ -520,7 +522,7 @@ def test_fit_reports_explicit_limit_for_pytorch_streaming_loader(tmp_path) -> No
         track_best=False,
     )
 
-    assert history[0]["num_batches"] == 2.0
+    assert history[0]["system/train/num_batches"] == 2.0
     assert reporter.phase_totals == [2]
 
 
@@ -550,7 +552,7 @@ def test_fit_can_track_best_train_loss_without_validation(tmp_path) -> None:
         _make_loader(),
         num_epochs=1,
         show_progress=False,
-        early_stopping_monitor="train_loss",
+        early_stopping_monitor="train/loss",
         track_best=True,
     )
 
@@ -572,7 +574,7 @@ def test_fit_early_stopping_enables_train_loss_tracking_without_validation(
         num_epochs=1,
         show_progress=False,
         early_stopping_patience=1,
-        early_stopping_monitor="train_loss",
+        early_stopping_monitor="train/loss",
     )
 
     assert trainer.best_epoch == 1
@@ -591,7 +593,7 @@ def test_fit_resume_preserves_best_and_early_stopping_wait(tmp_path) -> None:
             "best_metric_value": 0.1,
             "epochs_without_improvement": 1,
             "stopped_early": False,
-            "monitor": "valid_loss",
+            "monitor": "valid/loss",
             "mode": "min",
         },
         best_checkpoint_path=previous_best,
@@ -614,7 +616,7 @@ def test_fit_resume_preserves_best_and_early_stopping_wait(tmp_path) -> None:
         validation_dataloader=_make_loader(),
         show_progress=False,
         early_stopping_patience=2,
-        early_stopping_monitor="valid_loss",
+        early_stopping_monitor="valid/loss",
         track_best=True,
     )
 
@@ -633,9 +635,29 @@ def test_fit_resume_preserves_best_and_early_stopping_wait(tmp_path) -> None:
         "best_metric_value": 0.1,
         "epochs_without_improvement": 2,
         "stopped_early": True,
-        "monitor": "valid_loss",
+        "monitor": "valid/loss",
         "mode": "min",
     }
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_restore_fit_state_rejects_non_finite_best_metric(
+    tmp_path,
+    value: float,
+) -> None:
+    trainer = _make_trainer(tmp_path)
+
+    with pytest.raises(ValueError, match="best_metric_value must be finite"):
+        trainer.restore_fit_state(
+            {
+                "best_epoch": 1,
+                "best_metric_value": value,
+                "epochs_without_improvement": 0,
+                "stopped_early": False,
+                "monitor": "valid/loss",
+                "mode": "min",
+            }
+        )
 
 
 def test_step_lr_scheduler_steps_once_per_batch(tmp_path) -> None:

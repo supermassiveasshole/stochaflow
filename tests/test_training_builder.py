@@ -723,6 +723,7 @@ def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> N
         "params": {"alpha": 0.25},
     }
     raw["objective"] = {"name": "mse", "params": {}}
+    raw["metrics"] = []
     raw["diagnostics"] = []
     raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False
@@ -799,6 +800,7 @@ def test_custom_builder_trains_without_process_or_objective(tmp_path: Path) -> N
     raw["process"] = None
     raw["training"] = {"name": "stage4_direct_loss", "params": {}}
     raw["objective"] = None
+    raw["metrics"] = []
     raw["diagnostics"] = []
     raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False
@@ -825,6 +827,7 @@ def test_standard_factory_projects_inference_assets_into_checkpoint(
     raw["process"] = None
     raw["training"] = {"name": "stage4_inference_asset", "params": {}}
     raw["objective"] = None
+    raw["metrics"] = []
     raw["diagnostics"] = []
     raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False

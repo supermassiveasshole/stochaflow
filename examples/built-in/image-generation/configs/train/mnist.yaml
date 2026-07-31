@@ -69,6 +69,18 @@ objective:
   params:
     reduction: mean
 
+metrics:
+  - id: prediction_mae
+    name: mae
+    channel: gaussian.prediction_target
+    phases: [validation, test]
+    params: {}
+  - id: clean_reconstruction_mse
+    name: mse
+    channel: gaussian.clean_reconstruction
+    phases: [validation, test]
+    params: {}
+
 optimizer:
   name: torch.optim.Adam
   params:
@@ -147,7 +159,7 @@ trainer:
   show_progress: true
   early_stopping:
     enabled: false
-    monitor: valid_loss
+    monitor: valid/loss
     mode: min
     patience: 7
     min_delta: 0.00001

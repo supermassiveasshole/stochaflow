@@ -43,6 +43,7 @@ def selected_component_identities(
         ],
         "loggers": [backend.name for backend in config.logging.backends],
         "diagnostics": [diagnostic.name for diagnostic in config.diagnostics],
+        "metrics": [metric.name for metric in config.metrics],
     }
 
 

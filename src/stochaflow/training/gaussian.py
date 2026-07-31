@@ -7,6 +7,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 import torch
 from torch import nn
 
+from stochaflow.metrics import MetricUpdate
 from stochaflow.processes import DiscreteGaussianDenoisingProcess
 from stochaflow.processes.gaussian import LearnedRangeGaussianVarianceProcess
 from stochaflow.sampling import PredictionType, VarianceMode
@@ -117,6 +118,17 @@ class GaussianDenoisingTrainingStrategy(TrainingStrategy):
 
         return self.variance.mode
 
+    @property
+    def metric_channels(self) -> frozenset[str]:
+        """Return Gaussian prediction and clean-reconstruction channels."""
+
+        return frozenset(
+            (
+                "gaussian.prediction_target",
+                "gaussian.clean_reconstruction",
+            )
+        )
+
     def predict_gaussian_model(
         self,
         state: torch.Tensor,
@@ -168,7 +180,22 @@ class GaussianDenoisingTrainingStrategy(TrainingStrategy):
             "clean_samples": clean.detach(),
         }
         diagnostics.update(gaussian_loss_diagnostics(computation))
-        return TrainStepOutput(loss=computation.loss, diagnostics=diagnostics)
+        return TrainStepOutput(
+            loss=computation.loss,
+            diagnostics=diagnostics,
+            metric_updates={
+                "gaussian.prediction_target": MetricUpdate(
+                    args=(
+                        computation.prediction.model_output,
+                        computation.target,
+                    )
+                ),
+                "gaussian.clean_reconstruction": MetricUpdate(
+                    args=(computation.prediction.clean, clean)
+                ),
+            },
+            loss_aggregation_weight=clean.shape[0],
+        )
 
 
 @REGISTRIES.training_builders.register("gaussian_denoising")

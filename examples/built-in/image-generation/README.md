@@ -57,6 +57,12 @@ The maintained MNIST result comes from one 200-epoch run with 78,000 optimizer
 updates. Validation denoising loss selected `best.pt` at epoch 183; the reported
 losses are v-prediction objectives, not perceptual-quality metrics.
 
+The current training config also aggregates `prediction_mae` and
+`clean_reconstruction_mse` over validation and final test phases. They measure
+the configured Gaussian prediction target and reconstructed clean image,
+respectively; neither is a generated-sample distribution or perceptual-quality
+metric.
+
 | Evaluation | Result |
 | --- | ---: |
 | Selected checkpoint | `best.pt`, epoch 183 / step 71,370 |
