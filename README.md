@@ -135,7 +135,7 @@ The actively maintained example surface is deliberately small:
 | Example | Role | Current status |
 | --- | --- | --- |
 | [MNIST](examples/built-in/image-generation/README.md) | Minimal built-in image-generation workflow | One train config, DDPM/DDIM sample profiles, and a resume observability overlay |
-| [AFHQ-v2](examples/showcases/afhq-v2/README.md) | Installable data-source showcase | Corrected class-conditional ADM and pixel DiT production configs, plus an unlabeled 256px Dog source for controlled P2-compatible research |
+| [AFHQ-v2](examples/showcases/afhq-v2/README.md) | Installable class-conditional data-source showcase | Corrected ADM and pixel DiT production configs with aggregate and per-class evaluation |
 
 Separate CIFAR-10, Flowers102, and multi-source training YAMLs are not maintained.
 Their removal does not remove the underlying reusable data sources or recipes.
@@ -205,21 +205,13 @@ The repository includes:
 - a runnable
   [pixel DiT-B/8 training config](examples/showcases/afhq-v2/experiments/production/train-dit-128.yaml),
   for which this README does not claim a completed quality result;
-- checkpoint-backed DDIM/CFG sampling and class-aware evaluation profiles;
-- an `afhq-v2.dog` source that materializes the authenticated training Dog
-  subset as an unlabeled 256×256 artifact using the pinned guided-diffusion
-  BOX/bicubic/center-crop transform.
+- checkpoint-backed DDIM/CFG sampling and class-aware evaluation profiles that
+  report aggregate and per-class KID/FID for cat, dog, and wild.
 
 The dataset source is approximately 6.96 GB and is licensed CC BY-NC 4.0.
 Review the [AFHQ-v2 guide](docs/tutorials/afhq-v2.md) before downloading or
-training. The historical AFHQ version and full benchmark protocol used by the
-P2 publication are not recoverable from its public materials, so this source
-supports a **P2-compatible AFHQ-v2 Dog** study, not a claim of exact historical
-AFHQ-D reproduction. The checked-in 50,000-sample requests are frozen future
-protocol inputs, not an operational benchmark today: the current Tensor writer
-buffers and concatenates the full `50000 × 3 × 256 × 256` FP32 output (about
-39 GB before additional runtime overhead). Formal execution waits for sharded
-prediction artifacts and completeness validation.
+training. The maintained example evaluates the complete class-conditional
+surface; it does not add a separate single-class reproduction workflow.
 
 ### Gaussian variance, P2, and respaced DDPM
 

@@ -149,7 +149,7 @@ residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与�
 
 <p class="sf-result-meta">fresh training required · quality result pending</p>
 
-[查看 AFHQ-v2 数据、配置与 P2-compatible Dog 边界](tutorials/afhq-v2.md)
+[查看 AFHQ-v2 数据、配置与按类评估流程](tutorials/afhq-v2.md)
 :::
 ::::
 

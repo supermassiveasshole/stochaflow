@@ -88,7 +88,6 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
     assert "class_labeled_image" in REGISTRIES.data_builders.names()
     assert "afhq-v2.class-images" not in REGISTRIES.data_builders.names()
     assert "afhq-v2.official" in IMAGE_DATA_SOURCES.names()
-    assert "afhq-v2.dog" in IMAGE_DATA_SOURCES.names()
     assert (_SHOWCASE / "uv.lock").is_file()
     assert declaration["project"]["name"] == "stochaflow-afhq-v2"
     assert declaration["project"]["entry-points"]["stochaflow.extensions"] == {
@@ -120,7 +119,6 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
     assert {path.name for path in package.glob("*.py")} == {
         "__init__.py",
         "artifact.py",
-        "dog_artifact.py",
     }
     assert {
         path.name
@@ -130,8 +128,6 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
         "archive.py",
         "contracts.py",
         "downloading.py",
-        "dog_image_transform.py",
-        "dog_materialization.py",
         "image_transform.py",
         "locking.py",
         "materialization.py",

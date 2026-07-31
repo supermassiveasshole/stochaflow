@@ -1,9 +1,8 @@
 # 训练后 Evaluation 与 Benchmark 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：P2 formal-release gate，尚未进入实现；E0–E1 在 Metrics M0–M1 后前移
-  以支持 controlled pilot，formal P2 50k evidence 还依赖 E2 与 E3 的
-  prediction/FID/KID/Gaussian profile 子集
+- 状态：尚未进入实现；E0–E1 在 Metrics M0–M1 后推进，E2–E3 扩展
+  prediction artifact、FID/KID 与 class-aware Gaussian profile
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-26
@@ -71,9 +70,8 @@
    在 exact sharding 与去重 contract 完成前，不开放正式分布式 benchmark；超预算、
    跳过样本或部分失败必须显式标为 incomplete，不能静默产生“完整”分数。
 10. **不同 AFHQ 协议不能只因都叫 FID/KID 就比较。**
-    当前三类 900-sample official-test DDIM-50、P2-compatible Dog 50k/full-train-reference
-    ancestral protocol，以及未来 latent decoded protocol必须具有不同 protocol
-    identity。Reporter 可以并列展示，但 Gate 不允许直接计算跨协议 delta。
+    当前三类 official-test DDIM-50 与未来 latent decoded protocol 必须具有不同
+    protocol identity。Reporter 可以并列展示，但 Gate 不允许直接计算跨协议 delta。
 
 ## 2. 语义划分：Metrics、Validation、Diagnostic 与 Evaluation
 
@@ -304,25 +302,25 @@ T2I-CompBench 等完整协议。
 [T2I-CompBench](https://github.com/Karine-Huang/T2I-CompBench)
 应通过 extension EvaluationBuilder 或 exporter 接入，不硬编码进 core。
 
-P2/ADM lane 提供一个直接的仓库内反例：
+AFHQ 与未来 latent generation 提供一个直接的仓库内反例：
 
 ```text
-current AFHQ showcase:
-    900 generated
-    900 official-test reference
+pixel AFHQ showcase:
+    class-conditional generated samples
+    official-test reference
     class-conditional CFG
     DDIM-50
 
-P2-compatible AFHQ-v2 Dog:
-    50,000 generated
-    complete training-set reference
-    unconditional
-    250/1000 respaced ancestral DDPM
+latent AFHQ profile:
+    decoded latent samples
+    separately frozen reference transform
+    class-conditional CFG
+    independently versioned sampler/codec
 ```
 
-两者的 FID/KID estimator、reference、sample count、condition allocation 和 solver
-均不同。前者不能作为后者的 baseline，也不能通过给结果字段都命名为 `fid` 绕过
-protocol comparison guard。
+两者的 FID/KID estimator、reference transform、sample count、condition allocation
+和 solver/codec 均可能不同。不能通过给结果字段都命名为 `fid` 绕过 protocol
+comparison guard。
 
 ### 4.6 Super resolution：必须同时看 distortion 与 perception
 
@@ -1249,21 +1247,16 @@ PSNR/SSIM/LPIPS 需对 shape、range、crop、color 做 fail-fast 检查。paire
 FID/KID 是必要但不充分的 distribution evidence。更完整的 compositional、prompt
 alignment 或 human evaluation 通过 extension BenchmarkSuite 接入。
 
-P2-compatible AFHQ-v2 Dog profile在通用字段之上固定：
+三类 AFHQ-v2 product profile 在通用字段之上固定：
 
 - corrected ADM topology digest；
-- epsilon prediction 与 learned-range variance；
-- constant/P2 training policy只作为 subject identity，不由 evaluator重新计算；
-- EMA 0.9999；
-- 250/1000-step respaced ancestral DDPM；
-- `clip_denoised=true`；
-- exactly 50,000 complete generated samples；
-- complete authenticated train reference；
-- fixed final-budget checkpoint，而不是用同一 reference FID选择多个 subject；
-- dataset-version、KID implementation和seed uncertainty作为显式 limitation。
-
-三类 AFHQ-v2 product profile采用另一套治理：validation选择 checkpoint/CFG，
-official test只评估唯一 frozen subject一次。两种 profile不能共享 selection record。
+- checkpoint 中的 prediction/variance/training-policy identity；
+- cat/dog/wild class mapping 与生成 allocation；
+- EMA/raw 权重选择；
+- DDIM/DDPM 名称、步数、schedule、CFG 与 seed；
+- authenticated official-test reference；
+- aggregate 和 per-class KID/FID；
+- validation 选择 checkpoint/CFG，official test 只评估唯一 frozen subject 一次。
 
 ### 13.4 Class-conditional latent image generation profile
 

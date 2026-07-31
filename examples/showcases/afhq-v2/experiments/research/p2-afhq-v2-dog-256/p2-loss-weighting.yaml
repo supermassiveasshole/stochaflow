@@ -1,6 +1,0 @@
-training:
-  params:
-    loss_weighting:
-      name: p2
-      k: 1.0
-      gamma: 1.0

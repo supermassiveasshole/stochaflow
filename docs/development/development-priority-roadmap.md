@@ -4,8 +4,8 @@
 - 状态：Active
 - 制定日期：2026-07-29
 - 最近排期复核：2026-07-30
-- 当前工程优先项：A0/A1 repository implementation 已关闭；下一步补齐
-  Evaluation E0–E3 的 P2-required subset，并在目标 GPU 上执行 A2 capacity/pilot
+- 当前工程优先项：A0/A1 repository implementation 已关闭；下一步完成 Metrics
+  M0–M1 与 class-aware Evaluation 基础
 - 当前产品主线：pretrained image autoencoder + class-conditional latent diffusion
 - 当前 pixel-quality lane：corrected ADM + learned-range Gaussian + P2 weighting
   已具备 algorithm/config substrate；quality evidence 尚未运行
@@ -25,7 +25,7 @@
   -> Train/Sample authority cutover
   -> Metrics M0-M1
   -> learned-range Gaussian + exact P2 capability
-  -> Evaluation E0-E3 P2-required subset / launch A2 jobs
+  -> class-aware Evaluation
   -> pretrained AutoencoderKL provider
   -> AFHQ latent train/resume/sample vertical slice
   -> production latent substrate
@@ -35,9 +35,9 @@
 
 其中：
 
-- [P2/ADM 计划](p2-weighting-and-adm-topology-refactor-plan.md)拆成三个明确
+- [P2/ADM 计划](p2-weighting-and-adm-topology-refactor-plan.md)保留两个明确
   attribution boundary：A0 只修 topology；A1 实现 learned variance、hybrid
-  objective、P2 和 respaced ancestral DDPM；A2 才运行正式 AFHQ 对照。
+  objective、P2 和 respaced ancestral DDPM。
 - A0 是当前 `adm_unet` 名称与实现不一致的 correctness 修复，纳入 P0，在 B1 前
   完成；它不启动新的 production 长训练。
 - `Train/Sample authority cutover` 只执行
@@ -46,12 +46,10 @@
 - 当前下一项能力计划是 Metrics。B1 关闭后立即执行
   [Metrics 计划](metrics-support-plan.md)的 M0–M1，先冻结 canonical epoch result、
   monitor key 和 validation/test MetricEngine，再进入 latent asset 与 codec 实现。
-- Metrics M2–M4、Hydra H0–H3、Evaluation 的非 P2 profile 和 example cleanup 不
-  构成首个 AFHQ latent correctness 的架构前置；它们按各自 gate 继续。E0–E3 的
-  P2-required subset 只是单人排期中为尽早启动 pixel A2 而前移，不表示 codec 依赖
-  Evaluation。
-- A1 core implementation 在 K0 后执行。A2 的 2.4M-image/50k-sample GPU 实验不阻塞
-  L0 codec implementation；两者可以分别占用实验与开发资源并行推进。
+- Metrics M2–M4、Hydra H0–H3 和 Evaluation 的扩展 profile 不构成首个 AFHQ
+  latent correctness 的架构前置；它们按各自 gate 继续。
+- A1 core implementation 在 K0 后执行。目标硬件上的 capacity、吞吐与显存验证是
+  operational evidence，不是 A0/A1 或 Metrics 合并门槛。
 - prepared posterior、optimizer-step training 与 codec asset bundle 不阻塞 smoke，
   但阻塞正式多 checkpoint 长训练。
 - Stable Diffusion 不是被移除的 future idea，而是复用 latent substrate 的下一条
@@ -98,10 +96,7 @@ flowchart LR
 
     P2C --> E01["Evaluation E0-E1 foundation"]
     K0 --> E01
-    E01 --> P2P["A2 operational pilot"]
-    E01 --> E23["Evaluation E2-E3 P2 subset"]
-    P2P --> P2R["A2 formal AFHQ P2 evidence"]
-    E23 --> P2R
+    E01 --> E23["Evaluation E2-E3 class-aware profiles"]
 
     LD3 --> P1["LD4A prepared posterior"]
     LD3 --> P2["LD4B optimizer-step production loop"]
@@ -122,11 +117,9 @@ flowchart LR
 ```
 
 Inference asset projection 已完成，不再作为未来节点。图中的 `K0 -> LD2` 表示本轮
-明确的实施顺序，不表示 codec 在架构上依赖 MetricEngine。A1 与 L0 也没有架构依赖；
-单人排期先关闭 A1 core，随后在 A2 GPU jobs 运行期间开发 L0。A2 pilot 只依赖
-E0–E1 foundation；正式 50k FID/KID evidence 还必须等待 E2 prediction artifact 与
-E3 Gaussian/FID/KID 所需子集。P2 pixel benchmark 和 latent quality profile 都消费
-Evaluation 基础，但使用不同 subject/data/protocol，不能共享一个模糊 FID。
+明确的实施顺序，不表示 codec 在架构上依赖 MetricEngine。A1 与 L0 也没有架构依赖。
+三类 AFHQ 与 latent quality profile 都消费 Evaluation 基础，但使用不同
+subject/data/protocol，不能共享一个模糊 FID。
 
 ## 4. Milestone 排期
 
@@ -144,7 +137,7 @@ wall-clock 时间。每个 milestone 应独立提交并保持主分支可运行�
 
 退出条件：新的 latent 分支建立在已提交、可复现、无已知挂起回归的基线上。
 
-### A0 — ADM Topology Correctness Cutover（Done；GPU capacity 证据转入 A2 gate）
+### A0 — ADM Topology Correctness Cutover（Done）
 
 执行 P2/ADM 计划的 A0：
 
@@ -156,8 +149,8 @@ wall-clock 时间。每个 milestone 应独立提交并保持主分支可运行�
 - 删除旧 topology config fields，不增加 legacy mode 或 checkpoint adapter；
 - 旧 raw/EMA/optimizer state fail closed，必须 fresh run；
 - maintained production config 在目标设备 profile 前使用保守的 microbatch 1 /
-  accumulation 32，不宣称旧 microbatch 8 容量仍成立；4090/DGX profile 继续作为
-  A2 promotion evidence。
+  accumulation 32，不宣称旧 microbatch 8 容量仍成立；4090/DGX profile 是后续
+  operational evidence。
 
 A0 只验证 fixed-variance baseline，不实现 P2 或用新 topology 启动长训练。当前
 README 的 epoch-170 结果属于旧 91.3M topology，A0 完成时不得继续归因给新的
@@ -234,30 +227,18 @@ retained MNIST/AFHQ 的训练数值行为保持不变。
 参数；loss、variance、respacing 与 pinned reference parity 已测试；旧
 fixed-variance paths 无回归。
 
-### A2 — Controlled AFHQ P2 Evidence（Substrate ready；quality evidence blocked）
+### A2 — Class-aware AFHQ Evaluation（scope revised）
 
-- 新增 AFHQ-v2 Dog DataSource，复用 generic unlabelled image Builder，不新增
-  dataset-specific Builder；
-- 先运行相同 corrected topology 下的 constant/P2 pilot；
-- 正式 profile 固定 2.4M images seen、effective batch 8、EMA 0.9999、
-  250/1000 ancestral 与 50k fake；
-- 同时保存 baseline 和 P2 完整结果，不只发布胜者；
-- 数据版本、KID implementation、seed 与 checkpoint-selection无法从论文恢复的部分
-  进入 protocol limitation；
-- 三类 conditional AFHQ-v2 另做 product A/B，不冒充 AFHQ-D paper reproduction；
-- 只有 validation 选择 frozen subject 后，official test 才运行一次。
+原单类别 reproduction lane 已取消，不再新增专用 DataSource、训练 recipe、采样
+protocol 或 benchmark resolver。AFHQ 只维护现有 class-conditional product surface：
 
-首个准确声明是“P2-compatible AFHQ-v2 Dog reproduction”。历史数据 identity 与
-metric protocol 未关闭前，不声明 exact paper benchmark reproduction。
+- official cat/dog/wild 数据与统一 class-labeled artifact；
+- aggregate 和 per-class KID/FID；
+- validation 选择 frozen subject 后，official test 只运行一次；
+- 结果固定 checkpoint、data identity、class allocation、sampler 与 metric protocol。
 
-退出条件：algorithm parity 已通过，两个 formal run complete，FID/KID protocol
-identity与 sample completeness可验证，发布措辞通过文档复核。
-
-截至 2026-07-30，Dog DataSource/materializer、唯一 benchmark base、P2-only
-restricted override、resolved-config provenance CLI 与 DDPM-250/1000 requests 已完成。
-尚未执行 4090/DGX capacity、controlled pilot、2.4M-image formal runs 或 50k
-FID/KID；后者还等待 Evaluation E2 sharded prediction/completeness 与 E3 metric
-authority。当前 Tensor writer 整体缓冲 50k FP32 images，不能替代该 authority。
+代码合并只要求 class-aware evaluation contract 与回归测试通过。4090/DGX 上的容量、
+吞吐、显存和长训练质量结果属于后续运行验收，不阻塞 A0/A1、Metrics 或 main 合并。
 
 ### L0 — Pretrained Codec Ready（P1，1–2 个工程周）
 
@@ -391,11 +372,11 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 | [Data Layer Composition Boundary](data-layer-composition-boundary-review.md) | Done | Base | 已实施 | image-backed 与 prepared-backed 使用两个 recipe-level Builder |
 | [Sampling Request Config Refactor](sampling-request-config-refactor.md) | Done / 将被替代 | B1 | Hydra C1 | C1 后成为历史记录，不维持 v10 dual authority |
 | [Legacy Intel macOS Lifecycle](legacy-intel-macos-pytorch-test-lifecycle.md) | Done | Maintenance | 无 | Deprecated / best effort，不约束新 codec/DiT |
-| [P2 Weighting and ADM Topology](p2-weighting-and-adm-topology-refactor-plan.md) | A0/A1 implemented; A2 evidence pending | Done core + P2 quality gate | E0-E3 subset -> A2 capacity/pilot/formal evidence | topology/P2/config substrate 已闭合；未运行的 A2 GPU/50k evidence 不阻塞 L0 |
+| [P2 Weighting and ADM Topology](p2-weighting-and-adm-topology-refactor-plan.md) | A0/A1 implemented | Done core | repository validation | topology/P2 capability 已闭合；单类别 reproduction lane 已取消 |
 | [Metrics](metrics-support-plan.md) | Queued foundation | P1 | A0/B1 后、L0 前 | 立即完成 Metrics M0–M1；M2–M4 按 diagnostic/extension 需求 |
-| [Latent Diffusion](latent-diffusion-support-plan.md) | Current product mainline | P1/P2 | A0 -> B1 -> K0/A1 -> L0–L3 | A1 是当前单人排期前置而非 codec 架构依赖；A2 与 L0 并行 |
+| [Latent Diffusion](latent-diffusion-support-plan.md) | Current product mainline | P1/P2 | A0 -> B1 -> K0/A1 -> L0–L3 | A1 是当前单人排期前置而非 codec 架构依赖 |
 | [Hydra Configuration Migration](hydra-configuration-composition-migration-plan.md) | Split | P0 + P2 + Later | C0/C1 -> K0 -> L1 -> H0-H3 | C0/C1 先行；H0-H3 在 L1 后；H4 延期 |
-| [Post-training Evaluation](post-training-evaluation-support-plan.md) | Formal-release gate | P2 | Metrics M0–M1 + shared inference projection | E0–E1 支撑 pilot；E2–E3 P2 subset 阻塞 formal 50k evidence |
+| [Post-training Evaluation](post-training-evaluation-support-plan.md) | Formal-release gate | P2 | Metrics M0–M1 + shared inference projection | E0–E1 建立基础；E2–E3 扩展 class-aware 与 offline evaluation |
 | [Stable Diffusion Component-Native](stable-diffusion-component-native-support-plan.md) | Next product line | P3 | L2/L3 共享前置稳定 | SD1–SD6；SD7–SD8 后置 |
 | [Default Workflow and Pipeline](default-workflow-pipeline-support-plan.md) | Umbrella / promotion | P3/P4 | 真实 recipe 稳定 | 不阻塞 capability；R0 复用 Hydra H1 invocation seam |
 | [Extension Import Boundary](extension-import-boundary-and-activation-latency-plan.md) | Rebase required | P4 | C1/C2 后重新测量 | 当前 v10、Physics/KD DoD 失效；只做 codec 窄 import gate |
@@ -445,13 +426,11 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 
 - A0 后不再把旧 91.3M ADM checkpoint、FID/KID 或 sample panel描述为新
   `adm_unet` production config 的可复现结果。
-- P2 paper-compatible claim 固定 epsilon、learned range、linear T=1000、uniform
-  timestep 与 constant/P2 A/B；当前 v/cosine/CFG recipe 只能是独立 product
-  experiment。
+- P2 capability 的数值正确性由 epsilon、learned range、linear T=1000、uniform
+  timestep 与 constant/P2 parity tests 固定；仓库不维护单类别 paper reproduction。
 - Metrics 的 `loss_aggregation_weight` 是 epoch统计权重；P2
   `timestep_loss_weight` 是 timestep objective coefficient，两者不能共用字段。
-- 当前 900-sample official-test protocol 与 P2 FID-50k/full-train-reference protocol
-  不可直接比较。
+- AFHQ evaluation 同时报告 aggregate 和 cat/dog/wild per-class 结果。
 - Metrics M0–M1 在 latent 开发前冻结 canonical result、source 和 monitor contract；
   它们不提前提供 codec-dependent image-space quality。
 - L1 可声明 experimental functional support，不声明规模或质量。

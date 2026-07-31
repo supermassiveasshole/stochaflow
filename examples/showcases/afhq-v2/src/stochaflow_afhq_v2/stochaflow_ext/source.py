@@ -1,4 +1,4 @@
-"""AFHQ-v2 source registrations and private parameter parsing."""
+"""Official AFHQ-v2 source registration and private parameter parsing."""
 
 from __future__ import annotations
 
@@ -12,15 +12,10 @@ from stochaflow.extensions import (
     DataArtifact,
     DataSourceContext,
     ImageDataSource,
-    ImageFolderArtifactPayload,
 )
 from stochaflow_afhq_v2.artifact import (
     AFHQV2_SOURCE_NAME,
     materialize_afhq_v2_artifact,
-)
-from stochaflow_afhq_v2.dog_artifact import (
-    AFHQV2_DOG_SOURCE_NAME,
-    materialize_afhq_v2_dog_artifact,
 )
 
 _PARAM_FIELDS = {"archive", "downloader", "lock_file", "resolution"}
@@ -100,37 +95,4 @@ class AFHQV2ImageDataSource(ImageDataSource):
         )
 
 
-@IMAGE_DATA_SOURCES.register(AFHQV2_DOG_SOURCE_NAME)
-class AFHQV2DogImageDataSource(ImageDataSource):
-    """Materialize the unlabeled 256px AFHQ-v2 train/dog benchmark."""
-
-    def materialize(
-        self,
-        context: DataSourceContext,
-    ) -> DataArtifact[ImageFolderArtifactPayload]:
-        """Acquire or verify the train/dog-only benchmark artifact."""
-
-        path = f"{self.config_path}.params"
-        raw = _params(self.params, path=path)
-        return materialize_afhq_v2_dog_artifact(
-            context,
-            archive=_optional_path(
-                raw.get("archive"),
-                path=f"{path}.archive",
-            ),
-            downloader=_downloader(
-                raw.get("downloader", "auto"),
-                path=f"{path}.downloader",
-            ),
-            lock_file=_optional_path(
-                raw.get("lock_file"),
-                path=f"{path}.lock_file",
-            ),
-            resolution=_resolution(
-                raw.get("resolution", 256),
-                path=f"{path}.resolution",
-            ),
-        )
-
-
-__all__ = ["AFHQV2DogImageDataSource", "AFHQV2ImageDataSource"]
+__all__ = ["AFHQV2ImageDataSource"]

@@ -1,3 +1,3 @@
-"""AFHQ-v2 preparation, capacity, evaluation, and benchmark helpers."""
+"""User-facing AFHQ-v2 preparation, capacity, and evaluation tools."""
 
 __all__: list[str] = []

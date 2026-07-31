@@ -1,4 +1,4 @@
-# AFHQ-v2 generation showcase
+# AFHQ-v2 class-conditional generation showcase
 
 这个可安装 example 展示一条完整、可恢复的 AFHQ-v2 生成数据流：
 
@@ -14,24 +14,13 @@
   -> tensor、PNG、trajectory 与可追溯 manifest
 ```
 
-同一 extension 另提供独立 research lane：
-
-```text
-authenticated AFHQ-v2 train/dog
-  -> guided-diffusion BOX/bicubic/center-crop 256px materialization
-  -> generic unlabeled image artifact + core image Builder
-  -> unconditional canonical ADM + learned-range variance
-  -> constant/P2 controlled A/B + 1000/250-step ancestral DDPM
-```
-
-这个 extension 注册两个 DataSource：`afhq-v2.official` 发布带 identity、类别映射和
-标签 inventory 的标准 `ClassLabeledImageFolderArtifactPayload`；
-`afhq-v2.dog` 只物化 authenticated train/dog subset，并发布不含 labels 的通用
-`ImageFolderArtifactPayload`。前者使用 core `class_labeled_image` Builder，后者使用
-core `image` Builder；Dataset、Sampler、collate 和 DataLoader 都不由 source 构造。
-ADM-UNet、DiT、Gaussian Process、训练 Strategy、CFG SamplingBuilder、DDPM/DDIM、
-Trainer、EMA、checkpoint 和 artifact writers 也都使用 Stochaflow 的内置注册路径；
-runner 中没有 AFHQ 名称分支。
+这个 extension 只注册 `AFHQV2ImageDataSource`（`afhq-v2.official`）。它发布带
+identity、类别映射和标签 inventory 的标准
+`ClassLabeledImageFolderArtifactPayload`。配置使用 core
+`class_labeled_image` Builder；Dataset、Sampler、collate 和 DataLoader 都不由 source
+构造。ADM-UNet、DiT、Gaussian Process、训练 Strategy、CFG SamplingBuilder、
+DDPM/DDIM、Trainer、EMA、checkpoint 和 artifact writers 也都使用 Stochaflow 的
+内置注册路径；runner 中没有 AFHQ 名称分支。
 
 ## 数据与许可证
 
@@ -68,9 +57,9 @@ uv sync --project examples/showcases/afhq-v2 --locked
 ```
 
 这会创建/同步 showcase 自己的环境、安装三个 example 命令，并注册 extension entry
-point `stochaflow-afhq-v2`。entry point 注册 `afhq-v2.official` 与
-`afhq-v2.dog`；训练配置分别调用内置 `class_labeled_image` 与 `image` Builder。
-example 不引入平行的 builder、source envelope、image recipe 或 loader config 类型；
+point `stochaflow-afhq-v2`。entry point 只注册 `afhq-v2.official`；训练配置调用内置
+`class_labeled_image` Builder。example 不引入平行的 builder、source envelope、
+image recipe 或 loader config 类型；
 模型、训练、采样和评估所需的通用配置与生命周期也都来自 Stochaflow。
 
 - `stochaflow-afhq-v2-prepare`；
@@ -162,37 +151,6 @@ class mapping、official partition roots/counts 和 `_index/images.json` descrip
 identity 总是强制 full。旧 `prepared/afhq-v2` cache、`dataset_manifest.yaml`、
 `files.sha256` 和 schema-v1 checkpoint binding 没有 reader 或迁移路径；升级后必须重新
 materialize，并从新 run 开始。
-
-### P2-compatible Dog artifact
-
-准备/验证 unlabeled 256px train/dog artifact：
-
-```bash
-uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-prepare \
-  --profile dog \
-  --cache-root ./data \
-  --policy ensure \
-  --verification full
-
-uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-prepare \
-  --profile dog \
-  --cache-root ./data \
-  --policy require \
-  --verification full
-```
-
-Dog profile 默认且只接受 resolution 256，使用同一 authenticated archive 的 4,678 张
-official train/dog images。materializer pin
-OpenAI guided-diffusion commit
-`8fb3ad9197f16bbc40620447b2742e13458d2831`，按逐级 BOX downsample、bicubic resize、
-integer center crop 的顺序对齐 `center_crop_arr`，再用固定 RGB PNG policy 编码。
-transform、source subset、file inventory 与 Pillow/NumPy/zlib 版本进入 artifact
-identity。horizontal flip 留给 generic `image` Builder 的 seeded runtime policy。
-
-`afhq-v2.dog` 返回只有 train 的普通 `ImageFolderArtifactPayload`；路径中的 `dog/`
-不会作为 class label 进入 batch。这条 source 准确命名为
-**P2-compatible AFHQ-v2 Dog**。P2 公开材料没有冻结历史 AFHQ version、file list、seed
-和 metric/checkpoint protocol，因此不能称为 exact P2 AFHQ-D reproduction。
 
 ## 2. 真实训练容量报告
 
@@ -387,9 +345,8 @@ sample panel 来自旧的、不兼容 ADM graph，已从 current result surface 
 checkpoint、resolved config 与 evaluation artifacts 前，本 README 不发布 AFHQ quality
 数值。
 
-即使新的三类 production run 使用现有 class-aware 900-sample evaluator，其结果也不能与
-P2 的 50,000-fake ancestral protocol 直接比较：data domain、sample count、reference
-set 与 solver 都不同。
+新的三类 production run 使用现有 class-aware evaluator，统一报告 aggregate 与
+cat/dog/wild per-class KID/FID。
 
 ### Production 输出布局
 
@@ -419,63 +376,7 @@ data artifact binding；checkpoint 记录同一 identity；sampling manifest 记
 lineage、seed、conditions、guidance、weights 和 artifact 路径，因此结果可以追溯到同一
 训练输入。
 
-## 7. P2-compatible AFHQ-v2 Dog research
-
-research authority 与 production config 分离：
-
-```text
-experiments/research/p2-afhq-v2-dog-256/
-├── train-base.yaml
-├── p2-loss-weighting.yaml
-├── sample-ddpm-250.yaml
-└── sample-ddpm-1000.yaml
-```
-
-唯一完整 `train-base.yaml` 固定 unlabeled Dog-256、canonical unconditional
-93,563,910-parameter ADM、epsilon prediction、learned-range/rescaled VB、linear
-`T=1000`、constant weighting、MSE mean、AdamW `2e-5`/weight decay 0、EMA 0.9999、
-FP32、batch 8 和 300,000 updates/2.4M images。training/generation seeds 分别为
-`20260730`/`20260731`。
-
-effective batch 8 是 frozen protocol fact；如果 4090 只能使用更小 micro batch，必须用
-accumulation 保持 effective batch，并在 resolved config/provenance 中记录 adaptation，
-不能静默改变 FP32 reference recipe。
-
-restricted resolver 只允许 P2 variant 把
-`training.params.loss_weighting` 改为 `{name: p2, k: 1.0, gamma: 1.0}`，并记录
-base/override SHA-256、唯一 changed path 和 resolved-config SHA-256：
-
-```bash
-uv run --project examples/showcases/afhq-v2 \
-  python -m stochaflow_afhq_v2.tools.benchmark_config \
-  --variant constant \
-  --output outputs/afhq-v2/research/configs/constant.yaml \
-  --provenance outputs/afhq-v2/research/configs/constant.provenance.json
-
-uv run --project examples/showcases/afhq-v2 \
-  python -m stochaflow_afhq_v2.tools.benchmark_config \
-  --variant p2 \
-  --output outputs/afhq-v2/research/configs/p2.yaml \
-  --provenance outputs/afhq-v2/research/configs/p2.provenance.json
-```
-
-P2 使用 cumulative-SNR 权重 `(1 + snr(t))^-1`，只乘 epsilon simple MSE，不做 batch
-renormalization，也不乘 detached-mean learned-variance VB term。sample profiles只选择
-EMA 1,000-step full ancestral 或 250-step uniform-section selected-pair ancestral
-DDPM；250-step 不是 DDIM，P2 training fields 不出现在 sample request。
-
-这里冻结的是 algorithm-compatible protocol，不是已完成 benchmark。正式声明仍需要完成
-两组 run、50,000 fake completeness、固定 reference/FID/KID implementation、capacity
-evidence 和 checkpoint policy。历史 AFHQ version/file list 无法从 P2 公开材料恢复，
-因此只能称 P2-compatible AFHQ-v2 Dog，不能称 exact P2 AFHQ-D reproduction。
-
-两份 sample request 继承 50,000 samples，但它们目前只是 frozen future protocol
-inputs。当前 Tensor writer 会缓冲并拼接完整 `50000 × 3 × 256 × 256` FP32 output，
-samples payload 约 39 GB，尚未计额外运行时内存。正式执行必须等待 sharded prediction
-artifact 与 completeness authority；不要直接把当前一次性 `stochaflow sample` 当作
-operational 50k benchmark。
-
-## 8. 正式 KID/FID 评估
+## 7. 正式 KID/FID 评估
 
 训练期 validation 和 diagnostic 不冒充正式生成质量结果。对冻结的 best checkpoint
 执行 class-aware post-training evaluation：
