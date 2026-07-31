@@ -13,7 +13,7 @@
 - 关联计划：
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
   [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)、
-  [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)、
+  [正式 Gaussian loss 架构](../framework.md)、
   [Stable Diffusion Component-Native 支持计划](stable-diffusion-component-native-support-plan.md)、
   [自动化模型调优开发计划](automated-model-tuning-plan.md)、
   [Consistency Distillation 支持计划](consistency-distillation-support-plan.md)

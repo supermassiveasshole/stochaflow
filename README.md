@@ -215,7 +215,8 @@ surface; it does not add a separate single-class reproduction workflow.
 ### Gaussian variance, P2, and respaced DDPM
 
 Gaussian training defaults remain `variance: {mode: fixed}` and
-`loss_weighting: {name: constant}`. Learned-range mode expects `2C` model
+`loss_weighting: {name: constant, params: {}}` (or omit the weighting field).
+Learned-range mode expects `2C` model
 channels: the first `C` predict the denoising target and the second `C`
 interpolate between selected-pair posterior and forward log-variance bounds.
 Its hybrid loss adds `0.001 ×` the full, unweighted variational bound; the
@@ -228,6 +229,9 @@ epsilon prediction it applies
 loss without batch renormalization; it never weights the variance term.
 Diagnostic `timestep_loss_weight` records this optimization coefficient and is
 unrelated to any `loss_aggregation_weight` used to combine batches for metrics.
+Gaussian weighting is a family-local extension point: namespaced third-party
+policies use the same registry/factory path as built-ins without adding core
+dispatch branches. Explicit declarations always use `{name, params}`.
 
 `ddpm.num_inference_steps: 250` selects a uniform-section, selected-pair
 ancestral path. It is not DDIM-250 and does not combine a non-adjacent mean with

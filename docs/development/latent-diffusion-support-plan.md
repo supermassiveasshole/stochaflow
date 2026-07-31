@@ -31,7 +31,7 @@
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
   [Metrics 支持开发计划](metrics-support-plan.md)、
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)、
-  [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)
+  [正式 Gaussian loss 架构](../framework.md)
 
 ## 1. 本轮结论
 
@@ -1904,7 +1904,7 @@ joint_training: true
 
 ### 18.5 learned variance
 
-P2/ADM 计划 A1 完成后，framework 将具备 `2C` prediction、learned-range variance、
+已完成的 Gaussian A1 framework 具备 `2C` prediction、learned-range variance、
 hybrid objective 和 transition tests；latent recipe仍需在自己的 TrainingBuilder /
 SamplingBuilder 边界验证 codec latent channels、DiT output layout 与 no-clipping
 语义，不能仅因 core capability存在就自动宣称 official DiT learned sigma。

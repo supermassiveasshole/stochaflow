@@ -55,10 +55,28 @@ level index 或 downsample factor。middle 始终使用
 class embedding 和一个 CFG null class。旧 stage-level skip/Spatial Transformer
 实现的构造字段与 checkpoint 均不兼容，必须 fresh train。
 
-## Gaussian loss 与 variance policy
+(gaussian-loss-variance-policy)=
+## Gaussian family math、loss 与 variance policy
 
-内置 Gaussian TrainingBuilder 在自身组合边界提供两组私有 policy，不把它们提升为
-全局 Objective 或 Registry：
+Gaussian training 使用 family-scoped 组合边界，不把 parameterization、variance 或
+simple-loss weighting 提升为跨任务通用抽象。职责唯一归属如下：
+
+| 职责 | 所有者 |
+| --- | --- |
+| epsilon/x0/v/score 转换、training target、SNR 与 model-output split | process-free Gaussian family math |
+| marginal scales、时间域和 learned-range posterior 能力 | Gaussian Process |
+| batch 解释、时间采样和任务特定 model 调用 | `TrainingStrategy` |
+| simple-loss coefficient 和 prediction compatibility | `GaussianSimpleLossWeighting` |
+| per-sample feature reduction 与 batch reduction | Objective |
+| simple loss、weight 和可选 VB 的组合 | `GaussianLossComposer` |
+| learned-range posterior/VB | 独立 variance-loss collaborator |
+| 配置解析和完整组合验证 | Gaussian `TrainingBuilder` |
+
+Training 调用 `Process.marginal_scales()` 后把纯 Tensor scales 交给 family math；Gaussian
+core training 不导入 Sampling。Sampling 继续拥有 denoised clipping、Dynamics 和 solver
+语义，并通过兼容 wrapper 复用同一 prediction math。
+
+Variance policy 仍是具体 Gaussian Builder 的私有参数：
 
 - `variance: {mode: fixed}` 是默认路径，模型输出 `C` channels，不计算 VB；
 - `variance: {mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出
@@ -66,18 +84,41 @@ class embedding 和一个 CFG null class。旧 stage-level skip/Spatial Transfor
   log-variance bounds 之间插值；hybrid loss 定义为 simple loss 加 `0.001 ×` 完整 VLB，
   在 uniform single-timestep estimator 中实现为 `T / 1000 ×` sampled VB term，并使用
   detached mean/prediction branch；
-- `loss_weighting: {name: constant}` 是默认 simple-loss policy；
-- `loss_weighting: {name: p2, k: 1.0, gamma: 1.0}` 只在 epsilon prediction 下具有
+- 省略 `loss_weighting` 使用 constant policy。若显式声明，规范格式是
+  `{name: constant, params: {}}`；
+- `{name: p2, params: {k: 1.0, gamma: 1.0}}` 只在 epsilon prediction 下具有
   paper-compatible P2 语义。权重为
   `(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)`，来自 cumulative marginal SNR，
   不进行 batch renormalization，也不作用于 learned-variance VB term。
+
+Simple-loss weighting 使用 Gaussian family-local registry，而不是全局 `REGISTRIES` 或
+通用 Objective。框架内置和第三方 policy 通过相同 registry/factory 构造；第三方名称
+必须带 namespace。新增 policy 只需实现并注册 `GaussianSimpleLossWeighting`，无需修改
+Process、Objective、Strategy、Builder 或 core dispatch。旧开发期 flat P2 声明
+`{name: p2, k: ..., gamma: ...}` 会直接失败。
 
 内置 UNet/ADM 和任何实现 `DenoiserChannelLayout` 的 extension model 会在
 TrainingBuilder 组合时预检 `C`/`2C` 声明；不公开静态 channel layout 的外部 model
 仍可组合，并在第一批 raw output shape 校验中 fail closed。
 
-P2 官方语义使用 per-sample MSE；其他满足 `PerSampleObjective` 的 Objective 可以复用
-相同 weighting plumbing，但只能称为 P2-style weighting。训练 diagnostic 中的
+P2 或 learned-range 组合要求 Objective 满足
+`BatchReduciblePerSampleObjective`。Composer 的固定顺序是：
+
+```text
+simple_per_sample
+-> policy_weights * simple_per_sample
+-> + unweighted_variational_bound
+-> objective.reduce_per_sample_loss(...)
+```
+
+`MSEObjective(reduction="mean")` 对 feature 和 batch 都取 mean；`sum` 对两者都取
+sum，因此全一权重以及 P2 `gamma=0` 在两种 reduction 下都严格保持未加权 identity。
+weighted 路径只调用一次 `per_sample_loss()` 和一次 reducer。constant + fixed variance
+可以继续使用任意 scalar Objective；若 Objective 另有 `PerSampleObjective` capability，
+其结果仍保留给 diagnostics。声明不需要 per-sample reduction 的 weighting policy 必须
+产生精确全一权重，否则 fail closed。
+
+P2 官方语义使用 per-sample MSE。训练 diagnostic 中的
 `timestep_loss_weight` 是实际优化目标的 timestep 系数；指标系统若使用
 `loss_aggregation_weight`，后者只表示 batch 对聚合统计的权重，不参与 autograd。
 

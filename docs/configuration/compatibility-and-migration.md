@@ -248,6 +248,39 @@ provenance 会写入新兄弟 run 及其 checkpoint，旧 logger/event 文件不
 resume 不接受任意模型、训练资产或 optimizer 替换；需要改变它们时应启动新的训练
 workflow。
 
+### Gaussian weighting 的恢复与开发期配置切换
+
+`GaussianSimpleLossWeighting` 是由配置构造的 family policy，不是 managed
+`nn.Module`，核心不会为它保存或恢复独立 `state_dict`。policy 的 `name` 与 `params`
+只保存在 checkpoint 的完整 resolved config；`selected_components` 不展开
+`training.params`，不能代替该配置。
+
+strict resume 先以 `EXACT` policy 验证 checkpoint 保存的 extension provenance，再激活
+插件并通过 Gaussian family registry 重建 weighting。第三方 policy 的代码身份因此由
+所选 entry point 的 name、distribution、version 和 target 约束；缺失插件或
+name/distribution/target identity 不匹配会在训练组件构造前失败。sampling request 和
+observability overlay 都不能替换 weighting。
+
+开发期 flat P2 declaration：
+
+```yaml
+loss_weighting: {name: p2, k: 1.0, gamma: 1.0}
+```
+
+不受支持。新格式必须显式使用：
+
+```yaml
+loss_weighting:
+  name: p2
+  params:
+    k: 1.0
+    gamma: 1.0
+```
+
+框架不提供 alias、弃用期、config/checkpoint 转换器或参数猜测；旧 declaration 在 Builder
+组合时 fail closed。这个配置切换不改变 checkpoint container format，当前 writer 仍是
+v11。
+
 终端进度显示不属于训练状态。strict resume 可用互斥的 `--progress` 与
 `--no-progress` 覆盖 checkpoint 保存的 `trainer.show_progress`；两者都不指定时继承
 checkpoint。最终生效值和 CLI 覆盖意图分别记录在新 run 的 config 与 runtime options

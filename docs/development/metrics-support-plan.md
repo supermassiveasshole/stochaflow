@@ -19,7 +19,7 @@
 - 关联计划：
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)、
   [自动化模型调优开发计划](automated-model-tuning-plan.md)、
-  [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)
+  [正式 Gaussian loss 架构](../framework.md)
 - 归档说明：稳定的 API、配置、迁移与 extension 教程已经移入公开文档；本文只保留
   需求来源、决策演进和验收清单，不应从 Sphinx index 链接
 

@@ -1180,7 +1180,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | `prediction_type` | 训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。 |
 | `condition_dropout` | 训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。 |
 | `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
-| `loss_weighting` | Gaussian-local simple-loss policy；默认 `{name: constant}`。`{name: p2, k: <finite positive>, gamma: <finite non-negative>}` 只支持 epsilon，使用 cumulative SNR 且不重归一化，也不加权 learned-variance VB term。 |
+| `loss_weighting` | Gaussian family-local registry declaration；省略字段使用 constant，显式声明必须是 `{name: <policy>, params: {...}}`。内置 P2 写作 `{name: p2, params: {k: <finite positive>, gamma: <finite non-negative>}}`，只支持 epsilon，不重归一化且不加权 learned-variance VB；P2/learned-range 要求 `BatchReduciblePerSampleObjective`，第三方 policy 名称必须 namespaced，旧 flat P2 参数会被拒绝。 |
 
 (config-component-training_builders-gaussian-denoising)=
 #### `gaussian_denoising`
@@ -1193,7 +1193,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | --- | --- |
 | `prediction_type` | 训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`；要求注入离散 Gaussian Process 和 Objective。 |
 | `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
-| `loss_weighting` | Gaussian-local simple-loss policy；默认 `{name: constant}`。`{name: p2, k: <finite positive>, gamma: <finite non-negative>}` 只支持 epsilon，使用 cumulative SNR 且不重归一化，也不加权 learned-variance VB term。 |
+| `loss_weighting` | Gaussian family-local registry declaration；省略字段使用 constant，显式声明必须是 `{name: <policy>, params: {...}}`。内置 P2 写作 `{name: p2, params: {k: <finite positive>, gamma: <finite non-negative>}}`，只支持 epsilon，不重归一化且不加权 learned-variance VB；P2/learned-range 要求 `BatchReduciblePerSampleObjective`，第三方 policy 名称必须 namespaced，旧 flat P2 参数会被拒绝。 |
 
 (config-component-training_builders-supervised)=
 #### `supervised`

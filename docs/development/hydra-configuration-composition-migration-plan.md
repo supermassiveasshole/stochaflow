@@ -17,7 +17,7 @@
   AFHQ frozen evaluation、capacity trial policy、adaptive HPO
 - 关联决策：
   [Sampling Request Config Refactor](sampling-request-config-refactor.md)、
-  [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)、
+  [正式 Gaussian loss 架构](../framework.md)、
   [Extension 导入边界与激活延迟优化计划](extension-import-boundary-and-activation-latency-plan.md)、
   [自动化模型调优开发计划](automated-model-tuning-plan.md)
 

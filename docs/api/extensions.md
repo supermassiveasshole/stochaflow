@@ -249,6 +249,7 @@ Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trai
 | `TrainStepOutput` | Strategy 返回的 scalar loss、低成本 step report、diagnostics、metric channel updates 与 epoch loss reporting weight |
 | `MSEObjective` | 内置 task-neutral scalar MSE Objective |
 | `PerSampleObjective` | 可选的逐样本 loss capability |
+| `BatchReduciblePerSampleObjective` | 在逐样本 loss 之外显式拥有 batch reduction policy 的 Objective capability |
 | `compute_objective` | 校验并执行 scalar Objective，同时读取可选逐样本 capability |
 | `TrainingDiagnostic` | training diagnostic 生命周期根契约 |
 | `DiagnosticBuildContext` | diagnostic 构建期 logger 和输出目录；采样 shape 由 diagnostic 私有配置拥有 |
@@ -460,9 +461,77 @@ checkpoint 保存。
 | `DDIMSampler` | 内置 discrete Gaussian DDIM sampler |
 | `GaussianDiagnosticSemantics` | Strategy 可选暴露给 Gaussian diagnostics 的 prediction type、variance mode 与 model-invocation capability |
 | `gaussian_training_target` | 按 Gaussian prediction type 生成对应训练 target |
+| `GaussianSimpleLossContext` | policy 唯一可见的 prediction type 与 batch-aligned SNR |
+| `GaussianSimpleLossWeighting` | Gaussian simple-loss weighting 的窄 family contract |
+| `register_gaussian_simple_loss_weighting` | 以 namespaced 名称注册第三方 weighting policy |
 
 这些符号只承诺 discrete Gaussian family 内的行为兼容，不是 Flow Matching、SDE 或
 sigma-space solver 的 universal 接口。
+
+### Gaussian simple-loss weighting extension
+
+Weighting policy 不接收 Process、Objective、Strategy、model 或 Sampling 对象。它只验证
+prediction contract，并从 `GaussianSimpleLossContext` 返回一个 `[B]` Tensor：
+
+```python
+import torch
+
+from stochaflow.extensions import (
+    GaussianSimpleLossContext,
+    GaussianSimpleLossWeighting,
+    PredictionType,
+    register_gaussian_simple_loss_weighting,
+)
+
+
+@register_gaussian_simple_loss_weighting("my_lab.inverse_one_plus_snr")
+class InverseOnePlusSnrWeighting(GaussianSimpleLossWeighting):
+    def __init__(self, *, scale: float = 1.0) -> None:
+        self.scale = float(scale)
+
+    @property
+    def requires_per_sample_loss(self) -> bool:
+        return True
+
+    def validate_contract(self, *, prediction_type: PredictionType) -> None:
+        del prediction_type
+
+    def sample_weights(
+        self,
+        context: GaussianSimpleLossContext,
+    ) -> torch.Tensor:
+        return self.scale / (1.0 + context.signal_to_noise_ratio)
+```
+
+配置使用统一 component declaration：
+
+```yaml
+training:
+  name: gaussian_denoising
+  params:
+    prediction_type: x0
+    loss_weighting:
+      name: my_lab.inverse_one_plus_snr
+      params:
+        scale: 0.5
+```
+
+第三方注册名必须含 namespace；未限定名称保留给框架。factory 把 `params` 原样作为
+constructor keyword arguments。输出必须是与 context SNR 相同 shape `[B]`、device 和
+dtype 的浮点 Tensor，且所有 weight finite、非负；框架不执行 batch renormalization。
+`requires_per_sample_loss=False` 只适用于精确 identity policy，非全一输出会在 scalar
+Objective 路径 fail closed。
+
+需要逐样本组合的 policy 以及 learned-range variance 要求 Objective 满足：
+
+```python
+class BatchReduciblePerSampleObjective(PerSampleObjective, Protocol):
+    def reduce_per_sample_loss(self, loss: torch.Tensor) -> torch.Tensor: ...
+```
+
+reducer 必须返回同设备浮点 scalar。内置 `MSEObjective` 的 `per_sample_loss()` 按配置的
+`mean`/`sum` 处理非 batch 维，`reduce_per_sample_loss()` 再以同一语义处理 batch 维；
+`forward()` 委托这两个方法。Gaussian weighted 路径只调用一次逐样本方法和一次 reducer。
 
 ## Sampling 生命周期与 artifact
 

@@ -35,7 +35,7 @@
 
 其中：
 
-- [P2/ADM 计划](p2-weighting-and-adm-topology-refactor-plan.md)保留两个明确
+- [正式 Gaussian loss 架构](../framework.md)保留两个明确
   attribution boundary：A0 只修 topology；A1 实现 learned variance、hybrid
   objective、P2 和 respaced ancestral DDPM。
 - A0 是当前 `adm_unet` 名称与实现不一致的 correctness 修复，纳入 P0，在 B1 前
@@ -139,7 +139,7 @@ wall-clock 时间。每个 milestone 应独立提交并保持主分支可运行�
 
 ### A0 — ADM Topology Correctness Cutover（Done）
 
-执行 P2/ADM 计划的 A0：
+执行已关闭的 P2/ADM A0：
 
 - 以 pinned OpenAI guided-diffusion U-Net 作为唯一 topology reference；
 - 修复 per-input-block skip ledger、每级 `num_res_blocks + 1` decoder blocks、
@@ -207,11 +207,12 @@ retained MNIST/AFHQ 的训练数值行为保持不变。
 
 ### A1 — Learned-range Gaussian and P2 Capability（Done，2026-07-30）
 
-执行 P2/ADM 计划的 A1：
+执行已关闭的 P2/ADM A1；稳定 contract 见[正式 Gaussian loss 架构](../framework.md)：
 
 - model/process/dynamics 使用窄 family capability 表达 `2C` learned-range variance；
 - epsilon simple MSE 与 detached-mean variational-bound term 构成 hybrid loss；
-- `loss_weighting: constant|p2` 只属于 Gaussian TrainingBuilder 私有 recipe；
+- `loss_weighting` 是 Gaussian family-local registry declaration；省略字段使用 constant，
+  显式配置统一使用 `{name, params}`，内置 P2 只是其中一个 policy；
 - exact `w_t = (k + SNR(t))^-gamma`，P2 只加权 simple term；
 - CFG 只作用于 prediction half，variance 取 conditional branch；
 - DDPM 支持 250-step improved-diffusion-style respaced ancestral transition；
@@ -373,7 +374,7 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 | [Data Layer Composition Boundary](data-layer-composition-boundary-review.md) | Done | Base | 已实施 | image-backed 与 prepared-backed 使用两个 recipe-level Builder |
 | [Sampling Request Config Refactor](sampling-request-config-refactor.md) | Done / 将被替代 | B1 | Hydra C1 | C1 后成为历史记录，不维持 v10 dual authority |
 | [Legacy Intel macOS Lifecycle](legacy-intel-macos-pytorch-test-lifecycle.md) | Done | Maintenance | 无 | Deprecated / best effort，不约束新 codec/DiT |
-| [P2 Weighting and ADM Topology](p2-weighting-and-adm-topology-refactor-plan.md) | A0/A1 implemented | Done core | repository validation | topology/P2 capability 已闭合；单类别 reproduction lane 已取消 |
+| [Gaussian loss/P2 与 ADM topology](../framework.md) | Implemented | Done core | repository validation | 稳定 contract 已移入正式文档；单类别 reproduction lane 已取消 |
 | [Metrics](metrics-support-plan.md) | Queued foundation | P1 | A0/B1 后、L0 前 | 立即完成 Metrics M0–M1；M2–M4 按 diagnostic/extension 需求 |
 | [Latent Diffusion](latent-diffusion-support-plan.md) | Current product mainline | P1/P2 | A0 -> B1 -> K0/A1 -> L0–L3 | A1 是当前单人排期前置而非 codec 架构依赖 |
 | [Hydra Configuration Migration](hydra-configuration-composition-migration-plan.md) | Split | P0 + P2 + Later | C0/C1 -> K0 -> L1 -> H0-H3 | C0/C1 先行；H0-H3 在 L1 后；H4 延期 |

@@ -270,12 +270,14 @@ training:
   params:
     prediction_type: epsilon
     variance: {mode: fixed}
-    loss_weighting: {name: constant}
+    loss_weighting: {name: constant, params: {}}
 ```
 
 `variance` 与 `loss_weighting` 都属于具体 Gaussian TrainingBuilder 的 private params，
-不是新的顶层 schema、Objective 或 Registry。省略它们与上面的默认值等价。fixed
-variance 要求模型输出与 state 相同的 `C` channels，并且不计算 variational-bound term。
+不是新的顶层 schema 或通用 Objective。`loss_weighting` 由 Gaussian family-local
+registry 构造，不属于全局 `REGISTRIES`。省略整个字段使用 constant；若显式声明，
+`name` 和 `params` 都必须出现，`params` 可以为空。fixed variance 要求模型输出与 state
+相同的 `C` channels，并且不计算 variational-bound term。
 
 paper-compatible P2 + learned-range recipe 写作：
 
@@ -303,8 +305,9 @@ training:
       loss: rescaled_variational_bound
     loss_weighting:
       name: p2
-      k: 1.0
-      gamma: 1.0
+      params:
+        k: 1.0
+        gamma: 1.0
 
 objective:
   name: mse
@@ -324,11 +327,17 @@ P2 权重精确为
 `0..T-1`；weight 与被采样 noisy state 使用同一个 cumulative marginal，不能错一位或
 改用单步 alpha。
 
-P2 只在 `prediction_type: epsilon` 下提供 paper-compatible 声明。其他
-`PerSampleObjective` 可以复用这条 plumbing，但结果只能称 P2-style weighting；官方
-语义使用 `mse`/`mean`。diagnostic 中的 `timestep_loss_weight` 是这个 timestep-dependent
-训练系数；未来或项目级指标使用的 `loss_aggregation_weight` 只控制 batch 统计聚合，
-不参与 autograd。
+P2 只在 `prediction_type: epsilon` 下提供 paper-compatible 声明。P2 与
+learned-range 都要求 Objective 满足 `BatchReduciblePerSampleObjective`。内置
+`MSEObjective` 的 `mean` 是 feature mean + batch mean，`sum` 是 feature sum + batch
+sum；因此全一权重或 `gamma: 0` 在两种 reduction 下都严格等价于未加权 Objective。
+diagnostic 中的 `timestep_loss_weight` 是这个 timestep-dependent 训练系数；未来或项目级
+指标使用的 `loss_aggregation_weight` 只控制 batch 统计聚合，不参与 autograd。
+
+第三方 policy 必须用 namespaced 名称注册，例如
+`my_lab.inverse_one_plus_snr`，并以同一 `{name, params}` declaration 供无条件和类条件
+Gaussian Builder 构造。新增 policy 不需要修改两套 Builder/Strategy。开发期 flat 配置
+`{name: p2, k: 1.0, gamma: 1.0}` 不受支持，也没有 alias 或自动迁移。
 
 ancestral 250-step sampling 通过 DDPM 配置表达：
 
