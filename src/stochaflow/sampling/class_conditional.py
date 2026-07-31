@@ -12,7 +12,10 @@ from stochaflow.models.conditioning import (
     ClassConditionalDenoiser,
     predict_prevalidated_class_conditioned,
 )
-from stochaflow.processes import DiscreteGaussianDenoisingProcess
+from stochaflow.processes import (
+    DiscreteGaussianDenoisingProcess,
+    LearnedRangeGaussianVarianceProcess,
+)
 from stochaflow.sampling.builder import (
     DenoisingTrajectoryConfig,
     SamplingBuilder,
@@ -20,7 +23,12 @@ from stochaflow.sampling.builder import (
     StandardDenoisingObserver,
     WeightSelection,
 )
-from stochaflow.sampling.gaussian import GaussianModelDynamics, PredictionType
+from stochaflow.sampling.gaussian import (
+    GaussianModelDynamics,
+    PredictionType,
+    VarianceMode,
+    _variance_mode_from_declaration,
+)
 from stochaflow.sampling.sampler import Sampler, SamplerResult
 from stochaflow.sampling.writers import SamplingBatch
 from stochaflow.utils.config import ComponentConfig
@@ -41,6 +49,7 @@ class ClassConditionalDenoisingConfig:
 
     weights: WeightSelection
     prediction_type: PredictionType
+    variance_mode: VarianceMode
     clip_denoised: bool
     guidance_scale: float
     conditions: tuple[ClassConditionAllocation, ...]
@@ -72,6 +81,14 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
         if self.context.shape is None:
             raise ValueError("class_conditional_denoising requires sampling.shape")
         config = self._parse_params(self.context.params)
+        if config.variance_mode == "learned_range" and not isinstance(
+            process,
+            LearnedRangeGaussianVarianceProcess,
+        ):
+            raise TypeError(
+                "class_conditional_denoising learned_range variance requires "
+                "LearnedRangeGaussianVarianceProcess"
+            )
         model_value, resolved_weights = self.context.model_provider.resolve(
             config.weights
         )
@@ -116,12 +133,14 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
                 model,
                 class_labels,
                 guidance_scale=config.guidance_scale,
+                variance_mode=config.variance_mode,
                 counts=counts,
             )
             dynamics = GaussianModelDynamics(
                 process,
                 predict,
                 prediction_type=config.prediction_type,
+                variance_mode=config.variance_mode,
                 clip_denoised=config.clip_denoised,
             )
             lifecycle = StandardDenoisingObserver(
@@ -163,6 +182,7 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
             metadata={
                 "weights": resolved_weights,
                 "prediction_type": config.prediction_type,
+                "variance": {"mode": config.variance_mode},
                 "clip_denoised": config.clip_denoised,
                 "guidance_scale": config.guidance_scale,
                 "conditions": [
@@ -194,6 +214,7 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
         allowed = {
             "weights",
             "prediction_type",
+            "variance",
             "clip_denoised",
             "guidance_scale",
             "conditions",
@@ -217,6 +238,10 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
                 "class_conditional_denoising prediction_type must be "
                 "epsilon, x0, v, or score"
             )
+        variance_mode = _variance_mode_from_declaration(
+            params.get("variance"),
+            path="class_conditional_denoising.variance",
+        )
         clip_denoised = params.get("clip_denoised", True)
         if not isinstance(clip_denoised, bool):
             raise TypeError("class_conditional_denoising clip_denoised must be boolean")
@@ -234,6 +259,7 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
         return ClassConditionalDenoisingConfig(
             weights=cast(WeightSelection, weights),
             prediction_type=cast(PredictionType, prediction_type),
+            variance_mode=variance_mode,
             clip_denoised=clip_denoised,
             guidance_scale=guidance_scale,
             conditions=conditions,
@@ -363,11 +389,18 @@ class ClassifierFreeGuidancePredictor:
         class_labels: torch.Tensor,
         *,
         guidance_scale: float,
+        variance_mode: VarianceMode = "fixed",
         counts: ClassConditionalEvaluationCounts,
     ) -> None:
+        if variance_mode not in ("fixed", "learned_range"):
+            raise ValueError(
+                "classifier-free guidance variance_mode must be fixed or "
+                "learned_range"
+            )
         self.model = model
         self.class_labels = class_labels
         self.guidance_scale = guidance_scale
+        self.variance_mode = variance_mode
         self.counts = counts
 
     def __call__(
@@ -404,7 +437,16 @@ class ClassifierFreeGuidancePredictor:
             doubled_labels,
         )
         conditional, unconditional = doubled_prediction.chunk(2, dim=0)
-        return unconditional + self.guidance_scale * (conditional - unconditional)
+        if self.variance_mode == "fixed":
+            return unconditional + self.guidance_scale * (
+                conditional - unconditional
+            )
+        conditional_mean, conditional_variance = conditional.chunk(2, dim=1)
+        unconditional_mean, _ = unconditional.chunk(2, dim=1)
+        guided_mean = unconditional_mean + self.guidance_scale * (
+            conditional_mean - unconditional_mean
+        )
+        return torch.cat((guided_mean, conditional_variance), dim=1)
 
     def _predict(
         self,
@@ -424,9 +466,20 @@ class ClassifierFreeGuidancePredictor:
         )
         if not isinstance(output, torch.Tensor):
             raise TypeError("class_conditional_denoising model must return a Tensor")
-        if output.shape != state.shape:
+        expected_shape = state.shape
+        if self.variance_mode == "learned_range":
+            if state.ndim < 2:
+                raise ValueError(
+                    "learned_range class-conditional state must include a "
+                    "channel dimension"
+                )
+            expected_shape = torch.Size(
+                (state.shape[0], state.shape[1] * 2, *state.shape[2:])
+            )
+        if output.shape != expected_shape:
             raise ValueError(
-                "class_conditional_denoising model output must match the state shape"
+                "class_conditional_denoising model output has shape "
+                f"{tuple(output.shape)}, expected {tuple(expected_shape)}"
             )
         if output.device != state.device:
             raise ValueError(

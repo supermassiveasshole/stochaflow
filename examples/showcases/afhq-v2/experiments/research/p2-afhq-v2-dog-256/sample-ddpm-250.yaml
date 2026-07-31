@@ -1,0 +1,11 @@
+sampling:
+  sampler:
+    name: ddpm
+    params:
+      num_inference_steps: 250
+  options:
+    weights: ema
+  seed: 20260731
+  writers:
+    - name: tensor
+      params: {}

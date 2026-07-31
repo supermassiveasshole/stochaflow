@@ -9,6 +9,7 @@ import torch
 from stochaflow.processes import (
     DiscreteGaussianDenoisingProcess,
     DiscreteGaussianProcess,
+    GaussianMarginalCoefficientSnapshot,
     GaussianScales,
 )
 from stochaflow.sampling import (
@@ -336,6 +337,8 @@ def test_eta_positive_clean_transition_does_not_consume_generator() -> None:
 
 def test_eta_positive_zero_variance_transition_does_not_consume_generator() -> None:
     class PlateauProcess(DiscreteGaussianProcess):
+        """Expose one self-consistent zero-noise selected-pair plateau."""
+
         def marginal_scales(
             self,
             state_times: torch.Tensor,
@@ -345,6 +348,27 @@ def test_eta_positive_zero_variance_transition_does_not_consume_generator() -> N
             return GaussianScales(
                 torch.full(shape, 0.8, device=state_times.device),
                 torch.full(shape, 0.6, device=state_times.device),
+            )
+
+        def marginal_coefficient_snapshot(
+            self,
+            source_times: torch.Tensor,
+            target_times: torch.Tensor,
+            broadcast_shape: torch.Size,
+        ) -> GaussianMarginalCoefficientSnapshot:
+            del target_times
+            shape = (source_times.shape[0],) + (1,) * (
+                len(broadcast_shape) - 1
+            )
+            alpha_bar = torch.full(
+                shape,
+                0.64,
+                device=source_times.device,
+            )
+            return GaussianMarginalCoefficientSnapshot(
+                source_alpha_bar=alpha_bar,
+                target_alpha_bar=alpha_bar,
+                transition_alpha=torch.ones_like(alpha_bar),
             )
 
     process = PlateauProcess(

@@ -88,6 +88,7 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
     assert "class_labeled_image" in REGISTRIES.data_builders.names()
     assert "afhq-v2.class-images" not in REGISTRIES.data_builders.names()
     assert "afhq-v2.official" in IMAGE_DATA_SOURCES.names()
+    assert "afhq-v2.dog" in IMAGE_DATA_SOURCES.names()
     assert (_SHOWCASE / "uv.lock").is_file()
     assert declaration["project"]["name"] == "stochaflow-afhq-v2"
     assert declaration["project"]["entry-points"]["stochaflow.extensions"] == {
@@ -119,6 +120,7 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
     assert {path.name for path in package.glob("*.py")} == {
         "__init__.py",
         "artifact.py",
+        "dog_artifact.py",
     }
     assert {
         path.name
@@ -128,6 +130,8 @@ def test_afhq_showcase_registers_only_the_source_extension() -> None:
         "archive.py",
         "contracts.py",
         "downloading.py",
+        "dog_image_transform.py",
+        "dog_materialization.py",
         "image_transform.py",
         "locking.py",
         "materialization.py",
@@ -219,7 +223,18 @@ def test_afhq_production_configs_parse_and_follow_pipeline_contract() -> None:
         ]
 
     assert adm["model"]["name"] == "adm_unet"
-    assert adm["model"]["params"]["num_classes"] == 3
+    assert adm["model"]["params"] == {
+        "input_size": 128,
+        "in_channels": 3,
+        "out_channels": 3,
+        "base_channels": 128,
+        "channel_multipliers": [1, 1, 2, 3, 4],
+        "num_res_blocks": 2,
+        "attention_resolutions": [32, 16, 8],
+        "attention_head_channels": 64,
+        "num_classes": 3,
+        "dropout": 0.1,
+    }
     assert dit["model"] == {
         "name": "dit",
         "params": {
@@ -234,9 +249,9 @@ def test_afhq_production_configs_parse_and_follow_pipeline_contract() -> None:
             "num_classes": 3,
         },
     }
-    assert adm["data"]["params"]["loader"]["batch_size"] == 8
+    assert adm["data"]["params"]["loader"]["batch_size"] == 1
     assert dit["data"]["params"]["loader"]["batch_size"] == 32
-    assert adm["trainer"]["accumulate_grad_batches"] == 4
+    assert adm["trainer"]["accumulate_grad_batches"] == 32
     assert dit["trainer"]["accumulate_grad_batches"] == 1
     adm_shared = deepcopy(adm)
     dit_shared = deepcopy(dit)
@@ -263,7 +278,7 @@ def test_afhq_production_configs_parse_and_follow_pipeline_contract() -> None:
         "expected_warmup_steps",
     ),
     [
-        (_ADM_CONFIG, 1_679, 420, 84_000, 1_680),
+        (_ADM_CONFIG, 13_436, 420, 84_000, 1_680),
         (_DIT_CONFIG, 419, 419, 83_800, 1_676),
     ],
 )
@@ -323,6 +338,21 @@ def test_afhq_smoke_config_is_bounded_and_uses_the_real_data_contract() -> None:
     assert raw["trainer"]["accumulate_grad_batches"] == 2
     assert raw["trainer"]["num_epochs"] == 1
     assert raw["lr_scheduler"]["params"]["total_steps"] == 2
+    assert raw["model"] == {
+        "name": "adm_unet",
+        "params": {
+            "input_size": 128,
+            "in_channels": 3,
+            "out_channels": 3,
+            "base_channels": 32,
+            "channel_multipliers": [1, 2],
+            "num_res_blocks": 1,
+            "attention_resolutions": [64],
+            "attention_head_channels": 32,
+            "num_classes": 3,
+            "dropout": 0.0,
+        },
+    }
     assert raw["diagnostics"][0]["name"] == (
         "class_conditional_diffusion_quality"
     )

@@ -76,6 +76,25 @@ class PrevalidatedRecordingClassConditionalDenoiser(
         )
 
 
+class LearnedRangeClassConditionalDenoiser(RecordingClassConditionalDenoiser):
+    """Return distinct prediction and variance heads for CFG assertions."""
+
+    def predict_class_conditioned(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+        class_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        del model_time
+        label_shape = (class_labels.shape[0],) + (1,) * (state.ndim - 1)
+        labels = (
+            class_labels.to(device=state.device, dtype=state.dtype)
+            .reshape(label_shape)
+            .expand_as(state)
+        )
+        return torch.cat((labels, labels + 10.0), dim=1)
+
+
 class InvalidInferenceModel(nn.Module):
     """Model returned by a provider that lacks conditional capability."""
 
@@ -304,6 +323,45 @@ def test_cfg_prediction_formula_uses_one_forward(
     assert counts.forward_calls == 1
     assert len(model.seen_labels) == 1
     assert torch.equal(model.seen_labels[0], expected_labels)
+
+
+@pytest.mark.parametrize(
+    ("guidance_scale", "expected_mean", "expected_variance"),
+    [
+        (0.0, [2.0, 2.0], [12.0, 12.0]),
+        (1.0, [0.0, 1.0], [10.0, 11.0]),
+        (2.0, [-2.0, 0.0], [10.0, 11.0]),
+    ],
+)
+def test_learned_range_cfg_guides_only_prediction_head(
+    guidance_scale: float,
+    expected_mean: list[float],
+    expected_variance: list[float],
+) -> None:
+    model = LearnedRangeClassConditionalDenoiser()
+    counts = ClassConditionalEvaluationCounts()
+    predictor = ClassifierFreeGuidancePredictor(
+        model,
+        torch.tensor([0, 1]),
+        guidance_scale=guidance_scale,
+        variance_mode="learned_range",
+        counts=counts,
+    )
+
+    output = predictor(
+        torch.zeros(2, 1, 2, 2),
+        torch.zeros(2, dtype=torch.long),
+    )
+    prediction, variance = output.chunk(2, dim=1)
+
+    assert torch.equal(
+        prediction[:, 0, 0, 0],
+        torch.tensor(expected_mean),
+    )
+    assert torch.equal(
+        variance[:, 0, 0, 0],
+        torch.tensor(expected_variance),
+    )
 
 
 def test_cfg_predictor_uses_optional_prevalidated_model_path() -> None:

@@ -15,11 +15,15 @@ from .ddim import DDIMSampler
 from .ddpm import DDPMAncestralSampler
 from .dynamics import GenerativeDynamics
 from .gaussian import (
+    CleanTargetVarianceReferenceGaussianDenoisingDynamics,
     GaussianDenoisingDynamics,
     GaussianModelDynamics,
     GaussianPrediction,
     GaussianTransition,
+    LearnedVarianceGaussianPrediction,
     PredictionType,
+    TargetAwareGaussianDenoisingDynamics,
+    VarianceMode,
     normalize_gaussian_prediction,
 )
 from .grid import (
@@ -46,6 +50,7 @@ from .writers import (
 
 __all__ = [
     "ClassConditionalDenoisingBuilder",
+    "CleanTargetVarianceReferenceGaussianDenoisingDynamics",
     "DDIMSampler",
     "DDPMAncestralSampler",
     "GaussianDenoisingDynamics",
@@ -56,6 +61,7 @@ __all__ = [
     "ImageSamplingArtifactWriter",
     "InferenceAssetProvider",
     "InferenceModelProvider",
+    "LearnedVarianceGaussianPrediction",
     "PredictionType",
     "Sampler",
     "SamplerResult",
@@ -69,8 +75,10 @@ __all__ = [
     "SamplingOutput",
     "SamplingRecipe",
     "StandardDenoisingBuilder",
+    "TargetAwareGaussianDenoisingDynamics",
     "TensorSamplingArtifactWriter",
     "TrajectoryObserver",
+    "VarianceMode",
     "denormalize_samples",
     "normalize_gaussian_prediction",
     "save_image_grid",

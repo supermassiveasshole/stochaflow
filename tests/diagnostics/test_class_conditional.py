@@ -12,6 +12,7 @@ import yaml
 from torch import nn
 
 from stochaflow.processes import DiscreteGaussianProcess
+from stochaflow.sampling import VarianceMode
 from stochaflow.training import (
     ClassConditionalGaussianDenoisingTrainingStrategy,
     ManagedTrainingModule,
@@ -81,6 +82,10 @@ class CustomNullConditionalStrategy(TrainingStrategy):
     @property
     def prediction_type(self) -> Literal["v"]:
         return "v"
+
+    @property
+    def variance_mode(self) -> VarianceMode:
+        return "fixed"
 
     @property
     def num_classes(self) -> int:

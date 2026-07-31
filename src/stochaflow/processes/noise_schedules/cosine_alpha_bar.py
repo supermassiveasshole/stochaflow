@@ -34,7 +34,7 @@ class CosineAlphaBarSchedule(TabulatedDiscreteVPSchedule):
         ).square()
         alpha_bar = alpha_bar / alpha_bar[0]
         betas = (1.0 - alpha_bar[1:] / alpha_bar[:-1]).clamp(max=max_beta)
-        super().__init__(betas.to(dtype=dtype))
+        super().__init__(betas, storage_dtype=dtype)
 
 
 __all__ = ["CosineAlphaBarSchedule"]

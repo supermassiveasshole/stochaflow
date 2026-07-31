@@ -1,0 +1,137 @@
+# P2-compatible AFHQ-v2 Dog research protocol.
+# 600 epochs * 500 updates/epoch * 8 images/update = 2.4M images.
+experiment:
+  name: p2_compatible_afhq_v2_dog_256
+  seed: 20260730
+  output_dir: outputs/afhq-v2/research/p2-dog-256
+
+extensions:
+  plugins: [stochaflow-afhq-v2]
+
+data:
+  name: image
+  params:
+    source:
+      name: afhq-v2.dog
+      materialization:
+        cache_root: ./data
+        policy: require
+        verification: full
+      params:
+        resolution: 256
+    partition:
+      mode: none
+    image:
+      size: [256, 256]
+      channels: 3
+      normalize: true
+      random_horizontal_flip: true
+    loader:
+      batch_size: 8
+      num_workers: 2
+      shuffle: true
+      drop_last: true
+      pin_memory: true
+      persistent_workers: true
+      prefetch_factor: 4
+      steps_per_epoch: 500
+
+model:
+  name: adm_unet
+  params:
+    input_size: 256
+    in_channels: 3
+    out_channels: 6
+    base_channels: 128
+    channel_multipliers: [1, 1, 2, 2, 4, 4]
+    num_res_blocks: 1
+    attention_resolutions: [16]
+    attention_head_channels: 64
+    num_classes: null
+    dropout: 0.1
+
+process:
+  name: discrete_gaussian
+  params:
+    schedule:
+      name: linear_beta
+      params:
+        num_timesteps: 1000
+        beta_start: 1.0e-4
+        beta_end: 0.02
+
+training:
+  name: gaussian_denoising
+  params:
+    prediction_type: epsilon
+    variance:
+      mode: learned_range
+      loss: rescaled_variational_bound
+    loss_weighting:
+      name: constant
+
+objective:
+  name: mse
+  params:
+    reduction: mean
+
+optimizer:
+  name: torch.optim.AdamW
+  params:
+    lr: 2.0e-5
+    weight_decay: 0.0
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+ema:
+  enabled: true
+  decay: 0.9999
+  update_after_step: 0
+  update_every: 1
+  use_for_sampling: true
+
+sampling:
+  run_after_training: false
+  sampler:
+    name: ddpm
+    params:
+      num_inference_steps: 1000
+  options:
+    weights: ema
+    clip_denoised: true
+    trajectory:
+      enabled: false
+      every_steps: 1
+  shape: [3, 256, 256]
+  num_samples: 50000
+  batch_size: 8
+  seed: 20260731
+  writers:
+    - name: tensor
+      params: {}
+
+diagnostics: []
+
+trainer:
+  num_epochs: 600
+  device: auto
+  precision: fp32
+  accumulate_grad_batches: 1
+  max_grad_norm: null
+  show_progress: true
+  early_stopping:
+    enabled: false
+
+logging:
+  log_every: 100
+  backends:
+    - name: local
+      params:
+        console: false
+        append: false
+    - name: tensorboard
+      params: {}
+  torch_logs: {}
+
+artifacts:
+  checkpoint_every: 25

@@ -98,15 +98,14 @@ def test_homepage_presents_mnist_before_afhq() -> None:
     """Keep the minimal built-in workflow ahead of the larger showcase."""
 
     homepage = (DOCS_ROOT / "index.md").read_text(encoding="utf-8")
-    asset_names = (
-        "mnist_ddim50_epoch_0183_samples.png",
-        "afhq_v2_adm_ddim50_epoch_0170_samples.png",
-    )
+    mnist_asset = "mnist_ddim50_epoch_0183_samples.png"
+    afhq_card = "AFHQ-v2 · class-conditional ADM"
+    legacy_afhq_asset = "afhq_v2_adm_ddim50_epoch_0170_samples.png"
 
-    assert homepage.index(asset_names[0]) < homepage.index(asset_names[1])
-    for filename in asset_names:
-        assert f"_static/{filename}" in homepage
-        assert (PROJECT_ROOT / "assets" / "readme" / filename).is_file()
+    assert homepage.index(mnist_asset) < homepage.index(afhq_card)
+    assert f"_static/{mnist_asset}" in homepage
+    assert (PROJECT_ROOT / "assets" / "readme" / mnist_asset).is_file()
+    assert legacy_afhq_asset not in homepage
 
 
 def test_homepage_cards_override_furo_container_padding_reset() -> None:
@@ -177,15 +176,19 @@ def test_maintained_examples_publish_grounded_results() -> None:
 
     mnist = MNIST_README.read_text(encoding="utf-8")
     afhq = AFHQ_README.read_text(encoding="utf-8")
+    normalized_afhq = " ".join(afhq.split())
 
     assert "Best validation loss | **0.07189**" in mnist
     assert "mnist_ddpm_epoch_0183_samples.png" in mnist
     assert "mnist_ddim50_epoch_0183_samples.png" in mnist
     assert "mnist_ddpm_epoch_0183_trajectory.gif" in mnist
     assert "mnist_ddim50_epoch_0183_trajectory.gif" in mnist
-    assert "Aggregate FID | **30.240**" in afhq
-    assert "Aggregate KID | **0.005310 ± 0.000701**" in afhq
-    assert "afhq_v2_adm_ddim50_epoch_0170_samples.png" in afhq
+    assert "exact parameter count 是 105,197,187" in normalized_afhq
+    assert "已从 current result surface 移除" in normalized_afhq
+    assert "本 README 不发布 AFHQ quality 数值" in normalized_afhq
+    assert "Aggregate FID | **30.240**" not in afhq
+    assert "Aggregate KID | **0.005310 ± 0.000701**" not in afhq
+    assert "afhq_v2_adm_ddim50_epoch_0170_samples.png" not in afhq
 
     for source in (MNIST_README, AFHQ_README):
         content = source.read_text(encoding="utf-8")

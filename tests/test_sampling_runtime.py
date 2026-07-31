@@ -983,6 +983,40 @@ def test_sample_request_contract_collision_fails_before_plugin_preflight(
         run_sampling(checkpoint=checkpoint, config_path=config_path)
 
 
+def test_sample_request_cannot_override_learned_variance_contract(
+    tmp_path: Path,
+) -> None:
+    raw = _raw_config(
+        recipe_name="standard_denoising",
+        recipe_contract={
+            "prediction_type": "epsilon",
+            "variance": {"mode": "learned_range"},
+        },
+        sampler={
+            "name": "ddpm",
+            "params": {"num_inference_steps": 2},
+        },
+    )
+    raw["sampling"]["shape"] = [2]
+    checkpoint = _checkpoint(tmp_path / "checkpoint.pt", raw)
+    config_path = tmp_path / "sampling.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "sampling": {
+                    "options": {
+                        "variance": {"mode": "fixed"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="fixed inference contract"):
+        run_sampling(checkpoint=checkpoint, config_path=config_path)
+
+
 def test_partial_sample_request_inherits_unspecified_checkpoint_fields(
     tmp_path: Path,
 ) -> None:

@@ -28,7 +28,8 @@ class UNet(nn.Module):
     ) -> None:
         super().__init__()
 
-        model_out_channels = out_channels
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         attention_level_set = set(attention_levels or ())
 
         self.time_embedding = TimeEmbedding(
@@ -121,7 +122,7 @@ class UNet(nn.Module):
         self.output_act = nn.SiLU()
         self.output_projection = nn.Conv2d(
             channels,
-            model_out_channels,
+            self.out_channels,
             kernel_size=3,
             padding=1,
         )

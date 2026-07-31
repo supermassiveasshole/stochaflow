@@ -22,6 +22,31 @@ migration：
 DataLoaders` 的职责边界。完全 synthetic、没有外部 artifact binding 的 recipe 不受该
 格式迁移影响。
 
+## Canonical ADM topology 是 breaking boundary
+
+`adm_unet` registry identity 现在直接表示 canonical ADM input/output block graph：
+initial projection、每个 encoder ResBlock 和每个 downsample 都保存 skip；decoder
+每个 resolution 使用 `num_res_blocks + 1` 个 ResBlock，并逐 block 消费 skip。attention
+是 GroupNorm/QKV/output projection/residual block，`attention_resolutions` 填写实际
+spatial resolution。
+
+旧实现的 stage-level skip graph 和 Spatial Transformer 没有 compatibility mode。以下
+配置字段已删除并会被拒绝：
+
+- `transformer_depths`、`middle_transformer_depth`、`attention_head_dim`；
+- 可配置的 `time_embedding_dim`、`scale_shift_norm`、`residual_resampling`；
+- `zero_init_residual` 与 `zero_init_output`。
+
+使用新字段 `input_size`、`attention_resolutions` 和
+`attention_head_channels`。scale-shift norm、residual up/down、residual/output
+zero-init 以及 `4 * base_channels` time embedding 都是 `adm_unet` 定义的一部分，不再
+作为 recipe 开关。
+
+旧 ADM 的 raw、EMA 与 optimizer state 具有不同 key/shape/topology。框架不会 partial
+load、映射 key、转换 state、保留 legacy model name 或自动改写 resolved config；strict
+state validation 会 fail closed。升级时必须 fresh train，并从新 checkpoint 执行 resume
+或 sampling。拓扑修复前发布的 AFHQ 指标与样本不能归因给 corrected ADM 或 P2。
+
 ## Checkpoint v10
 
 当前 writer 和 runtime 只接受 `format_version: 10`；不读取或迁移 v8/v9。旧
@@ -62,6 +87,20 @@ weights-only warm start。
 optimizer/scheduler class、EMA topology、precision 和 accumulation 同样必须匹配。
 data-aware 训练还会在构建 sibling run 和恢复任何训练资产前，重新 materialize 并比较
 checkpoint 的完整 `DataArtifactBindings`。
+
+### Gaussian inference recipe variance cutover
+
+新构建的所有 Gaussian training recipe 都在 checkpoint fixed contract 中同时冻结
+`prediction_type` 与 `variance: {mode: fixed|learned_range}`。即使使用兼容默认值
+`fixed`，该字段也会显式保存；sample request 不能覆盖它。
+
+因此，在这次变更前写出的某些 v10 Gaussian checkpoint 虽然 format version 相同，但其
+`inference_recipe.contract` 缺少 `variance`。strict resume 会因新 TrainingPlan 的
+explicit fixed recipe 与旧保存 recipe 不相等而拒绝它；框架不会改写 checkpoint。
+checkpoint-backed sampling 对缺失字段继续采用 fixed-compatible default，除非另有
+model/state incompatibility。对非 ADM 模型，这是 training recipe authority cutover；
+对 ADM checkpoint 还同时存在上一节更强的 state key/shape/topology 不兼容，因此旧 ADM
+sampling 仍会失败。手工补字段不能修复 ADM state，也不是受支持的 checkpoint migration。
 
 ### Precision 与 accumulation
 
@@ -152,6 +191,11 @@ descriptor、declaration、role 或 embedded state。
 
 request 可改变 shape、数量、batch、seed、Sampler、writers 和 recipe 公开的 options。
 `options` 浅合并，Sampler/writers 原子替换；Builder identity 和 fixed contract 不可修改。
+Gaussian checkpoint 的 fixed contract 包含 `prediction_type` 和 `variance.mode`：
+sample request 不能把 fixed checkpoint 改成 learned-range，反之亦然。P2 的
+`loss_weighting` 与 learned-range 的 `variance.loss` 是 training/resume facts，保存在完整
+resolved config 中；它们不是 sampling option。`ddpm.num_inference_steps` 或显式 schedule
+只是 request-time solver protocol，不能改变 checkpoint 的 prediction/variance contract。
 resume observability config 也只能改变没有恢复状态的监控表面，不能改变 extension
 selection，也不能引入 checkpoint 未选择的 diagnostic provider module。它的有效配置和
 provenance 会写入新兄弟 run 及其 checkpoint，旧 logger/event 文件不会续写。除此之外，

@@ -113,6 +113,40 @@ class PrevalidatedToyClassConditionalDenoiser(ToyClassConditionalDenoiser):
         )
 
 
+class LearnedVarianceToyClassConditionalDenoiser(ToyClassConditionalDenoiser):
+    """Return a prediction head plus learned-range interpolation values."""
+
+    def predict_class_conditioned(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+        class_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        mean = super().predict_class_conditioned(
+            state,
+            model_time,
+            class_labels,
+        )
+        return torch.cat((mean, torch.zeros_like(mean)), dim=1)
+
+
+class DeclaredLayoutToyClassConditionalDenoiser(
+    ToyClassConditionalDenoiser,
+):
+    """Add a static output-layout declaration to the independent denoiser."""
+
+    def __init__(
+        self,
+        process: DeterministicConditionalGaussianProcess,
+        *,
+        in_channels: int,
+        out_channels: int,
+    ) -> None:
+        super().__init__(process, "epsilon")
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+
 class NonConditionalModel(nn.Module):
     """Parameter-bearing model that intentionally lacks the capability."""
 
@@ -358,6 +392,103 @@ def test_builder_preserves_injected_assets_and_private_configuration() -> None:
     )
     assert plan.strategy.prediction_type == "v"
     assert plan.strategy.condition_dropout == pytest.approx(0.25)
+
+
+def test_builder_composes_p2_learned_range_and_freezes_variance_recipe() -> None:
+    process = _process()
+    model = LearnedVarianceToyClassConditionalDenoiser(process, "epsilon")
+    objective = MSEObjective()
+    context = _builder_context(model, process, objective)
+    context.params.update(
+        {
+            "prediction_type": "epsilon",
+            "condition_dropout": 0.1,
+            "variance": {
+                "mode": "learned_range",
+                "loss": "rescaled_variational_bound",
+            },
+            "loss_weighting": {"name": "p2", "k": 1.0, "gamma": 1.0},
+        }
+    )
+
+    plan = ClassConditionalGaussianDenoisingTrainingBuilder(context).build()
+    output = plan.strategy.training_step(_batch())
+
+    assert plan.inference_recipe is not None
+    assert plan.inference_recipe.contract == {
+        "prediction_type": "epsilon",
+        "variance": {"mode": "learned_range"},
+    }
+    assert torch.isfinite(output.loss)
+    assert output.diagnostics["per_sample_variational_bound"].shape == (2,)
+    assert output.diagnostics["timestep_loss_weight"].shape == (2,)
+
+
+@pytest.mark.parametrize(
+    ("params", "out_channels", "message"),
+    [
+        ({}, 2, "fixed Gaussian variance requires 1 output channels"),
+        (
+            {
+                "variance": {
+                    "mode": "learned_range",
+                    "loss": "rescaled_variational_bound",
+                }
+            },
+            1,
+            "learned_range Gaussian variance requires 2 output channels",
+        ),
+    ],
+)
+def test_conditional_builder_preflights_declared_model_output_layout(
+    params: dict[str, object],
+    out_channels: int,
+    message: str,
+) -> None:
+    process = _process()
+    model = DeclaredLayoutToyClassConditionalDenoiser(
+        process,
+        in_channels=1,
+        out_channels=out_channels,
+    )
+    context = _builder_context(model, process, MSEObjective())
+    context.params.update(params)
+
+    with pytest.raises(ValueError, match=message):
+        ClassConditionalGaussianDenoisingTrainingBuilder(context).build()
+
+
+def test_conditional_builder_accepts_declared_learned_range_layout() -> None:
+    process = _process()
+    model = DeclaredLayoutToyClassConditionalDenoiser(
+        process,
+        in_channels=1,
+        out_channels=2,
+    )
+    context = _builder_context(model, process, MSEObjective())
+    context.params.update(
+        {
+            "variance": {
+                "mode": "learned_range",
+                "loss": "rescaled_variational_bound",
+            }
+        }
+    )
+
+    plan = ClassConditionalGaussianDenoisingTrainingBuilder(context).build()
+
+    assert plan.primary_model is model
+
+
+def test_conditional_builder_retains_runtime_layout_check_for_opaque_model() -> None:
+    process = _process()
+    model = LearnedVarianceToyClassConditionalDenoiser(process, "epsilon")
+    context = _builder_context(model, process, MSEObjective())
+
+    plan = ClassConditionalGaussianDenoisingTrainingBuilder(context).build()
+
+    with pytest.raises(ValueError, match="fixed-variance Gaussian model output"):
+        plan.strategy.training_step(_batch())
 
 
 def _builder_context(

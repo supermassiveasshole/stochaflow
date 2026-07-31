@@ -11,12 +11,15 @@ from torch import nn
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.sampling import PredictionType
 from stochaflow.training import (
+    GaussianDenoisingTrainingBuilder,
     GaussianDenoisingTrainingStrategy,
     MSEObjective,
     TrainStepOutput,
     gaussian_training_target,
     validate_train_step_output,
 )
+from stochaflow.training.builder import TrainingBuilderContext
+from stochaflow.utils.config import ComponentConfig
 
 
 @pytest.mark.parametrize(
@@ -86,6 +89,41 @@ class PerfectTargetModel(nn.Module):
         return target + self.offset * 0.0
 
 
+class LearnedVarianceGaussianModel(nn.Module):
+    """Return epsilon and learned-range interpolation heads."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.offset = nn.Parameter(torch.zeros(()))
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+    ) -> torch.Tensor:
+        del model_time
+        mean = torch.zeros_like(state) + self.offset
+        return torch.cat((mean, torch.zeros_like(mean)), dim=1)
+
+
+class DeclaredLayoutGaussianModel(nn.Module):
+    """Declare static channel counts for builder-boundary validation."""
+
+    def __init__(self, *, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.offset = nn.Parameter(torch.zeros(()))
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+    ) -> torch.Tensor:
+        del model_time
+        return state + self.offset
+
+
 @pytest.mark.parametrize("prediction_type", ["epsilon", "x0", "v", "score"])
 def test_gaussian_strategy_supports_all_prediction_targets(
     prediction_type: PredictionType,
@@ -128,6 +166,168 @@ def test_gaussian_strategy_rejects_unhandled_conditions() -> None:
         strategy.training_step(
             (torch.zeros(1, 1, 2, 2), {"low_res": torch.zeros(1, 1, 1, 1)})
         )
+
+
+def test_unconditional_builder_composes_p2_learned_range_recipe() -> None:
+    process = DeterministicGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 4}}
+    )
+    model = LearnedVarianceGaussianModel()
+    objective = MSEObjective()
+
+    def model_factory(config: ComponentConfig) -> nn.Module:
+        del config
+        raise AssertionError("Gaussian builder must preserve the injected model")
+
+    def objective_factory(config: ComponentConfig) -> nn.Module:
+        del config
+        raise AssertionError("Gaussian builder must preserve the injected objective")
+
+    builder = GaussianDenoisingTrainingBuilder(
+        TrainingBuilderContext(
+            params={
+                "prediction_type": "epsilon",
+                "variance": {
+                    "mode": "learned_range",
+                    "loss": "rescaled_variational_bound",
+                },
+                "loss_weighting": {"name": "p2", "k": 1.0, "gamma": 1.0},
+            },
+            primary_model=model,
+            process=process,
+            objective=objective,
+            model_factory=model_factory,
+            objective_factory=objective_factory,
+        )
+    )
+
+    plan = builder.build()
+    output = plan.strategy.training_step(torch.zeros(2, 1, 2, 2))
+
+    assert plan.inference_recipe is not None
+    assert plan.inference_recipe.contract == {
+        "prediction_type": "epsilon",
+        "variance": {"mode": "learned_range"},
+    }
+    assert torch.isfinite(output.loss)
+    assert output.diagnostics["per_sample_loss"].shape == (2,)
+
+
+@pytest.mark.parametrize(
+    ("params", "out_channels", "message"),
+    [
+        ({}, 2, "fixed Gaussian variance requires 1 output channels"),
+        (
+            {
+                "variance": {
+                    "mode": "learned_range",
+                    "loss": "rescaled_variational_bound",
+                }
+            },
+            1,
+            "learned_range Gaussian variance requires 2 output channels",
+        ),
+    ],
+)
+def test_unconditional_builder_preflights_declared_model_output_layout(
+    params: dict[str, object],
+    out_channels: int,
+    message: str,
+) -> None:
+    process = DeterministicGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 4}}
+    )
+    model = DeclaredLayoutGaussianModel(
+        in_channels=1,
+        out_channels=out_channels,
+    )
+    objective = MSEObjective()
+
+    def model_factory(config: ComponentConfig) -> nn.Module:
+        del config
+        raise AssertionError("Gaussian builder must preserve the injected model")
+
+    def objective_factory(config: ComponentConfig) -> nn.Module:
+        del config
+        raise AssertionError("Gaussian builder must preserve the injected objective")
+
+    builder = GaussianDenoisingTrainingBuilder(
+        TrainingBuilderContext(
+            params=params,
+            primary_model=model,
+            process=process,
+            objective=objective,
+            model_factory=model_factory,
+            objective_factory=objective_factory,
+        )
+    )
+
+    with pytest.raises(ValueError, match=message):
+        builder.build()
+
+
+def test_unconditional_builder_accepts_declared_learned_range_layout() -> None:
+    process = DeterministicGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 4}}
+    )
+    model = DeclaredLayoutGaussianModel(in_channels=1, out_channels=2)
+    objective = MSEObjective()
+
+    def model_factory(config: ComponentConfig) -> nn.Module:
+        del config
+        raise AssertionError("Gaussian builder must preserve the injected model")
+
+    def objective_factory(config: ComponentConfig) -> nn.Module:
+        del config
+        raise AssertionError("Gaussian builder must preserve the injected objective")
+
+    plan = GaussianDenoisingTrainingBuilder(
+        TrainingBuilderContext(
+            params={
+                "variance": {
+                    "mode": "learned_range",
+                    "loss": "rescaled_variational_bound",
+                }
+            },
+            primary_model=model,
+            process=process,
+            objective=objective,
+            model_factory=model_factory,
+            objective_factory=objective_factory,
+        )
+    ).build()
+
+    assert plan.primary_model is model
+
+
+def test_unconditional_builder_retains_runtime_layout_check_for_opaque_model() -> None:
+    process = DeterministicGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 4}}
+    )
+    model = LearnedVarianceGaussianModel()
+    objective = MSEObjective()
+
+    def model_factory(config: ComponentConfig) -> nn.Module:
+        del config
+        raise AssertionError("Gaussian builder must preserve the injected model")
+
+    def objective_factory(config: ComponentConfig) -> nn.Module:
+        del config
+        raise AssertionError("Gaussian builder must preserve the injected objective")
+
+    plan = GaussianDenoisingTrainingBuilder(
+        TrainingBuilderContext(
+            params={},
+            primary_model=model,
+            process=process,
+            objective=objective,
+            model_factory=model_factory,
+            objective_factory=objective_factory,
+        )
+    ).build()
+
+    with pytest.raises(ValueError, match="fixed-variance Gaussian model output"):
+        plan.strategy.training_step(torch.zeros(2, 1, 2, 2))
 
 
 @pytest.mark.parametrize("prediction_type", ["epsilon", "x0", "v", "score"])

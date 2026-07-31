@@ -16,7 +16,8 @@
 </div>
 
 当前内置实现聚焦 pixel-space 离散 Gaussian diffusion，包括无条件与类别条件训练、
-DDPM/DDIM、EMA、CFG 和结果 writers。项目可以通过普通 Python distribution 接入
+fixed/learned-range variance、epsilon-only P2 weighting、full/respaced ancestral
+DDPM、DDIM、EMA、CFG 和结果 writers。项目可以通过普通 Python distribution 接入
 自己的数据、训练策略、生成算法与 artifact；latent diffusion、pretrained
 autoencoder 和 distributed training 尚未实现。
 
@@ -121,8 +122,9 @@ manifest 共同固定一次运行的来源。
 
 ## 结果一览
 
-以下结果来自仓库记录的固定协议，不代表未实现能力，也不把短 smoke run 当作质量
-benchmark。MNIST 最小工作流在前，AFHQ-v2 production showcase 在后。
+MNIST 卡片来自仓库记录的固定协议，不把短 smoke run 当作质量 benchmark。AFHQ-v2
+卡片描述 canonical ADM 拓扑切换后的当前可运行 surface；corrected ADM 尚无已发布的
+长训练质量结果。
 
 ::::{container} sf-results
 :::{container} sf-result-card
@@ -141,14 +143,13 @@ checkpoint 的 validation v-prediction loss 为 **0.07189**。
 :::{container} sf-result-card
 <h3 class="sf-card-title">AFHQ-v2 · class-conditional ADM</h3>
 
-<img src="_static/afhq_v2_adm_ddim50_epoch_0170_samples.png" width="782" height="782" loading="lazy" decoding="async" alt="使用 epoch 170 EMA checkpoint、DDIM-50 和 classifier-free guidance 2.0 生成的 36 张 AFHQ-v2 样本">
+`adm_unet` 使用 canonical input/output block graph、逐 block skip ledger 和 QKV
+residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与样本不作为 corrected
+模型或 P2 的证据。
 
-固定 900 real / 900 generated 协议报告 aggregate FID **30.240**，
-aggregate KID **0.005310 ± 0.000701**。
+<p class="sf-result-meta">fresh training required · quality result pending</p>
 
-<p class="sf-result-meta">EMA · DDIM-50 · CFG 2.0 · seed 20260726</p>
-
-[查看 AFHQ-v2 协议、配置与追溯信息](tutorials/afhq-v2.md)
+[查看 AFHQ-v2 数据、配置与 P2-compatible Dog 边界](tutorials/afhq-v2.md)
 :::
 ::::
 

@@ -186,6 +186,7 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 | `SamplingRecipe` | checkpoint 内部 SamplingBuilder identity 与不可由 sample request 覆盖的 JSON-safe contract |
 | `ManagedTrainingModule` | 辅助 `nn.Module` 及其 core-managed mode policy |
 | `TrainingStrategy` | 只定义 batch interpretation、forward、loss 与 metric 计算 |
+| `DenoiserChannelLayout` | model 可选暴露的静态 `in_channels`/`out_channels` capability；Gaussian Builder 据此在组合时预检 fixed `C` 或 learned-range `2C` 输出 |
 | `DeviceTransferableBatch` | 自定义领域 batch 可选择实现的显式设备迁移 capability |
 | `ReferenceImageBatchSemantics` | Strategy 可选实现的 reference-metric image extraction capability |
 | `TrainStepOutput` | Strategy 返回的 scalar loss、metrics 与 diagnostics |
@@ -317,17 +318,17 @@ device/mode、优化和 checkpoint 生命周期；EMA 只跟踪 primary model。
 | `DiscreteVPSchedule` | immutable discrete VP coefficient capability |
 | `DiscreteVPCoefficients` | 一组离散 VP transition coefficients |
 | `TabulatedDiscreteVPSchedule` | 基于固定 coefficient table 的可复用 schedule 实现 |
-| `DiscreteGaussianDenoisingProcess` | 整数时间、terminal prior、marginal 与 adjacent-posterior Process capability |
-| `DiscreteGaussianProcess` | 内置 coefficient-snapshot Process 实现 |
+| `DiscreteGaussianDenoisingProcess` | 整数时间、terminal prior、marginal 与 adjacent-posterior 基础 Process capability |
+| `DiscreteGaussianProcess` | 内置 coefficient-snapshot Process；另外满足 selected-pair coefficients 与 learned-range variance bounds |
 | `PredictionType` | Gaussian model prediction parameterization |
 | `GaussianPrediction` | 归一化后的 epsilon 与 predicted-clean 结果 |
 | `GaussianTransition` | 一步离散 Gaussian transition distribution |
 | `GaussianDenoisingDynamics` | DDPM/DDIM 消费的窄 Gaussian Dynamics capability |
-| `GaussianModelDynamics` | 将 Process、model callable、prediction semantics 与 clipping 组合成 Gaussian Dynamics |
+| `GaussianModelDynamics` | 将 Process、model callable、prediction/variance semantics 与 clipping 组合成 Gaussian Dynamics |
 | `normalize_gaussian_prediction` | 把 epsilon/x0/v/score model output 归一化为 `GaussianPrediction` |
-| `DDPMAncestralSampler` | 内置 discrete Gaussian ancestral sampler |
+| `DDPMAncestralSampler` | 内置 full/respaced selected-pair ancestral sampler |
 | `DDIMSampler` | 内置 discrete Gaussian DDIM sampler |
-| `GaussianDiagnosticSemantics` | Strategy 可选暴露给 Gaussian diagnostics 的 model-invocation capability |
+| `GaussianDiagnosticSemantics` | Strategy 可选暴露给 Gaussian diagnostics 的 prediction type、variance mode 与 model-invocation capability |
 | `gaussian_training_target` | 按 Gaussian prediction type 生成对应训练 target |
 
 这些符号只承诺 discrete Gaussian family 内的行为兼容，不是 Flow Matching、SDE 或

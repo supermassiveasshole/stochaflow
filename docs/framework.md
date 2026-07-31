@@ -12,10 +12,10 @@ Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它
 | 领域 | 内置能力 | 扩展边界 |
 | --- | --- | --- |
 | 数据 | 普通图像、有标签图像、超分辨率配对、多源多分辨率图像 recipe | `ImageDataSource` 适配兼容 artifact；独立数据生命周期使用自定义 `DataBuilder` |
-| 模型 | 无条件 UNet、class-conditional ADM-UNet 与 pixel DiT | 注册满足任务 capability 的普通 `nn.Module`，模型不拥有训练或采样策略 |
-| 训练 | 无条件/类条件 Gaussian denoising、supervised、混合精度与固定梯度累积 | `TrainingBuilder` 组合资产，`TrainingStrategy` 只解释 batch 并计算 loss/metrics |
-| 概率过程 | 离散 VP Gaussian Process 与 linear/cosine schedule | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
-| 采样 | DDPM、DDIM、class-conditional CFG、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
+| 模型 | 无条件 UNet、canonical unconditional/class-conditional ADM U-Net 与 pixel DiT | 注册满足任务 capability 的普通 `nn.Module`，模型不拥有训练或采样策略 |
+| 训练 | 无条件/类条件 Gaussian denoising、fixed/learned-range variance、constant/P2 weighting、supervised、混合精度与固定梯度累积 | `TrainingBuilder` 组合资产，`TrainingStrategy` 只解释 batch 并计算 loss/metrics |
+| 概率过程 | 离散 VP Gaussian Process、linear/cosine schedule、selected-pair coefficients 与 learned-range bounds | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
+| 采样 | full/respaced ancestral DDPM、DDIM、class-conditional CFG、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
 | 输出 | Tensor、PNG、trajectory grid/GIF | `SamplingArtifactWriter` 可输出 NetCDF、Zarr 等领域格式 |
 | 生命周期 | EMA、checkpoint v10、strict resume、checkpoint-bound inference、diagnostic、Rich/TensorBoard/W&B 日志 | 注册 Objective、diagnostic 和 logger |
 | 项目扩展 | `stochaflow init`、Python packaging entry point、插件 provenance | 普通可安装 Python distribution；不绑定 `uv` 或固定仓库布局 |
@@ -32,8 +32,9 @@ SamplingBuilder；这些组件可以继续复用离散 Gaussian Process 和 DDPM
 - `class_conditional_gaussian_denoising` 解释
   `(images, {"class_label": labels})`，在训练时执行 condition dropout，并支持
   epsilon、x0、v 和 score targets；
-- `adm_unet` 与 `dit` 实现同一个模型 capability。ADM 使用卷积多尺度路径和低分辨率
-  Transformer blocks；DiT 使用 adaLN-Zero、固定二维位置编码与 PyTorch SDPA；
+- `adm_unet` 与 `dit` 实现同一个模型 capability。ADM 使用 canonical input/output
+  block graph、逐 block skip ledger、scale-shift residual blocks 和 QKV residual
+  attention；DiT 使用 adaLN-Zero、固定二维位置编码与 PyTorch SDPA；
 - `class_conditional_denoising` SamplingBuilder 拥有 label allocation 和
   classifier-free guidance，并把组装好的 model callable 交给现有 DDPM/DDIM；
 - `class_conditional_diffusion_quality` 使用真实 batch labels 做 reconstruction，并用固定
@@ -45,6 +46,45 @@ Process、Sampler 和 `GenerativeDynamics` 根接口都没有增加 class 或 CF
 才只需实现 DataSource。任何一层 runtime recipe 语义不同都应使用独立 DataBuilder。
 新增兼容 denoiser 只需注册模型，不需要修改 runner。完整可运行例子见
 [AFHQ-v2 类条件生成](tutorials/afhq-v2.md)。
+
+`ADMUNet.num_res_blocks` 表示 encoder 在每个 spatial resolution 的 residual block 数
+`R`；decoder 每级固定为 `R + 1`，每个 block 消费一条 skip。
+`attention_resolutions` 填写实际空间尺寸，例如 128 输入下的 `[32, 16, 8]`，不是
+level index 或 downsample factor。middle 始终使用
+`ResBlock → Attention → ResBlock`。`num_classes: null` 创建无条件 ADM；正整数创建
+class embedding 和一个 CFG null class。旧 stage-level skip/Spatial Transformer
+实现的构造字段与 checkpoint 均不兼容，必须 fresh train。
+
+## Gaussian loss 与 variance policy
+
+内置 Gaussian TrainingBuilder 在自身组合边界提供两组私有 policy，不把它们提升为
+全局 Objective 或 Registry：
+
+- `variance: {mode: fixed}` 是默认路径，模型输出 `C` channels，不计算 VB；
+- `variance: {mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出
+  `[prediction(C), variance(C)]`。variance head 在 selected-pair posterior 与 forward
+  log-variance bounds 之间插值；hybrid loss 定义为 simple loss 加 `0.001 ×` 完整 VLB，
+  在 uniform single-timestep estimator 中实现为 `T / 1000 ×` sampled VB term，并使用
+  detached mean/prediction branch；
+- `loss_weighting: {name: constant}` 是默认 simple-loss policy；
+- `loss_weighting: {name: p2, k: 1.0, gamma: 1.0}` 只在 epsilon prediction 下具有
+  paper-compatible P2 语义。权重为
+  `(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)`，来自 cumulative marginal SNR，
+  不进行 batch renormalization，也不作用于 learned-variance VB term。
+
+内置 UNet/ADM 和任何实现 `DenoiserChannelLayout` 的 extension model 会在
+TrainingBuilder 组合时预检 `C`/`2C` 声明；不公开静态 channel layout 的外部 model
+仍可组合，并在第一批 raw output shape 校验中 fail closed。
+
+P2 官方语义使用 per-sample MSE；其他满足 `PerSampleObjective` 的 Objective 可以复用
+相同 weighting plumbing，但只能称为 P2-style weighting。训练 diagnostic 中的
+`timestep_loss_weight` 是实际优化目标的 timestep 系数；指标系统若使用
+`loss_aggregation_weight`，后者只表示 batch 对聚合统计的权重，不参与 autograd。
+
+learned-range class-conditional sampling 中，CFG 只外推 prediction half。scale 0 与 1
+分别返回完整 unconditional/conditional `2C` output；其他 scale 使用 guided prediction
+half 加 conditional variance half。DDPM 消费该 variance，DDIM 明确忽略 variance half
+但仍只用正确的 prediction channels。
 
 ## 三层组织方式
 
@@ -111,10 +151,14 @@ flowchart TB
 `predict()`、`step()`、`drift()`、`score()` 或 `denoise()`。新 family 不必假装兼容
 Gaussian 数学。
 
-离散 Gaussian family 另外公开 DDPM adjacent transition、DDIM selected-pair transition
-和 schedule resolver。这些是 family 内可复用 primitive，不是通用 `Sampler` 根接口。
-项目 Sampler 可以组合它们实现 post-transition correction 或其他求解策略，而内置
-DDPM/DDIM 也调用同一组 primitive，避免维护两份数学实现。
+离散 Gaussian family 另外公开 selected-pair marginal coefficient snapshot、
+DDPM selected-pair ancestral transition、DDIM selected-pair transition 和各自的
+schedule resolver。这些是 family 内可复用 primitive，不是通用 `Sampler` 根接口。
+DDPM 的 `num_inference_steps` 使用 uniform-section respacing；它从 selected-pair
+coefficients 构造祖先后验，不是 DDIM，也不是跳过 model evaluation 后继续使用 adjacent
+variance。DDIM 复用 coefficient snapshot，但保持自己的 generalized `eta` 数学。项目
+Sampler 可以组合这些 primitive 实现 post-transition correction，而内置 DDPM/DDIM
+也调用同一组 primitive，避免维护重复数学。
 
 ### 任务层
 

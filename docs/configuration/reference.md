@@ -726,25 +726,20 @@ native provider，扩展 Registry 不能占用。
 (config-component-models-adm-unet)=
 #### `adm_unet`
 
-带 class/time conditioning、scale-shift residual blocks、residual resampling 和低分辨率 Transformer 的 ADM 风格 UNet。
+使用 canonical ADM input/output block graph、逐 block skip ledger、scale-shift residual blocks、residual resampling 和 QKV residual attention 的 U-Net；num_classes 为 null 时无条件，正整数时提供 CFG null class。
 
 | 参数 | 含义与约束 |
 | --- | --- |
+| `input_size` | 方形输入的空间边长，也是 topology fact；必须兼容 channel_multipliers 决定的下采样深度。 |
 | `in_channels` | 输入 state 通道数。 |
-| `out_channels` | 输出预测通道数；固定方差去噪要求与输入通道相同。 |
+| `out_channels` | 输出通道数；fixed variance 通常等于输入 C，learned_range variance 必须为 2C（prediction head 后接 variance head）。 |
 | `base_channels` | 第一层特征通道数。 |
 | `channel_multipliers` | 各分辨率层相对 base_channels 的通道倍数。 |
-| `num_res_blocks` | 每个分辨率层的 residual block 数量。 |
-| `transformer_depths` | 每个分辨率层的 Spatial Transformer 深度；零表示禁用。 |
-| `middle_transformer_depth` | middle block 的 Spatial Transformer 深度；零表示禁用。 |
-| `attention_head_dim` | Transformer attention 的单 head 通道数。 |
-| `time_embedding_dim` | time 与 class embedding 的共享 conditioning 宽度。 |
-| `num_classes` | 非 null class 数量；null class id 固定为 num_classes。 |
-| `dropout` | residual 与 Transformer 分支的 dropout 概率。 |
-| `scale_shift_norm` | residual block 是否使用 conditioning scale-shift normalization。 |
-| `residual_resampling` | 下采样和上采样是否使用 residual resampling blocks。 |
-| `zero_init_residual` | 是否零初始化 residual block 的末端 projection。 |
-| `zero_init_output` | 是否零初始化最终输出 projection。 |
+| `num_res_blocks` | encoder 每个空间分辨率的 residual block 数 R；decoder 在每级固定使用 R+1 个 block，并逐个消费 skip。 |
+| `attention_resolutions` | 启用 QKV residual attention 的实际空间分辨率值，例如 `[32, 16, 8]`；middle 始终含一组 attention。 |
+| `attention_head_channels` | 每个 attention head 的通道宽度；必须整除所有启用 attention 的 feature width。 |
+| `num_classes` | null 表示无条件模型且不创建 class embedding；正整数表示真实 class 数量，CFG null class id 固定为 num_classes。 |
+| `dropout` | residual block 的 dropout 概率。 |
 
 (config-component-models-dit)=
 #### `dit`
@@ -1016,7 +1011,7 @@ native provider，扩展 Registry 不能占用。
 (config-component-processes-discrete-gaussian)=
 #### `discrete_gaussian`
 
-从构造期 schedule 固定 coefficient snapshot，并提供 marginal 与 adjacent posterior 的离散 Gaussian process。
+从构造期 schedule 固定 coefficient snapshot，并提供 marginal、selected-pair coefficient、adjacent posterior 与 learned-range log-variance bounds 的离散 Gaussian process。
 
 | 参数 | 含义与约束 |
 | --- | --- |
@@ -1044,12 +1039,14 @@ native provider，扩展 Registry 不能占用。
 (config-component-samplers-ddpm)=
 #### `ddpm`
 
-在离散 Gaussian dynamics 上执行 adjacent ancestral transition；具体类公开同一 adjacent transition primitive。
+在离散 Gaussian dynamics 上执行完整或 uniform-section respaced ancestral transition；selected-pair 后验仍是 DDPM，而不是 DDIM。
 
 | 参数 | 含义与约束 |
 | --- | --- |
 | `start_time` | 可选起始 state time；null 使用 process terminal time。 |
 | `end_time` | 结束 state time；默认 0。 |
+| `num_inference_steps` | 可选正整数；按 improved-diffusion uniform-section 规则选择完整 terminal-to-clean ancestral transition 数，并与 schedule、start_time/end_time 互斥。 |
+| `schedule` | 可选、严格递减且唯一的显式 public-state schedule；与 num_inference_steps、start_time/end_time 互斥。 |
 
 (config-registry-name-sampling-builders)=
 ### `sampling_builders`
@@ -1062,7 +1059,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 (config-component-sampling_builders-class-conditional-denoising)=
 #### `class_conditional_denoising`
 
-为离散 Gaussian denoising 显式分配 class labels，并通过 classifier-free guidance 组合条件与 null prediction。
+为离散 Gaussian denoising 显式分配 class labels，并通过 classifier-free guidance 组合条件与 null prediction；支持 checkpoint 固化的 fixed 或 learned_range variance。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
@@ -1070,6 +1067,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | --- | --- |
 | `weights` | 来自 `sampling.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`。 |
 | `prediction_type` | 训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample request 不可覆盖。 |
+| `variance` | 训练时固化的 `{mode: fixed\|learned_range}`；sample request 不可覆盖。learned_range 要求模型输出 `[prediction(C), variance(C)]`；CFG scale 0/1 返回完整对应分支，其他 scale 只引导 prediction half 并保留 conditional variance half。 |
 | `clip_denoised` | 来自 `sampling.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。 |
 | `guidance_scale` | 来自 `sampling.options.guidance_scale`；有限非负 CFG scale。 |
 | `conditions` | 来自 `sampling.options.conditions` 的必填有序列表；count 总和必须等于 sampling.num_samples。 |
@@ -1081,7 +1079,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 (config-component-sampling_builders-standard-denoising)=
 #### `standard_denoising`
 
-固定 Tensor shape 的标准 Gaussian denoising sampling recipe；要求 sampling.shape、离散 Gaussian Process，以及返回 Tensor 的 model(state, model_time)。
+固定 Tensor shape 的标准 Gaussian denoising sampling recipe；要求 sampling.shape、离散 Gaussian Process，以及返回 fixed C 或 learned_range 2C Tensor 的 model(state, model_time)。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
@@ -1089,6 +1087,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | --- | --- |
 | `weights` | 来自 `sampling.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`；选择 `ema` 时 checkpoint 必须含 EMA state。 |
 | `prediction_type` | 训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample request 不可覆盖。 |
+| `variance` | 训练时固化的 `{mode: fixed\|learned_range}`；sample request 不可覆盖。DDPM 消费 learned variance，DDIM 只消费 prediction half 并明确忽略 variance half。 |
 | `clip_denoised` | 来自 `sampling.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。 |
 | `sampler.name` | 来自顶层 `sampling.sampler.name` 的 Sampler；必须兼容离散 Gaussian Dynamics。 |
 | `sampler.params` | 来自顶层 `sampling.sampler.params` 的构造 mapping。 |
@@ -1106,7 +1105,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 (config-component-training_builders-class-conditional-gaussian-denoising)=
 #### `class_conditional_gaussian_denoising`
 
-读取 `(Tensor, {"class_label": labels})` batch，训练满足 ClassConditionalDenoiser capability 的离散 Gaussian denoiser。
+读取 `(Tensor, {"class_label": labels})` batch，训练满足 ClassConditionalDenoiser capability 的离散 Gaussian denoiser；可组合 fixed/learned_range variance 与 constant/P2 simple-loss weighting。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
@@ -1114,17 +1113,21 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | --- | --- |
 | `prediction_type` | 训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。 |
 | `condition_dropout` | 训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。 |
+| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
+| `loss_weighting` | Gaussian-local simple-loss policy；默认 `{name: constant}`。`{name: p2, k: <finite positive>, gamma: <finite non-negative>}` 只支持 epsilon，使用 cumulative SNR 且不重归一化，也不加权 learned-variance VB term。 |
 
 (config-component-training_builders-gaussian-denoising)=
 #### `gaussian_denoising`
 
-使用离散 Gaussian marginal 和指定 prediction target 训练无条件去噪模型；batch 必须为 Tensor 或 (Tensor, {})。
+使用离散 Gaussian marginal 和指定 prediction target 训练无条件去噪模型；batch 必须为 Tensor 或 (Tensor, {})，并可组合 fixed/learned_range variance 与 constant/P2 simple-loss weighting。
 
 运行时注入（不得在 YAML 中覆盖）：`context`。
 
 | 参数 | 含义与约束 |
 | --- | --- |
 | `prediction_type` | 训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`；要求注入离散 Gaussian Process 和 Objective。 |
+| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出 2C；hybrid 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
+| `loss_weighting` | Gaussian-local simple-loss policy；默认 `{name: constant}`。`{name: p2, k: <finite positive>, gamma: <finite non-negative>}` 只支持 epsilon，使用 cumulative SNR 且不重归一化，也不加权 learned-variance VB term。 |
 
 (config-component-training_builders-supervised)=
 #### `supervised`

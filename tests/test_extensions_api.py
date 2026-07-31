@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from stochaflow import data, processes, sampling, training
+from stochaflow import data, models, processes, sampling, training
 from stochaflow import extensions as public
 from stochaflow.utils import config, logging, plugins, registry
 
@@ -39,6 +39,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         ),
         "DDIMSampler": sampling.DDIMSampler,
         "DDPMAncestralSampler": sampling.DDPMAncestralSampler,
+        "DenoiserChannelLayout": models.DenoiserChannelLayout,
         "DiagnosticBuildContext": training.DiagnosticBuildContext,
         "DeviceTransferableBatch": training.DeviceTransferableBatch,
         "ExperimentLogger": logging.ExperimentLogger,

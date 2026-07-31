@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/jychoi118/P2-weighting.git",
+    "commit": "3da0947ac350072e457c211401218175bc94e137",
+    "file": "guided_diffusion/gaussian_diffusion.py",
+    "sha256": "ab0d8db1834a06b5a9cdc24f78890b9efd980d2e036e834313549b515f247e24"
+  },
+  "respaced_sampling": {
+    "num_timesteps": 1000,
+    "num_inference_steps": 250,
+    "final_public_pair": [1, 0],
+    "clipping_reference_public_pair": [5, 1],
+    "float64_final_posterior_mean_coefficient_1": 1.0000000000001101,
+    "runtime_final_posterior_mean_coefficient_1": 1.0,
+    "runtime_final_posterior_mean_coefficient_2": 0.0,
+    "runtime_final_lower_log_variance": -9.364627838134766,
+    "non_adjacent_public_pair": [13, 9],
+    "runtime_non_adjacent_posterior_mean_coefficient_1": 0.4333510100841522,
+    "runtime_non_adjacent_posterior_mean_coefficient_2": 0.5666487216949463,
+    "runtime_non_adjacent_posterior_variance": 0.000700847536791116
+  },
+  "hybrid_loss": {
+    "num_timesteps": 4,
+    "beta_start": 0.0001,
+    "beta_end": 0.02,
+    "model_timesteps": [0, 3],
+    "clean": [
+      [-0.8, -0.2, 0.3, 0.9],
+      [-0.5, 0.0, 0.4, 0.75]
+    ],
+    "noise": [
+      [0.25, -0.75, 0.5, 1.0],
+      [-0.4, 0.2, 0.8, -0.6]
+    ],
+    "mean_head": [
+      [0.1, -0.2, 0.3, -0.4],
+      [0.05, 0.15, -0.25, 0.35]
+    ],
+    "variance_head": [
+      [-1.0, -0.5, 0.0, 0.5],
+      [1.0, 0.75, -0.75, 0.25]
+    ],
+    "constant": {
+      "simple": [0.5812499999999999, 0.5525],
+      "variational_bound": [
+        0.008427176818917198,
+        0.001549299720811901
+      ],
+      "loss": [0.5896771768189172, 0.5540492997208118]
+    },
+    "p2_k1_gamma1": {
+      "weighted_simple": [
+        0.00005812499853163899,
+        0.021937473993748426
+      ],
+      "variational_bound": [
+        0.008427176818917198,
+        0.001549299720811901
+      ],
+      "loss": [0.008485301817448837, 0.023486773714560327]
+    }
+  }
+}

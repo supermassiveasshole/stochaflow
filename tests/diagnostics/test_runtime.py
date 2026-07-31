@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from stochaflow.sampling import PredictionType
+from stochaflow.sampling import PredictionType, VarianceMode
 from stochaflow.training import TrainingStrategy, TrainStepOutput
 from stochaflow.training.diagnostics import runtime as diagnostic_runtime
 from stochaflow.training.diagnostics.config import (
@@ -47,6 +47,10 @@ class MappingGaussianStrategy(TrainingStrategy):
     @property
     def prediction_type(self) -> PredictionType:
         return "epsilon"
+
+    @property
+    def variance_mode(self) -> VarianceMode:
+        return "fixed"
 
     def predict_gaussian_model(
         self,

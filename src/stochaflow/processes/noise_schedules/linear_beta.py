@@ -25,7 +25,13 @@ class LinearBetaSchedule(TabulatedDiscreteVPSchedule):
         self.beta_start = float(beta_start)
         self.beta_end = float(beta_end)
         super().__init__(
-            torch.linspace(beta_start, beta_end, num_timesteps, dtype=dtype)
+            torch.linspace(
+                beta_start,
+                beta_end,
+                num_timesteps,
+                dtype=torch.float64,
+            ),
+            storage_dtype=dtype,
         )
 
 

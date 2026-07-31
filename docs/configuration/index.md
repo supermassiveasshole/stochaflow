@@ -30,6 +30,7 @@ troubleshooting
 | 理解 config/checkpoint 权威并跨环境移动实验 | [Checkpoint、配置权威与可移植性](compatibility-and-migration.md) |
 | 查看 Physics reconstruction 与蒸馏的完整扩展 | [纵向扩展参考项目](reference-projects.md) |
 | 训练、smoke run、恢复和 checkpoint 采样 | [常用工作流](workflows.md) |
+| 配置 learned-range variance、P2 weighting 或 respaced DDPM | {ref}`Gaussian variance、P2 与 respaced DDPM <gaussian-variance-p2-respaced-ddpm>` |
 | 用 TensorBoard 查看 loss、学习率、样本网格并比较运行 | [TensorBoard 使用指南](../tutorials/tensorboard.md) |
 | 估算大规模输出与 trajectory 内存 | [Sampling artifact 容量](sampling-capacity.md) |
 | 根据错误信息定位问题 | [排错索引](troubleshooting.md) |
@@ -252,6 +253,97 @@ version policy，再激活插件、执行跨组件校验并构建组件。训练
 checkpoint-backed inference 因而使用同一套显式插件选择与审计结果。这里的
 `prediction_type` 来自 TrainingBuilder 固化到 v10 checkpoint 的 recipe contract，
 不会在 sampling request 中重复声明。
+
+(gaussian-variance-p2-respaced-ddpm)=
+## Gaussian variance、P2 与 respaced DDPM
+
+内置 Gaussian training 的兼容默认值是：
+
+```yaml
+training:
+  name: gaussian_denoising
+  params:
+    prediction_type: epsilon
+    variance: {mode: fixed}
+    loss_weighting: {name: constant}
+```
+
+`variance` 与 `loss_weighting` 都属于具体 Gaussian TrainingBuilder 的 private params，
+不是新的顶层 schema、Objective 或 Registry。省略它们与上面的默认值等价。fixed
+variance 要求模型输出与 state 相同的 `C` channels，并且不计算 variational-bound term。
+
+paper-compatible P2 + learned-range recipe 写作：
+
+```yaml
+model:
+  name: adm_unet
+  params:
+    input_size: 256
+    in_channels: 3
+    out_channels: 6
+    base_channels: 128
+    channel_multipliers: [1, 1, 2, 2, 4, 4]
+    num_res_blocks: 1
+    attention_resolutions: [16]
+    attention_head_channels: 64
+    num_classes: null
+    dropout: 0.1
+
+training:
+  name: gaussian_denoising
+  params:
+    prediction_type: epsilon
+    variance:
+      mode: learned_range
+      loss: rescaled_variational_bound
+    loss_weighting:
+      name: p2
+      k: 1.0
+      gamma: 1.0
+
+objective:
+  name: mse
+  params: {reduction: mean}
+```
+
+模型的前 `C` channels 是 epsilon prediction，后 `C` channels 是 variance
+interpolation values。hybrid loss 为 P2-weighted per-sample simple loss 加未被 P2
+加权的 `0.001 ×` 完整 VLB；uniform single-timestep estimator 将它实现为
+`T / 1000 ×` sampled VB term，而不是再额外乘一次 `0.001`。VB 的
+mean/prediction branch 会 detach。
+P2 权重精确为
+`(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)`，来自 cumulative marginal SNR，
+不做 batch mean renormalization。`k` 必须 finite 且大于 0，`gamma` 必须 finite 且
+非负；`gamma: 0` 逐元素退化为 constant weight，`k: 1, gamma: 1` 在 VP schedule
+下逐元素等于 `1 - alpha_bar_t`。Process public state 使用 `1..T`，对应 model time
+`0..T-1`；weight 与被采样 noisy state 使用同一个 cumulative marginal，不能错一位或
+改用单步 alpha。
+
+P2 只在 `prediction_type: epsilon` 下提供 paper-compatible 声明。其他
+`PerSampleObjective` 可以复用这条 plumbing，但结果只能称 P2-style weighting；官方
+语义使用 `mse`/`mean`。diagnostic 中的 `timestep_loss_weight` 是这个 timestep-dependent
+训练系数；未来或项目级指标使用的 `loss_aggregation_weight` 只控制 batch 统计聚合，
+不参与 autograd。
+
+ancestral 250-step sampling 通过 DDPM 配置表达：
+
+```yaml
+sampling:
+  sampler:
+    name: ddpm
+    params: {num_inference_steps: 250}
+```
+
+这是 uniform-section selected-pair ancestral DDPM，不是 DDIM-250。`num_inference_steps`
+与显式 `schedule` 互斥，使用任一 respaced 声明时不能再组合 `start_time/end_time`。
+DDPM 从同一 selected-pair coefficient snapshot 构造 mean 和 variance；DDIM 保留自己的
+generalized `eta` transition，并在 learned-range checkpoint 上明确忽略 variance half。
+
+class-conditional learned-range CFG 只 guide prediction half。scale 0/1 返回完整
+unconditional/conditional `2C` output；其他 scale 保留 conditional variance half。
+`prediction_type` 与 `variance.mode` 写入 checkpoint inference recipe，独立 sample
+request 不可覆盖。P2 `k/gamma` 与 variance-loss policy 是 training/resume facts，不应
+放进 sample profile。
 
 ## 配置层次
 

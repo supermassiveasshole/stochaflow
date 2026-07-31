@@ -11,7 +11,7 @@ from stochaflow.utils.registry import REGISTRIES
 
 @runtime_checkable
 class PerSampleObjective(Protocol):
-    """Optional capability for diagnostics needing per-sample losses."""
+    """Optional capability for training policies and diagnostics."""
 
     def per_sample_loss(
         self,
@@ -38,7 +38,7 @@ class MSEObjective(nn.Module):
         prediction: torch.Tensor,
         target: torch.Tensor,
     ) -> torch.Tensor:
-        """Return batch-aligned MSE values for diagnostics."""
+        """Return batch-aligned MSE values for policies and diagnostics."""
 
         elementwise = F.mse_loss(prediction, target, reduction="none")
         if elementwise.ndim == 0:

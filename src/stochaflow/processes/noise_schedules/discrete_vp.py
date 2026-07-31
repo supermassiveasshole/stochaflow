@@ -27,6 +27,23 @@ class DiscreteVPCoefficients:
             raise ValueError("discrete VP coefficients must share a shape")
 
 
+@dataclass(frozen=True, slots=True)
+class DiscreteVPScheduleSnapshot:
+    """One coherent schedule snapshot used to derive process coefficients."""
+
+    marginal_scales: GaussianScales
+    transition_coefficients: DiscreteVPCoefficients
+    storage_dtype: torch.dtype
+
+    def __post_init__(self) -> None:
+        storage_dtype_value = cast(object, self.storage_dtype)
+        if (
+            not isinstance(storage_dtype_value, torch.dtype)
+            or not storage_dtype_value.is_floating_point
+        ):
+            raise TypeError("schedule snapshot storage dtype must be floating-point")
+
+
 class DiscreteVPSchedule(GaussianNoiseSchedule):
     """Mathematical capability for an immutable discrete VP schedule."""
 
@@ -64,21 +81,68 @@ class DiscreteVPSchedule(GaussianNoiseSchedule):
     ) -> DiscreteVPCoefficients:
         """Return adjacent-transition coefficients for states in ``[1, T]``."""
 
+    def coefficient_snapshot(
+        self,
+        state_times: torch.Tensor,
+        transition_times: torch.Tensor,
+    ) -> DiscreteVPScheduleSnapshot:
+        """Return coherent marginal and transition coefficient tables."""
+
+        scales = self.marginal_scales(state_times)
+        coefficients = self.transition_coefficients(transition_times)
+        return DiscreteVPScheduleSnapshot(
+            marginal_scales=scales,
+            transition_coefficients=coefficients,
+            storage_dtype=scales.signal.dtype,
+        )
+
 
 class TabulatedDiscreteVPSchedule(DiscreteVPSchedule):
     """Implement a fixed discrete VP schedule with coefficient tables."""
 
+    reference_beta_t: torch.Tensor
+    reference_alpha_t: torch.Tensor
+    reference_alpha_bar_t: torch.Tensor
     beta_t: torch.Tensor
     alpha_t: torch.Tensor
     alpha_bar_t: torch.Tensor
     sqrt_alpha_bar_t: torch.Tensor
     sqrt_one_minus_alpha_bar_t: torch.Tensor
 
-    def __init__(self, betas: torch.Tensor) -> None:
+    def __init__(
+        self,
+        betas: torch.Tensor,
+        *,
+        storage_dtype: torch.dtype | None = None,
+    ) -> None:
         super().__init__()
         betas = self._validate_betas(betas)
-        alphas = 1.0 - betas
-        alpha_bars = torch.cumprod(alphas, dim=0)
+        if storage_dtype is None:
+            storage_dtype = betas.dtype
+        self._validate_dtype(storage_dtype)
+        # Match the reference implementations: derive cumulative schedule
+        # coefficients in float64, then expose ordinary runtime buffers.
+        precise_betas = betas.to(dtype=torch.float64)
+        precise_alphas = 1.0 - precise_betas
+        precise_alpha_bars = torch.cumprod(precise_alphas, dim=0)
+        self.register_buffer(
+            "reference_beta_t",
+            precise_betas,
+            persistent=False,
+        )
+        self.register_buffer(
+            "reference_alpha_t",
+            precise_alphas,
+            persistent=False,
+        )
+        self.register_buffer(
+            "reference_alpha_bar_t",
+            precise_alpha_bars,
+            persistent=False,
+        )
+        betas = precise_betas.to(dtype=storage_dtype)
+        alphas = precise_alphas.to(dtype=storage_dtype)
+        alpha_bars = precise_alpha_bars.to(dtype=storage_dtype)
         self._num_timesteps = int(betas.shape[0])
         self.register_buffer("beta_t", betas)
         self.register_buffer("alpha_t", alphas)
@@ -134,6 +198,54 @@ class TabulatedDiscreteVPSchedule(DiscreteVPSchedule):
             previous_alpha_bar=previous,
         )
 
+    def coefficient_snapshot(
+        self,
+        state_times: torch.Tensor,
+        transition_times: torch.Tensor,
+    ) -> DiscreteVPScheduleSnapshot:
+        """Return float64 reference coefficients with the runtime storage dtype."""
+
+        state_times = self.validate_state_times(state_times)
+        transition_times = self.validate_state_times(transition_times)
+        if torch.any(transition_times == 0):
+            raise ValueError("transition state times must lie in [1, T]")
+
+        state_indices = (state_times - 1).clamp_min(0)
+        reference_alpha_bars = self.reference_alpha_bar_t
+        signal = self._gather(reference_alpha_bars.sqrt(), state_indices)
+        noise = self._gather(
+            (1.0 - reference_alpha_bars).sqrt(),
+            state_indices,
+        )
+        clean_mask = (state_times == 0).to(signal.device)
+        scales = GaussianScales(
+            torch.where(clean_mask, torch.ones_like(signal), signal),
+            torch.where(clean_mask, torch.zeros_like(noise), noise),
+        )
+
+        indices = transition_times - 1
+        alpha_bar = self._gather(reference_alpha_bars, indices)
+        previous = self._gather(
+            reference_alpha_bars,
+            (indices - 1).clamp_min(0),
+        )
+        previous = torch.where(
+            (transition_times == 1).to(previous.device),
+            torch.ones_like(previous),
+            previous,
+        )
+        coefficients = DiscreteVPCoefficients(
+            beta=self._gather(self.reference_beta_t, indices),
+            alpha=self._gather(self.reference_alpha_t, indices),
+            alpha_bar=alpha_bar,
+            previous_alpha_bar=previous,
+        )
+        return DiscreteVPScheduleSnapshot(
+            marginal_scales=scales,
+            transition_coefficients=coefficients,
+            storage_dtype=self.beta_t.dtype,
+        )
+
     @staticmethod
     def _validate_betas(betas: torch.Tensor) -> torch.Tensor:
         betas = torch.as_tensor(betas)
@@ -172,5 +284,6 @@ class TabulatedDiscreteVPSchedule(DiscreteVPSchedule):
 __all__ = [
     "DiscreteVPCoefficients",
     "DiscreteVPSchedule",
+    "DiscreteVPScheduleSnapshot",
     "TabulatedDiscreteVPSchedule",
 ]

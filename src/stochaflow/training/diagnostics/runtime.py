@@ -22,6 +22,7 @@ from stochaflow.sampling import (
     Sampler,
     SamplerResult,
     SamplingObservation,
+    VarianceMode,
 )
 from stochaflow.sampling.class_conditional import (
     ClassConditionalEvaluationCounts,
@@ -222,6 +223,7 @@ class GaussianTrainingRuntime:
     process: DiscreteGaussianDenoisingProcess
     prediction_type: PredictionType
     predict_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+    variance_mode: VarianceMode = "fixed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +238,7 @@ class ClassConditionalGaussianTrainingRuntime:
         [torch.Tensor, torch.Tensor, torch.Tensor],
         torch.Tensor,
     ]
+    variance_mode: VarianceMode = "fixed"
 
 
 def gaussian_training_runtime(trainer: Any) -> GaussianTrainingRuntime:
@@ -258,6 +261,7 @@ def gaussian_training_runtime(trainer: Any) -> GaussianTrainingRuntime:
         process,
         strategy.prediction_type,
         strategy.predict_gaussian_model,
+        strategy.variance_mode,
     )
 
 
@@ -312,6 +316,7 @@ def class_conditional_gaussian_training_runtime(
         num_classes,
         null_class_id,
         strategy.predict_class_conditional_gaussian_model,
+        strategy.variance_mode,
     )
 
 
@@ -340,6 +345,7 @@ class SamplerPool:
             process,
             training_runtime.predict_fn,
             prediction_type=training_runtime.prediction_type,
+            variance_mode=training_runtime.variance_mode,
             clip_denoised=True,
         )
         for profile in profiles:
@@ -697,12 +703,14 @@ class ClassConditionalSamplerRunner:
                 self.model,
                 self.class_labels[start:end],
                 guidance_scale=self.guidance_scale,
+                variance_mode=self.runtime.variance_mode,
                 counts=counts,
             )
             return GaussianModelDynamics(
                 self.runtime.process,
                 predictor,
                 prediction_type=self.runtime.prediction_type,
+                variance_mode=self.runtime.variance_mode,
                 clip_denoised=True,
             )
 
@@ -798,6 +806,7 @@ class ReconstructionEvaluator:
             runtime.process,
             runtime.predict_fn,
             prediction_type=runtime.prediction_type,
+            variance_mode=runtime.variance_mode,
             clip_denoised=True,
         )
         return _evaluate_reconstruction(
@@ -854,6 +863,7 @@ class ClassConditionalReconstructionEvaluator:
                 labels,
             ),
             prediction_type=runtime.prediction_type,
+            variance_mode=runtime.variance_mode,
             clip_denoised=True,
         )
         return _evaluate_reconstruction(

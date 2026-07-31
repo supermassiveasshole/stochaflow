@@ -10,7 +10,11 @@ import torch
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.registry import REGISTRIES
 
-from .gaussian import DiscreteGaussianDenoisingProcess
+from .gaussian import (
+    DiscreteGaussianDenoisingProcess,
+    GaussianLogVarianceBounds,
+    GaussianMarginalCoefficientSnapshot,
+)
 from .noise_schedules import DiscreteVPSchedule, GaussianScales
 
 
@@ -18,6 +22,7 @@ from .noise_schedules import DiscreteVPSchedule, GaussianScales
 class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
     r"""Model-free discrete VP Gaussian process with fixed coefficients."""
 
+    reference_alpha_bar_t: torch.Tensor
     marginal_signal_t: torch.Tensor
     marginal_noise_t: torch.Tensor
     sqrt_posterior_variance_t: torch.Tensor
@@ -140,6 +145,129 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
             ),
         )
 
+    def marginal_coefficient_snapshot(
+        self,
+        source_times: torch.Tensor,
+        target_times: torch.Tensor,
+        broadcast_shape: torch.Size,
+    ) -> GaussianMarginalCoefficientSnapshot:
+        """Return reference-precision coefficients for selected reverse pairs.
+
+        A subclass that replaces this process's marginal path must override
+        this selected-pair capability (and learned bounds) coherently.
+        """
+
+        source_times, target_times = self._validate_selected_pair_times(
+            source_times,
+            target_times,
+        )
+        source_alpha_bar = self._append_dimensions(
+            self._gather(self.reference_alpha_bar_t, source_times),
+            state_times=source_times,
+            broadcast_shape=broadcast_shape,
+        )
+        target_alpha_bar = self._append_dimensions(
+            self._gather(self.reference_alpha_bar_t, target_times),
+            state_times=target_times,
+            broadcast_shape=broadcast_shape,
+        )
+        return GaussianMarginalCoefficientSnapshot(
+            source_alpha_bar=source_alpha_bar,
+            target_alpha_bar=target_alpha_bar,
+            transition_alpha=source_alpha_bar / target_alpha_bar,
+        )
+
+    def reverse_log_variance_bounds(
+        self,
+        source_times: torch.Tensor,
+        target_times: torch.Tensor,
+        broadcast_shape: torch.Size,
+        *,
+        clean_target_reference_times: (
+            tuple[torch.Tensor, torch.Tensor] | None
+        ) = None,
+    ) -> GaussianLogVarianceBounds:
+        """Return learned-range bounds for one selected reverse transition."""
+
+        source_times, target_times = self._validate_selected_pair_times(
+            source_times,
+            target_times,
+        )
+        snapshot = self.marginal_coefficient_snapshot(
+            source_times,
+            target_times,
+            broadcast_shape,
+        )
+        transition_variance = 1.0 - snapshot.transition_alpha
+        posterior_variance = self._selected_pair_posterior_variance(snapshot)
+
+        clean_target = self._append_dimensions(
+            target_times == self.clean_time,
+            state_times=target_times,
+            broadcast_shape=broadcast_shape,
+        )
+        if clean_target_reference_times is not None:
+            clipped_source, clipped_target = clean_target_reference_times
+            clipped_source, clipped_target = self._validate_selected_pair_times(
+                clipped_source,
+                clipped_target,
+            )
+            if clipped_source.shape != source_times.shape:
+                raise ValueError(
+                    "clean-target variance reference times must match source times"
+                )
+            if bool(
+                torch.any(
+                    clean_target
+                    & self._append_dimensions(
+                        clipped_target != source_times,
+                        state_times=source_times,
+                        broadcast_shape=broadcast_shape,
+                    )
+                )
+            ):
+                raise ValueError(
+                    "clean-target variance reference must end at the final "
+                    "transition source"
+                )
+            clipped_snapshot = self.marginal_coefficient_snapshot(
+                clipped_source,
+                clipped_target,
+                broadcast_shape,
+            )
+            clipped_lower = self._selected_pair_posterior_variance(
+                clipped_snapshot
+            )
+        elif self.num_timesteps > 1:
+            clipped_source = torch.full_like(
+                source_times,
+                self.clean_time + 2,
+            )
+            clipped_target = torch.full_like(
+                target_times,
+                self.clean_time + 1,
+            )
+            clipped_snapshot = self.marginal_coefficient_snapshot(
+                clipped_source,
+                clipped_target,
+                broadcast_shape,
+            )
+            clipped_lower = self._selected_pair_posterior_variance(
+                clipped_snapshot
+            )
+        else:
+            clipped_lower = transition_variance
+        posterior_variance = torch.where(
+            clean_target,
+            clipped_lower,
+            posterior_variance,
+        )
+        storage_dtype = self.marginal_signal_t.dtype
+        return GaussianLogVarianceBounds(
+            lower=posterior_variance.log().to(dtype=storage_dtype),
+            upper=transition_variance.log().to(dtype=storage_dtype),
+        )
+
     def validate_noisy_state_times(self, state_times: torch.Tensor) -> torch.Tensor:
         """Validate source states in ``[1, T]``."""
 
@@ -147,6 +275,35 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
         if torch.any(result == 0):
             raise ValueError("source state times must lie in [1, T]")
         return result
+
+    def _validate_selected_pair_times(
+        self,
+        source_times: torch.Tensor,
+        target_times: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        source_times = self.validate_noisy_state_times(source_times)
+        target_times = self._validate_state_times(target_times)
+        if source_times.shape != target_times.shape:
+            raise ValueError(
+                "selected-pair source and target times must share a shape"
+            )
+        if source_times.device != target_times.device:
+            raise ValueError(
+                "selected-pair source and target times must share a device"
+            )
+        if torch.any(target_times >= source_times):
+            raise ValueError(
+                "selected-pair target times must be smaller than source times"
+            )
+        return source_times, target_times
+
+    @staticmethod
+    def _selected_pair_posterior_variance(
+        snapshot: GaussianMarginalCoefficientSnapshot,
+    ) -> torch.Tensor:
+        return (1.0 - snapshot.transition_alpha) * (
+            1.0 - snapshot.target_alpha_bar
+        ) / (1.0 - snapshot.source_alpha_bar)
 
     def posterior_mean(
         self,
@@ -170,8 +327,9 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
     def _register_coefficient_snapshot(self, schedule: DiscreteVPSchedule) -> None:
         state_times = torch.arange(0, self.num_timesteps + 1)
         transition_times = state_times[1:]
-        scales = schedule.marginal_scales(state_times)
-        coefficients = schedule.transition_coefficients(transition_times)
+        snapshot = schedule.coefficient_snapshot(state_times, transition_times)
+        scales = snapshot.marginal_scales
+        coefficients = snapshot.transition_coefficients
         signal, noise = self._validate_snapshot_tensors(
             (scales.signal, scales.noise),
             expected_shape=state_times.shape,
@@ -214,6 +372,20 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
                 "posterior mean coefficient 1",
                 "posterior mean coefficient 2",
             ),
+        )
+        storage_dtype = snapshot.storage_dtype
+        reference_alpha_bar = torch.cat(
+            (torch.ones_like(alpha_bar[:1]), alpha_bar),
+        )
+        self.register_buffer(
+            "reference_alpha_bar_t",
+            reference_alpha_bar,
+            persistent=False,
+        )
+        signal = signal.to(dtype=storage_dtype)
+        noise = noise.to(dtype=storage_dtype)
+        posterior_values = tuple(
+            value.to(dtype=storage_dtype) for value in posterior_values
         )
         self.register_buffer("marginal_signal_t", signal)
         self.register_buffer("marginal_noise_t", noise)

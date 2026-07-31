@@ -4,10 +4,11 @@
 - 状态：Active
 - 制定日期：2026-07-29
 - 最近排期复核：2026-07-30
-- 当前工程优先项：关闭 B0 后先完成 A0 ADM topology correctness，再执行 B1 和
-  Metrics M0–M1
+- 当前工程优先项：A0/A1 repository implementation 已关闭；下一步补齐
+  Evaluation E0–E3 的 P2-required subset，并在目标 GPU 上执行 A2 capacity/pilot
 - 当前产品主线：pretrained image autoencoder + class-conditional latent diffusion
 - 当前 pixel-quality lane：corrected ADM + learned-range Gaussian + P2 weighting
+  已具备 algorithm/config substrate；quality evidence 尚未运行
 - 首个 correctness target：AFHQ-v2 + frozen Diffusers `AutoencoderKL` + DiT-S/2
 - 首个开放数据 target：The Met Open Access curated snapshot
 - 下一条产品主线：Stable Diffusion 1.x component-native sampling 与 fine-tuning
@@ -143,7 +144,7 @@ wall-clock 时间。每个 milestone 应独立提交并保持主分支可运行�
 
 退出条件：新的 latent 分支建立在已提交、可复现、无已知挂起回归的基线上。
 
-### A0 — ADM Topology Correctness Cutover（P0，2–4 个工程日）
+### A0 — ADM Topology Correctness Cutover（Done；GPU capacity 证据转入 A2 gate）
 
 执行 P2/ADM 计划的 A0：
 
@@ -154,15 +155,18 @@ wall-clock 时间。每个 milestone 应独立提交并保持主分支可运行�
 - 128 config 使用 `[1,1,2,3,4]`，到达 8×8，并准确声明 32/16/8 attention；
 - 删除旧 topology config fields，不增加 legacy mode 或 checkpoint adapter；
 - 旧 raw/EMA/optimizer state fail closed，必须 fresh run；
-- 在 4090 和 DGX Spark 重新 profile corrected 约 105M production config 后，才冻结
-  microbatch/accumulation。
+- maintained production config 在目标设备 profile 前使用保守的 microbatch 1 /
+  accumulation 32，不宣称旧 microbatch 8 容量仍成立；4090/DGX profile 继续作为
+  A2 promotion evidence。
 
 A0 只验证 fixed-variance baseline，不实现 P2 或用新 topology 启动长训练。当前
 README 的 epoch-170 结果属于旧 91.3M topology，A0 完成时不得继续归因给新的
 production config。
 
-退出条件：topology/parameter golden、forward/backward、fixed-variance train/sample、
-old-checkpoint rejection、config reference 与公开文档全部闭合。
+repository exit 已于 2026-07-30 闭合：topology/parameter golden、
+guided-diffusion tiny forward/gradient fixture、forward/backward、
+fixed-variance train/sample、old-checkpoint rejection、config reference 与公开文档
+均已落地。目标 GPU capacity 不作为已测结果。
 
 ### B1 — Train/Sample Authority Cutover（P0，3–5 个工程日）
 
@@ -208,7 +212,7 @@ snapshot、日志和 checkpoint 路径；只有 selection-eligible validation ob
 可以进入 best/early-stopping monitor；旧 metric key 或 checkpoint 不提供兼容迁移；
 retained MNIST/AFHQ 的训练数值行为保持不变。
 
-### A1 — Learned-range Gaussian and P2 Capability（P1，1–2 个工程周）
+### A1 — Learned-range Gaussian and P2 Capability（Done，2026-07-30）
 
 执行 P2/ADM 计划的 A1：
 
@@ -226,10 +230,11 @@ retained MNIST/AFHQ 的训练数值行为保持不变。
 本 milestone 不把 P2 注册为通用 Objective，不把 weighting 推广到 v/x0/score，也不
 修改唯一 production AFHQ train recipe。
 
-退出条件：P2 official 256 unconditional topology精确为 93,563,910 参数；loss、
-variance、respacing 与 pinned reference parity；旧 fixed-variance paths 无回归。
+退出条件已闭合：P2 official 256 unconditional topology 精确为 93,563,910
+参数；loss、variance、respacing 与 pinned reference parity 已测试；旧
+fixed-variance paths 无回归。
 
-### A2 — Controlled AFHQ P2 Evidence（P2 quality gate，与 L0 并行）
+### A2 — Controlled AFHQ P2 Evidence（Substrate ready；quality evidence blocked）
 
 - 新增 AFHQ-v2 Dog DataSource，复用 generic unlabelled image Builder，不新增
   dataset-specific Builder；
@@ -247,6 +252,12 @@ metric protocol 未关闭前，不声明 exact paper benchmark reproduction。
 
 退出条件：algorithm parity 已通过，两个 formal run complete，FID/KID protocol
 identity与 sample completeness可验证，发布措辞通过文档复核。
+
+截至 2026-07-30，Dog DataSource/materializer、唯一 benchmark base、P2-only
+restricted override、resolved-config provenance CLI 与 DDPM-250/1000 requests 已完成。
+尚未执行 4090/DGX capacity、controlled pilot、2.4M-image formal runs 或 50k
+FID/KID；后者还等待 Evaluation E2 sharded prediction/completeness 与 E3 metric
+authority。当前 Tensor writer 整体缓冲 50k FP32 images，不能替代该 authority。
 
 ### L0 — Pretrained Codec Ready（P1，1–2 个工程周）
 
@@ -380,7 +391,7 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 | [Data Layer Composition Boundary](data-layer-composition-boundary-review.md) | Done | Base | 已实施 | image-backed 与 prepared-backed 使用两个 recipe-level Builder |
 | [Sampling Request Config Refactor](sampling-request-config-refactor.md) | Done / 将被替代 | B1 | Hydra C1 | C1 后成为历史记录，不维持 v10 dual authority |
 | [Legacy Intel macOS Lifecycle](legacy-intel-macos-pytorch-test-lifecycle.md) | Done | Maintenance | 无 | Deprecated / best effort，不约束新 codec/DiT |
-| [P2 Weighting and ADM Topology](p2-weighting-and-adm-topology-refactor-plan.md) | Next correctness/quality lane | P0 + P1 + P2 | B0 -> A0 -> B1/K0 -> A1 -> E0-E3 subset/A2 | topology 与 P2 分开归因；A2 GPU jobs 不阻塞 L0 |
+| [P2 Weighting and ADM Topology](p2-weighting-and-adm-topology-refactor-plan.md) | A0/A1 implemented; A2 evidence pending | Done core + P2 quality gate | E0-E3 subset -> A2 capacity/pilot/formal evidence | topology/P2/config substrate 已闭合；未运行的 A2 GPU/50k evidence 不阻塞 L0 |
 | [Metrics](metrics-support-plan.md) | Queued foundation | P1 | A0/B1 后、L0 前 | 立即完成 Metrics M0–M1；M2–M4 按 diagnostic/extension 需求 |
 | [Latent Diffusion](latent-diffusion-support-plan.md) | Current product mainline | P1/P2 | A0 -> B1 -> K0/A1 -> L0–L3 | A1 是当前单人排期前置而非 codec 架构依赖；A2 与 L0 并行 |
 | [Hydra Configuration Migration](hydra-configuration-composition-migration-plan.md) | Split | P0 + P2 + Later | C0/C1 -> K0 -> L1 -> H0-H3 | C0/C1 先行；H0-H3 在 L1 后；H4 延期 |

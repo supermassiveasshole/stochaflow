@@ -26,7 +26,8 @@ data:
       normalize: true
       random_horizontal_flip: true
     loader:
-      batch_size: 8
+      # Conservative until the corrected 105M topology is profiled on 4090/DGX.
+      batch_size: 1
       num_workers: 2
       shuffle: true
       drop_last: true
@@ -38,21 +39,16 @@ data:
 model:
   name: adm_unet
   params:
+    input_size: 128
     in_channels: 3
     out_channels: 3
     base_channels: 128
-    channel_multipliers: [1, 2, 3, 4]
+    channel_multipliers: [1, 1, 2, 3, 4]
     num_res_blocks: 2
-    transformer_depths: [0, 0, 1, 2]
-    middle_transformer_depth: 1
-    attention_head_dim: 64
-    time_embedding_dim: 512
+    attention_resolutions: [32, 16, 8]
+    attention_head_channels: 64
     num_classes: 3
     dropout: 0.1
-    scale_shift_norm: true
-    residual_resampling: true
-    zero_init_residual: true
-    zero_init_output: true
 
 process:
   name: discrete_gaussian
@@ -189,7 +185,7 @@ trainer:
   num_epochs: 200
   device: auto
   precision: bf16-mixed
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 32
   max_grad_norm: 1.0
   show_progress: true
   early_stopping:

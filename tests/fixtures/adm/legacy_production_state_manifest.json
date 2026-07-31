@@ -1,0 +1,1355 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "source_revision": "5c75a76de3d696a5b734ae4eefe88a30532bd2de",
+    "model_source": {
+      "path": "src/stochaflow/models/adm_unet.py",
+      "sha256": "ffa562a20326d1b1b498ad4676b7637b3a73b6da820459d00452721d2bb115ab"
+    },
+    "block_source": {
+      "path": "src/stochaflow/models/adm_blocks.py",
+      "sha256": "a33e5d2f171a26c5ba7a31f20f4622236b33e1c9f9e5ec1d161f047b951fa1c0"
+    },
+    "production_config": {
+      "path": "examples/showcases/afhq-v2/experiments/production/train-adm-128.yaml",
+      "sha256": "7a0adbdefee3b3b75f235197872b6856394d4a69f4638e6af76343999a9ebad2"
+    }
+  },
+  "model": {
+    "registry_name": "adm_unet",
+    "parameter_count": 91300867,
+    "state_entry_count": 355,
+    "state_kind": "parameter",
+    "state_dtype": "float32",
+    "state_shapes_sha256": "7adca8ea0dacc2f9758e29c86d8b82736719ef11c7547453964089e70d432dba"
+  },
+  "constructor": {
+    "in_channels": 3,
+    "out_channels": 3,
+    "base_channels": 128,
+    "channel_multipliers": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "num_res_blocks": 2,
+    "transformer_depths": [
+      0,
+      0,
+      1,
+      2
+    ],
+    "middle_transformer_depth": 1,
+    "attention_head_dim": 64,
+    "time_embedding_dim": 512,
+    "num_classes": 3,
+    "dropout": 0.1,
+    "scale_shift_norm": true,
+    "residual_resampling": true,
+    "zero_init_residual": true,
+    "zero_init_output": true
+  },
+  "state_shapes": {
+    "time_embedding.0.weight": [
+      512,
+      512
+    ],
+    "time_embedding.0.bias": [
+      512
+    ],
+    "time_embedding.2.weight": [
+      512,
+      512
+    ],
+    "time_embedding.2.bias": [
+      512
+    ],
+    "class_embedding.weight": [
+      4,
+      512
+    ],
+    "input_projection.weight": [
+      128,
+      3,
+      3,
+      3
+    ],
+    "input_projection.bias": [
+      128
+    ],
+    "down_blocks.0.0.input_norm.weight": [
+      128
+    ],
+    "down_blocks.0.0.input_norm.bias": [
+      128
+    ],
+    "down_blocks.0.0.input_projection.weight": [
+      128,
+      128,
+      3,
+      3
+    ],
+    "down_blocks.0.0.input_projection.bias": [
+      128
+    ],
+    "down_blocks.0.0.embedding_projection.1.weight": [
+      256,
+      512
+    ],
+    "down_blocks.0.0.embedding_projection.1.bias": [
+      256
+    ],
+    "down_blocks.0.0.output_norm.weight": [
+      128
+    ],
+    "down_blocks.0.0.output_norm.bias": [
+      128
+    ],
+    "down_blocks.0.0.output_projection.weight": [
+      128,
+      128,
+      3,
+      3
+    ],
+    "down_blocks.0.0.output_projection.bias": [
+      128
+    ],
+    "down_blocks.0.1.input_norm.weight": [
+      128
+    ],
+    "down_blocks.0.1.input_norm.bias": [
+      128
+    ],
+    "down_blocks.0.1.input_projection.weight": [
+      128,
+      128,
+      3,
+      3
+    ],
+    "down_blocks.0.1.input_projection.bias": [
+      128
+    ],
+    "down_blocks.0.1.embedding_projection.1.weight": [
+      256,
+      512
+    ],
+    "down_blocks.0.1.embedding_projection.1.bias": [
+      256
+    ],
+    "down_blocks.0.1.output_norm.weight": [
+      128
+    ],
+    "down_blocks.0.1.output_norm.bias": [
+      128
+    ],
+    "down_blocks.0.1.output_projection.weight": [
+      128,
+      128,
+      3,
+      3
+    ],
+    "down_blocks.0.1.output_projection.bias": [
+      128
+    ],
+    "down_blocks.1.0.input_norm.weight": [
+      256
+    ],
+    "down_blocks.1.0.input_norm.bias": [
+      256
+    ],
+    "down_blocks.1.0.input_projection.weight": [
+      256,
+      256,
+      3,
+      3
+    ],
+    "down_blocks.1.0.input_projection.bias": [
+      256
+    ],
+    "down_blocks.1.0.embedding_projection.1.weight": [
+      512,
+      512
+    ],
+    "down_blocks.1.0.embedding_projection.1.bias": [
+      512
+    ],
+    "down_blocks.1.0.output_norm.weight": [
+      256
+    ],
+    "down_blocks.1.0.output_norm.bias": [
+      256
+    ],
+    "down_blocks.1.0.output_projection.weight": [
+      256,
+      256,
+      3,
+      3
+    ],
+    "down_blocks.1.0.output_projection.bias": [
+      256
+    ],
+    "down_blocks.1.1.input_norm.weight": [
+      256
+    ],
+    "down_blocks.1.1.input_norm.bias": [
+      256
+    ],
+    "down_blocks.1.1.input_projection.weight": [
+      256,
+      256,
+      3,
+      3
+    ],
+    "down_blocks.1.1.input_projection.bias": [
+      256
+    ],
+    "down_blocks.1.1.embedding_projection.1.weight": [
+      512,
+      512
+    ],
+    "down_blocks.1.1.embedding_projection.1.bias": [
+      512
+    ],
+    "down_blocks.1.1.output_norm.weight": [
+      256
+    ],
+    "down_blocks.1.1.output_norm.bias": [
+      256
+    ],
+    "down_blocks.1.1.output_projection.weight": [
+      256,
+      256,
+      3,
+      3
+    ],
+    "down_blocks.1.1.output_projection.bias": [
+      256
+    ],
+    "down_blocks.2.0.input_norm.weight": [
+      384
+    ],
+    "down_blocks.2.0.input_norm.bias": [
+      384
+    ],
+    "down_blocks.2.0.input_projection.weight": [
+      384,
+      384,
+      3,
+      3
+    ],
+    "down_blocks.2.0.input_projection.bias": [
+      384
+    ],
+    "down_blocks.2.0.embedding_projection.1.weight": [
+      768,
+      512
+    ],
+    "down_blocks.2.0.embedding_projection.1.bias": [
+      768
+    ],
+    "down_blocks.2.0.output_norm.weight": [
+      384
+    ],
+    "down_blocks.2.0.output_norm.bias": [
+      384
+    ],
+    "down_blocks.2.0.output_projection.weight": [
+      384,
+      384,
+      3,
+      3
+    ],
+    "down_blocks.2.0.output_projection.bias": [
+      384
+    ],
+    "down_blocks.2.1.input_norm.weight": [
+      384
+    ],
+    "down_blocks.2.1.input_norm.bias": [
+      384
+    ],
+    "down_blocks.2.1.input_projection.weight": [
+      384,
+      384,
+      3,
+      3
+    ],
+    "down_blocks.2.1.input_projection.bias": [
+      384
+    ],
+    "down_blocks.2.1.embedding_projection.1.weight": [
+      768,
+      512
+    ],
+    "down_blocks.2.1.embedding_projection.1.bias": [
+      768
+    ],
+    "down_blocks.2.1.output_norm.weight": [
+      384
+    ],
+    "down_blocks.2.1.output_norm.bias": [
+      384
+    ],
+    "down_blocks.2.1.output_projection.weight": [
+      384,
+      384,
+      3,
+      3
+    ],
+    "down_blocks.2.1.output_projection.bias": [
+      384
+    ],
+    "down_blocks.3.0.input_norm.weight": [
+      512
+    ],
+    "down_blocks.3.0.input_norm.bias": [
+      512
+    ],
+    "down_blocks.3.0.input_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "down_blocks.3.0.input_projection.bias": [
+      512
+    ],
+    "down_blocks.3.0.embedding_projection.1.weight": [
+      1024,
+      512
+    ],
+    "down_blocks.3.0.embedding_projection.1.bias": [
+      1024
+    ],
+    "down_blocks.3.0.output_norm.weight": [
+      512
+    ],
+    "down_blocks.3.0.output_norm.bias": [
+      512
+    ],
+    "down_blocks.3.0.output_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "down_blocks.3.0.output_projection.bias": [
+      512
+    ],
+    "down_blocks.3.1.input_norm.weight": [
+      512
+    ],
+    "down_blocks.3.1.input_norm.bias": [
+      512
+    ],
+    "down_blocks.3.1.input_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "down_blocks.3.1.input_projection.bias": [
+      512
+    ],
+    "down_blocks.3.1.embedding_projection.1.weight": [
+      1024,
+      512
+    ],
+    "down_blocks.3.1.embedding_projection.1.bias": [
+      1024
+    ],
+    "down_blocks.3.1.output_norm.weight": [
+      512
+    ],
+    "down_blocks.3.1.output_norm.bias": [
+      512
+    ],
+    "down_blocks.3.1.output_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "down_blocks.3.1.output_projection.bias": [
+      512
+    ],
+    "down_transformers.2.layers.0.attention_norm.weight": [
+      384
+    ],
+    "down_transformers.2.layers.0.attention_norm.bias": [
+      384
+    ],
+    "down_transformers.2.layers.0.query_key_value.weight": [
+      1152,
+      384
+    ],
+    "down_transformers.2.layers.0.query_key_value.bias": [
+      1152
+    ],
+    "down_transformers.2.layers.0.attention_projection.weight": [
+      384,
+      384
+    ],
+    "down_transformers.2.layers.0.attention_projection.bias": [
+      384
+    ],
+    "down_transformers.2.layers.0.mlp_norm.weight": [
+      384
+    ],
+    "down_transformers.2.layers.0.mlp_norm.bias": [
+      384
+    ],
+    "down_transformers.2.layers.0.mlp.0.weight": [
+      1536,
+      384
+    ],
+    "down_transformers.2.layers.0.mlp.0.bias": [
+      1536
+    ],
+    "down_transformers.2.layers.0.mlp.3.weight": [
+      384,
+      1536
+    ],
+    "down_transformers.2.layers.0.mlp.3.bias": [
+      384
+    ],
+    "down_transformers.3.layers.0.attention_norm.weight": [
+      512
+    ],
+    "down_transformers.3.layers.0.attention_norm.bias": [
+      512
+    ],
+    "down_transformers.3.layers.0.query_key_value.weight": [
+      1536,
+      512
+    ],
+    "down_transformers.3.layers.0.query_key_value.bias": [
+      1536
+    ],
+    "down_transformers.3.layers.0.attention_projection.weight": [
+      512,
+      512
+    ],
+    "down_transformers.3.layers.0.attention_projection.bias": [
+      512
+    ],
+    "down_transformers.3.layers.0.mlp_norm.weight": [
+      512
+    ],
+    "down_transformers.3.layers.0.mlp_norm.bias": [
+      512
+    ],
+    "down_transformers.3.layers.0.mlp.0.weight": [
+      2048,
+      512
+    ],
+    "down_transformers.3.layers.0.mlp.0.bias": [
+      2048
+    ],
+    "down_transformers.3.layers.0.mlp.3.weight": [
+      512,
+      2048
+    ],
+    "down_transformers.3.layers.0.mlp.3.bias": [
+      512
+    ],
+    "down_transformers.3.layers.1.attention_norm.weight": [
+      512
+    ],
+    "down_transformers.3.layers.1.attention_norm.bias": [
+      512
+    ],
+    "down_transformers.3.layers.1.query_key_value.weight": [
+      1536,
+      512
+    ],
+    "down_transformers.3.layers.1.query_key_value.bias": [
+      1536
+    ],
+    "down_transformers.3.layers.1.attention_projection.weight": [
+      512,
+      512
+    ],
+    "down_transformers.3.layers.1.attention_projection.bias": [
+      512
+    ],
+    "down_transformers.3.layers.1.mlp_norm.weight": [
+      512
+    ],
+    "down_transformers.3.layers.1.mlp_norm.bias": [
+      512
+    ],
+    "down_transformers.3.layers.1.mlp.0.weight": [
+      2048,
+      512
+    ],
+    "down_transformers.3.layers.1.mlp.0.bias": [
+      2048
+    ],
+    "down_transformers.3.layers.1.mlp.3.weight": [
+      512,
+      2048
+    ],
+    "down_transformers.3.layers.1.mlp.3.bias": [
+      512
+    ],
+    "downsamples.0.input_norm.weight": [
+      128
+    ],
+    "downsamples.0.input_norm.bias": [
+      128
+    ],
+    "downsamples.0.input_projection.weight": [
+      256,
+      128,
+      3,
+      3
+    ],
+    "downsamples.0.input_projection.bias": [
+      256
+    ],
+    "downsamples.0.embedding_projection.1.weight": [
+      512,
+      512
+    ],
+    "downsamples.0.embedding_projection.1.bias": [
+      512
+    ],
+    "downsamples.0.output_norm.weight": [
+      256
+    ],
+    "downsamples.0.output_norm.bias": [
+      256
+    ],
+    "downsamples.0.output_projection.weight": [
+      256,
+      256,
+      3,
+      3
+    ],
+    "downsamples.0.output_projection.bias": [
+      256
+    ],
+    "downsamples.0.skip_projection.weight": [
+      256,
+      128,
+      1,
+      1
+    ],
+    "downsamples.0.skip_projection.bias": [
+      256
+    ],
+    "downsamples.1.input_norm.weight": [
+      256
+    ],
+    "downsamples.1.input_norm.bias": [
+      256
+    ],
+    "downsamples.1.input_projection.weight": [
+      384,
+      256,
+      3,
+      3
+    ],
+    "downsamples.1.input_projection.bias": [
+      384
+    ],
+    "downsamples.1.embedding_projection.1.weight": [
+      768,
+      512
+    ],
+    "downsamples.1.embedding_projection.1.bias": [
+      768
+    ],
+    "downsamples.1.output_norm.weight": [
+      384
+    ],
+    "downsamples.1.output_norm.bias": [
+      384
+    ],
+    "downsamples.1.output_projection.weight": [
+      384,
+      384,
+      3,
+      3
+    ],
+    "downsamples.1.output_projection.bias": [
+      384
+    ],
+    "downsamples.1.skip_projection.weight": [
+      384,
+      256,
+      1,
+      1
+    ],
+    "downsamples.1.skip_projection.bias": [
+      384
+    ],
+    "downsamples.2.input_norm.weight": [
+      384
+    ],
+    "downsamples.2.input_norm.bias": [
+      384
+    ],
+    "downsamples.2.input_projection.weight": [
+      512,
+      384,
+      3,
+      3
+    ],
+    "downsamples.2.input_projection.bias": [
+      512
+    ],
+    "downsamples.2.embedding_projection.1.weight": [
+      1024,
+      512
+    ],
+    "downsamples.2.embedding_projection.1.bias": [
+      1024
+    ],
+    "downsamples.2.output_norm.weight": [
+      512
+    ],
+    "downsamples.2.output_norm.bias": [
+      512
+    ],
+    "downsamples.2.output_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "downsamples.2.output_projection.bias": [
+      512
+    ],
+    "downsamples.2.skip_projection.weight": [
+      512,
+      384,
+      1,
+      1
+    ],
+    "downsamples.2.skip_projection.bias": [
+      512
+    ],
+    "middle_block_before.input_norm.weight": [
+      512
+    ],
+    "middle_block_before.input_norm.bias": [
+      512
+    ],
+    "middle_block_before.input_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "middle_block_before.input_projection.bias": [
+      512
+    ],
+    "middle_block_before.embedding_projection.1.weight": [
+      1024,
+      512
+    ],
+    "middle_block_before.embedding_projection.1.bias": [
+      1024
+    ],
+    "middle_block_before.output_norm.weight": [
+      512
+    ],
+    "middle_block_before.output_norm.bias": [
+      512
+    ],
+    "middle_block_before.output_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "middle_block_before.output_projection.bias": [
+      512
+    ],
+    "middle_transformer.layers.0.attention_norm.weight": [
+      512
+    ],
+    "middle_transformer.layers.0.attention_norm.bias": [
+      512
+    ],
+    "middle_transformer.layers.0.query_key_value.weight": [
+      1536,
+      512
+    ],
+    "middle_transformer.layers.0.query_key_value.bias": [
+      1536
+    ],
+    "middle_transformer.layers.0.attention_projection.weight": [
+      512,
+      512
+    ],
+    "middle_transformer.layers.0.attention_projection.bias": [
+      512
+    ],
+    "middle_transformer.layers.0.mlp_norm.weight": [
+      512
+    ],
+    "middle_transformer.layers.0.mlp_norm.bias": [
+      512
+    ],
+    "middle_transformer.layers.0.mlp.0.weight": [
+      2048,
+      512
+    ],
+    "middle_transformer.layers.0.mlp.0.bias": [
+      2048
+    ],
+    "middle_transformer.layers.0.mlp.3.weight": [
+      512,
+      2048
+    ],
+    "middle_transformer.layers.0.mlp.3.bias": [
+      512
+    ],
+    "middle_block_after.input_norm.weight": [
+      512
+    ],
+    "middle_block_after.input_norm.bias": [
+      512
+    ],
+    "middle_block_after.input_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "middle_block_after.input_projection.bias": [
+      512
+    ],
+    "middle_block_after.embedding_projection.1.weight": [
+      1024,
+      512
+    ],
+    "middle_block_after.embedding_projection.1.bias": [
+      1024
+    ],
+    "middle_block_after.output_norm.weight": [
+      512
+    ],
+    "middle_block_after.output_norm.bias": [
+      512
+    ],
+    "middle_block_after.output_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "middle_block_after.output_projection.bias": [
+      512
+    ],
+    "up_blocks.0.0.input_norm.weight": [
+      1024
+    ],
+    "up_blocks.0.0.input_norm.bias": [
+      1024
+    ],
+    "up_blocks.0.0.input_projection.weight": [
+      512,
+      1024,
+      3,
+      3
+    ],
+    "up_blocks.0.0.input_projection.bias": [
+      512
+    ],
+    "up_blocks.0.0.embedding_projection.1.weight": [
+      1024,
+      512
+    ],
+    "up_blocks.0.0.embedding_projection.1.bias": [
+      1024
+    ],
+    "up_blocks.0.0.output_norm.weight": [
+      512
+    ],
+    "up_blocks.0.0.output_norm.bias": [
+      512
+    ],
+    "up_blocks.0.0.output_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "up_blocks.0.0.output_projection.bias": [
+      512
+    ],
+    "up_blocks.0.0.skip_projection.weight": [
+      512,
+      1024,
+      1,
+      1
+    ],
+    "up_blocks.0.0.skip_projection.bias": [
+      512
+    ],
+    "up_blocks.0.1.input_norm.weight": [
+      512
+    ],
+    "up_blocks.0.1.input_norm.bias": [
+      512
+    ],
+    "up_blocks.0.1.input_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "up_blocks.0.1.input_projection.bias": [
+      512
+    ],
+    "up_blocks.0.1.embedding_projection.1.weight": [
+      1024,
+      512
+    ],
+    "up_blocks.0.1.embedding_projection.1.bias": [
+      1024
+    ],
+    "up_blocks.0.1.output_norm.weight": [
+      512
+    ],
+    "up_blocks.0.1.output_norm.bias": [
+      512
+    ],
+    "up_blocks.0.1.output_projection.weight": [
+      512,
+      512,
+      3,
+      3
+    ],
+    "up_blocks.0.1.output_projection.bias": [
+      512
+    ],
+    "up_blocks.1.0.input_norm.weight": [
+      768
+    ],
+    "up_blocks.1.0.input_norm.bias": [
+      768
+    ],
+    "up_blocks.1.0.input_projection.weight": [
+      384,
+      768,
+      3,
+      3
+    ],
+    "up_blocks.1.0.input_projection.bias": [
+      384
+    ],
+    "up_blocks.1.0.embedding_projection.1.weight": [
+      768,
+      512
+    ],
+    "up_blocks.1.0.embedding_projection.1.bias": [
+      768
+    ],
+    "up_blocks.1.0.output_norm.weight": [
+      384
+    ],
+    "up_blocks.1.0.output_norm.bias": [
+      384
+    ],
+    "up_blocks.1.0.output_projection.weight": [
+      384,
+      384,
+      3,
+      3
+    ],
+    "up_blocks.1.0.output_projection.bias": [
+      384
+    ],
+    "up_blocks.1.0.skip_projection.weight": [
+      384,
+      768,
+      1,
+      1
+    ],
+    "up_blocks.1.0.skip_projection.bias": [
+      384
+    ],
+    "up_blocks.1.1.input_norm.weight": [
+      384
+    ],
+    "up_blocks.1.1.input_norm.bias": [
+      384
+    ],
+    "up_blocks.1.1.input_projection.weight": [
+      384,
+      384,
+      3,
+      3
+    ],
+    "up_blocks.1.1.input_projection.bias": [
+      384
+    ],
+    "up_blocks.1.1.embedding_projection.1.weight": [
+      768,
+      512
+    ],
+    "up_blocks.1.1.embedding_projection.1.bias": [
+      768
+    ],
+    "up_blocks.1.1.output_norm.weight": [
+      384
+    ],
+    "up_blocks.1.1.output_norm.bias": [
+      384
+    ],
+    "up_blocks.1.1.output_projection.weight": [
+      384,
+      384,
+      3,
+      3
+    ],
+    "up_blocks.1.1.output_projection.bias": [
+      384
+    ],
+    "up_blocks.2.0.input_norm.weight": [
+      512
+    ],
+    "up_blocks.2.0.input_norm.bias": [
+      512
+    ],
+    "up_blocks.2.0.input_projection.weight": [
+      256,
+      512,
+      3,
+      3
+    ],
+    "up_blocks.2.0.input_projection.bias": [
+      256
+    ],
+    "up_blocks.2.0.embedding_projection.1.weight": [
+      512,
+      512
+    ],
+    "up_blocks.2.0.embedding_projection.1.bias": [
+      512
+    ],
+    "up_blocks.2.0.output_norm.weight": [
+      256
+    ],
+    "up_blocks.2.0.output_norm.bias": [
+      256
+    ],
+    "up_blocks.2.0.output_projection.weight": [
+      256,
+      256,
+      3,
+      3
+    ],
+    "up_blocks.2.0.output_projection.bias": [
+      256
+    ],
+    "up_blocks.2.0.skip_projection.weight": [
+      256,
+      512,
+      1,
+      1
+    ],
+    "up_blocks.2.0.skip_projection.bias": [
+      256
+    ],
+    "up_blocks.2.1.input_norm.weight": [
+      256
+    ],
+    "up_blocks.2.1.input_norm.bias": [
+      256
+    ],
+    "up_blocks.2.1.input_projection.weight": [
+      256,
+      256,
+      3,
+      3
+    ],
+    "up_blocks.2.1.input_projection.bias": [
+      256
+    ],
+    "up_blocks.2.1.embedding_projection.1.weight": [
+      512,
+      512
+    ],
+    "up_blocks.2.1.embedding_projection.1.bias": [
+      512
+    ],
+    "up_blocks.2.1.output_norm.weight": [
+      256
+    ],
+    "up_blocks.2.1.output_norm.bias": [
+      256
+    ],
+    "up_blocks.2.1.output_projection.weight": [
+      256,
+      256,
+      3,
+      3
+    ],
+    "up_blocks.2.1.output_projection.bias": [
+      256
+    ],
+    "up_blocks.3.0.input_norm.weight": [
+      256
+    ],
+    "up_blocks.3.0.input_norm.bias": [
+      256
+    ],
+    "up_blocks.3.0.input_projection.weight": [
+      128,
+      256,
+      3,
+      3
+    ],
+    "up_blocks.3.0.input_projection.bias": [
+      128
+    ],
+    "up_blocks.3.0.embedding_projection.1.weight": [
+      256,
+      512
+    ],
+    "up_blocks.3.0.embedding_projection.1.bias": [
+      256
+    ],
+    "up_blocks.3.0.output_norm.weight": [
+      128
+    ],
+    "up_blocks.3.0.output_norm.bias": [
+      128
+    ],
+    "up_blocks.3.0.output_projection.weight": [
+      128,
+      128,
+      3,
+      3
+    ],
+    "up_blocks.3.0.output_projection.bias": [
+      128
+    ],
+    "up_blocks.3.0.skip_projection.weight": [
+      128,
+      256,
+      1,
+      1
+    ],
+    "up_blocks.3.0.skip_projection.bias": [
+      128
+    ],
+    "up_blocks.3.1.input_norm.weight": [
+      128
+    ],
+    "up_blocks.3.1.input_norm.bias": [
+      128
+    ],
+    "up_blocks.3.1.input_projection.weight": [
+      128,
+      128,
+      3,
+      3
+    ],
+    "up_blocks.3.1.input_projection.bias": [
+      128
+    ],
+    "up_blocks.3.1.embedding_projection.1.weight": [
+      256,
+      512
+    ],
+    "up_blocks.3.1.embedding_projection.1.bias": [
+      256
+    ],
+    "up_blocks.3.1.output_norm.weight": [
+      128
+    ],
+    "up_blocks.3.1.output_norm.bias": [
+      128
+    ],
+    "up_blocks.3.1.output_projection.weight": [
+      128,
+      128,
+      3,
+      3
+    ],
+    "up_blocks.3.1.output_projection.bias": [
+      128
+    ],
+    "up_transformers.0.layers.0.attention_norm.weight": [
+      512
+    ],
+    "up_transformers.0.layers.0.attention_norm.bias": [
+      512
+    ],
+    "up_transformers.0.layers.0.query_key_value.weight": [
+      1536,
+      512
+    ],
+    "up_transformers.0.layers.0.query_key_value.bias": [
+      1536
+    ],
+    "up_transformers.0.layers.0.attention_projection.weight": [
+      512,
+      512
+    ],
+    "up_transformers.0.layers.0.attention_projection.bias": [
+      512
+    ],
+    "up_transformers.0.layers.0.mlp_norm.weight": [
+      512
+    ],
+    "up_transformers.0.layers.0.mlp_norm.bias": [
+      512
+    ],
+    "up_transformers.0.layers.0.mlp.0.weight": [
+      2048,
+      512
+    ],
+    "up_transformers.0.layers.0.mlp.0.bias": [
+      2048
+    ],
+    "up_transformers.0.layers.0.mlp.3.weight": [
+      512,
+      2048
+    ],
+    "up_transformers.0.layers.0.mlp.3.bias": [
+      512
+    ],
+    "up_transformers.0.layers.1.attention_norm.weight": [
+      512
+    ],
+    "up_transformers.0.layers.1.attention_norm.bias": [
+      512
+    ],
+    "up_transformers.0.layers.1.query_key_value.weight": [
+      1536,
+      512
+    ],
+    "up_transformers.0.layers.1.query_key_value.bias": [
+      1536
+    ],
+    "up_transformers.0.layers.1.attention_projection.weight": [
+      512,
+      512
+    ],
+    "up_transformers.0.layers.1.attention_projection.bias": [
+      512
+    ],
+    "up_transformers.0.layers.1.mlp_norm.weight": [
+      512
+    ],
+    "up_transformers.0.layers.1.mlp_norm.bias": [
+      512
+    ],
+    "up_transformers.0.layers.1.mlp.0.weight": [
+      2048,
+      512
+    ],
+    "up_transformers.0.layers.1.mlp.0.bias": [
+      2048
+    ],
+    "up_transformers.0.layers.1.mlp.3.weight": [
+      512,
+      2048
+    ],
+    "up_transformers.0.layers.1.mlp.3.bias": [
+      512
+    ],
+    "up_transformers.1.layers.0.attention_norm.weight": [
+      384
+    ],
+    "up_transformers.1.layers.0.attention_norm.bias": [
+      384
+    ],
+    "up_transformers.1.layers.0.query_key_value.weight": [
+      1152,
+      384
+    ],
+    "up_transformers.1.layers.0.query_key_value.bias": [
+      1152
+    ],
+    "up_transformers.1.layers.0.attention_projection.weight": [
+      384,
+      384
+    ],
+    "up_transformers.1.layers.0.attention_projection.bias": [
+      384
+    ],
+    "up_transformers.1.layers.0.mlp_norm.weight": [
+      384
+    ],
+    "up_transformers.1.layers.0.mlp_norm.bias": [
+      384
+    ],
+    "up_transformers.1.layers.0.mlp.0.weight": [
+      1536,
+      384
+    ],
+    "up_transformers.1.layers.0.mlp.0.bias": [
+      1536
+    ],
+    "up_transformers.1.layers.0.mlp.3.weight": [
+      384,
+      1536
+    ],
+    "up_transformers.1.layers.0.mlp.3.bias": [
+      384
+    ],
+    "upsamples.0.input_norm.weight": [
+      512
+    ],
+    "upsamples.0.input_norm.bias": [
+      512
+    ],
+    "upsamples.0.input_projection.weight": [
+      384,
+      512,
+      3,
+      3
+    ],
+    "upsamples.0.input_projection.bias": [
+      384
+    ],
+    "upsamples.0.embedding_projection.1.weight": [
+      768,
+      512
+    ],
+    "upsamples.0.embedding_projection.1.bias": [
+      768
+    ],
+    "upsamples.0.output_norm.weight": [
+      384
+    ],
+    "upsamples.0.output_norm.bias": [
+      384
+    ],
+    "upsamples.0.output_projection.weight": [
+      384,
+      384,
+      3,
+      3
+    ],
+    "upsamples.0.output_projection.bias": [
+      384
+    ],
+    "upsamples.0.skip_projection.weight": [
+      384,
+      512,
+      1,
+      1
+    ],
+    "upsamples.0.skip_projection.bias": [
+      384
+    ],
+    "upsamples.1.input_norm.weight": [
+      384
+    ],
+    "upsamples.1.input_norm.bias": [
+      384
+    ],
+    "upsamples.1.input_projection.weight": [
+      256,
+      384,
+      3,
+      3
+    ],
+    "upsamples.1.input_projection.bias": [
+      256
+    ],
+    "upsamples.1.embedding_projection.1.weight": [
+      512,
+      512
+    ],
+    "upsamples.1.embedding_projection.1.bias": [
+      512
+    ],
+    "upsamples.1.output_norm.weight": [
+      256
+    ],
+    "upsamples.1.output_norm.bias": [
+      256
+    ],
+    "upsamples.1.output_projection.weight": [
+      256,
+      256,
+      3,
+      3
+    ],
+    "upsamples.1.output_projection.bias": [
+      256
+    ],
+    "upsamples.1.skip_projection.weight": [
+      256,
+      384,
+      1,
+      1
+    ],
+    "upsamples.1.skip_projection.bias": [
+      256
+    ],
+    "upsamples.2.input_norm.weight": [
+      256
+    ],
+    "upsamples.2.input_norm.bias": [
+      256
+    ],
+    "upsamples.2.input_projection.weight": [
+      128,
+      256,
+      3,
+      3
+    ],
+    "upsamples.2.input_projection.bias": [
+      128
+    ],
+    "upsamples.2.embedding_projection.1.weight": [
+      256,
+      512
+    ],
+    "upsamples.2.embedding_projection.1.bias": [
+      256
+    ],
+    "upsamples.2.output_norm.weight": [
+      128
+    ],
+    "upsamples.2.output_norm.bias": [
+      128
+    ],
+    "upsamples.2.output_projection.weight": [
+      128,
+      128,
+      3,
+      3
+    ],
+    "upsamples.2.output_projection.bias": [
+      128
+    ],
+    "upsamples.2.skip_projection.weight": [
+      128,
+      256,
+      1,
+      1
+    ],
+    "upsamples.2.skip_projection.bias": [
+      128
+    ],
+    "output_norm.weight": [
+      128
+    ],
+    "output_norm.bias": [
+      128
+    ],
+    "output_projection.weight": [
+      3,
+      128,
+      3,
+      3
+    ],
+    "output_projection.bias": [
+      3
+    ]
+  }
+}

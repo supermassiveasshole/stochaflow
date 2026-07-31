@@ -6,7 +6,10 @@ from typing import Any, cast
 
 import torch
 
-from stochaflow.processes import DiscreteGaussianDenoisingProcess
+from stochaflow.processes import (
+    DiscreteGaussianDenoisingProcess,
+    SelectedPairGaussianProcess,
+)
 from stochaflow.utils.registry import REGISTRIES
 
 from .dynamics import GenerativeDynamics
@@ -117,17 +120,45 @@ class DDIMSampler(Sampler):
             raise ValueError("DDIM target times must be smaller than source times")
         prediction = _validate_gaussian_prediction(prediction, state=state)
 
-        source_scales = process.marginal_scales(source_times, state.size())
-        target_scales = process.marginal_scales(target_times, state.size())
-        signal_t, noise_t = source_scales.signal, source_scales.noise
-        signal_s, noise_s = target_scales.signal, target_scales.noise
-        posterior_variance = (
-            noise_s.square()
-            / noise_t.square()
-            * (1.0 - signal_t.square() / signal_s.square())
-        ).clamp_min(0.0)
+        if isinstance(process, SelectedPairGaussianProcess):
+            snapshot = process.marginal_coefficient_snapshot(
+                source_times,
+                target_times,
+                state.size(),
+            )
+            target_scales = process.marginal_scales(
+                target_times,
+                state.size(),
+            )
+            source_alpha_bar = snapshot.source_alpha_bar.to(
+                device=state.device,
+                dtype=target_scales.signal.dtype,
+            )
+            target_alpha_bar = snapshot.target_alpha_bar.to(
+                device=state.device,
+                dtype=target_scales.signal.dtype,
+            )
+            transition_alpha = source_alpha_bar / target_alpha_bar
+            signal_s = target_alpha_bar.sqrt()
+            noise_s_squared = 1.0 - target_alpha_bar
+            posterior_variance = (
+                noise_s_squared
+                / (1.0 - source_alpha_bar)
+                * (1.0 - transition_alpha)
+            ).clamp_min(0.0)
+        else:
+            source_scales = process.marginal_scales(source_times, state.size())
+            target_scales = process.marginal_scales(target_times, state.size())
+            signal_t, noise_t = source_scales.signal, source_scales.noise
+            signal_s, noise_s = target_scales.signal, target_scales.noise
+            noise_s_squared = noise_s.square()
+            posterior_variance = (
+                noise_s_squared
+                / noise_t.square()
+                * (1.0 - signal_t.square() / signal_s.square())
+            ).clamp_min(0.0)
         direction_scale = (
-            noise_s.square() - self.eta**2 * posterior_variance
+            noise_s_squared - self.eta**2 * posterior_variance
         ).clamp_min(0.0).sqrt()
         mean = signal_s * prediction.clean + direction_scale * prediction.epsilon
         standard_deviation = self.eta * posterior_variance.sqrt()

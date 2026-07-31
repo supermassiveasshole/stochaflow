@@ -11,9 +11,18 @@ from typing import Any, Literal, cast
 import torch
 from torch import nn
 
-from stochaflow.processes import DiscreteGaussianDenoisingProcess, Process
+from stochaflow.processes import (
+    DiscreteGaussianDenoisingProcess,
+    LearnedRangeGaussianVarianceProcess,
+    Process,
+)
 from stochaflow.sampling.assets import InferenceAssetProvider
-from stochaflow.sampling.gaussian import GaussianModelDynamics, PredictionType
+from stochaflow.sampling.gaussian import (
+    GaussianModelDynamics,
+    PredictionType,
+    VarianceMode,
+    _variance_mode_from_declaration,
+)
 from stochaflow.sampling.sampler import (
     Sampler,
     SamplerResult,
@@ -128,6 +137,7 @@ class DenoisingTrajectoryConfig:
 class StandardDenoisingConfig:
     weights: WeightSelection
     prediction_type: PredictionType
+    variance_mode: VarianceMode
     clip_denoised: bool
     sampler: ComponentConfig
     trajectory: DenoisingTrajectoryConfig
@@ -246,6 +256,14 @@ class StandardDenoisingBuilder(SamplingBuilder):
             )
         if self.context.shape is None:
             raise ValueError("standard_denoising requires sampling.shape")
+        if config.variance_mode == "learned_range" and not isinstance(
+            process,
+            LearnedRangeGaussianVarianceProcess,
+        ):
+            raise TypeError(
+                "standard_denoising learned_range variance requires "
+                "LearnedRangeGaussianVarianceProcess"
+            )
         model, resolved_weights = self.context.model_provider.resolve(config.weights)
         sampler = cast(
             Sampler,
@@ -258,6 +276,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
             process,
             model,
             prediction_type=config.prediction_type,
+            variance_mode=config.variance_mode,
             clip_denoised=config.clip_denoised,
         )
         generator = torch.Generator(device=self.context.device)
@@ -305,6 +324,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
             {
                 "weights": resolved_weights,
                 "prediction_type": config.prediction_type,
+                "variance": {"mode": config.variance_mode},
                 "clip_denoised": config.clip_denoised,
                 "sampler": {
                     "name": config.sampler.name,
@@ -323,6 +343,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
         allowed = {
             "weights",
             "prediction_type",
+            "variance",
             "clip_denoised",
             "sampler",
             "trajectory",
@@ -340,6 +361,10 @@ class StandardDenoisingBuilder(SamplingBuilder):
             raise ValueError(
                 "standard_denoising prediction_type must be epsilon, x0, v, or score"
             )
+        variance_mode = _variance_mode_from_declaration(
+            params.get("variance"),
+            path="standard_denoising.variance",
+        )
         clip_denoised = params.get("clip_denoised", True)
         if not isinstance(clip_denoised, bool):
             raise TypeError("standard_denoising clip_denoised must be boolean")
@@ -370,6 +395,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
         return StandardDenoisingConfig(
             weights=cast(WeightSelection, weights),
             prediction_type=cast(PredictionType, prediction_type),
+            variance_mode=variance_mode,
             clip_denoised=clip_denoised,
             sampler=sampler,
             trajectory=DenoisingTrajectoryConfig(enabled, every_steps),

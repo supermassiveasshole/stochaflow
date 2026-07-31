@@ -371,9 +371,11 @@ def test_clipping_recomputes_epsilon_from_clipped_clean_prediction() -> None:
     scales = process.marginal_scales(times, state.size())
 
     assert prediction.clean.max() == 1
-    assert torch.allclose(
+    torch.testing.assert_close(
         state,
         scales.signal * prediction.clean + scales.noise * prediction.epsilon,
+        rtol=1e-5,
+        atol=5e-7,
     )
 
 
@@ -394,9 +396,11 @@ def test_prediction_normalization_is_reusable_without_model_adapter() -> None:
 
     scales = process.marginal_scales(times, state.size())
     assert torch.equal(prediction.epsilon, raw_prediction)
-    assert torch.allclose(
+    torch.testing.assert_close(
         state,
         scales.signal * prediction.clean + scales.noise * prediction.epsilon,
+        rtol=1e-5,
+        atol=5e-7,
     )
 
 

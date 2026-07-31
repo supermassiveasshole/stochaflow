@@ -1,7 +1,7 @@
 # P2 Weighting 复刻与 ADM 拓扑修复计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式文档导航
-- 状态：Planned
+- 状态：Implemented（A0/A1 与 A2 substrate 已完成；A2 GPU/50k evidence 待外部 gate）
 - 制定日期：2026-07-30
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
@@ -11,6 +11,47 @@
 - 兼容性：Breaking；不加载、转换或部分复用旧 `adm_unet` checkpoint
 - 名词说明：本文中的 **P2 weighting** 是论文算法名，不是 Roadmap 的 `P2`
   优先级
+
+## 0. 实施与验收记录（2026-07-30）
+
+本分支已经关闭可在仓库内完成的实现与 reference-parity 工作：
+
+- A0：`adm_unet` 已切换到 canonical input/output block graph；AFHQ-128
+  parameter golden 为 105,197,187，P2-256 unconditional golden 为
+  93,563,910。pinned guided-diffusion tiny forward/input-gradient fixture、
+  attention parity、skip ledger、16-block attention placement、fixed-variance
+  train/sample 与旧 raw/EMA state rejection 均已测试。
+- A1：已实现 Gaussian-local `constant`/`p2` policy、learned-range `2C`
+  prediction、detached-mean hybrid VB、timestep-1 decoder NLL、selected-pair
+  process capability、250-step uniform-section ancestral DDPM、DDIM 独立
+  transition 与 learned-variance ignore、CFG prediction/variance split，以及
+  inference recipe 的 variance contract。默认 FP32 process 从单一 float64
+  reference snapshot 推导完整 posterior 后再转为 runtime dtype；fixture 同时
+  pin 住最终 1→0 与 250-step 链的非相邻 13→9 transition。静态声明
+  `DenoiserChannelLayout` 的 model 在 Builder 边界预检 fixed `C` /
+  learned-range `2C`，opaque model 保留首批 runtime fail-closed。P2、hybrid loss
+  与 respaced sampling 数值 fixture pin 到 P2 upstream commit
+  `3da0947ac350072e457c211401218175bc94e137`。
+- A2 substrate：已新增 authenticated `afhq-v2.dog` DataSource、pinned
+  guided-diffusion crop materializer、generic unlabeled image payload、唯一
+  benchmark base、受限 P2-only override、可审计 resolved-config CLI，以及
+  DDPM-250/1000 checkpoint-driven sample requests。
+- 旧 91.3M ADM 的 checkpoint/result attribution 已从 current public result
+  surface 移除；公开文档只描述 corrected topology 与当前可执行能力。
+
+以下项目不是仓库内实现完成的同义词，仍保持为显式 promotion gate：
+
+- 4090 上 corrected ADM-128 BF16 microbatch 1/2/4/8 profile；
+- 4090 上 P2-256 FP32 effective-batch-8 capacity/overfit trial；
+- DGX Spark 的同配置 train/resume/sample 验证；
+- A2 constant/P2 controlled pilot、2.4M-image formal runs 与 50k FID/KID；
+- Evaluation E2 sharded prediction/completeness、E3 frozen reference/FID/KID
+  authority。当前 Tensor writer 会整体缓冲 50k×3×256×256 FP32 samples，约
+  39 GB，因此 checked-in 50k request 是 frozen future protocol input，不是当前
+  已执行的 benchmark。
+
+在上述 gate 完成前，不发布 corrected ADM 或 P2 quality 数值，也不把当前
+AFHQ-v2 Dog protocol 命名为 exact historical P2 AFHQ-D reproduction。
 
 ## 1. 执行结论
 
@@ -1052,6 +1093,7 @@ uv run pytest \
   tests/test_gaussian_learned_variance.py \
   tests/test_training_strategy.py \
   tests/test_class_conditional_gaussian.py \
+  tests/test_denoiser_channel_layout.py \
   tests/test_ddpm_shapes.py \
   tests/test_ddim_shapes.py \
   tests/test_class_conditional_sampling.py
@@ -1062,6 +1104,9 @@ A2 data/evaluation：
 ```bash
 uv run pytest \
   tests/test_data_sources.py \
+  tests/test_afhq_v2_prepare.py \
+  tests/test_afhq_v2_dog.py \
+  tests/test_afhq_v2_benchmark_config.py \
   tests/test_afhq_v2_showcase.py \
   tests/test_afhq_v2_evaluation.py
 ```

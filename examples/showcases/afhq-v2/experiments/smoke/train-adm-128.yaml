@@ -38,15 +38,14 @@ data:
 model:
   name: adm_unet
   params:
+    input_size: 128
     in_channels: 3
     out_channels: 3
     base_channels: 32
     channel_multipliers: [1, 2]
     num_res_blocks: 1
-    transformer_depths: [0, 1]
-    middle_transformer_depth: 1
-    attention_head_dim: 32
-    time_embedding_dim: 128
+    attention_resolutions: [64]
+    attention_head_channels: 32
     num_classes: 3
     dropout: 0.0
 

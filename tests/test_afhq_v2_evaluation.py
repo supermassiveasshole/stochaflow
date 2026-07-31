@@ -277,21 +277,16 @@ def _tiny_checkpoint(
     raw["model"] = {
         "name": "adm_unet",
         "params": {
+            "input_size": 128,
             "in_channels": 3,
             "out_channels": 3,
-            "base_channels": 8,
-            "channel_multipliers": [1],
+            "base_channels": 2,
+            "channel_multipliers": [1, 1, 1, 1, 1],
             "num_res_blocks": 1,
-            "transformer_depths": [0],
-            "middle_transformer_depth": 0,
-            "attention_head_dim": 8,
-            "time_embedding_dim": 32,
+            "attention_resolutions": [],
+            "attention_head_channels": 2,
             "num_classes": 3,
             "dropout": 0.0,
-            "scale_shift_norm": True,
-            "residual_resampling": True,
-            "zero_init_residual": True,
-            "zero_init_output": True,
         },
     }
     raw["process"] = {

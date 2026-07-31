@@ -110,15 +110,14 @@ def _microbatches() -> list[tuple[torch.Tensor, dict[str, torch.Tensor]]]:
         (
             "adm_unet",
             {
+                "input_size": 8,
                 "in_channels": 1,
                 "out_channels": 1,
                 "base_channels": 8,
                 "channel_multipliers": [1, 2],
                 "num_res_blocks": 1,
-                "transformer_depths": [0, 1],
-                "middle_transformer_depth": 1,
-                "attention_head_dim": 8,
-                "time_embedding_dim": 32,
+                "attention_resolutions": [4],
+                "attention_head_channels": 8,
                 "num_classes": 3,
                 "dropout": 0.0,
             },

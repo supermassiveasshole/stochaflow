@@ -281,10 +281,12 @@ Sampler；score SDE 或 sigma-space 方法也可以定义自己的窄契约。�
 接口，也不会促使核心为 `GenerativeDynamics` 增加 universal `predict`、`drift`、`score`
 或 `denoise` 方法。
 
-`GaussianDenoisingDynamics` 是 DDPM/DDIM 依赖的抽象能力；内置
-`GaussianModelDynamics` 是普通 model callable 的具体 adapter。Process 不提供 Dynamics
-工厂方法，也不依赖模型 callable、prediction parameterization、clipping policy 或具体
-Dynamics 类型。Builder、diagnostic 或用户推理工作流负责显式构造/包装 Dynamics。
+`GaussianDenoisingDynamics` 是 DDPM/DDIM 依赖的基础抽象能力；respaced learned-range
+DDPM 另外使用 target-aware Gaussian Dynamics 的窄能力。内置
+`GaussianModelDynamics` 是普通 model callable 的具体 adapter，可按 fixed 或
+learned-range variance 解析 `C`/`2C` output。Process 不提供 Dynamics 工厂方法，也不依赖
+模型 callable、prediction parameterization、variance、clipping policy 或具体 Dynamics
+类型。Builder、diagnostic 或用户推理工作流负责显式构造/包装 Dynamics。
 
 `noise_schedules` Registry 只服务 Gaussian Process，不是 Flow Matching interpolant 的
 万能 Schedule Registry。离散 Gaussian Process 依赖 `DiscreteVPSchedule` 数学能力；内置
@@ -296,9 +298,12 @@ Schedule 返回与 `state_times` 同形的系数，样本 rank 的 broadcast 由
 迁移和 checkpoint 因而始终读取同一份 Process-owned state。
 
 内置 `gaussian_denoising` TrainingBuilder、`standard_denoising` SamplingBuilder、DDPM
-和 DDIM 都依赖公开的 `DiscreteGaussianDenoisingProcess`。第三方实现该 Process 接口即可
-复用这些组件，无需继承 `DiscreteGaussianProcess`；训练 timestep sampling policy 由
-Gaussian TrainingStrategy 拥有。
+和 DDIM 的 fixed/adjacent 路径依赖公开的 `DiscreteGaussianDenoisingProcess`。第三方
+实现该 Process 接口即可复用默认路径，无需继承 `DiscreteGaussianProcess`；训练
+timestep sampling policy 由 Gaussian TrainingStrategy 拥有。需要 non-adjacent
+respacing 时还必须满足 selected-pair coefficient capability；需要 learned-range
+variance 时还必须提供 selected-pair lower/upper log-variance bounds。Builder/Sampler 在
+完整组合边界分别验证这些窄能力，不把可选方法塞进 Process root。
 
 ```python
 from stochaflow.extensions import (
@@ -340,6 +345,7 @@ class PhysicsSamplingBuilder(SamplingBuilder):
             process=process,
             predict_fn=build_guided_predict_fn(...),
             prediction_type="epsilon",
+            variance_mode="fixed",
             clip_denoised=True,
         )
         # Builder also owns observations, initial state and Sampler execution.
@@ -359,7 +365,12 @@ SamplingBuilder 构造 initial state，或直接调用 Sampler。
 完整 `sample()` 是 framework-level 统一生命周期，不意味着当前支持的算法 family 必须把
 可组合数学全部藏进循环。离散 Gaussian family 另外公开：
 
-- `DDPMAncestralSampler.transition()`：构造 adjacent `x_t -> x_{t-1}` 分布；
+- selected-pair marginal coefficient snapshot：为 `0 <= s < t <= T` 提供
+  `alpha_bar_s`、`alpha_bar_t` 与二者比值；
+- `DDPMAncestralSampler.resolve_schedule()`：解析 full adjacent、
+  uniform-section respaced 或 explicit public-state schedule；
+- `DDPMAncestralSampler.transition()`：从同一 selected-pair snapshot 构造
+  `x_t -> x_s` ancestral posterior；learned prediction 可以提供该 pair 的 log variance；
 - `DDIMSampler.resolve_schedule()`：解析 configured uniform、explicit 或 partial schedule；
 - `DDIMSampler.transition()`：构造 batch-aligned selected-pair `x_t -> x_s` 分布；
 - `GaussianTransition.mean/standard_deviation` 与 `sample(generator=...)`：显式抽取 next
@@ -370,7 +381,9 @@ SamplingBuilder 构造 initial state，或直接调用 Sampler。
 这些 API 只属于离散 Gaussian family，不是 `Sampler.step()` 的别名，也不要求未来的 Flow
 Matching、SDE 或 sigma-space sampler 实现。transition 不调用模型、不发送 observation、
 不应用任务 correction；完整 DDPM/DDIM Sampler 委托这些 primitive 并继续拥有 RNG、loop
-和 accepted-step lifecycle。
+和 accepted-step lifecycle。DDPM respacing 不是 DDIM：前者构造 selected-pair ancestral
+posterior，后者保留 generalized `eta` update。learned-range DDIM 只消费 prediction half，
+明确忽略 variance half。
 
 ### 复用 Gaussian family 完成 condition 或 physics guidance
 
@@ -392,6 +405,7 @@ class PhysicsGuidedDynamics(GaussianDenoisingDynamics):
             process,
             lambda state, time: model(state, time, low_res=low_res),
             prediction_type="epsilon",
+            variance_mode="fixed",
             clip_denoised=True,
         )
         self.physics_state = physics_state
@@ -653,6 +667,10 @@ class ConditionalGaussianStrategy(TrainingStrategy, GaussianDiagnosticSemantics)
     def prediction_type(self):
         return "epsilon"
 
+    @property
+    def variance_mode(self):
+        return "fixed"
+
     def predict_gaussian_model(self, state, model_time):
         return self.model(
             {"state": state, "time": model_time},
@@ -661,8 +679,11 @@ class ConditionalGaussianStrategy(TrainingStrategy, GaussianDiagnosticSemantics)
 ```
 
 这是结构化 Protocol，不要求 Strategy 显式继承它；示例继承用于类型标注和能力发现。
-`prediction_type` 说明 Gaussian parameterization，`predict_gaussian_model()` 封装任务自己的
-模型签名。diagnostic 用该 callable 与 Process 构造 Dynamics，不直接调用 primary model。
+`prediction_type` 说明 Gaussian parameterization，`variance_mode` 声明 callable 返回
+`C` fixed output 还是 `2C` learned-range output，`predict_gaussian_model()` 封装任务自己的
+模型签名。diagnostic 用这些语义与 Process 构造 Dynamics，不直接调用 primary model；
+learned-range diagnostics 只用 prediction half 做 reconstruction/DDIM，仍按 recipe 验证
+完整 raw output layout。
 
 如果条件任务无法为 diagnostic 提供明确的 condition，就不应伪造该 capability；启用
 `diffusion_quality` 时会得到清晰的不兼容错误。该能力不让 Strategy 构建 Sampler、运行

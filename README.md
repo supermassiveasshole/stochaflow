@@ -9,10 +9,13 @@ The maintained implementation currently focuses on **pixel-space discrete
 Gaussian diffusion**:
 
 - unconditional generation with a UNet;
-- class-conditional generation with an ADM-UNet or pixel-space DiT;
+- unconditional or class-conditional generation with a canonical ADM U-Net,
+  plus class-conditional pixel-space DiT;
 - epsilon, x0, v, and score prediction targets;
-- DDPM and DDIM sampling, EMA weights, trajectories, and classifier-free
-  guidance.
+- fixed or learned-range Gaussian variance, including the learned-range hybrid
+  variational bound and epsilon-only P2 simple-loss weighting;
+- full and uniformly respaced ancestral DDPM, DDIM, EMA weights, trajectories,
+  and classifier-free guidance.
 
 Stochaflow is pre-1.0 research software and currently permits breaking changes.
 Latent diffusion, pretrained autoencoder integration, Stable Diffusion
@@ -109,10 +112,10 @@ not require retraining.
 | Area | Implemented today |
 | --- | --- |
 | Data | Verified managed and referenced data artifacts; image, class-labeled image, super-resolution data, and multi-resolution image recipes |
-| Models | Unconditional UNet, class-conditional ADM-UNet, and class-conditional pixel-space DiT |
-| Training | Unconditional and class-conditional Gaussian denoising, supervised training, mixed precision, gradient accumulation, EMA, and a single-optimizer automatic loop |
-| Probability process | Discrete variance-preserving Gaussian process with linear-beta and cosine-alpha-bar schedules |
-| Sampling | DDPM, DDIM, class allocation, classifier-free guidance, trajectory observation, and Tensor/PNG/GIF writers |
+| Models | Unconditional UNet, canonical unconditional/class-conditional ADM U-Net, and class-conditional pixel-space DiT |
+| Training | Unconditional and class-conditional Gaussian denoising; fixed or learned-range variance; constant or epsilon-only P2 simple-loss weighting; supervised training, mixed precision, gradient accumulation, EMA, and a single-optimizer automatic loop |
+| Probability process | Discrete variance-preserving Gaussian process with linear-beta and cosine-alpha-bar schedules, selected-pair marginal coefficients, and learned-range variance bounds |
+| Sampling | Full or uniformly respaced ancestral DDPM, DDIM, class allocation, classifier-free guidance, trajectory observation, and Tensor/PNG/GIF writers |
 | Runtime | Registry-based composition, explicit extension activation, checkpoint v10 strict resume, checkpoint-backed inference, local/TensorBoard/W&B logging, and training diagnostics |
 | CLI | `stochaflow init`, `stochaflow train`, and `stochaflow sample` |
 
@@ -132,7 +135,7 @@ The actively maintained example surface is deliberately small:
 | Example | Role | Current status |
 | --- | --- | --- |
 | [MNIST](examples/built-in/image-generation/README.md) | Minimal built-in image-generation workflow | One train config, DDPM/DDIM sample profiles, and a resume observability overlay |
-| [AFHQ-v2](examples/showcases/afhq-v2/README.md) | Installable class-conditional data-source showcase | ADM-UNet and pixel DiT production configs; published results below are from ADM-UNet |
+| [AFHQ-v2](examples/showcases/afhq-v2/README.md) | Installable data-source showcase | Corrected class-conditional ADM and pixel DiT production configs, plus an unlabeled 256px Dog source for controlled P2-compatible research |
 
 Separate CIFAR-10, Flowers102, and multi-source training YAMLs are not maintained.
 Their removal does not remove the underlying reusable data sources or recipes.
@@ -170,51 +173,78 @@ and
 [`mnist-ddim-50.yaml`](examples/built-in/image-generation/configs/sample/mnist-ddim-50.yaml).
 The referenced trained checkpoint is not distributed.
 
-### AFHQ-v2 class-conditional ADM
+### AFHQ-v2 and the corrected ADM topology
 
-The published result below was produced by a completed 200-epoch, 84,000-update
-ADM-UNet run. After training, periodic EMA snapshots were screened with one
-fixed sampling protocol; among the three finalists, aggregate FID was the
-primary selection metric and aggregate KID was secondary.
+The maintained `adm_unet` now follows the canonical ADM input/output block
+graph: the initial projection, every encoder residual block, and every
+downsample enter the skip ledger; each decoder level contains `R + 1` residual
+blocks and consumes one skip per block. `attention_resolutions` names actual
+spatial sizes, and attention is GroupNorm/QKV/residual attention rather than a
+stage-end Spatial Transformer. The maintained AFHQ-128 configuration contains
+105,197,187 parameters.
 
-| Evaluation | Result |
-| --- | ---: |
-| Selected checkpoint | EMA weights from `epoch_0170.pt`, epoch 170 / step 71,400 |
-| Aggregate FID | **30.240** |
-| Aggregate KID | **0.005310 ± 0.000701** |
-| Per-class FID (cat / dog / wild) | **37.965 / 58.565 / 24.352** |
+This is a breaking model cutover. Configurations using the removed transformer
+depth and topology switches are rejected, and checkpoints made by the previous
+ADM implementation cannot be sampled, resumed, partially loaded, or converted.
+Start a fresh run. Results published before this cutover were produced by that
+incompatible topology and are intentionally not presented as current AFHQ
+results; the corrected production model does not yet have a published
+long-training quality result.
 
-The fixed protocol uses 300 official-test images and 300 generated images per
-class, for 900 real and 900 generated images in aggregate. Sampling uses EMA,
-deterministic DDIM-50 (`eta: 0`), classifier-free guidance 2.0, and seed
-`20260726`. These are 900-sample protocol results, not 50,000-image benchmark
-scores. The selected checkpoint SHA-256 is
-`ea43404395d884c03fd7b130f407e5ace6c35b2336d2c5bd073f630828c2e4ce`.
-
-The following panel is the complete 36-sample output, not a curated subset.
-Rows 1–2 are cat, rows 3–4 are dog, and rows 5–6 are wild:
-
-<p align="center">
-  <img src="assets/readme/afhq_v2_adm_ddim50_epoch_0170_samples.png" width="720" alt="Thirty-six independently generated class-conditional AFHQ-v2 samples using EMA, DDIM-50, and classifier-free guidance 2.0">
-</p>
+Separately, every newly built Gaussian checkpoint now freezes
+`variance.mode`—including `fixed`—beside `prediction_type`. A pre-change v10
+Gaussian checkpoint whose inference recipe lacks `variance` can therefore be
+rejected by strict resume even for a non-ADM model; sampling keeps the
+fixed-compatible default unless a separate model/state incompatibility exists.
+The framework does not patch the saved training recipe.
 
 The repository includes:
 
-- the measured
+- the corrected
   [ADM-UNet training config](examples/showcases/afhq-v2/experiments/production/train-adm-128.yaml);
 - a runnable
   [pixel DiT-B/8 training config](examples/showcases/afhq-v2/experiments/production/train-dit-128.yaml),
   for which this README does not claim a completed quality result;
-- the exact
-  [README sampling profile](examples/showcases/afhq-v2/experiments/sampling/ddim50-cfg2-readme.yaml);
-- the
-  [KID/FID evaluation profile](examples/showcases/afhq-v2/experiments/evaluation/ddim50-cfg2-kid-fid.yaml).
+- checkpoint-backed DDIM/CFG sampling and class-aware evaluation profiles;
+- an `afhq-v2.dog` source that materializes the authenticated training Dog
+  subset as an unlabeled 256×256 artifact using the pinned guided-diffusion
+  BOX/bicubic/center-crop transform.
 
-The trained checkpoint is not distributed in this repository. Reproducing the
-sampling or evaluation therefore requires a compatible checkpoint produced by
-training. The dataset source is approximately 6.96 GB and is licensed CC BY-NC
-4.0; review the [AFHQ-v2 guide](docs/tutorials/afhq-v2.md) before downloading or
-training.
+The dataset source is approximately 6.96 GB and is licensed CC BY-NC 4.0.
+Review the [AFHQ-v2 guide](docs/tutorials/afhq-v2.md) before downloading or
+training. The historical AFHQ version and full benchmark protocol used by the
+P2 publication are not recoverable from its public materials, so this source
+supports a **P2-compatible AFHQ-v2 Dog** study, not a claim of exact historical
+AFHQ-D reproduction. The checked-in 50,000-sample requests are frozen future
+protocol inputs, not an operational benchmark today: the current Tensor writer
+buffers and concatenates the full `50000 × 3 × 256 × 256` FP32 output (about
+39 GB before additional runtime overhead). Formal execution waits for sharded
+prediction artifacts and completeness validation.
+
+### Gaussian variance, P2, and respaced DDPM
+
+Gaussian training defaults remain `variance: {mode: fixed}` and
+`loss_weighting: {name: constant}`. Learned-range mode expects `2C` model
+channels: the first `C` predict the denoising target and the second `C`
+interpolate between selected-pair posterior and forward log-variance bounds.
+Its hybrid loss adds `0.001 ×` the full, unweighted variational bound; the
+uniform single-timestep estimator implements that as `T / 1000 ×` its sampled
+VB term, with the mean-prediction branch detached.
+
+P2 is a Gaussian training policy, not an Objective or sampling option. With
+epsilon prediction it applies
+`(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)` to each sample's simple
+loss without batch renormalization; it never weights the variance term.
+Diagnostic `timestep_loss_weight` records this optimization coefficient and is
+unrelated to any `loss_aggregation_weight` used to combine batches for metrics.
+
+`ddpm.num_inference_steps: 250` selects a uniform-section, selected-pair
+ancestral path. It is not DDIM-250 and does not combine a non-adjacent mean with
+adjacent variance. DDIM keeps its own generalized transition and ignores a
+learned variance head. For class-conditional learned variance, CFG guides only
+the prediction half; scales other than 0 or 1 retain the conditional variance
+half, while scales 0 and 1 return the complete unconditional or conditional
+branch respectively.
 
 ## Composition boundaries
 

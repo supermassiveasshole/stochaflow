@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import pickle
 import random
@@ -18,7 +20,11 @@ import torch
 from torch import nn
 from torch.optim.lr_scheduler import LRScheduler, StepLR
 
+from stochaflow.models.adm_unet import ADMUNet
+from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.sampling import SamplingRecipe
+from stochaflow.sampling import runtime as sampling_runtime
+from stochaflow.sampling.runtime import run_sampling
 from stochaflow.training.ema import EMAStateDict, ExponentialMovingAverage
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
@@ -28,8 +34,16 @@ from stochaflow.utils.checkpoint import (
     parse_rng_state,
     restore_rng_state,
     validate_inference_asset_descriptors,
+    validate_module_state_dict_compatibility,
 )
 from stochaflow.utils.plugins import ExtensionIdentityError
+
+_LEGACY_ADM_STATE_MANIFEST = (
+    Path(__file__).parent
+    / "fixtures"
+    / "adm"
+    / "legacy_production_state_manifest.json"
+)
 
 
 def _write_load_marker(path: str) -> object:
@@ -185,6 +199,144 @@ def _legacy_v8_payload(
     payload.pop("grad_scaler_class", None)
     payload.pop("grad_scaler_state_dict", None)
     return payload
+
+
+def _legacy_adm_manifest() -> dict[str, Any]:
+    value = json.loads(_LEGACY_ADM_STATE_MANIFEST.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise TypeError("legacy ADM state manifest must contain a mapping")
+    return cast(dict[str, Any], value)
+
+
+def _legacy_adm_state_shapes() -> OrderedDict[str, tuple[int, ...]]:
+    raw_shapes = _legacy_adm_manifest().get("state_shapes")
+    if not isinstance(raw_shapes, dict):
+        raise TypeError("legacy ADM state manifest must contain state_shapes")
+    shapes: OrderedDict[str, tuple[int, ...]] = OrderedDict()
+    for raw_name, raw_shape in raw_shapes.items():
+        if not isinstance(raw_name, str):
+            raise TypeError("legacy ADM state names must be strings")
+        if not isinstance(raw_shape, list) or any(
+            isinstance(dimension, bool)
+            or not isinstance(dimension, int)
+            or dimension <= 0
+            for dimension in raw_shape
+        ):
+            raise TypeError(
+                "legacy ADM state shapes must contain positive integers"
+            )
+        shapes[raw_name] = tuple(raw_shape)
+    return shapes
+
+
+def _legacy_adm_meta_state() -> OrderedDict[str, torch.Tensor]:
+    return OrderedDict(
+        (
+            name,
+            torch.empty(shape, dtype=torch.float32, device="meta"),
+        )
+        for name, shape in _legacy_adm_state_shapes().items()
+    )
+
+
+def _legacy_adm_low_storage_cpu_state() -> OrderedDict[str, torch.Tensor]:
+    return OrderedDict(
+        (
+            name,
+            torch.zeros((), dtype=torch.float32).expand(shape),
+        )
+        for name, shape in _legacy_adm_state_shapes().items()
+    )
+
+
+def _corrected_adm_production_meta_model() -> ADMUNet:
+    with torch.device("meta"):
+        return ADMUNet(
+            input_size=128,
+            in_channels=3,
+            out_channels=3,
+            base_channels=128,
+            channel_multipliers=[1, 1, 2, 3, 4],
+            num_res_blocks=2,
+            attention_resolutions=[32, 16, 8],
+            attention_head_channels=64,
+            num_classes=3,
+            dropout=0.1,
+        )
+
+
+def _legacy_adm_sampling_config(*, weights: str) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "experiment": {
+            "name": "legacy-adm-rejection",
+            "output_dir": "unused",
+            "seed": 7,
+        },
+        "extensions": {"plugins": []},
+        "data": {"name": "image", "params": {}},
+        "model": {
+            "name": "adm_unet",
+            "params": {
+                "input_size": 128,
+                "in_channels": 3,
+                "out_channels": 3,
+                "base_channels": 128,
+                "channel_multipliers": [1, 1, 2, 3, 4],
+                "num_res_blocks": 2,
+                "attention_resolutions": [32, 16, 8],
+                "attention_head_channels": 64,
+                "num_classes": 3,
+                "dropout": 0.1,
+            },
+        },
+        "process": {
+            "name": "discrete_gaussian",
+            "params": {
+                "schedule": {
+                    "name": "linear_beta",
+                    "params": {
+                        "num_timesteps": 2,
+                        "beta_start": 0.0001,
+                        "beta_end": 0.02,
+                    },
+                }
+            },
+        },
+        "training": {"name": "class_conditional_gaussian_denoising", "params": {}},
+        "objective": {"name": "mse", "params": {}},
+        "sampling": {
+            "run_after_training": False,
+            "sampler": {
+                "name": "ddim",
+                "params": {"num_inference_steps": 1, "eta": 0.0},
+            },
+            "options": {
+                "weights": weights,
+                "clip_denoised": True,
+                "guidance_scale": 2.0,
+                "conditions": [{"class_label": 0, "count": 1}],
+            },
+            "shape": [3, 128, 128],
+            "num_samples": 1,
+            "batch_size": 1,
+            "seed": 11,
+            "writers": [{"name": "tensor", "params": {}}],
+        },
+    }
+    if weights == "ema":
+        config["ema"] = {"enabled": True, "use_for_sampling": True}
+    return config
+
+
+def _module_tensor_identity_and_version_snapshot(
+    module: nn.Module,
+) -> dict[str, tuple[int, int]]:
+    snapshot: dict[str, tuple[int, int]] = {}
+    for name, value in module.state_dict(keep_vars=True).items():
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"module state entry {name!r} must be a tensor")
+        snapshot[name] = (id(value), value._version)
+    return snapshot
 
 
 def _cuda_grad_scaler(*, initial_scale: float = 65_536.0) -> torch.cuda.amp.GradScaler:
@@ -899,6 +1051,244 @@ def test_malformed_scaler_state_fails_atomically_before_managed_state() -> None:
 
     assert torch.equal(target_model.weight, original_weight)
     assert target_scaler.state_dict() == original_scaler_state
+
+
+def test_legacy_adm_production_state_manifest_is_frozen_and_self_consistent() -> (
+    None
+):
+    manifest = _legacy_adm_manifest()
+    state_shapes = _legacy_adm_state_shapes()
+    canonical_shapes = json.dumps(
+        {
+            name: list(shape)
+            for name, shape in state_shapes.items()
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert manifest["schema_version"] == 1
+    assert manifest["provenance"] == {
+        "source_revision": "5c75a76de3d696a5b734ae4eefe88a30532bd2de",
+        "model_source": {
+            "path": "src/stochaflow/models/adm_unet.py",
+            "sha256": (
+                "ffa562a20326d1b1b498ad4676b7637b3a73b6da820459d00452721d2bb115ab"
+            ),
+        },
+        "block_source": {
+            "path": "src/stochaflow/models/adm_blocks.py",
+            "sha256": (
+                "a33e5d2f171a26c5ba7a31f20f4622236b33e1c9f9e5ec1d161f047b951fa1c0"
+            ),
+        },
+        "production_config": {
+            "path": (
+                "examples/showcases/afhq-v2/experiments/production/"
+                "train-adm-128.yaml"
+            ),
+            "sha256": (
+                "7a0adbdefee3b3b75f235197872b6856394d4a69f4638e6af76343999a9ebad2"
+            ),
+        },
+    }
+    assert manifest["constructor"] == {
+        "in_channels": 3,
+        "out_channels": 3,
+        "base_channels": 128,
+        "channel_multipliers": [1, 2, 3, 4],
+        "num_res_blocks": 2,
+        "transformer_depths": [0, 0, 1, 2],
+        "middle_transformer_depth": 1,
+        "attention_head_dim": 64,
+        "time_embedding_dim": 512,
+        "num_classes": 3,
+        "dropout": 0.1,
+        "scale_shift_norm": True,
+        "residual_resampling": True,
+        "zero_init_residual": True,
+        "zero_init_output": True,
+    }
+    assert manifest["model"] == {
+        "registry_name": "adm_unet",
+        "parameter_count": 91_300_867,
+        "state_entry_count": 355,
+        "state_kind": "parameter",
+        "state_dtype": "float32",
+        "state_shapes_sha256": (
+            "7adca8ea0dacc2f9758e29c86d8b82736719ef11c7547453964089e70d432dba"
+        ),
+    }
+    assert len(state_shapes) == 355
+    assert sum(math.prod(shape) for shape in state_shapes.values()) == 91_300_867
+    assert hashlib.sha256(canonical_shapes).hexdigest() == (
+        manifest["model"]["state_shapes_sha256"]
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["checkpoint.model_state_dict", "checkpoint.ema_model_state_dict"],
+)
+def test_corrected_adm_rejects_faithful_legacy_raw_and_ema_state_shapes(
+    path: str,
+) -> None:
+    model = _corrected_adm_production_meta_model()
+    legacy_state = _legacy_adm_meta_state()
+
+    assert len(legacy_state) == 355
+    assert sum(tensor.numel() for tensor in legacy_state.values()) == 91_300_867
+    with pytest.raises(
+        ValueError,
+        match=rf"{path} keys do not match runtime",
+    ):
+        validate_module_state_dict_compatibility(
+            model,
+            legacy_state,
+            path=path,
+        )
+
+
+def test_legacy_adm_raw_checkpoint_rejection_is_transactional() -> None:
+    model = _corrected_adm_production_meta_model()
+    manager = CheckpointManager(model)
+    payload = CheckpointManager(nn.Identity()).build_state()
+    payload["model_state_dict"] = _legacy_adm_low_storage_cpu_state()
+    snapshot = _module_tensor_identity_and_version_snapshot(model)
+
+    with pytest.raises(
+        ValueError,
+        match=r"checkpoint\.model_state_dict keys do not match runtime",
+    ):
+        manager.restore_payload(payload, path="legacy-adm-raw.pt")
+
+    assert _module_tensor_identity_and_version_snapshot(model) == snapshot
+
+
+def test_legacy_adm_ema_checkpoint_rejection_is_transactional() -> None:
+    model = _corrected_adm_production_meta_model()
+    ema = ExponentialMovingAverage(model)
+    manager = CheckpointManager(model, ema=ema)
+    payload = CheckpointManager(nn.Identity()).build_state()
+    legacy_state = _legacy_adm_low_storage_cpu_state()
+    payload["model_state_dict"] = legacy_state
+    payload["ema_model_state_dict"] = OrderedDict(legacy_state)
+    payload["ema_state_dict"] = {
+        "decay": ema.decay,
+        "update_after_step": ema.update_after_step,
+        "update_every": ema.update_every,
+        "num_updates": ema.num_updates,
+        "shadow_params": OrderedDict(legacy_state),
+        "shadow_buffers": OrderedDict(),
+    }
+    model_snapshot = _module_tensor_identity_and_version_snapshot(model)
+    ema_scalar_snapshot = (
+        ema.decay,
+        ema.update_after_step,
+        ema.update_every,
+        ema.num_updates,
+    )
+    ema_parameter_snapshot = {
+        name: (id(tensor), tensor._version)
+        for name, tensor in ema.shadow_params.items()
+    }
+    ema_buffer_snapshot = {
+        name: (id(tensor), tensor._version)
+        for name, tensor in ema.shadow_buffers.items()
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"ema_state_dict\.shadow_params keys do not match runtime",
+    ):
+        manager.restore_payload(payload, path="legacy-adm-ema.pt")
+
+    assert _module_tensor_identity_and_version_snapshot(model) == model_snapshot
+    assert (
+        ema.decay,
+        ema.update_after_step,
+        ema.update_every,
+        ema.num_updates,
+    ) == ema_scalar_snapshot
+    assert {
+        name: (id(tensor), tensor._version)
+        for name, tensor in ema.shadow_params.items()
+    } == ema_parameter_snapshot
+    assert {
+        name: (id(tensor), tensor._version)
+        for name, tensor in ema.shadow_buffers.items()
+    } == ema_buffer_snapshot
+
+
+@pytest.mark.parametrize("weights", ["raw", "ema"])
+def test_sampling_runtime_rejects_faithful_legacy_adm_topology(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    weights: str,
+) -> None:
+    config = _legacy_adm_sampling_config(weights=weights)
+    process = DiscreteGaussianProcess(config["process"]["params"]["schedule"])
+    recipe = SamplingRecipe(
+        name="class_conditional_denoising",
+        contract={
+            "prediction_type": "epsilon",
+            "variance": {"mode": "fixed"},
+        },
+    )
+    payload = CheckpointManager(
+        nn.Identity(),
+        process=process,
+        inference_recipe=recipe,
+    ).build_state(config=config)
+    legacy_state = _legacy_adm_low_storage_cpu_state()
+    payload["model_state_dict"] = legacy_state
+    if weights == "ema":
+        payload["ema_model_state_dict"] = OrderedDict(legacy_state)
+        payload["ema_state_dict"] = {
+            "decay": 0.9999,
+            "update_after_step": 0,
+            "update_every": 1,
+            "num_updates": 1,
+            "shadow_params": OrderedDict(legacy_state),
+            "shadow_buffers": OrderedDict(),
+        }
+    checkpoint = tmp_path / f"legacy-adm-{weights}.pt"
+    torch.save(payload, checkpoint)
+
+    original_build_model = sampling_runtime.build_model
+    constructed_models: list[nn.Module] = []
+
+    def build_model_on_meta(declaration: Any) -> nn.Module:
+        with torch.device("meta"):
+            model = original_build_model(declaration)
+        constructed_models.append(model)
+        return model
+
+    monkeypatch.setattr(sampling_runtime, "build_model", build_model_on_meta)
+    output_dir = tmp_path / f"samples-{weights}"
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"for .*copying from a non-meta parameter.*is a no-op",
+            category=UserWarning,
+        )
+        with pytest.raises(
+            RuntimeError,
+            match=r"Error\(s\) in loading state_dict for ADMUNet",
+        ):
+            run_sampling(
+                checkpoint=checkpoint,
+                output_dir=output_dir,
+                device_name="cpu",
+            )
+
+    assert len(constructed_models) == 1
+    assert all(
+        value.device.type == "meta"
+        for value in constructed_models[0].state_dict().values()
+    )
+    assert not output_dir.exists()
 
 
 def test_malformed_module_state_fails_before_any_parameter_is_changed() -> None:

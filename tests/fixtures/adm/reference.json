@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "guided_diffusion": {
+    "repository": "https://github.com/openai/guided-diffusion.git",
+    "commit": "22e0df8183507e13a7813f8d38d51b072ca1e67c",
+    "unet_sha256": "a70068e4d5ecf6f50372c19d66bb3441823b19ce6e02ff9b289a86a1a0d20217",
+    "script_util_sha256": "05c750c50c4fe98f09c5087b13127e5a5b64e8148bb746d7770ea5f5ac7f8438"
+  },
+  "p2_weighting": {
+    "repository": "https://github.com/jychoi118/P2-weighting.git",
+    "commit": "3da0947ac350072e457c211401218175bc94e137",
+    "unet_sha256": "a70068e4d5ecf6f50372c19d66bb3441823b19ce6e02ff9b289a86a1a0d20217",
+    "gaussian_diffusion_sha256": "ab0d8db1834a06b5a9cdc24f78890b9efd980d2e036e834313549b515f247e24",
+    "readme_sha256": "b3a60752f7763d18b1679d06435214d295d3cb65d14cbdd548afa53d691a77e4"
+  },
+  "legacy_stochaflow": {
+    "parameter_count": 91300867,
+    "skip_count": 4,
+    "decoder_blocks": 8,
+    "lowest_resolution": 16
+  },
+  "canonical_adm_128": {
+    "parameter_count": 105197187,
+    "input_blocks": 15,
+    "decoder_blocks": 15,
+    "attention_blocks": 16,
+    "lowest_resolution": 8
+  },
+  "p2_afhq_256": {
+    "parameter_count": 93563910
+  },
+  "tiny_forward_gradient": {
+    "source": "guided_diffusion.unet.UNetModel",
+    "input_size": 4,
+    "in_channels": 1,
+    "out_channels": 1,
+    "base_channels": 32,
+    "channel_multipliers": [1],
+    "num_res_blocks": 1,
+    "attention_resolutions": [4],
+    "attention_head_channels": 32,
+    "model_time": [3],
+    "input": [
+      -0.75,
+      -0.65,
+      -0.55,
+      -0.45,
+      -0.35,
+      -0.25,
+      -0.15,
+      -0.05,
+      0.05,
+      0.15,
+      0.25,
+      0.35,
+      0.45,
+      0.55,
+      0.65,
+      0.75
+    ],
+    "output": [
+      0.1529873162508011,
+      0.14866061508655548,
+      0.1486912965774536,
+      0.15310512483119965,
+      0.14884883165359497,
+      0.1423424482345581,
+      0.14239314198493958,
+      0.14901836216449738,
+      0.14901919662952423,
+      0.1426127552986145,
+      0.14267954230308533,
+      0.1491984724998474,
+      0.15343491733074188,
+      0.1493333876132965,
+      0.14937512576580048,
+      0.15354520082473755
+    ],
+    "input_gradient": [
+      3.027871571248397e-07,
+      8.48188665258931e-06,
+      6.705220584990457e-06,
+      -1.969359345821431e-06,
+      7.824757631169632e-06,
+      2.5672448828117922e-05,
+      2.4850620320648886e-05,
+      7.033095698716352e-06,
+      6.155918981676223e-06,
+      2.4388262318097986e-05,
+      2.703923382796347e-05,
+      1.0336901141272392e-05,
+      -1.1004655107171857e-06,
+      8.22986476123333e-06,
+      1.1484719834697898e-05,
+      3.728462615981698e-06
+    ],
+    "loss": 0.6497552394866943,
+    "loss_definition": "output.square().sum() + 0.125 * output.sum()",
+    "parameter_initialization": {
+      "multidimensional": "sin(arange * 0.013 + (index + 1) * 0.173) * 0.025 / sqrt(parameter[0].numel())",
+      "one_dimensional": "0.15 + sin(arange * 0.013 + (index + 1) * 0.173) * 0.025"
+    }
+  }
+}

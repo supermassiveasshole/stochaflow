@@ -33,6 +33,7 @@ from stochaflow.data import (
     canonical_artifact_digest,
     canonical_artifact_json_bytes,
 )
+from stochaflow.models import DenoiserChannelLayout
 from stochaflow.processes import (
     DiscreteGaussianDenoisingProcess,
     DiscreteGaussianProcess,
@@ -140,6 +141,7 @@ __all__ = [
     "DataSource",
     "DataSourceContext",
     "DataSourceMaterializationConfig",
+    "DenoiserChannelLayout",
     "DeviceTransferableBatch",
     "DiagnosticBuildContext",
     "DiscreteGaussianDenoisingProcess",
