@@ -13,7 +13,7 @@ Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它
 | --- | --- | --- |
 | 数据 | 普通图像、有标签图像、超分辨率配对、多源多分辨率图像 recipe | `ImageDataSource` 适配兼容 artifact；独立数据生命周期使用自定义 `DataBuilder` |
 | 模型 | 无条件 UNet、canonical unconditional/class-conditional ADM U-Net 与 pixel DiT | 注册满足任务 capability 的普通 `nn.Module`，模型不拥有训练或采样策略 |
-| 训练 | 无条件/类条件 Gaussian denoising、fixed/learned-range variance、constant/P2 weighting、supervised、混合精度与固定梯度累积 | `TrainingBuilder` 组合资产，`TrainingStrategy` 只解释 batch 并计算 loss/metrics |
+| 训练 | 无条件/类条件 Gaussian denoising、具体 P2 training recipe、fixed/learned-range variance、supervised、混合精度与固定梯度累积 | `TrainingBuilder` 组合资产，`TrainingStrategy` 解释 batch、调用模型并拥有该 recipe 的 loss/metrics |
 | 概率过程 | 离散 VP Gaussian Process、linear/cosine schedule、selected-pair coefficients 与 learned-range bounds | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
 | 采样 | full/respaced ancestral DDPM、DDIM、class-conditional CFG、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
 | 输出 | Tensor、PNG、trajectory grid/GIF | `SamplingArtifactWriter` 可输出 NetCDF、Zarr 等领域格式 |
@@ -56,27 +56,60 @@ class embedding 和一个 CFG null class。旧 stage-level skip/Spatial Transfor
 实现的构造字段与 checkpoint 均不兼容，必须 fresh train。
 
 (gaussian-loss-variance-policy)=
-## Gaussian family math、loss 与 variance policy
+## Gaussian layer ownership、P2 与 variance
 
-Gaussian training 使用 family-scoped 组合边界，不把 parameterization、variance 或
-simple-loss weighting 提升为跨任务通用抽象。职责唯一归属如下：
+Gaussian 代码按 framework layer 组织，而不是放入一个能够编排 Process、Training 和
+Sampling 的横向 family 模块。各 layer 的 `gaussian/` 子包只拥有该 layer 的职责；唯一
+跨层共享的是 process-free prediction kernel：`PredictionType`、`GaussianPrediction` 和
+只接收 Tensor/scales 的 `normalize_gaussian_prediction()`。
 
-| 职责 | 所有者 |
+| 职责 | 唯一所有者 |
 | --- | --- |
-| epsilon/x0/v/score 转换、training target、SNR 与 model-output split | process-free Gaussian family math |
-| marginal scales、时间域和 learned-range posterior 能力 | Gaussian Process |
-| batch 解释、时间采样和任务特定 model 调用 | `TrainingStrategy` |
-| simple-loss coefficient 和 prediction compatibility | `GaussianSimpleLossWeighting` |
-| per-sample feature reduction 与 batch reduction | Objective |
-| simple loss、weight 和可选 VB 的组合 | `GaussianLossComposer` |
-| learned-range posterior/VB | 独立 variance-loss collaborator |
-| 配置解析和完整组合验证 | Gaussian `TrainingBuilder` |
+| epsilon/x0/v/score 的纯 Tensor 转换 | process-free Gaussian prediction kernel |
+| marginal scales、时间域、schedule、posterior 与 learned-range bounds | `processes.gaussian` |
+| batch 解释、时间采样、model-output layout、training target、SNR、loss/VB 和 model 调用 | 具体 `training.gaussian` `TrainingStrategy` |
+| denoised clipping、Dynamics、model adapter 与 solver semantics | `sampling.gaussian` |
+| recipe 参数解析、资产兼容性与 inference recipe 固化 | 对应的 Gaussian `TrainingBuilder` / `SamplingBuilder` |
+| scalar Objective 与可选逐样本报告能力 | Objective 自身 |
 
-Training 调用 `Process.marginal_scales()` 后把纯 Tensor scales 交给 family math；Gaussian
-core training 不导入 Sampling。Sampling 继续拥有 denoised clipping、Dynamics 和 solver
-语义，并通过兼容 wrapper 复用同一 prediction math。
+这条 layer-first 约定防止 Training 导入 Sampling，也防止 Process 获得 model、Objective
+或 batch 语义。纯 prediction kernel 不知道 Process/time、variance head、裁剪、P2、VB、
+Objective 或 registry。目录是实现归属而不是新的公共导入面；extension 仍从
+`stochaflow.extensions` 导入稳定契约。
 
-Variance policy 仍是具体 Gaussian Builder 的私有参数：
+P2 是一个具体训练 recipe，即“兼容的 epsilon model + P2 TrainingStrategy”的组合，不是
+Process capability、Objective mode 或可插拔 weighting policy。内置 Builder identity 为：
+
+- `p2_gaussian_denoising`：无条件 P2；
+- `class_conditional_p2_gaussian_denoising`：类条件 P2，并另外拥有
+  `condition_dropout`。
+
+两者把 `prediction_type` 固定为 epsilon，要求 `MSEObjective`，并把有限的 `k > 0`、
+`gamma >= 0` 作为 Strategy 私有参数。配置直接把这些参数放在所选 Builder 下：
+
+```yaml
+training:
+  name: p2_gaussian_denoising
+  params:
+    k: 1.0
+    gamma: 1.0
+    variance:
+      mode: fixed
+```
+
+不存在 Gaussian weighting registry、通用 loss composer 或公共 batch-reducer protocol；
+旧 `loss_weighting` component declaration 会作为未知 Builder 参数失败。另一个 weighting
+公式、prediction restriction、model signature 或 batch 语义意味着另一个具体
+TrainingStrategy，并由带项目 namespace 的 TrainingBuilder 注册和组合。
+
+P2 Strategy 使用 cumulative marginal SNR：
+`(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)`。它按样本计算 MSE，只对 simple loss
+应用权重，不进行 batch renormalization。`MSEObjective(reduction="mean")` 对 feature 和
+batch 都取 mean；`sum` 对两者都取 sum，因此 `gamma=0` 在两种 reduction 下都严格保持
+未加权 identity。这里调用的是内置 `MSEObjective` 的具体 reduction 行为，不要求其他
+Objective 实现通用 reducer contract。
+
+Variance 同样由所选 Gaussian Strategy 拥有：
 
 - `variance: {mode: fixed}` 是默认路径，模型输出 `C` channels，不计算 VB；
 - `variance: {mode: learned_range, loss: rescaled_variational_bound}` 要求模型输出
@@ -84,43 +117,13 @@ Variance policy 仍是具体 Gaussian Builder 的私有参数：
   log-variance bounds 之间插值；hybrid loss 定义为 simple loss 加 `0.001 ×` 完整 VLB，
   在 uniform single-timestep estimator 中实现为 `T / 1000 ×` sampled VB term，并使用
   detached mean/prediction branch；
-- 省略 `loss_weighting` 使用 constant policy。若显式声明，规范格式是
-  `{name: constant, params: {}}`；
-- `{name: p2, params: {k: 1.0, gamma: 1.0}}` 只在 epsilon prediction 下具有
-  paper-compatible P2 语义。权重为
-  `(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)`，来自 cumulative marginal SNR，
-  不进行 batch renormalization，也不作用于 learned-variance VB term。
+- P2 与 learned-range 组合仍只权重 simple loss，VB 保持未加权。
 
-Simple-loss weighting 使用 Gaussian family-local registry，而不是全局 `REGISTRIES` 或
-通用 Objective。框架内置和第三方 policy 通过相同 registry/factory 构造；第三方名称
-必须带 namespace。新增 policy 只需实现并注册 `GaussianSimpleLossWeighting`，无需修改
-Process、Objective、Strategy、Builder 或 core dispatch。旧开发期 flat P2 声明
-`{name: p2, k: ..., gamma: ...}` 会直接失败。
-
-内置 UNet/ADM 和任何实现 `DenoiserChannelLayout` 的 extension model 会在
-TrainingBuilder 组合时预检 `C`/`2C` 声明；不公开静态 channel layout 的外部 model
-仍可组合，并在第一批 raw output shape 校验中 fail closed。
-
-P2 或 learned-range 组合要求 Objective 满足
-`BatchReduciblePerSampleObjective`。Composer 的固定顺序是：
-
-```text
-simple_per_sample
--> policy_weights * simple_per_sample
--> + unweighted_variational_bound
--> objective.reduce_per_sample_loss(...)
-```
-
-`MSEObjective(reduction="mean")` 对 feature 和 batch 都取 mean；`sum` 对两者都取
-sum，因此全一权重以及 P2 `gamma=0` 在两种 reduction 下都严格保持未加权 identity。
-weighted 路径只调用一次 `per_sample_loss()` 和一次 reducer。constant + fixed variance
-可以继续使用任意 scalar Objective；若 Objective 另有 `PerSampleObjective` capability，
-其结果仍保留给 diagnostics。声明不需要 per-sample reduction 的 weighting policy 必须
-产生精确全一权重，否则 fail closed。
-
-P2 官方语义使用 per-sample MSE。训练 diagnostic 中的
-`timestep_loss_weight` 是实际优化目标的 timestep 系数；指标系统若使用
-`loss_aggregation_weight`，后者只表示 batch 对聚合统计的权重，不参与 autograd。
+内置 UNet/ADM 和任何实现 `DenoiserChannelLayout` 的 extension model 会在 Builder 组合时
+预检 `C`/`2C` 声明；不公开静态 channel layout 的外部 model 仍可组合，并在第一批 raw
+output shape 校验中 fail closed。训练 diagnostic 中的 `timestep_loss_weight` 是实际优化
+目标的 timestep 系数；`loss_aggregation_weight` 只表示 batch 对 epoch 报告的权重，不
+参与 autograd。
 
 learned-range class-conditional sampling 中，CFG 只外推 prediction half。scale 0 与 1
 分别返回完整 unconditional/conditional `2C` output；其他 scale 使用 guided prediction

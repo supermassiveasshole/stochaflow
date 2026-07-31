@@ -249,7 +249,6 @@ Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trai
 | `TrainStepOutput` | Strategy 返回的 scalar loss、低成本 step report、diagnostics、metric channel updates 与 epoch loss reporting weight |
 | `MSEObjective` | 内置 task-neutral scalar MSE Objective |
 | `PerSampleObjective` | 可选的逐样本 loss capability |
-| `BatchReduciblePerSampleObjective` | 在逐样本 loss 之外显式拥有 batch reduction policy 的 Objective capability |
 | `compute_objective` | 校验并执行 scalar Objective，同时读取可选逐样本 capability |
 | `TrainingDiagnostic` | training diagnostic 生命周期根契约 |
 | `DiagnosticBuildContext` | diagnostic 构建期 logger 和输出目录；采样 shape 由 diagnostic 私有配置拥有 |
@@ -266,6 +265,10 @@ Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trai
 
 Strategy 不是 `nn.Module`，也不移动、冻结、选择或序列化资产；这些生命周期由
 TrainingPlan 和核心 runtime 管理。
+
+`PerSampleObjective` 只承诺可选的逐样本报告，不包含公共 batch-reducer protocol。
+内置 `MSEObjective` 可以在自己的具体实现中保持 `mean`/`sum` reduction 语义；其他
+Objective 不需要为了某个 Gaussian recipe 实现通用 reducer。
 
 Trainer 会递归迁移 batch 中的 `Tensor`、`Mapping` 的 value、tuple（包括
 namedtuple）和 list；mapping key 及其他 leaf 保持不变。领域 dataclass 或自定义容器若
@@ -442,6 +445,12 @@ checkpoint 保存。
 
 ## Discrete Gaussian family
 
+Gaussian 实现按 layer-first convention 组织：process path/schedule 位于 Process layer，
+training target/loss 与 P2 位于 Training layer，Dynamics/clipping/solver 位于 Sampling
+layer。跨层 kernel 只包含 prediction type、`GaussianPrediction` 与纯 Tensor prediction
+normalization。这个物理目录约定不是 extension import surface；下表符号仍统一从
+`stochaflow.extensions` 导入。
+
 | 符号 | 用途 |
 | --- | --- |
 | `GaussianNoiseSchedule` | Gaussian schedule 的 family-specific 根契约 |
@@ -461,77 +470,80 @@ checkpoint 保存。
 | `DDIMSampler` | 内置 discrete Gaussian DDIM sampler |
 | `GaussianDiagnosticSemantics` | Strategy 可选暴露给 Gaussian diagnostics 的 prediction type、variance mode 与 model-invocation capability |
 | `gaussian_training_target` | 按 Gaussian prediction type 生成对应训练 target |
-| `GaussianSimpleLossContext` | policy 唯一可见的 prediction type 与 batch-aligned SNR |
-| `GaussianSimpleLossWeighting` | Gaussian simple-loss weighting 的窄 family contract |
-| `register_gaussian_simple_loss_weighting` | 以 namespaced 名称注册第三方 weighting policy |
 
 这些符号只承诺 discrete Gaussian family 内的行为兼容，不是 Flow Matching、SDE 或
 sigma-space solver 的 universal 接口。
 
-### Gaussian simple-loss weighting extension
+### Gaussian training recipe extension
 
-Weighting policy 不接收 Process、Objective、Strategy、model 或 Sampling 对象。它只验证
-prediction contract，并从 `GaussianSimpleLossContext` 返回一个 `[B]` Tensor：
-
-```python
-import torch
-
-from stochaflow.extensions import (
-    GaussianSimpleLossContext,
-    GaussianSimpleLossWeighting,
-    PredictionType,
-    register_gaussian_simple_loss_weighting,
-)
-
-
-@register_gaussian_simple_loss_weighting("my_lab.inverse_one_plus_snr")
-class InverseOnePlusSnrWeighting(GaussianSimpleLossWeighting):
-    def __init__(self, *, scale: float = 1.0) -> None:
-        self.scale = float(scale)
-
-    @property
-    def requires_per_sample_loss(self) -> bool:
-        return True
-
-    def validate_contract(self, *, prediction_type: PredictionType) -> None:
-        del prediction_type
-
-    def sample_weights(
-        self,
-        context: GaussianSimpleLossContext,
-    ) -> torch.Tensor:
-        return self.scale / (1.0 + context.signal_to_noise_ratio)
-```
-
-配置使用统一 component declaration：
+P2 由具体 TrainingBuilder/TrainingStrategy 表达，不是一个可注册的 loss-weighting
+coefficient。内置无条件 recipe 使用：
 
 ```yaml
 training:
-  name: gaussian_denoising
+  name: p2_gaussian_denoising
   params:
-    prediction_type: x0
-    loss_weighting:
-      name: my_lab.inverse_one_plus_snr
-      params:
-        scale: 0.5
+    k: 1.0
+    gamma: 1.0
+    variance:
+      mode: fixed
 ```
 
-第三方注册名必须含 namespace；未限定名称保留给框架。factory 把 `params` 原样作为
-constructor keyword arguments。输出必须是与 context SNR 相同 shape `[B]`、device 和
-dtype 的浮点 Tensor，且所有 weight finite、非负；框架不执行 batch renormalization。
-`requires_per_sample_loss=False` 只适用于精确 identity policy，非全一输出会在 scalar
-Objective 路径 fail closed。
+类条件版本选择 `class_conditional_p2_gaussian_denoising`，并可另外声明
+`condition_dropout`。两个 P2 Builder 都固定 epsilon prediction、要求
+`MSEObjective`，验证 model 的 fixed `C` 或 learned-range `2C` output contract，并把与
+采样有关的 prediction/variance 事实写入 checkpoint inference recipe。不存在
+`loss_weighting` 配置、Gaussian weighting registry、通用 loss composer 或公共 reducer
+protocol。
 
-需要逐样本组合的 policy 以及 learned-range variance 要求 Objective 满足：
+第三方若要实现另一种 SNR weighting、prediction restriction、model signature 或 batch
+语义，应提供自己的 Strategy，并以带 namespace 的 TrainingBuilder 注册完整 recipe：
 
 ```python
-class BatchReduciblePerSampleObjective(PerSampleObjective, Protocol):
-    def reduce_per_sample_loss(self, loss: torch.Tensor) -> torch.Tensor: ...
+from typing import Any
+
+from stochaflow.extensions import (
+    REGISTRIES,
+    TrainingBuilder,
+    TrainingPlan,
+    TrainingStrategy,
+    TrainStepOutput,
+)
+
+
+class InverseSnrGaussianStrategy(TrainingStrategy):
+    def __init__(self, model, process, objective, *, scale: float) -> None:
+        self.model = model
+        self.process = process
+        self.objective = objective
+        self.scale = scale
+
+    def training_step(self, batch: Any) -> TrainStepOutput:
+        ...  # interpret batch, call model, and own this recipe's loss semantics
+
+
+@REGISTRIES.training_builders.register("my_lab.inverse_snr_gaussian")
+class InverseSnrGaussianBuilder(TrainingBuilder):
+    def build(self) -> TrainingPlan:
+        strategy = InverseSnrGaussianStrategy(
+            self.context.primary_model,
+            self.context.process,
+            self.context.objective,
+            scale=float(self.context.params.get("scale", 1.0)),
+        )
+        return TrainingPlan(
+            strategy=strategy,
+            primary_model=self.context.primary_model,
+            process=self.context.process,
+            objective=self.context.objective,
+        )
 ```
 
-reducer 必须返回同设备浮点 scalar。内置 `MSEObjective` 的 `per_sample_loss()` 按配置的
-`mean`/`sum` 处理非 batch 维，`reduce_per_sample_loss()` 再以同一语义处理 batch 维；
-`forward()` 委托这两个方法。Gaussian weighted 路径只调用一次逐样本方法和一次 reducer。
+实际 Builder 应在构造 Strategy 前验证 Process、Objective、model capability、私有参数和
+未知字段，并原样保留 core 注入的资产。若 checkpoint 需要支持 sampling，还必须声明与
+该 model/strategy 组合匹配的 `SamplingRecipe`。`gaussian_training_target()` 可供自定义
+Gaussian Strategy 复用；它不会替 Strategy 决定 batch、model call、weighting 或
+reduction。
 
 ## Sampling 生命周期与 artifact
 

@@ -100,10 +100,10 @@ checkpoint + sample config
     `provider: torch`、`class_name` 或 `target`；配置参考、错误信息和 `--check` 必须按
     role 明确显示该字段接受 Registry identity 还是两个受限 native identifier。
 14. **P2 research variation 不扩张 production authoring tree。** corrected ADM
-    topology 是唯一 ADM production recipe 的组成；`constant`/`p2` A/B 由 benchmark
-    protocol基于同一 readable base config产生 frozen resolved configs，不永久增加
-    `train-adm-baseline.yaml`/`train-adm-p2.yaml`，也不把训练变化伪装成 sample
-    profile。
+    topology 是唯一 ADM production recipe 的组成；standard/P2 A/B 由 benchmark
+    protocol 在同一 readable base config 上选择具体 P2 TrainingBuilder，并产生 frozen
+    resolved configs，不永久增加 `train-adm-baseline.yaml`/`train-adm-p2.yaml`，也不把
+    训练变化伪装成 sample profile。
 
 推荐的最终边界是：
 
@@ -1461,7 +1461,7 @@ Hydra composed mapping
 - AFHQ batch、accumulation、scheduler、verification 不漂移；
 - AFHQ ADM parity 使用 A0 后的 canonical skip/attention topology，并拒绝 pre-A0
   config/checkpoint；
-- P2 benchmark override 与 production Hydra Defaults List 隔离；
+- P2 benchmark TrainingBuilder selection 与 production Hydra Defaults List 隔离；
 - AFHQ sample config不进入 train Defaults List；
 - AFHQ evaluation/capacity authority 不变；
 - AFHQ installed-wheel extension activation 正常。

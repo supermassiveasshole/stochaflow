@@ -239,47 +239,58 @@ request 可改变 shape、数量、batch、seed、Sampler、writers 和 recipe �
 `options` 浅合并，Sampler/writers 原子替换；Builder identity 和 fixed contract 不可修改。
 Gaussian checkpoint 的 fixed contract 包含 `prediction_type` 和 `variance.mode`：
 sample request 不能把 fixed checkpoint 改成 learned-range，反之亦然。P2 的
-`loss_weighting` 与 learned-range 的 `variance.loss` 是 training/resume facts，保存在完整
-resolved config 中；它们不是 sampling option。`ddpm.num_inference_steps` 或显式 schedule
-只是 request-time solver protocol，不能改变 checkpoint 的 prediction/variance contract。
+TrainingBuilder identity、`k/gamma` 与 learned-range 的 `variance.loss` 是
+training/resume facts，保存在完整 resolved config 中；它们不是 sampling option。
+`ddpm.num_inference_steps` 或显式 schedule 只是 request-time solver protocol，不能改变
+checkpoint 的 prediction/variance contract。
 resume observability config 也只能改变没有恢复状态的监控表面，不能改变 extension
 selection，也不能引入 checkpoint 未选择的 diagnostic provider module。它的有效配置和
 provenance 会写入新兄弟 run 及其 checkpoint，旧 logger/event 文件不会续写。除此之外，
 resume 不接受任意模型、训练资产或 optimizer 替换；需要改变它们时应启动新的训练
 workflow。
 
-### Gaussian weighting 的恢复与开发期配置切换
+### P2 TrainingBuilder 的恢复与开发期配置切换
 
-`GaussianSimpleLossWeighting` 是由配置构造的 family policy，不是 managed
-`nn.Module`，核心不会为它保存或恢复独立 `state_dict`。policy 的 `name` 与 `params`
-只保存在 checkpoint 的完整 resolved config；`selected_components` 不展开
+P2 是具体 TrainingBuilder/TrainingStrategy 组合，不是可注入标准 Gaussian Builder 的
+weighting policy。无条件 recipe 使用 `p2_gaussian_denoising`，类条件 recipe 使用
+`class_conditional_p2_gaussian_denoising`；两者固定 epsilon prediction，并从
+`training.params` 读取 `k`、`gamma` 和 `variance`。核心不会为这些普通 recipe 参数保存
+独立 `state_dict`；完整 resolved config 才是恢复权威，`selected_components` 不展开
 `training.params`，不能代替该配置。
 
-strict resume 先以 `EXACT` policy 验证 checkpoint 保存的 extension provenance，再激活
-插件并通过 Gaussian family registry 重建 weighting。第三方 policy 的代码身份因此由
-所选 entry point 的 name、distribution、version 和 target 约束；缺失插件或
-name/distribution/target identity 不匹配会在训练组件构造前失败。sampling request 和
-observability overlay 都不能替换 weighting。
+strict resume 以 checkpoint 保存的 `training.name` 和完整参数重建同一个 P2 Builder。
+第三方 weighting 变体必须注册自己的 namespaced TrainingBuilder/TrainingStrategy；其代码
+身份继续由所选 entry point 的 name、distribution、version 和 target 约束。sampling
+request 和 observability overlay 都不能把标准 Builder 改成 P2、替换 `k/gamma`，或选择
+另一种第三方训练算法。
 
-开发期 flat P2 declaration：
+所有开发期 `loss_weighting` declaration 均不受支持，包括曾使用的 flat 或 component
+形式：
 
 ```yaml
-loss_weighting: {name: p2, k: 1.0, gamma: 1.0}
+training:
+  name: gaussian_denoising
+  params:
+    loss_weighting:
+      name: p2
+      params: {k: 1.0, gamma: 1.0}
 ```
 
-不受支持。新格式必须显式使用：
+新配置必须选择具体 Builder：
 
 ```yaml
-loss_weighting:
-  name: p2
+training:
+  name: p2_gaussian_denoising
   params:
     k: 1.0
     gamma: 1.0
+    variance: {mode: fixed}
 ```
 
-框架不提供 alias、弃用期、config/checkpoint 转换器或参数猜测；旧 declaration 在 Builder
-组合时 fail closed。这个配置切换不改变 checkpoint container format，当前 writer 仍是
-v11。
+标准 `gaussian_denoising` 和 `class_conditional_gaussian_denoising` 会把
+`loss_weighting` 作为未知参数拒绝。框架不提供 weighting policy registry、alias、弃用期、
+config/checkpoint 转换器或参数猜测。这个切换不改变 checkpoint container format，当前
+writer 仍是 v11。
 
 终端进度显示不属于训练状态。strict resume 可用互斥的 `--progress` 与
 `--no-progress` 覆盖 checkpoint 保存的 `trainer.show_progress`；两者都不指定时继承

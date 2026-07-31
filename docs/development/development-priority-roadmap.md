@@ -7,7 +7,7 @@
 - 当前工程优先项：A0/A1、修订后的 A2 class-aware example contract 与 Metrics
   M0–M4 repository implementation 已关闭；下一步推进通用 Evaluation E0–E1
 - 当前产品主线：pretrained image autoencoder + class-conditional latent diffusion
-- 当前 pixel-quality lane：corrected ADM + learned-range Gaussian + P2 weighting
+- 当前 pixel-quality lane：corrected ADM + learned-range Gaussian + concrete P2 training
   已具备 algorithm/config substrate；quality evidence 尚未运行
 - 首个 correctness target：AFHQ-v2 + frozen Diffusers `AutoencoderKL` + DiT-S/2
 - 首个开放数据 target：The Met Open Access curated snapshot
@@ -211,8 +211,9 @@ retained MNIST/AFHQ 的训练数值行为保持不变。
 
 - model/process/dynamics 使用窄 family capability 表达 `2C` learned-range variance；
 - epsilon simple MSE 与 detached-mean variational-bound term 构成 hybrid loss；
-- `loss_weighting` 是 Gaussian family-local registry declaration；省略字段使用 constant，
-  显式配置统一使用 `{name, params}`，内置 P2 只是其中一个 policy；
+- P2 由具体的无条件/类条件 `TrainingStrategy` 与对应 `TrainingBuilder` 实现；
+  配置通过 P2 builder 的私有 `k`、`gamma` 参数表达，不建立 weighting policy
+  registry；
 - exact `w_t = (k + SNR(t))^-gamma`，P2 只加权 simple term；
 - CFG 只作用于 prediction half，variance 取 conditional branch；
 - DDPM 支持 250-step improved-diffusion-style respaced ancestral transition；
@@ -221,8 +222,8 @@ retained MNIST/AFHQ 的训练数值行为保持不变。
 - inference recipe 固定 prediction/variance semantics；
 - gamma-zero、learned-range、VB gradient 与 upstream numeric parity tests。
 
-本 milestone 不把 P2 注册为通用 Objective，不把 weighting 推广到 v/x0/score，也不
-修改唯一 production AFHQ train recipe。
+本 milestone 不把 P2 注册为通用 Objective，不建立 weighting policy registry，也不
+把 P2 推广到 v/x0/score 或修改唯一 production AFHQ train recipe。
 
 退出条件已闭合：P2 official 256 unconditional topology 精确为 93,563,910
 参数；loss、variance、respacing 与 pinned reference parity 已测试；旧
@@ -429,7 +430,7 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 - A0 后不再把旧 91.3M ADM checkpoint、FID/KID 或 sample panel描述为新
   `adm_unet` production config 的可复现结果。
 - P2 capability 的数值正确性由 epsilon、learned range、linear T=1000、uniform
-  timestep 与 constant/P2 parity tests 固定；仓库不维护单类别 paper reproduction。
+  timestep 与 standard/P2 parity tests 固定；仓库不维护单类别 paper reproduction。
 - Metrics 的 `loss_aggregation_weight` 是 epoch统计权重；P2
   `timestep_loss_weight` 是 timestep objective coefficient，两者不能共用字段。
 - AFHQ evaluation 同时报告 aggregate 和 cat/dog/wild per-class 结果。
@@ -463,7 +464,7 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 4. `Add metric contracts and canonical epoch results`
 5. `Add validation MetricEngine`
 6. `Add learned-range Gaussian training`
-7. `Add exact P2 weighting and respaced DDPM`
+7. `Add concrete P2 training and respaced DDPM`
 8. `Add post-training evaluation foundation`
 9. `Add P2 prediction and quality profiles`
 10. `Add pretrained AutoencoderKL codec`

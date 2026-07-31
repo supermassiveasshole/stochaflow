@@ -16,7 +16,7 @@
 </div>
 
 当前内置实现聚焦 pixel-space 离散 Gaussian diffusion，包括无条件与类别条件训练、
-fixed/learned-range variance、epsilon-only P2 weighting、full/respaced ancestral
+fixed/learned-range variance、epsilon-only P2 training、full/respaced ancestral
 DDPM、DDIM、EMA、CFG 和结果 writers。项目可以通过普通 Python distribution 接入
 自己的数据、训练策略、生成算法与 artifact；latent diffusion、pretrained
 autoencoder 和 distributed training 尚未实现。

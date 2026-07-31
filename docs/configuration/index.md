@@ -30,7 +30,7 @@ troubleshooting
 | 理解 config/checkpoint 权威并跨环境移动实验 | [Checkpoint、配置权威与可移植性](compatibility-and-migration.md) |
 | 查看 Physics reconstruction 与蒸馏的完整扩展 | [纵向扩展参考项目](reference-projects.md) |
 | 训练、smoke run、恢复和 checkpoint 采样 | [常用工作流](workflows.md) |
-| 配置 learned-range variance、P2 weighting 或 respaced DDPM | {ref}`Gaussian variance、P2 与 respaced DDPM <gaussian-variance-p2-respaced-ddpm>` |
+| 配置 learned-range variance、P2 training 或 respaced DDPM | {ref}`Gaussian variance、P2 与 respaced DDPM <gaussian-variance-p2-respaced-ddpm>` |
 | 用 TensorBoard 查看 loss、学习率、样本网格并比较运行 | [TensorBoard 使用指南](../tutorials/tensorboard.md) |
 | 估算大规模输出与 trajectory 内存 | [Sampling artifact 容量](sampling-capacity.md) |
 | 根据错误信息定位问题 | [排错索引](troubleshooting.md) |
@@ -270,14 +270,18 @@ training:
   params:
     prediction_type: epsilon
     variance: {mode: fixed}
-    loss_weighting: {name: constant, params: {}}
 ```
 
-`variance` 与 `loss_weighting` 都属于具体 Gaussian TrainingBuilder 的 private params，
-不是新的顶层 schema 或通用 Objective。`loss_weighting` 由 Gaussian family-local
-registry 构造，不属于全局 `REGISTRIES`。省略整个字段使用 constant；若显式声明，
-`name` 和 `params` 都必须出现，`params` 可以为空。fixed variance 要求模型输出与 state
-相同的 `C` channels，并且不计算 variational-bound term。
+`gaussian_denoising` 与 `class_conditional_gaussian_denoising` 是标准、未加权的
+Gaussian TrainingBuilder。`prediction_type` 支持 `epsilon`、`x0`、`v` 和 `score`；
+`variance` 是 Builder 的 private recipe fact，不是新的顶层 schema 或通用 Objective。
+fixed variance 要求模型输出与 state 相同的 `C` channels，并且不计算
+variational-bound term。
+
+P2 不是标准 Builder 上的 weighting option，而是两个拥有完整训练语义的具体
+TrainingBuilder：无条件使用 `p2_gaussian_denoising`，类条件使用
+`class_conditional_p2_gaussian_denoising`。两者固定 epsilon prediction，不接受
+`prediction_type`，并要求 `objective.name: mse`。
 
 paper-compatible P2 + learned-range recipe 写作：
 
@@ -297,17 +301,13 @@ model:
     dropout: 0.1
 
 training:
-  name: gaussian_denoising
+  name: p2_gaussian_denoising
   params:
-    prediction_type: epsilon
+    k: 1.0
+    gamma: 1.0
     variance:
       mode: learned_range
       loss: rescaled_variational_bound
-    loss_weighting:
-      name: p2
-      params:
-        k: 1.0
-        gamma: 1.0
 
 objective:
   name: mse
@@ -327,17 +327,31 @@ P2 权重精确为
 `0..T-1`；weight 与被采样 noisy state 使用同一个 cumulative marginal，不能错一位或
 改用单步 alpha。
 
-P2 只在 `prediction_type: epsilon` 下提供 paper-compatible 声明。P2 与
-learned-range 都要求 Objective 满足 `BatchReduciblePerSampleObjective`。内置
+P2 Builder 固定 `prediction_type: epsilon`，并拒绝其他 prediction 参数。P2 与
+learned-range 的内置实现都要求 `MSEObjective`；不建立通用 Objective reducer 契约。
 `MSEObjective` 的 `mean` 是 feature mean + batch mean，`sum` 是 feature sum + batch
-sum；因此全一权重或 `gamma: 0` 在两种 reduction 下都严格等价于未加权 Objective。
-diagnostic 中的 `timestep_loss_weight` 是这个 timestep-dependent 训练系数；未来或项目级
-指标使用的 `loss_aggregation_weight` 只控制 batch 统计聚合，不参与 autograd。
+sum，因此 `gamma: 0` 在两种 reduction 下都让 simple-loss 部分严格等价于相应的未加权
+MSE；learned-range VB 仍按原语义相加且不被 P2 加权。diagnostic 中的
+`timestep_loss_weight` 是这个 timestep-dependent 训练系数；未来或项目级指标使用的
+`loss_aggregation_weight` 只控制 batch 统计聚合，不参与 autograd。
 
-第三方 policy 必须用 namespaced 名称注册，例如
-`my_lab.inverse_one_plus_snr`，并以同一 `{name, params}` declaration 供无条件和类条件
-Gaussian Builder 构造。新增 policy 不需要修改两套 Builder/Strategy。开发期 flat 配置
-`{name: p2, k: 1.0, gamma: 1.0}` 不受支持，也没有 alias 或自动迁移。
+类条件 P2 配置使用相同的 `k`、`gamma` 和 `variance`，并额外接受
+`condition_dropout`：
+
+```yaml
+training:
+  name: class_conditional_p2_gaussian_denoising
+  params:
+    condition_dropout: 0.1
+    k: 1.0
+    gamma: 1.0
+    variance: {mode: fixed}
+```
+
+第三方 weighting 变体应实现并注册自己的 namespaced `TrainingBuilder` 和具体
+`TrainingStrategy`，例如 `training.name: my_lab.min_snr_gaussian`。框架不提供
+weighting policy registry、通用 Composer 或按 policy 名称分派的标准 Gaussian
+Builder。任何开发期 `loss_weighting` 配置都不受支持，也没有 alias 或自动迁移。
 
 ancestral 250-step sampling 通过 DDPM 配置表达：
 
@@ -356,7 +370,8 @@ generalized `eta` transition，并在 learned-range checkpoint 上明确忽略 v
 class-conditional learned-range CFG 只 guide prediction half。scale 0/1 返回完整
 unconditional/conditional `2C` output；其他 scale 保留 conditional variance half。
 `prediction_type` 与 `variance.mode` 写入 checkpoint inference recipe，独立 sample
-request 不可覆盖。P2 `k/gamma` 与 variance-loss policy 是 training/resume facts，不应
+request 不可覆盖。P2 Builder identity、`k/gamma` 与 variance-loss recipe 是
+training/resume facts，不应
 放进 sample profile。
 
 ## 配置层次

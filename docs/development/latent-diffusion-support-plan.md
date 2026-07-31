@@ -1031,8 +1031,8 @@ batch contract 决定；core runner 不增加分支。
 - Gaussian Process；
 - epsilon prediction 作为 parity baseline；
 - fixed variance；
-- constant/unweighted simple MSE；P2 capability 即使已经在 pixel Gaussian recipe 中
-  实现，也不自动成为 latent correctness default；
+- standard unweighted simple MSE；concrete P2 strategy 即使已经在 pixel Gaussian
+  recipe 中实现，也不自动成为 latent correctness default；
 - `clip_denoised=false`；
 - concrete condition dropout 由 Strategy 管理；
 - model-internal dropout 关闭；
@@ -1041,10 +1041,10 @@ batch contract 决定；core runner 不增加分支。
 `v` prediction 可以作为受控扩展，但不能因为 pixel AFHQ recipe 可用就自动成为
 latent default。
 
-P2 weighting 是 parameterization-dependent 的 Gaussian training policy。只有在
-latent epsilon baseline、codec reconstruction 和 decoded evaluation protocol稳定后，
-才能以相同 topology/data/budget 做 `constant`/`p2` A/B；pixel AFHQ 的收益不能直接
-推广到 latent DiT，更不能把 P2 参数放进 codec 或 Process 配置。
+P2 是 parameterization-dependent 的具体 Gaussian TrainingStrategy/TrainingBuilder
+组合。只有在 latent epsilon baseline、codec reconstruction 和 decoded evaluation
+protocol 稳定后，才能以相同 topology/data/budget 做 standard/P2 builder A/B；pixel
+AFHQ 的收益不能直接推广到 latent DiT，更不能把 P2 参数放进 codec 或 Process 配置。
 
 learned variance 后续需要：
 
