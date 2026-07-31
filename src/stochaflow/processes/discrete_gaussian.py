@@ -22,7 +22,8 @@ from .noise_schedules import DiscreteVPSchedule, GaussianScales
 class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
     r"""Model-free discrete VP Gaussian process with fixed coefficients."""
 
-    reference_alpha_bar_t: torch.Tensor
+    _reference_alpha_bar_t: torch.Tensor
+    _runtime_alpha_bar_t: torch.Tensor
     marginal_signal_t: torch.Tensor
     marginal_noise_t: torch.Tensor
     sqrt_posterior_variance_t: torch.Tensor
@@ -161,13 +162,14 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
             source_times,
             target_times,
         )
+        reference_alpha_bar_t = self._reference_alpha_bar_for_runtime()
         source_alpha_bar = self._append_dimensions(
-            self._gather(self.reference_alpha_bar_t, source_times),
+            self._gather(reference_alpha_bar_t, source_times),
             state_times=source_times,
             broadcast_shape=broadcast_shape,
         )
         target_alpha_bar = self._append_dimensions(
-            self._gather(self.reference_alpha_bar_t, target_times),
+            self._gather(reference_alpha_bar_t, target_times),
             state_times=target_times,
             broadcast_shape=broadcast_shape,
         )
@@ -377,9 +379,13 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
         reference_alpha_bar = torch.cat(
             (torch.ones_like(alpha_bar[:1]), alpha_bar),
         )
+        # Keep the immutable reference table on CPU instead of registering it as
+        # module state. MPS cannot represent float64 buffers, while CPU/CUDA use
+        # this table to preserve reference precision for selected-pair math.
+        self._reference_alpha_bar_t = reference_alpha_bar.detach().cpu().clone()
         self.register_buffer(
-            "reference_alpha_bar_t",
-            reference_alpha_bar,
+            "_runtime_alpha_bar_t",
+            reference_alpha_bar.to(dtype=storage_dtype),
             persistent=False,
         )
         signal = signal.to(dtype=storage_dtype)
@@ -392,6 +398,12 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
         self.register_buffer("sqrt_posterior_variance_t", posterior_values[0])
         self.register_buffer("posterior_mean_coef1", posterior_values[1])
         self.register_buffer("posterior_mean_coef2", posterior_values[2])
+
+    def _reference_alpha_bar_for_runtime(self) -> torch.Tensor:
+        runtime = self.marginal_signal_t
+        if runtime.device.type == "mps":
+            return self._runtime_alpha_bar_t
+        return self._reference_alpha_bar_t.to(device=runtime.device)
 
     @staticmethod
     def _validate_snapshot_tensors(
