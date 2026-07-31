@@ -18,7 +18,7 @@ from torchmetrics import Metric
 from stochaflow import data, metrics, models, processes, sampling, training
 from stochaflow import extensions as public
 from stochaflow.scripts import experiment_runner
-from stochaflow.training import diagnostics
+from stochaflow.training import diagnostics, gaussian_weighting
 from stochaflow.utils import config, logging, plugins, registry
 
 
@@ -162,6 +162,9 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
             data.ClassLabeledImageFolderArtifactPayload
         ),
         "BoundTrainingDiagnostic": training.BoundTrainingDiagnostic,
+        "BatchReduciblePerSampleObjective": (
+            training.BatchReduciblePerSampleObjective
+        ),
         "DataArtifact": data.DataArtifact,
         "DataArtifactBinding": data.DataArtifactBinding,
         "DataArtifactBindings": data.DataArtifactBindings,
@@ -218,6 +221,12 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "GaussianNoiseSchedule": processes.GaussianNoiseSchedule,
         "GaussianPrediction": sampling.GaussianPrediction,
         "GaussianScales": processes.GaussianScales,
+        "GaussianSimpleLossContext": (
+            gaussian_weighting.GaussianSimpleLossContext
+        ),
+        "GaussianSimpleLossWeighting": (
+            gaussian_weighting.GaussianSimpleLossWeighting
+        ),
         "GaussianTransition": sampling.GaussianTransition,
         "GenerativeDynamics": sampling.GenerativeDynamics,
         "InferenceAssetProjection": training.InferenceAssetProjection,
@@ -312,6 +321,9 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
             plugins.parse_extension_plugin_provenance
         ),
         "prepare_extension_plugins": plugins.prepare_extension_plugins,
+        "register_gaussian_simple_loss_weighting": (
+            gaussian_weighting.register_gaussian_simple_loss_weighting
+        ),
         "gaussian_training_target": training.gaussian_training_target,
         "normalize_gaussian_prediction": sampling.normalize_gaussian_prediction,
         "validate_metric_configs": metrics.validate_metric_configs,

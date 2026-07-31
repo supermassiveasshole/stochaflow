@@ -7,21 +7,23 @@ from typing import Any, Protocol, cast, runtime_checkable
 import torch
 from torch import nn
 
+from stochaflow.families.gaussian import PredictionType, VarianceMode
 from stochaflow.metrics import MetricUpdate
 from stochaflow.processes import DiscreteGaussianDenoisingProcess
-from stochaflow.processes.gaussian import LearnedRangeGaussianVarianceProcess
-from stochaflow.sampling import PredictionType, VarianceMode
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
 from stochaflow.training.gaussian_loss import (
-    GaussianLossWeightingConfig,
-    GaussianVarianceConfig,
-    compute_gaussian_training_loss,
+    GaussianLossComposer,
+    build_gaussian_loss_composer,
     gaussian_loss_diagnostics,
     gaussian_training_target,
-    parse_gaussian_loss_weighting,
+    prepare_gaussian_loss_inputs,
+)
+from stochaflow.training.gaussian_variance import (
     parse_gaussian_variance,
     validate_gaussian_model_output_layout,
-    validate_per_sample_objective,
+)
+from stochaflow.training.gaussian_weighting import (
+    build_gaussian_simple_loss_weighting,
 )
 from stochaflow.training.strategy import (
     Batch,
@@ -65,58 +67,40 @@ class GaussianDenoisingTrainingStrategy(TrainingStrategy):
         self,
         model: nn.Module,
         process: DiscreteGaussianDenoisingProcess,
-        objective: nn.Module,
-        *,
-        prediction_type: PredictionType = "epsilon",
-        variance: GaussianVarianceConfig | None = None,
-        loss_weighting: GaussianLossWeightingConfig | None = None,
+        loss_composer: GaussianLossComposer,
     ) -> None:
-        if prediction_type not in ("epsilon", "x0", "v", "score"):
-            raise ValueError(
-                "Gaussian prediction_type must be epsilon, x0, v, or score"
-            )
-        if process.terminal_time <= process.clean_time:
-            raise ValueError("Gaussian training requires a non-empty noisy time range")
-        self.model = model
-        self.process = process
-        self.objective = objective
-        self._prediction_type: PredictionType = cast(
-            PredictionType,
-            prediction_type,
-        )
-        self.variance = variance or GaussianVarianceConfig()
-        self.loss_weighting = loss_weighting or GaussianLossWeightingConfig()
-        if (
-            self.loss_weighting.name == "p2"
-            and self.prediction_type != "epsilon"
-        ):
-            raise ValueError("P2 weighting requires epsilon prediction")
-        if self.variance.mode == "learned_range" and not isinstance(
-            self.process,
-            LearnedRangeGaussianVarianceProcess,
-        ):
+        process_value = cast(object, process)
+        if not isinstance(process_value, DiscreteGaussianDenoisingProcess):
             raise TypeError(
-                "learned_range variance requires "
-                "LearnedRangeGaussianVarianceProcess capability"
+                "Gaussian training requires DiscreteGaussianDenoisingProcess"
             )
-        validate_per_sample_objective(
-            self.objective,
-            variance=self.variance,
-            loss_weighting=self.loss_weighting,
-            path="Gaussian training policy",
-        )
+        if process_value.terminal_time <= process_value.clean_time:
+            raise ValueError("Gaussian training requires a non-empty noisy time range")
+        composer_value = cast(object, loss_composer)
+        if not isinstance(composer_value, GaussianLossComposer):
+            raise TypeError("Gaussian training requires GaussianLossComposer")
+        if (
+            composer_value.bound_variance_process is not None
+            and composer_value.bound_variance_process is not process_value
+        ):
+            raise ValueError(
+                "Gaussian training loss composer is bound to a different Process"
+            )
+        self.model = model
+        self.process = process_value
+        self.loss_composer = composer_value
 
     @property
     def prediction_type(self) -> PredictionType:
         """Return the configured Gaussian model parameterization."""
 
-        return self._prediction_type
+        return self.loss_composer.prediction_type
 
     @property
     def variance_mode(self) -> VarianceMode:
         """Return the configured Gaussian model-output variance layout."""
 
-        return self.variance.mode
+        return self.loss_composer.variance.mode
 
     @property
     def metric_channels(self) -> frozenset[str]:
@@ -159,18 +143,15 @@ class GaussianDenoisingTrainingStrategy(TrainingStrategy):
         noisy, noise = self.process.sample_marginal(clean, state_times)
         model_times = state_times - self.process.clean_time - 1
         raw_model_output = self.predict_gaussian_model(noisy, model_times)
-        computation = compute_gaussian_training_loss(
-            objective=self.objective,
-            process=self.process,
+        inputs = prepare_gaussian_loss_inputs(
+            self.process,
             clean=clean,
             noisy=noisy,
             noise=noise,
             state_times=state_times,
             raw_model_output=raw_model_output,
-            prediction_type=self.prediction_type,
-            variance=self.variance,
-            loss_weighting=self.loss_weighting,
         )
+        computation = self.loss_composer.compute(inputs)
         prediction = computation.prediction
         diagnostics: dict[str, Any] = {
             "timesteps": state_times.detach(),
@@ -211,7 +192,7 @@ class GaussianDenoisingTrainingBuilder(TrainingBuilder):
             params.pop("variance", None),
             path="training.params.variance",
         )
-        loss_weighting = parse_gaussian_loss_weighting(
+        loss_weighting = build_gaussian_simple_loss_weighting(
             params.pop("loss_weighting", None),
             path="training.params.loss_weighting",
         )
@@ -238,26 +219,15 @@ class GaussianDenoisingTrainingBuilder(TrainingBuilder):
             raise ValueError(
                 "training.params.prediction_type must be epsilon, x0, v, or score"
             )
-        if loss_weighting.name == "p2" and prediction_type != "epsilon":
-            raise ValueError(
-                "training.params.loss_weighting p2 requires "
-                "training.params.prediction_type epsilon"
-            )
-        if variance.mode == "learned_range" and not isinstance(
-            process,
-            LearnedRangeGaussianVarianceProcess,
-        ):
-            raise TypeError(
-                "training.params.variance learned_range requires "
-                "LearnedRangeGaussianVarianceProcess capability"
-            )
         validate_gaussian_model_output_layout(
             self.context.primary_model,
             variance_mode=variance.mode,
             path="gaussian_denoising primary model",
         )
-        validate_per_sample_objective(
-            objective,
+        composer = build_gaussian_loss_composer(
+            objective=objective,
+            process=process,
+            prediction_type=cast(PredictionType, prediction_type),
             variance=variance,
             loss_weighting=loss_weighting,
             path="gaussian_denoising training policy",
@@ -265,10 +235,7 @@ class GaussianDenoisingTrainingBuilder(TrainingBuilder):
         strategy = GaussianDenoisingTrainingStrategy(
             self.context.primary_model,
             process,
-            objective,
-            prediction_type=cast(PredictionType, prediction_type),
-            variance=variance,
-            loss_weighting=loss_weighting,
+            composer,
         )
         return TrainingPlan(
             strategy=strategy,

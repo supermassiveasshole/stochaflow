@@ -30,6 +30,7 @@ from stochaflow.training.diagnostics import (
 from .helpers import (
     RecordingLogger,
     fit_event,
+    gaussian_loss_composer,
     gaussian_system,
     provider_config,
     trainer,
@@ -163,8 +164,11 @@ def _conditional_runtime() -> tuple[SimpleNamespace, RecordingConditionalDenoise
     strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
         model,
         process,
-        objective,
-        prediction_type="v",
+        gaussian_loss_composer(
+            process,
+            objective,
+            prediction_type="v",
+        ),
         condition_dropout=1.0,
     )
     runtime = SimpleNamespace(

@@ -20,8 +20,12 @@ from stochaflow.training import (
     TrainingPlan,
 )
 from stochaflow.training.gaussian_loss import (
-    GaussianLossWeightingConfig,
-    GaussianVarianceConfig,
+    GaussianLossComposer,
+    build_gaussian_loss_composer,
+)
+from stochaflow.training.gaussian_variance import parse_gaussian_variance
+from stochaflow.training.gaussian_weighting import (
+    build_gaussian_simple_loss_weighting,
 )
 from stochaflow.training.metric_binding import TrainingMetricRuntime
 from stochaflow.training.precision import PrecisionRuntime
@@ -85,6 +89,29 @@ class TinyLearnedVarianceGaussianDenoiser(TinyGaussianDenoiser):
         mean = super().forward(state, model_time)
         variance = torch.full_like(mean, -0.5)
         return torch.cat((mean, variance), dim=1)
+
+
+def _gaussian_loss_composer(
+    process: DiscreteGaussianProcess,
+    objective: nn.Module,
+    *,
+    variance: object = None,
+    loss_weighting: object = None,
+) -> GaussianLossComposer:
+    return build_gaussian_loss_composer(
+        objective=objective,
+        process=process,
+        prediction_type="epsilon",
+        variance=parse_gaussian_variance(
+            variance,
+            path="test Gaussian variance",
+        ),
+        loss_weighting=build_gaussian_simple_loss_weighting(
+            loss_weighting,
+            path="test Gaussian loss weighting",
+        ),
+        path="test Gaussian training policy",
+    )
 
 
 class MappingMeanAbsoluteErrorMetric(Metric):
@@ -586,8 +613,7 @@ def test_gaussian_phase_metrics_run_end_to_end_without_external_data(
     strategy = GaussianDenoisingTrainingStrategy(
         model,
         process,
-        objective,
-        prediction_type="epsilon",
+        _gaussian_loss_composer(process, objective),
     )
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     runtime = TrainingMetricRuntime(
@@ -676,16 +702,17 @@ def test_learned_range_p2_metrics_aggregate_uneven_batches_by_samples(
     strategy = GaussianDenoisingTrainingStrategy(
         model,
         process,
-        objective,
-        prediction_type="epsilon",
-        variance=GaussianVarianceConfig(
-            mode="learned_range",
-            loss="rescaled_variational_bound",
-        ),
-        loss_weighting=GaussianLossWeightingConfig(
-            name="p2",
-            k=1.0,
-            gamma=1.0,
+        _gaussian_loss_composer(
+            process,
+            objective,
+            variance={
+                "mode": "learned_range",
+                "loss": "rescaled_variational_bound",
+            },
+            loss_weighting={
+                "name": "p2",
+                "params": {"k": 1.0, "gamma": 1.0},
+            },
         ),
     )
     optimizer = torch.optim.SGD(model.parameters(), lr=0.0)

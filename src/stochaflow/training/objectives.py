@@ -23,6 +23,60 @@ class PerSampleObjective(Protocol):
         ...
 
 
+@runtime_checkable
+class BatchReduciblePerSampleObjective(PerSampleObjective, Protocol):
+    """Objective capability with an explicit batch-reduction policy."""
+
+    def reduce_per_sample_loss(self, loss: torch.Tensor) -> torch.Tensor:
+        """Reduce one scalar loss per batch item to a scalar loss."""
+
+        ...
+
+
+def validate_per_sample_loss(
+    value: object,
+    *,
+    prediction: torch.Tensor,
+) -> torch.Tensor:
+    """Validate a batch-aligned floating-point objective result."""
+
+    if not isinstance(value, torch.Tensor):
+        raise TypeError("per-sample objective capability must return a Tensor")
+    if not torch.is_floating_point(value):
+        raise TypeError(
+            "per-sample objective capability must return a floating-point Tensor"
+        )
+    if prediction.ndim == 0:
+        raise ValueError("per-sample objective validation requires a batch dimension")
+    if value.ndim != 1 or value.shape[0] != prediction.shape[0]:
+        raise ValueError("per-sample objective output must match the prediction batch")
+    if value.device != prediction.device:
+        raise ValueError(
+            "per-sample objective output must be on the prediction device"
+        )
+    return value
+
+
+def validate_reduced_loss(
+    value: object,
+    *,
+    per_sample_loss: torch.Tensor,
+) -> torch.Tensor:
+    """Validate a floating-point scalar produced by a batch reducer."""
+
+    if not isinstance(value, torch.Tensor):
+        raise TypeError("objective batch reducer must return a Tensor")
+    if not torch.is_floating_point(value):
+        raise TypeError("objective batch reducer must return a floating-point Tensor")
+    if value.ndim != 0:
+        raise ValueError("objective batch reducer must return a scalar Tensor")
+    if value.device != per_sample_loss.device:
+        raise ValueError(
+            "objective batch reducer output must be on the per-sample loss device"
+        )
+    return value
+
+
 @REGISTRIES.objectives.register("mse")
 class MSEObjective(nn.Module):
     """Task-neutral mean-squared-error objective."""
@@ -48,10 +102,21 @@ class MSEObjective(nn.Module):
             return flattened.sum(dim=1)
         return flattened.mean(dim=1)
 
+    def reduce_per_sample_loss(self, loss: torch.Tensor) -> torch.Tensor:
+        """Reduce batch-aligned MSE values with the configured semantics."""
+
+        per_sample_loss = validate_per_sample_loss(loss, prediction=loss)
+        if self.reduction == "sum":
+            reduced = per_sample_loss.sum()
+        else:
+            reduced = per_sample_loss.mean()
+        return validate_reduced_loss(reduced, per_sample_loss=per_sample_loss)
+
     def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compare prediction and target with configured scalar reduction."""
 
-        return F.mse_loss(prediction, target, reduction=self.reduction)
+        per_sample_loss = self.per_sample_loss(prediction, target)
+        return self.reduce_per_sample_loss(per_sample_loss)
 
 
 def compute_objective(
@@ -64,6 +129,8 @@ def compute_objective(
     loss_value: object = objective(prediction, target)
     if not isinstance(loss_value, torch.Tensor):
         raise TypeError("training objective must return a Tensor")
+    if not torch.is_floating_point(loss_value):
+        raise TypeError("training objective must return a floating-point Tensor")
     if loss_value.ndim != 0:
         raise ValueError("training objective must return a scalar Tensor")
     per_sample_value: object | None = None
@@ -73,16 +140,18 @@ def compute_objective(
             objective.per_sample_loss(prediction, target),
         )
     if per_sample_value is not None:
-        if not isinstance(per_sample_value, torch.Tensor):
-            raise TypeError("per-sample objective capability must return a Tensor")
-        if (
-            per_sample_value.ndim != 1
-            or per_sample_value.shape[0] != prediction.shape[0]
-        ):
-            raise ValueError(
-                "per-sample objective output must match the prediction batch"
-            )
+        per_sample_value = validate_per_sample_loss(
+            per_sample_value,
+            prediction=prediction,
+        )
     return loss_value, per_sample_value
 
 
-__all__ = ["MSEObjective", "PerSampleObjective", "compute_objective"]
+__all__ = [
+    "BatchReduciblePerSampleObjective",
+    "MSEObjective",
+    "PerSampleObjective",
+    "compute_objective",
+    "validate_per_sample_loss",
+    "validate_reduced_loss",
+]

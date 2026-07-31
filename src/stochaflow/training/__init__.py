@@ -40,7 +40,12 @@ from .gaussian import (
     GaussianDiagnosticSemantics,
     gaussian_training_target,
 )
-from .objectives import MSEObjective, PerSampleObjective, compute_objective
+from .objectives import (
+    BatchReduciblePerSampleObjective,
+    MSEObjective,
+    PerSampleObjective,
+    compute_objective,
+)
 from .optimization import WarmupCosineLR
 from .precision import (
     PRECISION_KINDS,
@@ -67,6 +72,7 @@ from .trainer import Trainer
 __all__ = [
     "PRECISION_KINDS",
     "Batch",
+    "BatchReduciblePerSampleObjective",
     "BoundTrainingDiagnostic",
     "ClassConditionalDiffusionQualityDiagnostic",
     "ClassConditionalGaussianDenoisingTrainingBuilder",

@@ -24,6 +24,14 @@ from stochaflow.training import (
     validate_train_step_output,
 )
 from stochaflow.training.builder import TrainingBuilderContext
+from stochaflow.training.gaussian_loss import (
+    GaussianLossComposer,
+    build_gaussian_loss_composer,
+)
+from stochaflow.training.gaussian_variance import parse_gaussian_variance
+from stochaflow.training.gaussian_weighting import (
+    build_gaussian_simple_loss_weighting,
+)
 from stochaflow.utils.config import ComponentConfig
 
 
@@ -216,6 +224,30 @@ class PerfectConditionalTargetModel(PerfectTargetModel):
         return self.forward(state, model_time)
 
 
+def _gaussian_loss_composer(
+    process: DiscreteGaussianProcess,
+    objective: nn.Module,
+    *,
+    prediction_type: PredictionType = "epsilon",
+    variance: object = None,
+    loss_weighting: object = None,
+) -> GaussianLossComposer:
+    return build_gaussian_loss_composer(
+        objective=objective,
+        process=process,
+        prediction_type=prediction_type,
+        variance=parse_gaussian_variance(
+            variance,
+            path="test Gaussian variance",
+        ),
+        loss_weighting=build_gaussian_simple_loss_weighting(
+            loss_weighting,
+            path="test Gaussian loss weighting",
+        ),
+        path="test Gaussian training policy",
+    )
+
+
 def test_supervised_strategy_declares_and_emits_metric_channel() -> None:
     model = nn.Linear(2, 1, bias=False)
     objective = MSEObjective()
@@ -246,11 +278,15 @@ def test_gaussian_strategy_supports_all_prediction_targets(
         {"name": "linear_beta", "params": {"num_timesteps": 4}}
     )
     model = PerfectTargetModel(process, prediction_type, clean_value=0.25)
+    objective = MSEObjective()
     strategy = GaussianDenoisingTrainingStrategy(
         model,
         process,
-        MSEObjective(),
-        prediction_type=prediction_type,
+        _gaussian_loss_composer(
+            process,
+            objective,
+            prediction_type=prediction_type,
+        ),
     )
 
     output = strategy.training_step(torch.full((2, 1, 2, 2), 0.25))
@@ -287,11 +323,11 @@ def test_class_conditional_gaussian_strategy_emits_shared_gaussian_channels() ->
         {"name": "linear_beta", "params": {"num_timesteps": 4}}
     )
     model = PerfectConditionalTargetModel(process, "epsilon", clean_value=0.25)
+    objective = MSEObjective()
     strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
         model,
         process,
-        MSEObjective(),
-        prediction_type="epsilon",
+        _gaussian_loss_composer(process, objective),
     )
     clean = torch.full((2, 1, 2, 2), 0.25)
     labels = torch.tensor([0, 2])
@@ -321,10 +357,11 @@ def test_gaussian_strategy_rejects_unhandled_conditions() -> None:
     process = DeterministicGaussianProcess(
         {"name": "linear_beta", "params": {"num_timesteps": 2}}
     )
+    objective = MSEObjective()
     strategy = GaussianDenoisingTrainingStrategy(
         PerfectTargetModel(process, "epsilon", 0.0),
         process,
-        MSEObjective(),
+        _gaussian_loss_composer(process, objective),
     )
 
     with pytest.raises(TypeError, match="custom TrainingBuilder"):
@@ -359,7 +396,10 @@ def test_unconditional_builder_composes_p2_learned_range_recipe() -> None:
                     "mode": "learned_range",
                     "loss": "rescaled_variational_bound",
                 },
-                "loss_weighting": {"name": "p2", "k": 1.0, "gamma": 1.0},
+                "loss_weighting": {
+                    "name": "p2",
+                    "params": {"k": 1.0, "gamma": 1.0},
+                },
             },
             primary_model=model,
             process=process,
@@ -518,7 +558,7 @@ def test_unconditional_builder_retains_runtime_layout_check_for_opaque_model() -
         )
     ).build()
 
-    with pytest.raises(ValueError, match="fixed-variance Gaussian model output"):
+    with pytest.raises(ValueError, match="output must match the state shape"):
         plan.strategy.training_step(torch.zeros(2, 1, 2, 2))
 
 
@@ -570,6 +610,16 @@ def test_gaussian_training_target_rejects_clean_state_time() -> None:
     ("clean", "noise", "message"),
     [
         (
+            [0.0, 0.0],
+            torch.ones(1, 2),
+            "must be Tensors",
+        ),
+        (
+            torch.tensor(0.0),
+            torch.tensor(1.0),
+            "batch dimension",
+        ),
+        (
             torch.zeros(1, 2, dtype=torch.long),
             torch.ones(1, 2, dtype=torch.long),
             "floating-point",
@@ -582,8 +632,8 @@ def test_gaussian_training_target_rejects_clean_state_time() -> None:
     ],
 )
 def test_gaussian_training_target_rejects_invalid_numeric_contract(
-    clean: torch.Tensor,
-    noise: torch.Tensor,
+    clean: object,
+    noise: object,
     message: str,
 ) -> None:
     process = DeterministicGaussianProcess(
@@ -593,8 +643,8 @@ def test_gaussian_training_target_rejects_invalid_numeric_contract(
     with pytest.raises((TypeError, ValueError), match=message):
         gaussian_training_target(
             process,
-            clean=clean,
-            noise=noise,
+            clean=clean,  # type: ignore[arg-type]
+            noise=noise,  # type: ignore[arg-type]
             state_times=torch.tensor([1]),
             prediction_type="epsilon",
         )

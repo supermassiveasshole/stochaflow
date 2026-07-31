@@ -5,10 +5,20 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 import torch
 
+from stochaflow.families.gaussian import (
+    GaussianPrediction,
+    LearnedVarianceGaussianPrediction,
+    PredictionType,
+    VarianceMode,
+    split_gaussian_model_output,
+)
+from stochaflow.families.gaussian import (
+    normalize_gaussian_prediction as normalize_gaussian_family_prediction,
+)
 from stochaflow.processes import (
     DiscreteGaussianDenoisingProcess,
     LearnedRangeGaussianVarianceProcess,
@@ -16,48 +26,7 @@ from stochaflow.processes import (
 
 from .dynamics import GenerativeDynamics
 
-PredictionType = Literal["epsilon", "x0", "v", "score"]
-VarianceMode = Literal["fixed", "learned_range"]
 PredictFn = Callable[[torch.Tensor, torch.Tensor], object]
-
-
-@dataclass(frozen=True, slots=True)
-class GaussianPrediction:
-    """Equivalent clean-state and noise predictions at one noisy state."""
-
-    clean: torch.Tensor
-    epsilon: torch.Tensor
-    model_output: torch.Tensor
-
-    def __post_init__(self) -> None:
-        for name in ("clean", "epsilon", "model_output"):
-            value = getattr(self, name)
-            if not isinstance(value, torch.Tensor):
-                raise TypeError(f"GaussianPrediction.{name} must be a Tensor")
-            if not torch.is_floating_point(value):
-                raise TypeError(
-                    f"GaussianPrediction.{name} must be floating-point"
-                )
-
-
-@dataclass(frozen=True, slots=True)
-class LearnedVarianceGaussianPrediction(GaussianPrediction):
-    """Gaussian prediction carrying target-aware learned log variance."""
-
-    log_variance: torch.Tensor
-
-    def __post_init__(self) -> None:
-        GaussianPrediction.__post_init__(self)
-        log_variance_value = cast(object, self.log_variance)
-        if not isinstance(log_variance_value, torch.Tensor):
-            raise TypeError(
-                "LearnedVarianceGaussianPrediction.log_variance must be a Tensor"
-            )
-        if not torch.is_floating_point(log_variance_value):
-            raise TypeError(
-                "LearnedVarianceGaussianPrediction.log_variance must be "
-                "floating-point"
-            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,14 +354,6 @@ def normalize_gaussian_prediction(
         raise ValueError("Gaussian state times must match the state batch")
     if state_times.device != state.device:
         raise ValueError("Gaussian state times must share the state device")
-    if not isinstance(model_output, torch.Tensor):
-        raise TypeError("Gaussian predict_fn must return a Tensor")
-    if model_output.shape != state.shape:
-        raise ValueError("Gaussian predict_fn output must match the state shape")
-    if model_output.device != state.device:
-        raise ValueError("Gaussian model output must share the state device")
-    if not torch.is_floating_point(model_output):
-        raise TypeError("Gaussian model output must be floating-point")
     prediction_type_value = cast(object, prediction_type)
     if not isinstance(prediction_type_value, str) or prediction_type_value not in (
         "epsilon",
@@ -409,25 +370,18 @@ def normalize_gaussian_prediction(
         raise TypeError("Gaussian clip_denoised must be boolean")
     clip_denoised = clip_denoised_value
     scales = process.marginal_scales(state_times, state.size())
-    signal = scales.signal
-    noise = scales.noise
-    if prediction_type == "epsilon":
-        epsilon = model_output
-        clean = (state - noise * epsilon) / signal
-    elif prediction_type == "x0":
-        clean = model_output
-        epsilon = (state - signal * clean) / noise
-    elif prediction_type == "v":
-        scale_energy = signal.square() + noise.square()
-        clean = (signal * state - noise * model_output) / scale_energy
-        epsilon = (noise * state + signal * model_output) / scale_energy
-    else:
-        epsilon = -noise * model_output
-        clean = (state - noise * epsilon) / signal
+    prediction = normalize_gaussian_family_prediction(
+        state,
+        model_output,
+        signal_scale=scales.signal,
+        noise_scale=scales.noise,
+        prediction_type=prediction_type,
+    )
     if clip_denoised:
-        clean = clean.clamp(-1.0, 1.0)
-        epsilon = (state - signal * clean) / noise
-    return GaussianPrediction(clean, epsilon, model_output)
+        clean = prediction.clean.clamp(-1.0, 1.0)
+        epsilon = (state - scales.signal * clean) / scales.noise
+        return GaussianPrediction(clean, epsilon, prediction.model_output)
+    return prediction
 
 
 def _validate_gaussian_prediction(
@@ -475,28 +429,11 @@ def _split_gaussian_model_output(
     state: torch.Tensor,
     variance_mode: VarianceMode,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    if not isinstance(value, torch.Tensor):
-        raise TypeError("Gaussian predict_fn must return a Tensor")
-    if value.device != state.device:
-        raise ValueError("Gaussian model output must share the state device")
-    if not torch.is_floating_point(value):
-        raise TypeError("Gaussian model output must be floating-point")
-    if variance_mode == "fixed":
-        if value.shape != state.shape:
-            raise ValueError("Gaussian predict_fn output must match the state shape")
-        return value, None
-    if state.ndim < 2:
-        raise ValueError(
-            "learned_range Gaussian state must include a channel dimension"
-        )
-    expected_shape = (state.shape[0], state.shape[1] * 2, *state.shape[2:])
-    if value.shape != expected_shape:
-        raise ValueError(
-            "learned_range Gaussian predict_fn output must have shape "
-            f"{expected_shape}, got {tuple(value.shape)}"
-        )
-    model_output, variance_values = value.chunk(2, dim=1)
-    return model_output, variance_values
+    return split_gaussian_model_output(
+        value,
+        state=state,
+        variance_mode=variance_mode,
+    )
 
 
 def _validate_target_times(

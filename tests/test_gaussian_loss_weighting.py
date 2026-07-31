@@ -4,24 +4,34 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import torch
 from torch import nn
 
+from stochaflow.families.gaussian import PredictionType
 from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.training.gaussian import GaussianDenoisingTrainingStrategy
 from stochaflow.training.gaussian_loss import (
-    GaussianLossWeightingConfig,
-    GaussianVarianceConfig,
-    compute_gaussian_training_loss,
+    GaussianLossComposer,
+    GaussianLossComputation,
+    GaussianLossInputs,
+    build_gaussian_loss_composer,
     gaussian_loss_diagnostics,
     gaussian_signal_to_noise_ratio,
-    gaussian_timestep_loss_weights,
+)
+from stochaflow.training.gaussian_variance import (
+    GaussianVarianceConfig,
     learned_range_log_variance,
-    parse_gaussian_loss_weighting,
     parse_gaussian_variance,
+)
+from stochaflow.training.gaussian_weighting import (
+    ConstantGaussianSimpleLossWeighting,
+    GaussianSimpleLossContext,
+    GaussianSimpleLossWeighting,
+    P2GaussianSimpleLossWeighting,
+    compute_gaussian_simple_loss_weights,
 )
 from stochaflow.training.objectives import MSEObjective
 
@@ -50,6 +60,88 @@ def gaussian_process(
     )
 
 
+def gaussian_loss_inputs(
+    process: DiscreteGaussianProcess,
+    *,
+    clean: torch.Tensor,
+    noisy: torch.Tensor,
+    noise: torch.Tensor,
+    state_times: torch.Tensor,
+    raw_model_output: object,
+) -> GaussianLossInputs:
+    """Prepare explicit Process facts for the process-free Composer."""
+
+    state_scales = process.marginal_scales(state_times, noisy.size())
+    return GaussianLossInputs(
+        clean=clean,
+        noisy=noisy,
+        noise=noise,
+        state_times=state_times,
+        raw_model_output=raw_model_output,
+        signal_scale=state_scales.signal,
+        noise_scale=state_scales.noise,
+        signal_to_noise_ratio=gaussian_signal_to_noise_ratio(
+            process,
+            state_times,
+        ),
+    )
+
+
+def compute_gaussian_loss(
+    *,
+    objective: nn.Module,
+    process: DiscreteGaussianProcess,
+    clean: torch.Tensor,
+    noisy: torch.Tensor,
+    noise: torch.Tensor,
+    state_times: torch.Tensor,
+    raw_model_output: object,
+    prediction_type: PredictionType = "epsilon",
+    variance: GaussianVarianceConfig | None = None,
+    loss_weighting: GaussianSimpleLossWeighting | None = None,
+) -> GaussianLossComputation:
+    """Build a validated test composition and compute one Gaussian loss."""
+
+    composer = build_gaussian_loss_composer(
+        objective=objective,
+        process=process,
+        prediction_type=prediction_type,
+        variance=variance or GaussianVarianceConfig(),
+        loss_weighting=(
+            loss_weighting or ConstantGaussianSimpleLossWeighting()
+        ),
+        path="test Gaussian training policy",
+    )
+    return composer.compute(
+        gaussian_loss_inputs(
+            process,
+            clean=clean,
+            noisy=noisy,
+            noise=noise,
+            state_times=state_times,
+            raw_model_output=raw_model_output,
+        )
+    )
+
+
+def gaussian_sample_weights(
+    process: DiscreteGaussianProcess,
+    state_times: torch.Tensor,
+    policy: GaussianSimpleLossWeighting,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return validated SNR and sample weights through the policy contract."""
+
+    snr = gaussian_signal_to_noise_ratio(process, state_times)
+    weights = compute_gaussian_simple_loss_weights(
+        policy,
+        GaussianSimpleLossContext(
+            prediction_type="epsilon",
+            signal_to_noise_ratio=snr,
+        ),
+    )
+    return snr, weights
+
+
 def test_p2_snr_uses_cumulative_marginal_scales() -> None:
     process = gaussian_process()
     state_times = torch.tensor([1, 3, 8])
@@ -63,10 +155,10 @@ def test_p2_snr_uses_cumulative_marginal_scales() -> None:
 def test_p2_matches_pinned_upstream_numeric_fixture() -> None:
     process = gaussian_process(dtype=torch.float64)
     state_times = torch.tensor([1, 4, 8])
-    snr, weights = gaussian_timestep_loss_weights(
+    snr, weights = gaussian_sample_weights(
         process,
         state_times,
-        GaussianLossWeightingConfig(name="p2", k=1.0, gamma=1.0),
+        P2GaussianSimpleLossWeighting(k=1.0, gamma=1.0),
     )
 
     assert torch.allclose(
@@ -86,6 +178,36 @@ def test_p2_matches_pinned_upstream_numeric_fixture() -> None:
         ),
         rtol=2e-5,
         atol=2e-7,
+    )
+
+
+def test_p2_matches_t1000_linear_schedule_fixture() -> None:
+    process = gaussian_process(1000, dtype=torch.float64)
+    state_times = torch.tensor([1, 500, 1000])
+
+    snr, weights = gaussian_sample_weights(
+        process,
+        state_times,
+        P2GaussianSimpleLossWeighting(k=1.0, gamma=1.0),
+    )
+
+    torch.testing.assert_close(
+        snr,
+        torch.tensor(
+            [9999.0, 0.08528994446263685, 4.03599265116842e-5],
+            dtype=torch.float64,
+        ),
+        rtol=2e-12,
+        atol=2e-12,
+    )
+    torch.testing.assert_close(
+        weights,
+        torch.tensor(
+            [1.0e-4, 0.9214127571182217, 0.9999596417023462],
+            dtype=torch.float64,
+        ),
+        rtol=2e-12,
+        atol=2e-12,
     )
 
 
@@ -116,7 +238,7 @@ def test_hybrid_loss_matches_pinned_upstream_decoder_kl_and_rescaling() -> None:
         loss="rescaled_variational_bound",
     )
 
-    constant = compute_gaussian_training_loss(
+    constant = compute_gaussian_loss(
         objective=MSEObjective(),
         process=process,
         clean=clean,
@@ -126,9 +248,9 @@ def test_hybrid_loss_matches_pinned_upstream_decoder_kl_and_rescaling() -> None:
         raw_model_output=torch.cat((mean_head, variance_head), dim=1),
         prediction_type="epsilon",
         variance=variance,
-        loss_weighting=GaussianLossWeightingConfig(),
+        loss_weighting=ConstantGaussianSimpleLossWeighting(),
     )
-    p2 = compute_gaussian_training_loss(
+    p2 = compute_gaussian_loss(
         objective=MSEObjective(),
         process=process,
         clean=clean,
@@ -138,8 +260,7 @@ def test_hybrid_loss_matches_pinned_upstream_decoder_kl_and_rescaling() -> None:
         raw_model_output=torch.cat((mean_head, variance_head), dim=1),
         prediction_type="epsilon",
         variance=variance,
-        loss_weighting=GaussianLossWeightingConfig(
-            name="p2",
+        loss_weighting=P2GaussianSimpleLossWeighting(
             k=1.0,
             gamma=1.0,
         ),
@@ -201,19 +322,57 @@ def test_p2_gamma_zero_and_closed_form_match_reference_identities() -> None:
     state_times = torch.tensor([1, 4, 8])
     scales = process.marginal_scales(state_times, state_times.size())
 
-    _, gamma_zero = gaussian_timestep_loss_weights(
+    _, gamma_zero = gaussian_sample_weights(
         process,
         state_times,
-        GaussianLossWeightingConfig(name="p2", k=7.0, gamma=0.0),
+        P2GaussianSimpleLossWeighting(k=7.0, gamma=0.0),
     )
-    _, paper_weight = gaussian_timestep_loss_weights(
+    _, paper_weight = gaussian_sample_weights(
         process,
         state_times,
-        GaussianLossWeightingConfig(name="p2", k=1.0, gamma=1.0),
+        P2GaussianSimpleLossWeighting(k=1.0, gamma=1.0),
     )
 
     assert torch.equal(gamma_zero, torch.ones_like(gamma_zero))
     assert torch.allclose(paper_weight, scales.noise.square(), atol=1e-7)
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum"])
+def test_p2_gamma_zero_is_constant_loss_identity(reduction: str) -> None:
+    process = gaussian_process(4)
+    clean = torch.zeros(3, 1, 2)
+    noise = torch.tensor([0.25, 0.5, 1.0]).reshape(3, 1, 1).expand_as(clean)
+    state_times = torch.tensor([1, 2, 4])
+    noisy, _ = process.sample_marginal(clean, state_times, noise=noise)
+    raw_model_output = torch.zeros_like(clean)
+    objective = MSEObjective(reduction=reduction)
+    inputs = gaussian_loss_inputs(
+        process,
+        clean=clean,
+        noisy=noisy,
+        noise=noise,
+        state_times=state_times,
+        raw_model_output=raw_model_output,
+    )
+    constant = GaussianLossComposer(
+        objective,
+        prediction_type="epsilon",
+        variance=GaussianVarianceConfig(),
+        loss_weighting=ConstantGaussianSimpleLossWeighting(),
+    ).compute(inputs)
+    gamma_zero = GaussianLossComposer(
+        MSEObjective(reduction=reduction),
+        prediction_type="epsilon",
+        variance=GaussianVarianceConfig(),
+        loss_weighting=P2GaussianSimpleLossWeighting(k=7.0, gamma=0.0),
+    ).compute(inputs)
+
+    assert torch.equal(gamma_zero.timestep_loss_weight, torch.ones(3))
+    torch.testing.assert_close(gamma_zero.loss, constant.loss)
+    torch.testing.assert_close(
+        gamma_zero.loss,
+        objective(raw_model_output, noise),
+    )
 
 
 def test_p2_loss_uses_raw_weights_without_batch_renormalization() -> None:
@@ -222,14 +381,14 @@ def test_p2_loss_uses_raw_weights_without_batch_renormalization() -> None:
     noise = torch.ones_like(clean)
     state_times = torch.tensor([1, 8])
     noisy, _ = process.sample_marginal(clean, state_times, noise=noise)
-    weighting = GaussianLossWeightingConfig(name="p2", k=1.0, gamma=1.0)
-    _, expected_weights = gaussian_timestep_loss_weights(
+    weighting = P2GaussianSimpleLossWeighting(k=1.0, gamma=1.0)
+    _, expected_weights = gaussian_sample_weights(
         process,
         state_times,
         weighting,
     )
 
-    result = compute_gaussian_training_loss(
+    result = compute_gaussian_loss(
         objective=MSEObjective(),
         process=process,
         clean=clean,
@@ -265,7 +424,7 @@ def test_fixed_scalar_objective_computation_carries_training_target() -> None:
     state_times = torch.tensor([1, 2])
     noisy, _ = process.sample_marginal(clean, state_times, noise=noise)
 
-    result = compute_gaussian_training_loss(
+    result = compute_gaussian_loss(
         objective=nn.MSELoss(),
         process=process,
         clean=clean,
@@ -275,11 +434,103 @@ def test_fixed_scalar_objective_computation_carries_training_target() -> None:
         raw_model_output=torch.zeros_like(clean),
         prediction_type="epsilon",
         variance=GaussianVarianceConfig(),
-        loss_weighting=GaussianLossWeightingConfig(),
+        loss_weighting=ConstantGaussianSimpleLossWeighting(),
     )
 
     assert result.per_sample_simple_loss is None
     assert torch.equal(result.target, noise)
+
+
+class MisdeclaredScalarPathWeighting(GaussianSimpleLossWeighting):
+    """Deliberately violate the scalar-path identity policy contract."""
+
+    @property
+    def requires_per_sample_loss(self) -> bool:
+        """Incorrectly claim that this non-identity policy needs no reducer."""
+
+        return False
+
+    def validate_contract(self, *, prediction_type: PredictionType) -> None:
+        """Accept the configured prediction representation."""
+
+    def sample_weights(
+        self,
+        context: GaussianSimpleLossContext,
+    ) -> torch.Tensor:
+        """Return non-identity weights that cannot use a scalar Objective."""
+
+        return torch.full_like(context.signal_to_noise_ratio, 0.5)
+
+
+class IntrospectableScalarObjective(nn.Module):
+    """Expose per-sample diagnostics without defining a batch reducer."""
+
+    def forward(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return the Objective's independent scalar semantics."""
+
+        return (prediction - target).abs().sum()
+
+    def per_sample_loss(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return batch-aligned values for diagnostic introspection."""
+
+        return (prediction - target).abs().reshape(prediction.shape[0], -1).sum(1)
+
+
+def test_scalar_objective_rejects_misdeclared_nonidentity_policy() -> None:
+    process = gaussian_process(2)
+    clean = torch.zeros(2, 1)
+    noise = torch.ones_like(clean)
+    state_times = torch.tensor([1, 2])
+    noisy, _ = process.sample_marginal(clean, state_times, noise=noise)
+
+    with pytest.raises(ValueError, match="requires_per_sample_loss=True"):
+        compute_gaussian_loss(
+            objective=nn.MSELoss(),
+            process=process,
+            clean=clean,
+            noisy=noisy,
+            noise=noise,
+            state_times=state_times,
+            raw_model_output=torch.zeros_like(clean),
+            prediction_type="epsilon",
+            variance=GaussianVarianceConfig(),
+            loss_weighting=MisdeclaredScalarPathWeighting(),
+        )
+
+
+def test_constant_scalar_path_preserves_per_sample_diagnostics_capability() -> None:
+    process = gaussian_process(2)
+    clean = torch.zeros(2, 1)
+    noise = torch.tensor([[1.0], [2.0]])
+    state_times = torch.tensor([1, 2])
+    noisy, _ = process.sample_marginal(clean, state_times, noise=noise)
+
+    result = compute_gaussian_loss(
+        objective=IntrospectableScalarObjective(),
+        process=process,
+        clean=clean,
+        noisy=noisy,
+        noise=noise,
+        state_times=state_times,
+        raw_model_output=torch.zeros_like(clean),
+        prediction_type="epsilon",
+        variance=GaussianVarianceConfig(),
+        loss_weighting=ConstantGaussianSimpleLossWeighting(),
+    )
+
+    assert result.loss.item() == pytest.approx(3.0)
+    assert result.per_sample_simple_loss is not None
+    assert torch.equal(result.per_sample_simple_loss, torch.tensor([1.0, 2.0]))
+    assert result.per_sample_weighted_simple_loss is result.per_sample_simple_loss
+    assert result.per_sample_loss is result.per_sample_simple_loss
 
 
 class AbsolutePerSampleObjective(nn.Module):
@@ -290,7 +541,9 @@ class AbsolutePerSampleObjective(nn.Module):
         prediction: torch.Tensor,
         target: torch.Tensor,
     ) -> torch.Tensor:
-        return (prediction - target).abs().mean()
+        return self.reduce_per_sample_loss(
+            self.per_sample_loss(prediction, target)
+        )
 
     def per_sample_loss(
         self,
@@ -298,6 +551,11 @@ class AbsolutePerSampleObjective(nn.Module):
         target: torch.Tensor,
     ) -> torch.Tensor:
         return (prediction - target).abs().reshape(prediction.shape[0], -1).mean(1)
+
+    def reduce_per_sample_loss(self, loss: torch.Tensor) -> torch.Tensor:
+        """Apply this Objective's explicit batch reduction."""
+
+        return loss.mean()
 
 
 def test_p2_reuses_an_independent_per_sample_objective() -> None:
@@ -307,7 +565,7 @@ def test_p2_reuses_an_independent_per_sample_objective() -> None:
     state_times = torch.tensor([1, 2])
     noisy, _ = process.sample_marginal(clean, state_times, noise=noise)
 
-    result = compute_gaussian_training_loss(
+    result = compute_gaussian_loss(
         objective=AbsolutePerSampleObjective(),
         process=process,
         clean=clean,
@@ -317,8 +575,7 @@ def test_p2_reuses_an_independent_per_sample_objective() -> None:
         raw_model_output=torch.zeros_like(clean),
         prediction_type="epsilon",
         variance=GaussianVarianceConfig(),
-        loss_weighting=GaussianLossWeightingConfig(
-            name="p2",
+        loss_weighting=P2GaussianSimpleLossWeighting(
             k=1.0,
             gamma=1.0,
         ),
@@ -330,42 +587,15 @@ def test_p2_reuses_an_independent_per_sample_objective() -> None:
 
 @pytest.mark.parametrize("prediction_type", ["x0", "v", "score"])
 def test_p2_is_rejected_for_non_epsilon_prediction(
-    prediction_type: str,
+    prediction_type: PredictionType,
 ) -> None:
-    process = gaussian_process()
-
-    with pytest.raises(ValueError, match="requires epsilon"):
-        GaussianDenoisingTrainingStrategy(
-            nn.Linear(1, 1),
-            process,
+    with pytest.raises(ValueError, match="prediction_type='epsilon'"):
+        GaussianLossComposer(
             MSEObjective(),
-            prediction_type=cast(Any, prediction_type),
-            loss_weighting=GaussianLossWeightingConfig(
-                name="p2",
-                k=1.0,
-                gamma=1.0,
-            ),
+            prediction_type=prediction_type,
+            variance=GaussianVarianceConfig(),
+            loss_weighting=P2GaussianSimpleLossWeighting(),
         )
-
-
-@pytest.mark.parametrize(
-    ("value", "error", "message"),
-    [
-        ({"name": "p2", "k": 0.0}, ValueError, "greater than zero"),
-        ({"name": "p2", "k": float("nan")}, ValueError, "finite"),
-        ({"name": "p2", "gamma": -1.0}, ValueError, "non-negative"),
-        ({"name": "p2", "gamma": float("inf")}, ValueError, "finite"),
-        ({"name": "constant", "gamma": 1.0}, ValueError, "unknown"),
-        ({"name": "other"}, ValueError, "constant or p2"),
-    ],
-)
-def test_loss_weighting_parser_fails_closed(
-    value: object,
-    error: type[Exception],
-    message: str,
-) -> None:
-    with pytest.raises(error, match=message):
-        parse_gaussian_loss_weighting(value, path="training.params.loss_weighting")
 
 
 @pytest.mark.parametrize(
@@ -387,6 +617,51 @@ def test_variance_parser_fails_closed(
 ) -> None:
     with pytest.raises(error, match=message):
         parse_gaussian_variance(value, path="training.params.variance")
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ({"mode": "invalid"}, "mode must be fixed or learned_range"),
+        (
+            {"mode": "fixed", "loss": "rescaled_variational_bound"},
+            "fixed Gaussian variance cannot define a loss",
+        ),
+        (
+            {"mode": "learned_range", "loss": None},
+            "learned_range Gaussian variance requires",
+        ),
+    ],
+)
+def test_variance_config_direct_construction_fails_closed(
+    config: dict[str, Any],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        GaussianVarianceConfig(**config)  # type: ignore[arg-type]
+
+
+def test_strategy_rejects_composer_bound_to_a_different_process() -> None:
+    composer_process = gaussian_process(4)
+    strategy_process = gaussian_process(4)
+    composer = build_gaussian_loss_composer(
+        objective=MSEObjective(),
+        process=composer_process,
+        prediction_type="epsilon",
+        variance=GaussianVarianceConfig(
+            mode="learned_range",
+            loss="rescaled_variational_bound",
+        ),
+        loss_weighting=ConstantGaussianSimpleLossWeighting(),
+        path="test Gaussian training policy",
+    )
+
+    with pytest.raises(ValueError, match="bound to a different Process"):
+        GaussianDenoisingTrainingStrategy(
+            nn.Identity(),
+            strategy_process,
+            composer,
+        )
 
 
 def test_learned_range_endpoints_and_extrapolation_use_selected_pair_bounds() -> None:
@@ -433,7 +708,7 @@ def test_variational_bound_does_not_backpropagate_into_mean_head() -> None:
     mean_head = torch.zeros_like(clean, requires_grad=True)
     variance_head = torch.zeros_like(clean, requires_grad=True)
 
-    result = compute_gaussian_training_loss(
+    result = compute_gaussian_loss(
         objective=MSEObjective(),
         process=process,
         clean=clean,
@@ -446,7 +721,7 @@ def test_variational_bound_does_not_backpropagate_into_mean_head() -> None:
             mode="learned_range",
             loss="rescaled_variational_bound",
         ),
-        loss_weighting=GaussianLossWeightingConfig(),
+        loss_weighting=ConstantGaussianSimpleLossWeighting(),
     )
 
     assert result.per_sample_variational_bound is not None
@@ -468,7 +743,7 @@ def test_p2_changes_only_the_simple_term_not_variational_bound() -> None:
         loss="rescaled_variational_bound",
     )
 
-    baseline = compute_gaussian_training_loss(
+    baseline = compute_gaussian_loss(
         objective=MSEObjective(),
         process=process,
         clean=clean,
@@ -478,9 +753,9 @@ def test_p2_changes_only_the_simple_term_not_variational_bound() -> None:
         raw_model_output=raw,
         prediction_type="epsilon",
         variance=variance,
-        loss_weighting=GaussianLossWeightingConfig(),
+        loss_weighting=ConstantGaussianSimpleLossWeighting(),
     )
-    weighted = compute_gaussian_training_loss(
+    weighted = compute_gaussian_loss(
         objective=MSEObjective(),
         process=process,
         clean=clean,
@@ -490,8 +765,7 @@ def test_p2_changes_only_the_simple_term_not_variational_bound() -> None:
         raw_model_output=raw,
         prediction_type="epsilon",
         variance=variance,
-        loss_weighting=GaussianLossWeightingConfig(
-            name="p2",
+        loss_weighting=P2GaussianSimpleLossWeighting(
             k=1.0,
             gamma=1.0,
         ),
@@ -533,10 +807,18 @@ def test_training_maps_public_state_one_to_model_timestep_zero(
 ) -> None:
     process = gaussian_process(4)
     model = RecordingGaussianModel()
+    composer = build_gaussian_loss_composer(
+        objective=MSEObjective(),
+        process=process,
+        prediction_type="epsilon",
+        variance=GaussianVarianceConfig(),
+        loss_weighting=ConstantGaussianSimpleLossWeighting(),
+        path="test Gaussian training policy",
+    )
     strategy = GaussianDenoisingTrainingStrategy(
         model,
         process,
-        MSEObjective(),
+        composer,
     )
 
     def fixed_state_times(*args: Any, **kwargs: Any) -> torch.Tensor:

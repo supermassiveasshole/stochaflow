@@ -486,7 +486,7 @@ def test_reference_cache_uses_strategy_before_label_and_4d_condition(
     runtime.strategy = MappingReferenceImageStrategy(
         assets.inference_model,
         assets.process,
-        assets.objective,
+        assets.loss_composer,
     )
     reference_images = -torch.ones(2, 1, 4, 4)
 
