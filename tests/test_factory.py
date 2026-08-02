@@ -23,7 +23,6 @@ from stochaflow.training import (
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (
     ComponentConfig,
-    ConfigError,
     LRSchedulerConfig,
     load_config,
     load_config_dict,
@@ -288,7 +287,7 @@ def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> 
     assert "process_gain" not in components.ema.shadow_params
 
     state = components.checkpoint_manager.build_state()
-    assert state.get("format_version") == 11
+    assert state.get("format_version") == 12
     process_state = state.get("process_state_dict")
     assert process_state is not None
     assert "process_gain" in process_state
@@ -308,19 +307,27 @@ def test_process_parameters_are_optimized_checkpointed_but_not_ema(tmp_path) -> 
     assert torch.equal(process.marginal_signal_t, expected_signal)
 
 
-def test_sampling_defaults_cannot_override_inference_recipe_contract(
+def test_training_checkpoint_contains_only_fixed_inference_recipe(
     tmp_path: Path,
 ) -> None:
     raw = load_config(BUILTIN_MNIST_TRAIN_CONFIG).to_dict()
     raw["model"]["params"] = dict(TINY_UNET_PARAMS)
     raw["experiment"]["output_dir"] = str(tmp_path)
-    raw["sampling"]["options"]["prediction_type"] = "epsilon"
+    components = build_training_components(load_config_dict(raw))
 
-    with pytest.raises(
-        ConfigError,
-        match=r"cannot override fixed inference contract.*prediction_type",
-    ):
-        build_training_components(load_config_dict(raw))
+    state = components.checkpoint_manager.build_state()
+    checkpoint_config = components.trainer.checkpoint_config
+    assert checkpoint_config is not None
+    assert "sampling" not in checkpoint_config
+    assert "use_for_sampling" not in checkpoint_config["ema"]
+    assert state.get("inference_recipe") == {
+        "schema_version": 1,
+        "name": "standard_denoising",
+        "contract": {
+            "prediction_type": "v",
+            "variance": {"mode": "fixed"},
+        },
+    }
 
 
 def test_checkpoint_manager_omits_absent_process_state(tmp_path: Path) -> None:

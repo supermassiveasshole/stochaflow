@@ -146,11 +146,6 @@ class InferenceAssetProvider:
                 f"inference asset slot {slot_name!r} factory must return nn.Module"
             )
         module = module_value
-        move_module_to_device(
-            module,
-            torch.device("cpu"),
-            role=f"inference asset {slot_name!r}",
-        )
         training_asset_name = descriptor["training_asset_name"]
         state_dict = self._state_dicts[training_asset_name]
         state_path = (

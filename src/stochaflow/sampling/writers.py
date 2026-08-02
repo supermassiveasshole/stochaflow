@@ -25,7 +25,12 @@ class SamplingBatch:
     """One generated batch and its optional reverse trajectory."""
 
     samples: Any
+    num_samples: int
     trajectory: tuple[SamplingObservation, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.num_samples) is not int or self.num_samples <= 0:
+            raise ValueError("sampling batch num_samples must be a positive integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +117,7 @@ def _tensor_trajectory(
         }
     except RuntimeError as exc:
         raise ValueError("trajectory batches must share compatible shapes") from exc
+
 
 @REGISTRIES.sampling_artifact_writers.register("tensor")
 class TensorSamplingArtifactWriter(SamplingArtifactWriter):
@@ -202,7 +208,9 @@ def write_sampling_artifacts(
 
     registries.sampling_artifact_writers.require_base(SamplingArtifactWriter)
     context.output_dir.mkdir(parents=True, exist_ok=True)
+    output_root = context.output_dir.resolve(strict=True)
     artifacts: dict[str, Path] = {}
+    artifact_paths: set[Path] = set()
     for config in configs:
         writer = cast(
             SamplingArtifactWriter,
@@ -229,7 +237,19 @@ def write_sampling_artifacts(
                     f"sampling artifact writer '{config.name}' returned missing "
                     f"path: {path}"
                 )
-            artifacts[key] = path
+            resolved = path.resolve(strict=True)
+            if resolved == output_root or not resolved.is_relative_to(output_root):
+                raise ValueError(
+                    f"sampling artifact writer '{config.name}' returned a path "
+                    f"outside its output directory: {path}"
+                )
+            if resolved in artifact_paths:
+                raise ValueError(
+                    f"sampling artifact writer '{config.name}' returned duplicate "
+                    f"artifact path: {path}"
+                )
+            artifact_paths.add(resolved)
+            artifacts[key] = resolved
     return artifacts
 
 

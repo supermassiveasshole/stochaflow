@@ -1,10 +1,12 @@
 # 条件 Gaussian 超分辨率
 
-本教程展示一个最小的**组合路径**：内置 `super_resolution` DataBuilder 负责产生
+本教程展示一个最小的 **extension-boundary sketch**：内置 `super_resolution`
+DataBuilder 负责产生
 `(high_res, {"low_res": low_res})`，项目扩展负责解释 condition，并复用 Stochaflow
 已有的离散 Gaussian Process、训练 target、Objective 和 DDPM/DDIM。
 
-这不是一个经过质量或收敛验证的超分辨率 baseline。下面的网络只用来说明 API 边界；
+这不是一个 installed/tested task distribution，也不是经过质量或收敛验证的超分辨率
+baseline。下面的网络只用来说明 API 边界；
 真实任务仍需自行选择网络、degradation、归一化、损失、数据规模和评估方法。
 
 ## 1. 哪些能力需要扩展
@@ -244,7 +246,7 @@ class ConditionalGaussianBuilder(TrainingBuilder):
 Builder 返回的 `primary_model`、`process` 和 `objective` 必须保留 context 注入的对象；
 设备、mode、optimizer、EMA 和 checkpoint 生命周期仍由核心管理。Strategy 只定义 batch
 解释、forward 和 loss。`prediction_type` 是训练与 inference 必须一致的语义，因此由
-TrainingBuilder 固化进 v11 checkpoint recipe contract，而不是留给 sample request。
+TrainingBuilder 固化进 v12 checkpoint recipe contract，而不是留给独立 sample config。
 
 ## 4. 用 LR closure 复用 DDPM/DDIM
 
@@ -253,7 +255,7 @@ SamplingBuilder 负责取得 condition、选择 checkpoint 权重、创建 termi
 Dynamics，不需要知道 `low_res`。
 
 下面约定 `low_res_path` 是一个由 `torch.save()` 写出的 `[N, C, h, w]` 浮点 Tensor；
-它必须使用与训练 recipe 相同的通道和归一化方式，且 `N == sampling.num_samples`。
+它必须使用与训练 recipe 相同的通道和归一化方式，且 `N == sample.num_samples`。
 
 ```python
 # my_sr/stochaflow_ext/sampling.py
@@ -364,7 +366,7 @@ class ConditionalSRSamplingBuilder(SamplingBuilder):
             )
         shape = self.context.shape
         if shape is None or len(shape) != 3:
-            raise ValueError("sampling.shape must be [C, H, W]")
+            raise ValueError("sample.shape must be [C, H, W]")
 
         model_value, resolved_weights = self.context.model_provider.resolve(
             cast(Any, weights)
@@ -373,7 +375,7 @@ class ConditionalSRSamplingBuilder(SamplingBuilder):
             raise TypeError("my-sr sampling requires ConditionalDenoiser")
         model = model_value
         if shape[0] != model.channels:
-            raise ValueError("sampling.shape channels must match the model")
+            raise ValueError("sample.shape channels must match the model")
 
         loaded = torch.load(
             Path(low_res_path),
@@ -389,7 +391,7 @@ class ConditionalSRSamplingBuilder(SamplingBuilder):
             or low_res.shape[1] != model.channels
         ):
             raise ValueError(
-                "low_res must have shape [sampling.num_samples, C, h, w]"
+                "low_res must have shape [sample.num_samples, C, h, w]"
             )
         if not torch.is_floating_point(low_res):
             raise TypeError("low_res must be floating-point")
@@ -454,7 +456,8 @@ class ConditionalSRSamplingBuilder(SamplingBuilder):
                 raise ValueError("Gaussian sampler must preserve the HR shape")
             batches.append(
                 SamplingBatch(
-                    samples=final_state.detach().to(device="cpu", copy=True)
+                    samples=final_state.detach().to(device="cpu", copy=True),
+                    num_samples=count,
                 )
             )
             solver_diagnostics.append(dict(result_value.diagnostics))
@@ -561,10 +564,6 @@ ema:
   decay: 0.9995
   update_after_step: 100
   update_every: 1
-  use_for_sampling: true
-
-sampling:
-  run_after_training: false
 
 diagnostics: []
 
@@ -591,9 +590,9 @@ artifacts:
 stochaflow train --config experiments/sr/train.yaml
 ```
 
-`sampling.run_after_training: false` 避免训练结束时在没有明确 LR condition 的情况下
-自动运行 checkpoint recipe。TrainingPlan 仍声明 recipe，因此之后可以显式执行
-`stochaflow sample`。
+训练配置不拥有 sampling invocation，也不会在训练结束时自动采样。TrainingPlan 仍把
+固定 inference recipe 写入 v12 checkpoint；准备好明确 LR condition 后，再使用独立、
+完整的 sample config 显式执行 `stochaflow sample`。
 
 ## 6. 条件采样
 
@@ -601,10 +600,10 @@ stochaflow train --config experiments/sr/train.yaml
 `data/sample-low-res.pt`。它的 batch 数必须等于 `num_samples`；不要把未归一化输入直接
 混入使用 `normalize: true` 训练的模型。
 
-partial sample request：
+完整的独立 sample config：
 
 ```yaml
-sampling:
+sample:
   shape: [3, 128, 128]
   num_samples: 4
   batch_size: 2
@@ -633,21 +632,25 @@ stochaflow sample \
   --config experiments/sr/sample.yaml
 ```
 
-改用 DDPM 时原子替换顶层 sampler declaration：
+改用 DDPM 时，复制上一份完整 config，并只把其中 `sample.sampler` 的值替换为：
 
 ```yaml
-sampler:
-  name: ddpm
-  params:
-    start_time: null
-    end_time: 0
+name: ddpm
+params:
+  start_time: null
+  end_time: 0
 ```
+
+这段 YAML 只是替换值，不是可单独传给 `--config` 的片段；复制后的文件仍须完整声明
+`sample` 的所有 invocation fields。上例的 `weights: auto` 在 checkpoint 含 EMA state 时
+选择 EMA，否则选择 raw，不读取 training-side sampling policy。
 
 `prediction_type` 已由 checkpoint fixed contract 保证一致。condition 输入与归一化仍由
 recipe 的 `low_res_path`/代码契约验证。DDPM/DDIM 不读取这些任务字段；它们能够复用，是
 因为 `GaussianModelDynamics` 已把 condition-aware 模型适配为两者要求的
-`GaussianDenoisingDynamics`。request 不能选择另一个 SamplingBuilder，也不能用
+`GaussianDenoisingDynamics`。sample config 不能选择另一个 SamplingBuilder，也不能用
 `options.prediction_type` 覆盖训练语义。
 
-本教程没有宣称该玩具网络达到任何 PSNR、SSIM、感知质量或科学重建精度。应使用独立
-validation/test 数据和任务适合的指标完成自己的实验验收。
+本教程没有宣称该玩具网络达到任何 PSNR、SSIM、感知质量或科学重建精度。真实 SR 支持
+必须在任务实现时同步交付 validation monitoring、checkpoint inference 与 task-specific
+formal `EvaluationBuilder`/protocol；它不属于当前 P2 merge 或实验 gate。

@@ -31,6 +31,8 @@ class TensorPair(NamedTuple):
 def test_public_metrics_surface_excludes_training_and_provenance_contracts() -> None:
     assert set(metrics.__all__) == {
         "ErrorOnNanMeanMetric",
+        "FrechetInceptionDistanceMetric",
+        "KernelInceptionDistanceMetric",
         "MetricEngine",
         "MetricRuntimeError",
         "MetricSpec",

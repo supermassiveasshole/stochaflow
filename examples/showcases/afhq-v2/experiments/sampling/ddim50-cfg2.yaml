@@ -1,8 +1,29 @@
-sampling:
+sample:
   sampler:
     name: ddim
     params:
       num_inference_steps: 50
       eta: 0.0
   options:
+    weights: ema
+    clip_denoised: true
     guidance_scale: 2.0
+    conditions:
+      - {class_label: 0, count: 12}
+      - {class_label: 1, count: 12}
+      - {class_label: 2, count: 12}
+    trajectory:
+      enabled: true
+      every_steps: 5
+  shape: [3, 128, 128]
+  num_samples: 36
+  batch_size: 12
+  seed: 20260726
+  writers:
+    - name: tensor
+      params: {}
+    - name: image
+      params:
+        grid_nrow: 12
+        gif_fps: 8
+        denormalize: true

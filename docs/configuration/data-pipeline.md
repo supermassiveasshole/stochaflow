@@ -199,7 +199,7 @@ type 不自动代表 recipe 兼容。
 内置 `gaussian_denoising` TrainingBuilder 只接受空 condition mapping，因此不能直接消费
 这里的 `low_res`。条件 Gaussian 超分辨率还需要项目自己提供 condition-aware model、
 TrainingBuilder/TrainingStrategy 和 SamplingBuilder；它们可以继续复用内置离散 Gaussian
-Process 以及 DDPM/DDIM。完整组合见
+Process 以及 DDPM/DDIM。extension 边界草图见
 [条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md)。
 
 在线 bicubic 模式从 HR 图像生成 LR condition：

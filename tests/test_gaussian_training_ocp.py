@@ -355,7 +355,6 @@ def test_installed_custom_strategy_survives_strict_cli_resume(
                 "1",
                 "--limit-test-batches",
                 "1",
-                "--skip-final-sample",
                 "--no-progress",
             ]
         )
@@ -404,7 +403,6 @@ def test_installed_custom_strategy_survives_strict_cli_resume(
                 "1",
                 "--limit-test-batches",
                 "1",
-                "--skip-final-sample",
                 "--no-progress",
             ]
         )

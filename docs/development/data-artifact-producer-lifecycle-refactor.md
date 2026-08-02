@@ -162,9 +162,10 @@ binding 的 checkpoint 不能 strict resume，应创建新 run。
 | Physics reconstruction | referenced | manifest/cache/identity/lock/publication | `.npy` schema、external hash、trajectory range、mmap payload |
 | Knowledge Distillation | none | 无 data artifact | synthetic splits 由 resolved config 与 seed 构造 |
 
-AFHQ 的 capacity/evaluation report 仍是 example-private；Physics sampling observations
-仍是 sampling task input；KD teacher bootstrap 仍是 TrainingBuilder 的模型构造输入。
-它们都不进入通用 data artifact metadata。
+AFHQ capacity report 仍是 example-private；正式 evaluation 已迁移到 public operation，
+但 AFHQ Builder/Metric/profile 的 task 语义仍由 example extension 拥有，legacy oracle 只作
+compatibility。Physics sampling observations 仍是 sampling task input；KD teacher bootstrap
+仍是 TrainingBuilder 的模型构造输入。它们都不进入通用 data artifact metadata。
 
 ## 6. 数据组合边界
 

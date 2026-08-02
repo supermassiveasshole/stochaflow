@@ -154,7 +154,7 @@ def _params(
 def _provider(
     instances: list[RecordingClassConditionalDenoiser],
     *,
-    prefer_ema: bool = False,
+    ema_available: bool = True,
 ) -> InferenceModelProvider:
     template = RecordingClassConditionalDenoiser()
     state = {
@@ -169,9 +169,8 @@ def _provider(
     return InferenceModelProvider(
         model_factory=factory,
         raw_state_dict=state,
-        ema_state_dict=state,
+        ema_state_dict=state if ema_available else None,
         device=torch.device("cpu"),
-        prefer_ema=prefer_ema,
     )
 
 
@@ -450,14 +449,27 @@ def test_resolved_raw_or_ema_model_capability_is_revalidated(weights: str) -> No
         ).run()
 
 
-def test_auto_weights_records_resolved_ema_selection() -> None:
+@pytest.mark.parametrize(
+    ("weights", "ema_available", "expected_weights"),
+    [
+        ("raw", True, "raw"),
+        ("ema", True, "ema"),
+        ("auto", True, "ema"),
+        ("auto", False, "raw"),
+    ],
+)
+def test_weight_selection_records_the_resolved_checkpoint_variant(
+    weights: str,
+    ema_available: bool,
+    expected_weights: str,
+) -> None:
     instances: list[RecordingClassConditionalDenoiser] = []
 
     output = ClassConditionalDenoisingBuilder(
         _context(
-            _params(weights="auto"),
-            _provider(instances, prefer_ema=True),
+            _params(weights=weights),
+            _provider(instances, ema_available=ema_available),
         )
     ).run()
 
-    assert output.metadata["weights"] == "ema"
+    assert output.metadata["weights"] == expected_weights

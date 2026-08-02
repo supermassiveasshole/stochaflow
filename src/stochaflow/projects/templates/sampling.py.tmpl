@@ -44,10 +44,11 @@ class RegressionPredictionBuilder(SamplingBuilder):
         input_max = _number(params, "input_max", 1.0)
         if input_min >= input_max:
             raise ValueError("input_min must be less than input_max")
+        weights = params.pop("weights", "auto")
         if params:
             raise ValueError(f"unknown sampling params: {', '.join(sorted(params))}")
 
-        model, weights = self.context.model_provider.resolve("auto")
+        model, resolved_weights = self.context.model_provider.resolve(weights)
         values = torch.linspace(
             input_min,
             input_max,
@@ -61,12 +62,17 @@ class RegressionPredictionBuilder(SamplingBuilder):
                 predictions = model(inputs)
                 if not isinstance(predictions, torch.Tensor):
                     raise TypeError("regression model must return a Tensor")
-                batches.append(SamplingBatch(samples=predictions.detach().cpu()))
+                batches.append(
+                    SamplingBatch(
+                        samples=predictions.detach().cpu(),
+                        num_samples=inputs.shape[0],
+                    )
+                )
         return SamplingOutput(
             batches=tuple(batches),
             metadata={
                 "workflow": "direct-regression-prediction",
-                "weights": weights,
+                "weights": resolved_weights,
                 "input_features": input_features,
                 "input_min": input_min,
                 "input_max": input_max,

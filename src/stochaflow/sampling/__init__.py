@@ -10,6 +10,7 @@ from .builder import (
     SamplingOutput,
 )
 from .dynamics import GenerativeDynamics
+from .execution import execute_sampling_builder, validate_sampling_output
 from .gaussian import (
     ClassConditionalDenoisingBuilder,
     CleanTargetVarianceReferenceGaussianDenoisingDynamics,
@@ -80,9 +81,11 @@ __all__ = [
     "TrajectoryObserver",
     "VarianceMode",
     "denormalize_samples",
+    "execute_sampling_builder",
     "normalize_gaussian_prediction",
     "save_image_grid",
     "save_trajectory_gif",
     "save_trajectory_grid",
+    "validate_sampling_output",
     "write_sampling_artifacts",
 ]

@@ -1,0 +1,49 @@
+version: 1
+name: afhq-v2-p2-production-closeout-v1
+
+training:
+  profile: ../production/train-adm-128-p2.yaml
+  seed: 20260726
+  device: cuda
+  deterministic: true
+  epochs: 200
+  expected_optimizer_updates: 84000
+
+selection:
+  profile: selection-ddim50-cfg2-validation-epsilon.yaml
+  split: validation
+  subject_weights: ema
+  eligible_epochs: [20, 40, 60, 80, 100, 120, 140, 160, 180, 200]
+  checkpoint_filename_format: "epoch_{epoch:04d}.pt"
+  expected_examples: 900
+  primary_metric:
+    key: eval/metrics/distribution/aggregate.fid
+    direction: minimize
+  tie_breakers:
+    - key: eval/metrics/distribution/aggregate.kid_mean
+      direction: minimize
+    - key: checkpoint_epoch
+      direction: minimize
+
+official_test:
+  profile: formal-ddim50-cfg2-official-test-epsilon.yaml
+  split: test
+  run_count: 1
+  expected_examples: 1467
+  strict_complete: true
+  acceptance:
+    require_all: true
+    thresholds:
+      - key: eval/metrics/distribution/aggregate.fid
+        maximum: 35.0
+      - key: eval/metrics/distribution/aggregate.kid_mean
+        maximum: 0.01
+      - key: eval/metrics/distribution/cat.fid
+        maximum: 65.0
+      - key: eval/metrics/distribution/dog.fid
+        maximum: 65.0
+      - key: eval/metrics/distribution/wild.fid
+        maximum: 65.0
+  aspirational:
+    key: eval/metrics/distribution/aggregate.fid
+    maximum: 30.0

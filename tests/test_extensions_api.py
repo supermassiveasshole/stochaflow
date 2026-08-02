@@ -572,7 +572,6 @@ def test_selected_plugin_metric_runs_and_persists_installed_provenance(
             artifact_verification_workers=None,
             resume_checkpoint=None,
             device=None,
-            sample_after_training=False,
         )
 
         experiment_runner._run_single_run(

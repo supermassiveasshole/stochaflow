@@ -61,14 +61,14 @@ class FinalSummary:
     best_epoch: int | None
     best_metric_name: str | None
     best_metric_value: float | None
-    test_loss: float | None
+    phase_test_metrics: Mapping[str, float]
     stopped_early: bool
     best_checkpoint: str | Path | None
     selected_checkpoint: str | Path | None
     selected_checkpoint_kind: str | None
     output_dir: str | Path
-    metrics_path: str | Path
-    log_path: str | Path
+    metrics_path: str | Path | None
+    log_path: str | Path | None
     artifacts: Mapping[str, str | Path] | None = None
 
 
@@ -208,7 +208,11 @@ class RichTrainingReporter:
         )
         table.add_row("Best metric", summary.best_metric_name or "-")
         table.add_row("Best value", _format_loss(summary.best_metric_value))
-        table.add_row("Test loss", _format_loss(summary.test_loss))
+        if summary.phase_test_metrics:
+            for name, value in sorted(summary.phase_test_metrics.items()):
+                table.add_row(name, _format_loss(value))
+        else:
+            table.add_row("Test metrics", "-")
         table.add_row("Stopped early", str(summary.stopped_early))
         table.add_row("Best checkpoint", _format_path(summary.best_checkpoint))
         if summary.selected_checkpoint is not None:

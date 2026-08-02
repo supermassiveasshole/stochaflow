@@ -1,8 +1,10 @@
 # 默认工作流与推理 Pipeline 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：Umbrella / promotion plan，尚未进入实现；不阻塞 concrete latent
-  capability，真实 recipe 稳定后再晋升
+- 状态：Umbrella / promotion plan，尚未进入 Recipe/Pipeline 实现；共享的 E0 immutable
+  outcome foundation、E1 standalone checkpoint Evaluation 与 E2 prediction artifact/offline
+  replay 以及 E3 AFHQ-v2 full-test slice 已完成，library-first training request API、
+  Evaluation E3 remaining profiles 与 E4 仍 pending
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25
@@ -191,9 +193,8 @@ time domain、prediction semantics 和预处理严格对齐，不能由两个 re
 | 缺口 | 影响 |
 | --- | --- |
 | 没有 Recipe identity/catalog | 默认配置散落，不能列出、复制或声明成熟度 |
-| 训练入口返回 `None` | 多阶段编排和 AutoML 不能可靠取得 checkpoint/metrics |
-| 只有 loss 的 epoch validation | SR 的 PSNR/SSIM/LPIPS 和 CM 质量不能成为统一 monitor |
-| 没有独立 Evaluation operation | 训练后只有 test loss/final sample，无法形成可重放 benchmark |
+| 没有 library-first training request API | runner 已返回 outcome，但多阶段编排仍须经过 CLI-shaped orchestration |
+| Evaluation profile 尚未完成 | E1/E2 已有 standalone subject/protocol/result、prediction persistence/replay；E3 task quality profiles 与 E4 policy 未完成 |
 | 无 inference bundle | checkpoint 包含训练状态，部署语义和预处理不够明确 |
 | sampling input 是 task-private 临时约定 | SR 文件身份、范围、颜色与输出映射未标准化 |
 | 内置 writer 只理解 tensor/image grid | SR 的 input/bicubic/output/reference 对比需要 task writer |
@@ -202,7 +203,7 @@ time domain、prediction semantics 和预处理严格对齐，不能由两个 re
 因此必须区分“实现 capability”和“晋升为默认 workflow”：
 
 - concrete capability 的 correctness vertical slice 不依赖 Recipe/catalog，也不等待
-  完整 Metrics/Evaluation；
+  Evaluation E3；
 - reusable run seam 由 Hydra 迁移计划的 `TrainingInvocation`/H1 统一拥有，本计划
   不再并行实现第二套 `run_training()`；
 - 正式 baseline promotion 依赖 Metrics/Evaluation 和稳定 recipe；
@@ -489,9 +490,10 @@ stochaflow sample --checkpoint ... --config my-sr/restore.yaml
 
 ### 7.1 训练入口必须先结构化
 
-sampling 已有可编程 `run_sampling(...) -> SamplingRunResult`，但训练入口仍与
-`argparse.Namespace`、console reporter 和目录创建耦合，并返回 `None`。Recipe、
-AutoML 和未来 Workflow 都不应解析 stdout 或递归启动 `stochaflow train`。
+sampling 已有可编程 `run_sampling(...) -> SamplingRunResult`。E0 已让当前训练 runner
+返回 immutable `TrainingRunOutcome`，并持久化 completed outcome manifest；但入口仍与
+`argparse.Namespace`、console reporter 和目录创建耦合。Recipe、AutoML 和未来 Workflow
+都不应解析 stdout 或递归启动 `stochaflow train`。
 
 与[自动调优计划](automated-model-tuning-plan.md)共用一次重构：
 
@@ -506,23 +508,33 @@ class TrainingRunRequest:
 
 @dataclass(frozen=True, slots=True)
 class TrainingRunOutcome:
-    status: str
     output_dir: Path
-    best_checkpoint: Path | None
+    final_epoch: int
+    final_metrics: Mapping[str, float]
     latest_checkpoint: Path | None
     best_epoch: int | None
-    final_metrics: Mapping[str, float]
-    phase_test_metrics: Mapping[str, float] | None
-    evaluation_results: tuple[EvaluationResultReference, ...]
-    sampling_results: tuple[SamplingResultReference, ...]
+    best_metric_name: str | None
+    best_metric_value: float | None
+    best_checkpoint: Path | None
+    selected_checkpoint: Path | None
+    selected_checkpoint_kind: Literal["best", "final"] | None
+    stopped_early: bool
+    phase_test_metrics: Mapping[str, float]
     manifest_path: Path
+    metrics_path: Path | None
+    log_path: Path | None
 ```
 
 `final_metrics` 和 `phase_test_metrics` 复用 Training 当前产生的 plain canonical scalar
-mapping。best checkpoint 与 early stopping 仍只读取 `valid/loss` 或
+mapping，并在 outcome 中成为 immutable snapshots；没有 test split 时后者为空 mapping。
+best checkpoint 与 early stopping 仍只读取 `valid/loss` 或
 `valid/metrics/...`；diagnostic 日志不进入这些 mapping。正式 Evaluation 不复用逐 key
 Training metadata，而是在自己的 `EvaluationResult` 中冻结 subject、dataset、split、
 protocol 和 result identity。
+
+以上 outcome foundation 已完成。`TrainingRunRequest` 与下面的 library-first
+`run_training()` 尚未实现；`evaluation_results`/`sampling_results` references 也不属于
+当前 outcome，必须等待各自 operation contract。
 
 ```python
 def run_training(
@@ -546,12 +558,13 @@ def run_training(
 
 ### 7.2 operation 不合并成一个 `run(kind=...)`
 
-保持独立入口：
+保持独立入口。当前可执行的 Evaluation 是 path-first E1 API，而
+`EvaluationRunRequest` 尚未成为 runtime 参数：
 
 ```text
-run_training(TrainingRunRequest) -> TrainingRunOutcome
-run_evaluation(EvaluationRunRequest) -> EvaluationRunOutcome
-run_sampling(SamplingRunRequest) -> SamplingRunOutcome
+run_training(TrainingRunRequest) -> TrainingRunOutcome        # planned
+run_evaluation(config_path, *, output_dir, device_name, ...)   # implemented E1
+run_sampling(...) -> SamplingRunResult                         # implemented
 ```
 
 三者的生命周期、resume、输入和输出并不相同。一个通用 `OperationRequest` 加可选
@@ -576,7 +589,7 @@ FID/KID、consistency NFE 曲线和 performance benchmark 由显式 Evaluation e
 
 ```text
 TrainingRunOutcome.selected checkpoint
--> EvaluationRunRequest(frozen weights/data/protocol)
+-> strict EvaluationConfig path (frozen weights/data/protocol)
 -> EvaluationRunOutcome / EvaluationResult
 ```
 
@@ -1453,12 +1466,15 @@ strict dataclass parser 和 round-trip tests 冻结。
 
 ### Stage R0：术语与 library run API
 
+E0 outcome foundation 已完成，但本 stage 的 library-first invocation seam 仍 pending；
+因此 R0 尚未关闭。
+
 交付：
 
 - 本计划评审通过；
 - 复用 Hydra H1 已抽取的 `TrainingInvocation` 与
   `run_training_invocation()`，不实现第二套 runner；
-- 在同一 seam 上补齐 `TrainingRunOutcome`；
+- 复用已落地的 immutable `TrainingRunOutcome`，在同一 seam 上补齐 request/observer；
 - CLI train 保持唯一 adapter；
 - 与 AutoML 计划共用 epoch observer/outcome；
 - C1 后 train/resume 行为不变；训练不再拥有 implicit final sample。
@@ -1773,7 +1789,7 @@ binding；不支持 arbitrary DAG/cache/remote scheduler。
 - Process 保持 model-free；
 - direct transform 不伪造 Sampler；
 - runner 不按 recipe/task name 分支；
-- MetricEngine 是 Training validation 与未来 Evaluation 的共享统计依赖，不拥有 task
+- MetricEngine 是 Training validation 与已实现 E1 Evaluation 的共享统计依赖，不拥有 task
   lifecycle；diagnostic provider 只产生观测日志/artifact；
 - core batch/config 不新增通用 condition/image/teacher 字段；
 - 多 optimizer 方法明确进入新 loop family；

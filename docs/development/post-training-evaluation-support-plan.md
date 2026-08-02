@@ -1,25 +1,26 @@
 # 训练后 Evaluation 与 Benchmark 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：尚未进入实现；E0–E1 复用现有 Metrics API，E2–E3 扩展
-  prediction artifact、FID/KID 与 class-aware Gaussian profile
+- 状态：当前普通像素图像生成范围已关闭。E0 outcome foundation、E1 standalone
+  checkpoint Evaluation、E2 prediction artifact/offline scoring 与 AFHQ-v2 class-aware
+  Gaussian vertical slice 已完成；本文其余 task profile 讨论均为 parked design record，
+  不是当前未闭合项或已排期工作
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-26
-- 本次排期修订日期：2026-07-29
+- 本次排期修订日期：2026-08-01
 - 前置工作：
   [正式 Metrics 扩展 API](../api/extensions.md#metrics)的 `MetricUpdate`、`MetricEngine`
   与 canonical result contract
-- 关联计划：
-  [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
-  [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)、
-  [正式 Gaussian loss 架构](../framework.md)、
-  [Stable Diffusion Component-Native 支持计划](stable-diffusion-component-native-support-plan.md)、
-  [自动化模型调优开发计划](automated-model-tuning-plan.md)、
-  [Consistency Distillation 支持计划](consistency-distillation-support-plan.md)
+- 关联权威：[正式架构说明](../../ARCHITECTURE.md)与根级
+  [Roadmap](../../ROADMAP.md)
 - 首版范围：独立 checkpoint evaluation、validation/test 治理、live inference、
-  可重放 prediction artifact、结构化 result/manifest、SR 与生成模型 profile、
-  result gate 和 comparison 基础
+  可重放 prediction artifact、结构化 result/manifest，以及普通像素图像生成 FID/KID
+  vertical slice
+
+范围关闭规则：SR、consistency、latent、codec、distillation 等任务必须在对应任务真正实现时
+同步提交 monitoring 与 Evaluation protocol；它们不是本计划的剩余阶段。reference cache、
+performance curve、comparison/gate 也只是可选增强，不阻塞 P2 merge 或 production run。
 
 ## 1. 目标与核心结论
 
@@ -37,17 +38,18 @@
 推荐结论如下：
 
 1. **Evaluation 是与 Training、Sampling 并列的一等 operation。**
-   增加 `run_evaluation(EvaluationRunRequest) -> EvaluationRunOutcome` 和
+   E1 已增加 checkpoint-backed `run_evaluation()`、`run_resolved_evaluation()` 和
    `stochaflow evaluate`；不实现 `run(kind=...)`，也不把它塞进
    `SamplingBuilder`、`TrainingDiagnostic` 或 `Metric`。
 2. **MetricEngine 是 Evaluation 可复用的统计依赖，不是 Evaluation 本身。**
    当前 Training validation 已通过 phase-local MetricEngine 产生 plain canonical
-   mapping；未来 `EvaluationRun` 可以复用 `MetricSpec`、Registry/factory 和
-   MetricEngine，但必须另外拥有 subject、dataset、protocol、artifact 与 result identity。
+   mapping；E1 `EvaluationRun` 复用 `MetricSpec`、Registry/factory 和 MetricEngine，
+   并另外拥有 subject、dataset、protocol、completeness 与 result identity。E2 已补齐
+   complete prediction artifact lifecycle 与 offline MetricEngine replay。
 3. **Validation、Diagnostic 与独立 Evaluation 的职责不同。**
    同一个 PSNR/FID 算法可以被不同上下文调用，但 Training diagnostic 只记录日志和
    artifact，不产生 selection-eligible result。Training 模型选择只消费 validation
-   phase mapping；未来 Evaluation 的决策资格由其显式 purpose/result contract 管理。
+   phase mapping；Evaluation 的治理语义由其显式 purpose/result contract 管理。
 4. **正式 test 只接受一个已经冻结的 subject。**
    test 结果永不反馈到 checkpoint selection、early stopping、HPO suggestion 或
    pruning。若需要在训练后比较多个 checkpoint，应在 validation split 上生成
@@ -58,18 +60,24 @@
    与 latency 属于任务级 evaluation，不能伪装成普通 evaluation step。
 6. **EvaluationBuilder 是任务评估的唯一新增 core composition entrypoint。**
    Runner 不理解 image、target、condition、Process family、模型签名或 sampler 名称；
-   具体 Builder 消费 sampling/task 层已经组合好的窄 inference capability，再组装
-   task evaluator、metric binding、artifact sink 和 protocol。Process/Dynamics/Sampler
-   compatibility 仍由 SamplingBuilder/sampling composition 拥有。
-7. **同时支持 live 与 offline scoring。**
-   昂贵的生成/restore 可以先流式保存带 manifest 的 predictions，再用相同或新增
-   metrics 重评；join 必须按稳定 sample ID，不能依赖目录枚举顺序。
+   E1 向 Builder 注入已选 raw/EMA 的 opaque primary model，再组装 task
+   evaluator、metric binding 和 protocol。E3 任务若需要完整生成方法，必须消费
+   sampling/task 层已组合的窄 capability；AFHQ-v2 slice 已通过绑定 pinned raw/EMA model 的
+   `EvaluationSamplingCapability` 和 shared SamplingBuilder execution seam 验证这条边界。
+   E2 已增加 artifact sink 与 offline record view。Process/Dynamics/Sampler compatibility
+   仍由 SamplingBuilder/sampling composition 拥有。
+7. **E1/E2 同时支持 live checkpoint evaluation 与 offline scoring。**
+   E2 允许昂贵的生成/restore 先通过 task sink 流式保存带 manifest 的 predictions，再用
+   相同或新增 metrics 重评；join 按 exact sample plan 与稳定 sample identity，不依赖目录
+   枚举顺序。`prediction_artifact` 已是 strict tagged subject，live sink 成功时随 result
+   发布 `predictions/`。
 8. **Evaluation 产生事实，Gate 应用政策，Reporter 只展示。**
    绝对阈值、相对 baseline 退化、promotion decision 和 selection policy 不进入
    Metric 或 Evaluator。`incomplete`、missing 和 non-finite 结果默认不能通过 gate。
 9. **首版单机单设备、单 subject、fail closed。**
-   在 exact sharding 与去重 contract 完成前，不开放正式分布式 benchmark；超预算、
-   跳过样本或部分失败必须显式标为 incomplete，不能静默产生“完整”分数。
+   E2 已完成本地 exact sharding、身份 join 与去重 contract，但在 distributed exact-sharding
+   lifecycle 完成前仍不开放正式分布式 benchmark；超预算、跳过样本或部分失败必须显式
+   标为 incomplete，不能静默产生“完整”分数。
 10. **不同 AFHQ 协议不能只因都叫 FID/KID 就比较。**
     当前三类 official-test DDIM-50 与未来 latent decoded protocol 必须具有不同
     protocol identity。Reporter 可以并列展示，但 Gate 不允许直接计算跨协议 delta。
@@ -157,6 +165,9 @@ validation split 混淆。
 | diagnostics runtime | RNG、eval mode、EMA 临时切换和 reference cache 的实现经验 |
 | 正式 Metrics API | `MetricUpdate`、MetricEngine、canonical key 与 collision/finite policy |
 | registry/extension activation | 自定义 EvaluationBuilder 与 metric 的构造边界 |
+| E1 standalone Evaluation | strict `EvaluationConfig`、safe checkpoint subject、`EvaluationBuilder -> EvaluationPlan`、single-device runtime、immutable result/manifest |
+| E2 prediction replay | streamed canonical JSONL、versioned manifest、exact sample-plan join、offline subject、producer lineage 与 deterministic gallery IDs |
+| E3 AFHQ-v2 vertical slice | core `fid`/`kid` adapters、public full-official-test profile、pinned raw/EMA sampling capability、aggregate/per-class completeness 与 live/offline parity |
 
 这些能力应被复用，但不能直接把 training 或 diagnostic callback lifecycle 伪造成
 独立 evaluation。
@@ -185,29 +196,51 @@ train
 当前边界有意不把 diagnostic 日志合入 canonical phase mapping。Training 的 validation
 mapping 只解决**训练上下文**的模型选择，仍不等于独立 benchmark。
 
-### 3.3 当前训练后路径
+### 3.3 当前训练后路径与独立 Evaluation
 
-当前 `_run_single_run()`：
+E0 完成后的 `_run_single_run()`：
 
 ```text
 restore selected best checkpoint
 -> test evaluate_epoch
--> optional run_sampling
--> console FinalSummary
+-> complete canonical phase-test mapping
+-> immutable TrainingRunOutcome
+-> console FinalSummary / logger close
+-> completed outcome manifest
 ```
 
-存在以下缺口：
+E0 已关闭 training result boundary：`_evaluate_test_split()` 保留 loss、普通 custom
+metrics 和 system phase facts；outcome 保留完整 final metrics、best/latest/selected
+checkpoint、early-stop 与 manifest/log paths；manifest 先写 `status: running`，只有
+reporter 与 logger 成功收尾后才发布 `status: completed` 和 `outcome`，失败不发布
+outcome。
 
-1. `_evaluate_test_split()` 只返回一个 `float test_loss`，没有普通 metrics；
-2. test 没有独立 manifest、protocol、数据 fingerprint、样本 identity 或 artifact；
-3. training `run_manifest.yaml` 在运行开始时写入，不包含最终 test result；
-4. `_run_single_run()` 返回 `None`，下游无法通过稳定 API 消费结果；
-5. 没有 `evaluate checkpoint now` 的 CLI/library entry；
-6. checkpoint 完整 restore 绑定 optimizer/scheduler/training RNG，独立 evaluation
-   不应为了读 primary/EMA/process state 构造全部训练生命周期；
-7. post-training test 使用已恢复的 raw primary model，而 final sampling 的
-   `weights:auto` 可能选择 EMA，二者可能报告不同 subject；
-8. final sampling 只生成 artifact，不比较 reference，也不等于 evaluation。
+E1 另行提供独立 checkpoint evaluation：
+
+```text
+strict EvaluationConfig
+-> safe v12 checkpoint subject preflight
+-> extension activation
+-> explicit raw/EMA model resolution
+-> checkpoint DataBuilder + validation/test split
+-> registered EvaluationBuilder -> EvaluationPlan
+-> inference-mode MetricEngine loop + strict sample completeness
+-> atomic result.json + evaluation_manifest.yaml publication
+-> immutable EvaluationRunOutcome
+```
+
+该路径不恢复 optimizer、scheduler、GradScaler 或 training RNG，不构造 TrainingPlan，
+也不修改 checkpoint。E2 在其上增加可选 streaming sink、versioned prediction manifest 与
+`prediction_artifact` offline branch；producer artifact 保持只读。当前剩余缺口是：
+
+1. phase test 仍没有独立 protocol、数据 fingerprint、样本 identity 或 artifact，training
+   outcome 不能替代 formal EvaluationResult；
+2. 训练入口仍以 CLI/`argparse.Namespace` 为外层 authority，没有 library-first
+   `TrainingRunRequest -> TrainingRunOutcome` API；
+3. E3 已关闭 core FID/KID adapters 与 AFHQ-v2 class-aware Gaussian vertical slice，但仍
+   没有 SR、通用/latent generation profile、reference cache、performance/curve、comparison、
+   selection 或 gate；这些是剩余 E3–E4；
+4. 独立 sampling 只生成 artifact，不比较 reference，也不等于 evaluation。
 
 ### 3.4 为什么不能只扩展 `Trainer.evaluate_epoch()`
 
@@ -518,38 +551,43 @@ package 不按图像、SR、Gaussian 或 consistency 建子目录来暗示通用
 
 ### 7.1 独立 library API
 
-与 Training/Sampling 保持平行：
+E1/E2 当前公开的可执行入口是同一个 path-first API：
 
 ```python
-def run_training(request: TrainingRunRequest) -> TrainingRunOutcome:
-    ...
-
-
-def run_evaluation(request: EvaluationRunRequest) -> EvaluationRunOutcome:
-    ...
-
-
-def run_sampling(request: SamplingRunRequest) -> SamplingRunOutcome:
-    ...
+outcome = run_evaluation(
+    "configs/evaluation.yaml",
+    output_dir="outputs/evaluations/candidate-a",
+    device_name="cuda",
+    force_extension_version_mismatch=False,
+)
 ```
 
-候选最小 contract：
+需要自行控制 extension activation 的调用方使用两阶段 seam：
 
 ```python
-@dataclass(frozen=True, slots=True)
-class EvaluationRunRequest:
-    config: EvaluationConfig
-    extensions: ResolvedExtensions
-    source: RunSource
+inputs = resolve_evaluation_inputs("configs/evaluation.yaml")
+extensions = activate_extension_plugins(inputs.extension_plan, policy=...)
+outcome = run_resolved_evaluation(inputs, extensions, device_name="cuda")
+```
 
+checkpoint subject 本身也分两阶段：`load_checkpoint_subject()` 只安全读取一次 v12
+payload、解析 config/provenance/data identity；插件激活后
+`resolve_checkpoint_subject()` 才构造配置明确选择的 raw 或 EMA primary model。
+`EvaluationBuilder` 只接收已经选定的 model capability，无权重新选择权重。
+prediction-artifact subject 则由 `load_prediction_artifact_inputs()` 在插件激活前认证
+manifest/shards/config/provenance，随后 `resolve_prediction_artifact()` 只暴露 immutable
+records/identity；它不构造 model 或原 DataBuilder。
 
+当前 `EvaluationRunOutcome` 是 immutable local view：
+
+```python
 @dataclass(frozen=True, slots=True)
 class EvaluationRunOutcome:
     evaluation_id: str
     protocol_id: str
     status: str
     output_dir: Path
-    subject: ResolvedEvaluationSubject
+    subject: Mapping[str, Any]
     split: str
     metrics: Mapping[str, float]
     measurements: Mapping[str, float]
@@ -559,9 +597,14 @@ class EvaluationRunOutcome:
     gate_result_path: Path | None
 ```
 
-failure 仍抛出有类型异常，同时尽力写 failure manifest；不能返回
-`status="complete"` 并把异常藏进 warnings。`incomplete` outcome 只在配置显式允许
-partial 时产生，且永远不能通过默认 gate。
+`EvaluationRunRequest` contract 已存在，但当前 path-first runtime 不以它作为执行入口；
+同样，library-first `TrainingRunRequest -> TrainingRunOutcome` 仍未实现。不要把 E1/E2 写成
+统一三-operation request facade 已经完成。
+
+failure 直接抛出有类型异常，不返回伪成功 outcome。runtime 只在整份 bundle 成功时才
+原子发布可选 `predictions/`、`result.json`、`resolved_evaluation.yaml` 和最后的 completion
+manifest；失败时清理未发布目录且不修改 producer artifact。`strict_complete: false` 可
+产生显式 `incomplete` result，但 E4 gate 尚未实现。
 
 ### 7.2 EvaluationConfig 是独立 authority
 
@@ -573,6 +616,9 @@ version: 1
 name: sr-x4-final-test
 purpose: final_test
 
+extensions:
+  plugins: [my-project]
+
 subject:
   kind: checkpoint
   path: outputs/sr/checkpoints/best.pt
@@ -583,7 +629,7 @@ data:
   split: test
 
 evaluation:
-  name: super_resolution_paired
+  name: my-project.paired-super-resolution
   params:
     inference:
       scale: 4
@@ -592,58 +638,60 @@ evaluation:
     sample_plan:
       seed: 20260726
       replicates_per_input: 1
-    protocol:
-      id: sr-x4-rgb-v1
-      expected_examples: 100
-      strict_complete: true
 
 metrics:
   - id: psnr_rgb
-    name: psnr
+    name: my-project.psnr
     channel: sr.prediction_target
     params:
       data_range: 1.0
       crop_border: 4
       color_space: rgb
   - id: ssim_rgb
-    name: ssim
+    name: my-project.ssim
     channel: sr.prediction_target
     params:
       data_range: 1.0
       crop_border: 4
       color_space: rgb
 
-artifacts:
-  save_predictions: true
-  save_per_sample_metrics: true
-  gallery:
-    ids: [image-001, image-017, image-042]
-
-gate:
-  rules:
-    - metric: eval/metrics/psnr_rgb
-      min: 28.0
+protocol:
+  id: sr-x4-rgb-v1
+  expected_examples: 100
+  strict_complete: true
 ```
 
 严格规则：
 
 - unknown field 失败；
-- `purpose`、split 和 downstream policy 的组合在 resolve 阶段验证；
-- `subject.kind` 使用 tagged union，不用几十个 optional 字段；
+- `purpose: selection_candidate` 只允许 `validation`，`final_test` 只允许 `test`，
+  `benchmark` 可以显式选择二者之一；
+- `subject.kind` 与 `data.source` 必须同为 `checkpoint` 或 `prediction_artifact`；checkpoint
+  `weights` 必须显式为 `raw` 或 `ema`，不接受 `auto`，prediction subject 不接受
+  `weights`；相对 subject path 以 evaluation YAML 所在目录解析；
 - `data.source: checkpoint` 复用 checkpoint resolved config 中的 DataBuilder declaration；
-- 如需新 benchmark data，显式提供另一个 `ComponentConfig`/evaluation data config，
-  仍通过 DataBuilder 构造，不新增 Dataset registry；
+  `prediction_artifact` 认证 producer data identity/split 并直接提供 ordered records，不重建
+  原 DataBuilder；
+- split 只允许 `validation` 或 `test`；offline split 必须与 producer manifest 一致；显式
+  外部 benchmark data authority 属于后续扩展；
 - evaluation config 不能覆盖 checkpoint 的 model/process 训练声明；
 - 可以覆盖的是任务 Builder 明确支持的 inference/evaluation 参数；
-- resolved config、source digest 和所有默认值写入 manifest。
+- `evaluation.name` 必须解析为注册的 `EvaluationBuilder`，`metrics[].name` 必须解析为
+  注册的 Metric；core 不提供通用 image/SR/FID evaluator；
+- `protocol.expected_examples` 是正整数，`strict_complete` 默认 `true`；duplicate sample
+  ID、超额样本或 strict count mismatch 都 fail closed；
+- config schema 没有 `artifacts`、`gate` 或 `comparison` 字段；prediction subject 已由 E2
+  tagged union 实现，gate/comparison 仍属于 E4；
+- resolved config、config SHA-256、checkpoint identity、provenance、completeness 和
+  runtime options 写入 result/manifest。
 
 `purpose` 首版只允许：
 
 | purpose | 合法 split | 决策资格 |
 | --- | --- | --- |
-| `selection_candidate` | validation | 可作为 SelectionPolicy 的一个候选事实 |
-| `final_test` | test | 只报告/gate；不能 selection/HPO |
-| `benchmark` | profile 明确声明的 validation 或 test | 只报告/gate；若要选模必须另跑 `selection_candidate` |
+| `selection_candidate` | validation | 产生候选事实；E4 才提供 SelectionPolicy |
+| `final_test` | test | 当前只报告；不能 selection/HPO，E4 才提供 gate |
+| `benchmark` | 显式 validation 或 test | 当前只报告；若未来要选模须另跑 `selection_candidate` |
 
 一个 `EvaluationRun` 始终只评估一个 subject。`SelectionPolicy` 消费多个
 `selection_candidate` results；`BenchmarkSuite` 消费/调度多个预声明 cases。这样
@@ -674,14 +722,14 @@ metric preprocessing/version 与 protocol identity 则写入 Evaluation manifest
 
 ### 8.1 Subject 使用 tagged union
 
-首版：
+E1/E2 已实现：
 
 ```text
 CheckpointSubject
 PredictionArtifactSubject
 ```
 
-后续有稳定 export 能力后增加：
+E5 后续再评估：
 
 ```text
 InferenceBundleSubject
@@ -698,9 +746,18 @@ checkpoint resolver 负责：
 - extension identity/version preflight；
 - content digest；
 - resolved training config 与 selected component provenance；
-- primary/process/所需 auxiliary 的只读 state projection；
+- E1 primary model 的只读 state projection；后续任务所需 process/auxiliary
+  必须通过明确的 inference asset contract 增加；
 - requested weights 到 concrete variant 的解析；
 - checkpoint epoch/global step 与 lineage。
+
+E1 的实际 seam 是 `load_checkpoint_subject()` 与
+`resolve_checkpoint_subject()`。前者使用 `torch.load(..., weights_only=True)` 读取一次
+checkpoint，并冻结 SHA-256、v12 format、epoch/global step、normalized training config、
+extension provenance、selected components、lineage 与 data artifact bindings；后者在
+extension activation 后构造已显式选择的 primary model。result subject 使用平面
+`requested_weights`/`resolved_weights`，不会把可再次选择 raw/EMA 的 provider 交给
+EvaluationBuilder。
 
 它明确忽略：
 
@@ -711,37 +768,45 @@ checkpoint resolver 负责：
 - training logger/diagnostic callback；
 - 不属于 evaluator 的 frozen teacher 或 auxiliary。
 
-不能直接调用要求 optimizer/scheduler topology 完全匹配的
-`CheckpointManager.restore_payload()`。应提炼与 sampling 共用的只读
-`InferenceStateProjection`/resolver；Training restore 继续使用严格完整 restore。
-该 projection 由 Latent Diffusion Phase 1 的 checkpoint/sampling 层唯一实现，
-Evaluation E1 只消费它，不再建立第二套 checkpoint asset resolver。
+它不调用要求 optimizer/scheduler topology 完全匹配的 training restore；
+Training restore 继续使用严格完整 restore。E1 只从已安全加载的 checkpoint
+payload 构造并 strict load 所选 primary model。后续若需 process、codec 或其他
+auxiliary，应复用 checkpoint/sampling 的公开 inference asset projection，不建立第二套
+task-specific checkpoint restore。
 
 ### 8.3 PredictionArtifactSubject
 
 prediction artifact 至少包含：
 
 ```text
-schema/version
-producer evaluation/sampling id
-source subject digest
+schema/version and artifact digest
+producer evaluation/sampling identity, normalized training config and extension provenance
+source subject identity/digest
 resolved weight variant
 inference profile and digest
 sample plan and digest
 sample IDs / input IDs / replicate indexes
-shard paths, media types and content digests
+canonical JSONL shard paths, sizes, counts, media types and content digests
+producer data identity and governed split
 preprocess/postprocess identity
-failed/skipped records
+deterministic gallery method/protocol/sample IDs
+missing/unexpected/duplicate/failed/skipped records
 completion status
 ```
 
 规则：
 
-- 使用 JSONL/JSON/YAML、image files、Numpy/safetensors 等明确安全格式；
-- 不为方便而加载任意 pickle；
-- prediction 与 reference 按 ID join，不按文件名排序或目录遍历顺序 join；
+- 当前 built-in sink/loader 只使用 strict canonical JSON manifest 与 canonical JSONL record
+  shards；path 必须是 normalized portable relative path，不加载任意 pickle；其他安全格式
+  需先新增显式 format contract，不能由扩展自行塞入现有 schema；
+- prediction 按 manifest 的 ordered sample plan 与 exact
+  `sample_id/input_id/replicate_index` join，不按文件名排序、shard 内顺序或目录遍历顺序
+  join；
+- manifest、artifact、sample-plan 与 shard digest/size/count 全部重算；missing、duplicate、
+  unexpected、corrupt、identity/split/gallery mismatch 均 fail closed；
 - offline scoring 生成新的 EvaluationResult，不修改 producer manifest；
-- incomplete prediction artifact 默认拒绝 formal final test；
+- loader 只接受对其 exact sample plan 为 complete 的 prediction artifact；evaluation 相对
+  protocol 的 complete/incomplete 状态仍单独记录；
 - 增加 metric 不要求重新生成，但改变 inference profile 必须重新产生 predictions。
 
 ### 8.4 不自动重建完整 TrainingPlan
@@ -776,55 +841,66 @@ class EvaluationBuilder(ABC):
 
 - 深复制后的私有 params；
 - resolved read-only subject；
-- DataBuilder 已组装后按治理规则选出的单个 iterable 与 data identity；不暴露未选择
-  的 train/validation/test iterable；
-- sampling/task composition 已构造并验证的窄 inference capability；offline scoring
-  时为空；
-- Metric factory/只读 declarations；
-- device、seed、output/artifact policy；
-- extension/protocol provenance。
+- checkpoint 路径提供 DataBuilder 已组装并按治理规则选出的单个 iterable 与 data
+  identity；prediction 路径提供按 authenticated sample plan 排序的 typed records 与
+  producer data identity；两者都不暴露未选择的 train/validation/test iterable；
+- checkpoint subject 提供已选定 raw/EMA 后的窄 inference capability；offline subject 的
+  inference 为 `None`；
+- runtime 管理的 unpublished absolute `artifact_root`，供可选 task sink 使用；
+- 不可变的 metric declarations；
+- `EvaluationProtocol`。
 
 Builder 不拥有 CLI parsing、全局目录选择、reporter 或 sampling composition；它拥有
-完整 **evaluation composition validation**。Stochaflow built-in 与 extension Builder
-走同一 registry/factory 路径。
+完整 **evaluation composition validation**。当前 core 没有内置 task EvaluationBuilder；自定义
+Builder 通过 `REGISTRIES.evaluation_builders` 的统一 registry/factory 路径构造。
 
 ### 9.2 EvaluationPlan
 
-候选 contract：
+当前 contract：
 
 ```python
 @dataclass(frozen=True, slots=True)
 class EvaluationPlan:
     evaluator: Evaluator
     data: Iterable[Any]
-    modules: Mapping[str, torch.nn.Module]
-    metrics: MetricEngine
-    artifact_sink: EvaluationArtifactSink | None
+    metric_specs: tuple[MetricSpec, ...]
     protocol: EvaluationProtocol
-    subject: ResolvedEvaluationSubject
+    subject: object
+    data_identity: Mapping[str, Any]
+    artifact_sink: EvaluationArtifactSink | None = None
+    modules: Mapping[str, torch.nn.Module] = field(default_factory=dict)
 ```
 
-Plan validation 至少验证：
+E1/E2 Plan validation 验证：
 
-- iterable 可重入且对应显式 split；
-- evaluator 声明的 metric channels 覆盖所有配置 binding；
-- modules/weights variant 与 evaluator 引用一致；
-- artifact sink 与 evaluator output capability 兼容；
-- protocol sample count、seed plan 和 metric preprocessing 完整；
-- no-grad/inference-only 资产没有 trainable lifecycle 要求；
-- live Evaluator 只依赖注入的窄 inference capability，不自行重组
-  Process/Dynamics/Sampler；
-- offline subject 不意外要求 live model。
+- data 是可重入 iterable，不是 one-shot iterator；
+- evaluator 实现 `Evaluator`，其 `metric_channels` 覆盖所有声明的 metric
+  channel；
+- subject 已解析，protocol 是 `EvaluationProtocol`；
+- `data_identity`、`metric_specs` 和 module mapping 可被安全快照；
+- Builder 返回的 subject、data、protocol、data identity 和 metric declarations
+  原样保留 context 注入值；
+- artifact sink 若存在必须满足 `consume/finalize/abort` structural contract，且 finalize
+  返回 complete `PredictionArtifactDraft`；
+- module mapping 只包含 `torch.nn.Module`，runtime 额外要求其声明已注入的
+  checkpoint primary model；offline plan 可以为空。
+
+Artifact sink 与 offline subject 已在 E2 进入同一个 `EvaluationPlan`/runtime 边界；core
+仍不解释 record payload 或 task inference 数学。
 
 不要给 `Process`、`Sampler`、`GenerativeDynamics` 或模型根添加 universal
 `evaluate()`/`predict()`。
 
 ### 9.3 Evaluator 负责 batch 与模型语义
 
-候选窄 contract：
+当前窄 contract：
 
 ```python
 class Evaluator(Protocol):
+    @property
+    def metric_channels(self) -> Collection[str]:
+        ...
+
     def evaluate_batch(self, batch: Any) -> EvaluationStepOutput:
         ...
 
@@ -848,36 +924,53 @@ class EvaluationStepOutput:
   prediction、target 或 condition；
 - `num_examples` 显式给出，Runner 不从任意 batch 猜 shape；
 - `sample_ids` 用于完整性、join 和 per-sample artifact；
-- `records` 对 core 不透明，只交给 Builder 配对的 task-compatible sink；
-- task Evaluator 调用已注入的 inference capability，不构造 model adapter、condition、
-  guidance、initial state 或数值 Sampler；
+- `records` 对 core 的 task payload 仍不透明；E2 optional sink 只校验 typed
+  `PredictionRecord` identity 并流式持久化；
+- live task Evaluator 调用已注入的 inference capability，offline Evaluator 解释已认证的
+  record payload；两者都不构造 model adapter、condition、guidance、initial state 或数值
+  Sampler；
 - Evaluator 不移动 module、选择 checkpoint、打开输出路径或直接发布最终 result。
 
 ### 9.4 Runner 生命周期
 
+E1/E2 当前生命周期：
+
 ```text
-resolve config/subject/extensions
--> DataBuilder and split selection
--> sampling/task composition builds validated inference capability (live only)
--> construct EvaluationBuilderContext with capability or offline subject
+strict parse config + tagged subject preflight
+-> extension provenance check and activation
+-> checkpoint branch:
+     resolve explicit raw/EMA primary model on one device
+     checkpoint DataBuilder and validation/test split selection
+   prediction-artifact branch:
+     authenticate complete manifest and canonical JSONL shards
+     exact-ID join records into the ordered sample plan; inference=None
+-> create unpublished artifact staging root
+-> construct EvaluationBuilderContext(subject, data, data identity, optional model,
+                                      artifact root, metric specs, protocol)
 -> EvaluationBuilder.build()
 -> plan.validate()
--> seed/device/eval mode/inference mode
+-> checkpoint branch requires plan.modules to declare the injected model
+-> seed/device/eval mode/torch.inference_mode()
 -> MetricEngine.reset()
 -> for each work batch:
      evaluator.evaluate_batch()
-     validate count/IDs
+     validate positive count and globally unique sample IDs
      MetricEngine.update() for every update group
-     artifact_sink.consume(records)
-     measurement collector update
+     optional artifact_sink.consume(step output)
+     example-weighted measurement update
 -> MetricEngine.compute()
--> artifact_sink.finalize()
--> completeness/finite/collision checks
--> write result + manifest atomically
--> optional gate + reporter
+-> protocol completeness/finite/collision checks
+-> optional sink.finalize(); require its ordered sample plan == observed IDs
+-> offline branch additionally requires observed ordered IDs == producer sample plan
+-> optional complete prediction manifest/shards staged as predictions/
+-> atomically publish predictions + resolved_evaluation.yaml + result.json
+   + final evaluation_manifest.yaml
+-> return immutable EvaluationRunOutcome
 ```
 
 Runner core 不按 evaluator name、task、Process family、metric id 或 recipe name 分支。
+`artifact_sink.consume/finalize/abort`、prediction shards 与 offline subject 已属于 E2；
+reference-cache/quality-profile 属于 E3，gate、comparison 与 suite 属于 E4。
 
 ### 9.5 Phase evaluator 与 task evaluator
 
@@ -896,12 +989,13 @@ Runner core 不按 evaluator name、task、Process family、metric id 或 recipe
    - 不伪造 `TrainEpochEndEvent`，不复用 TrainingDiagnostic callback 外壳。
 
 对于数值采样，SamplingBuilder 仍是 adapter、condition、guidance、initialization
-以及 Process/Dynamics/Sampler compatibility 的唯一 composition owner。实现
-Evaluation E1 时应从 sampling subsystem 提炼可注入的窄 `SamplingPlan`/
-`InferenceCapability`；Sampling operation 执行它并写普通 sampling artifacts，
-EvaluationBuilder 消费它并添加 metric/reference/completeness。对于 direct transform，
-同一个 task-local method factory 同时服务 SamplingBuilder 与 EvaluationBuilder，
-但不要求它伪造 numerical Sampler。任何路径都不能各自复制 solver/condition 数学。
+以及 Process/Dynamics/Sampler compatibility 的唯一 composition owner。checkpoint branch
+只注入已选择的 opaque primary model，offline branch 注入已认证 records；具体
+EvaluationBuilder 若需要完整 generation method，
+必须复用 task-local sampling/inference helper，而不能在 core runner 增加算法分支。
+对于 direct transform，同一个 task-local method factory 可以同时服务 SamplingBuilder 与
+EvaluationBuilder，但不要求它伪造 numerical Sampler。任何路径都不能各自复制
+solver/condition 数学。
 
 ## 10. Metrics、Measurements 与 Reference Cache
 
@@ -1059,7 +1153,7 @@ Reporter 不能：
 
 ### 12.1 结果模型
 
-候选数据模型：
+E1/E2 已实现的数据模型：
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -1069,48 +1163,53 @@ class EvaluationResult:
     protocol_id: str
     protocol_digest: str
     status: str
-    subject: ResolvedEvaluationSubject
-    data: EvaluationDataIdentity
+    subject: Mapping[str, Any]
+    data: Mapping[str, Any]
     metrics: Mapping[str, float]
     measurements: Mapping[str, float]
-    artifacts: Mapping[str, ArtifactReference]
-    completeness: CompletenessRecord
-    provenance: EvaluationProvenance
+    artifacts: Mapping[str, Any]
+    completeness: Mapping[str, Any]
+    provenance: Mapping[str, Any]
 ```
 
 `EvaluationRunOutcome` 是本地运行后的便利 view，可包含 `Path`；可移植
-`EvaluationResult` 使用相对 artifact reference + digest，不依赖原机器绝对路径。
+`EvaluationResult` 使用 JSON-shaped immutable mappings。checkpoint subject 记录
+path/SHA-256、format、epoch/global step、requested/resolved weights、lineage、extension、
+selected components 与 data artifact identity；prediction-artifact subject 记录
+artifact/manifest/sample-plan digest、producer、原 source subject、resolved weights、
+inference/pre/postprocess/gallery 与 extension lineage。data 分别记录 checkpoint DataBuilder
+identity，或 producer data 加 artifact/sample-plan identity。只有 Plan 声明 sink 时
+`artifacts` 才包含 portable `predictions/prediction_manifest.json` reference；reference-cache
+artifact 仍属于 E3。
 
 ### 12.2 最低 manifest
 
-每次运行至少记录：
+E1/E2 每次成功运行记录：
 
 ```text
-schema/version, evaluation id, case id, purpose, status
-subject kind/path/content digest/lineage
-checkpoint epoch/global step
-requested and resolved weight variant
-resolved inference profile and digest
-DataBuilder declaration, split, dataset fingerprint
-expected/observed sample IDs and counts
-sample-plan/seed-bank digest, replicates per input
-evaluator/builder identity and extension provenance
-metric implementation/version/backbone/direction/params
-preprocess, postprocess, color, range, crop, resize, quantization
-scalar metrics and optional uncertainty metadata
-prediction/reference-cache/artifact references and digests
-latency protocol, warmup, synchronization, batch/resolution
-hardware/software environment
-errors, skipped/failed IDs, completeness
+schema/version, evaluation id, protocol id/digest, purpose, status
+evaluation config source/digest and resolved config
+subject kind and checkpoint or prediction-artifact identity/lineage
+checkpoint epoch/global step or producer/source-subject/sample-plan digests
+requested/resolved weight variant or artifact-retained resolved weights
+DataBuilder declaration or producer data identity, governed split and artifact bindings
+expected/observed/unique/missing counts and sample-ID digest
+EvaluationBuilder/metric declarations and extension provenance
+finite eval/metrics/* and eval/measurements/* scalars
+device, seed, runtime options and completeness
+optional prediction manifest/shard references and digests
 ```
 
-如果 DataBuilder 无法提供可靠 dataset fingerprint，formal profile 必须由具体
-EvaluationBuilder 提供版本化 data identity 与 exact sample manifest；core 不通过
+E2 已补 prediction references、exact sample manifest、pre/postprocess、sample-plan、gallery
+与 producer lineage。E3 再补 reference-cache、metric backbone/version 与 task quality
+protocol；performance profile 后续冻结 latency/warmup/sync/repeat 环境事实。core 不通过
 检查任意 Dataset 内部字段来猜 fingerprint。
 
-EvaluationResult/manifest 原子发布后保持不可变，不反向写入 gate reference。
-可选 GateResult 是独立 sidecar，单向引用 EvaluationResult digest；本地
-`EvaluationRunOutcome.gate_result_path` 或上层 workflow manifest 可以引用该 sidecar。
+runtime 只向不存在的新 output directory 发布；predictions、resolved config、result 与最后的
+`evaluation_manifest.yaml` 全部先写入 sibling staging，再以 no-replace directory rename
+原子发布。任何失败都会清理 staging 且不修改既有目标。E4 可选 GateResult 将是独立
+sidecar；当前
+`EvaluationRunOutcome.gate_result_path` 始终为 `None`。
 
 ### 12.3 Comparison
 
@@ -1200,8 +1299,8 @@ gate:
 - selected raw/EMA 语义若在 run 结束评估；
 - 无完整 sampler、gallery 或 distribution reference cache。
 
-当前 train 命令默认 test 行为可暂时保留兼容，但应改名为
-`phase_test_metrics`，不能把一个 `float test_loss` 宣称为完整 benchmark。
+当前 train 命令保留 phase test convenience，并已将完整 canonical mapping 命名为
+`phase_test_metrics`；它仍不是完整 benchmark。
 
 ### 13.2 Paired super-resolution profile
 
@@ -1254,7 +1353,45 @@ alignment 或 human evaluation 通过 extension BenchmarkSuite 接入。
 - DDIM/DDPM 名称、步数、schedule、CFG 与 seed；
 - authenticated official-test reference；
 - aggregate 和 per-class KID/FID；
-- validation 选择 checkpoint/CFG，official test 只评估唯一 frozen subject 一次。
+- 显式冻结 checkpoint-selection policy，official test 只评估唯一 frozen subject 一次。
+
+其中 pixel AFHQ-v2 的首个 public E3 vertical slice 已于 2026-08-01 完成。checked-in
+`formal-ddim50-cfg2-official-test.yaml` 固定完整 official test 的
+cat/dog/wild 493/491/483 reference 与相同 generated allocation、EMA、DDIM-50、CFG 2.0、
+seed `20260726`、KID/FID provider 参数和 strict 1,467-example completeness。live run 通过
+shared SamplingBuilder seam 发布 replayable predictions；同一个 Builder/Metric 可从 E2
+artifact offline replay，而不重建 checkpoint model/DataBuilder 或再次生成。该完成状态只
+证明 evaluation contract/readiness，不代表 corrected ADM/P2 已产生长训练质量数值。
+
+control/P2 A/B 使用
+`formal-ddim50-cfg2-official-test-epsilon.yaml`，共同固定 epsilon/fixed recipe、完整
+official-test allocation、EMA、DDIM-50 eta 0 / CFG 2.0、seed 与 KID/FID parameters。已完成的
+受控 run 令 control 也使用 P2 Builder，但以 `gamma: 0` 得到 strict-standard epsilon
+objective；treatment 的唯一算法变化是 `gamma: 1`。两 arm 同 seed `20260726`、corrected
+105,197,187-parameter topology、真实 AFHQ、BF16、batch 8 / accumulation 4、deterministic
+runtime、1 full epoch（1,679 micro-batches / 420 optimizer updates），EMA 从 step 0 起使用
+decay 0.999。训练耗时分别为 4m28s 与 4m23s。
+
+checkpoint selection 固定为各 arm 预算终点的 `latest.pt` EMA，而不是分别按不可比的
+`valid/loss` 选择 `best.pt`。control checkpoint SHA 为 `6dd0...2196`，P2 checkpoint SHA
+为 `b02b...fa4a`。formal protocol ID 是
+`afhq-v2-adm-epsilon-ddim50-cfg2-official-test-v1`；两臂都 complete，均有 1,467 个 unique
+IDs 和同一个 exact sample plan（cat/dog/wild 493/491/483，`sample_ids_sha256` 为
+`b66fc...d6c1`），evaluation batch 为 30。
+
+| Scope | Control FID | P2 FID | FID delta | Control KID mean | P2 KID mean | KID delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Aggregate | 369.621427 | 371.250343 | +1.628916 | 0.476357937 | 0.479742199 | +0.003384262 |
+| Cat | 381.980901 | 383.273453 | +1.292552 | 0.551076353 | 0.553966224 | +0.002889871 |
+| Dog | 382.850132 | 385.106413 | +2.256281 | 0.484312266 | 0.488923877 | +0.004611611 |
+| Wild | 370.417725 | 371.661225 | +1.243500 | 0.502315342 | 0.504731715 | +0.002416373 |
+
+全部指标 lower-is-better，P2 在 aggregate 和各类均略差。这关闭了 controlled pipeline、
+lineage、exact-completeness 与 protocol readiness；它没有显示单 epoch P2 收益。KID delta
+与 reported standard deviation 同量级，单 seed/epoch 不能称为统计显著，也不是 200-epoch
+promotion evidence。production long-run gate 仍开放。完整 result/prediction bundles 保留在
+本机 `G:` volume；该 machine-local 位置只用于开发审计，不进入公共用户命令或 portable
+workflow authority。
 
 ### 13.4 Class-conditional latent image generation profile
 
@@ -1450,7 +1587,7 @@ version 属于 recipe acceptance contract。
 - 正式 test 不应因每个 HPO trial 自动运行而泄漏；
 - training 成功不应因可选报告/gallery 失败而丢失 checkpoint。
 
-推荐：
+E0 已完成前两项的 training-side foundation；其余仍是后续工作：
 
 1. training 返回结构化 `TrainingRunOutcome`；
 2. outcome 包含 selected checkpoint；
@@ -1461,24 +1598,21 @@ version 属于 recipe acceptance contract。
 
 ### 14.3 TrainingRunOutcome
 
-建议逐步从：
+E0 已把 training-side result 从单一 `test_loss` 迁移为：
 
 ```text
-test_loss: float | None
-sampling_artifacts: Mapping[str, Path]
+final_metrics: Mapping[str, float]
+phase_test_metrics: Mapping[str, float]
+selected_checkpoint: Path | None
+manifest_path: Path
 ```
 
-迁移为：
-
-```text
-phase_test_metrics: Mapping[str, float] | None
-evaluation_results: tuple[EvaluationResultReference, ...]
-sampling_results: tuple[SamplingResultReference, ...]
-```
-
-phase metric mapping 与 formal result 名称不同，避免使用者误以为一个 test loss/metric
-mapping 已完成全部 task benchmark。只有 `EvaluationResult` 冻结 subject、dataset、
-protocol、completeness 和 result identity。
+两个 metric mappings 都是 immutable snapshot；无 test split 时
+`phase_test_metrics` 为空 mapping。phase metric mapping 与 formal result 名称不同，避免
+使用者误以为一个 test loss/metric mapping 已完成全部 task benchmark。只有独立
+`EvaluationResult` 才冻结 subject、dataset、protocol、completeness 和 result identity。
+`evaluation_results`/`sampling_results` references 也尚未进入当前 outcome，不应提前记录为
+已实现。
 
 ### 14.4 AutoML
 
@@ -1498,28 +1632,26 @@ AutoML/HPO trial：
 
 ### 15.1 CLI
 
-首版：
-
-```text
-stochaflow evaluate --config evaluation.yaml
-```
-
-config 已包含显式 subject。可提供不改变 authority 的便利参数：
+E1/E2：
 
 ```text
 stochaflow evaluate \
-  --checkpoint outputs/run/checkpoints/best.pt \
-  --config configs/evaluation/sr-x4-test.yaml
+  --config evaluation.yaml \
+  --device cuda \
+  --output-dir outputs/evaluations/sr-x4-final
 ```
+
+`--config` 必填且已包含显式 checkpoint 或 prediction-artifact subject。`--device`、
+`--output-dir` 与 `--force-extension-version-mismatch` 是 runtime options；CLI 不提供独立
+`--checkpoint`，也不允许 arbitrary dotted patch。
 
 规则：
 
-- CLI override 只允许 schema 明确声明的 subject path/output/device 等运行字段；
-- 不提供 arbitrary dotted patch；
-- CLI 只解析、构造 request、调用 library API、展示 outcome；
+- CLI 只解析 runtime options、调用 `run_evaluation()` 并展示 outcome；
 - 不递归调用 `stochaflow sample` 或 `stochaflow train`；
-- 读取 prediction artifact 时显式选择对应 subject kind；
-- output directory 已存在且非空时默认失败，resume 另行设计。
+- output directory 必须不存在；当前没有 resume/overwrite；
+- E2 offline replay 复用同一个 `stochaflow evaluate`，不增加平行 prediction CLI；compare
+  与 gate 属于 E4。
 
 后续只读命令候选：
 
@@ -1530,49 +1662,55 @@ stochaflow evaluation gate result.json --policy gate.yaml
 
 ### 15.2 目录
 
+无 sink 的成功 bundle 精确为：
+
 ```text
 outputs/evaluations/<evaluation-id>/
 ├── resolved_evaluation.yaml
 ├── evaluation_manifest.yaml
-├── result.json
-├── metrics.json
-├── measurements.json
-├── sample_manifest.jsonl
-├── per_sample_metrics.jsonl
-├── gate_result.json            # optional sidecar; points to result digest
-├── logs/
-├── predictions/
-│   ├── manifest.json
-│   └── shards/
-├── artifacts/
-│   ├── gallery/
-│   └── curves/
-└── caches/
-    └── references/  # 可改为外部 content-addressed cache reference
+└── result.json
 ```
 
-大 prediction/cache 可存储在外部 artifact root；evaluation 目录保存带 digest 的引用。
-临时文件和未完成 shard 使用不同后缀，成功 finalize 后原子发布 manifest/result。
+`result.json` 内含 metrics、measurements、subject、data、completeness 与 provenance；
+manifest 引用 result 的 SHA-256。E2 live sink 额外发布：
+
+```text
+outputs/evaluations/<evaluation-id>/
+├── predictions/
+│   ├── prediction_manifest.json
+│   └── <one or more canonical JSONL shards>
+├── resolved_evaluation.yaml
+├── evaluation_manifest.yaml
+└── result.json
+```
+
+prediction manifest 内含 exact sample plan、completeness、shard digests、producer/source
+lineage、pre/postprocess 与 deterministic gallery IDs。AFHQ-v2 E3 slice 已在这个布局上发布
+首个正式 task quality prediction artifact；content-addressed reference cache 与其他 E3
+profile artifacts 仍待实现，E4 再增加 comparison/gate sidecar。
 
 ## 16. 分阶段实施
 
-### Stage E0：语义、结果与 phase metric 基础
+### Stage E0：语义、结果与 phase metric 基础（outcome foundation complete）
 
 复用已经实现的 `MetricSpec`、`MetricUpdate`、MetricEngine 和 validation-only selection
 contract。
 
-排期：P2/ADM A1 core 后启动。现有 inference asset projection
-已经可供 checkpoint subject resolver 复用；pretrained codec 接入后再增加
-codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
+E0 outcome foundation 已于 2026-08-01 关闭。现有 inference asset projection 已经可供
+后续 checkpoint subject resolver 复用；pretrained codec 接入后再增加 codec-dependent
+profile，不要求 pixel 与 latent 两条主线互相等待。
 
 交付：
 
 - 本计划评审通过；
 - 冻结 Metric/Diagnostic/Evaluation/Selection/Gate 术语；
-- Evaluation 构造复用现有 `MetricSpec`/MetricEngine；
-- structured training outcome 使用 `phase_test_metrics` plain mapping，不再只暴露
-  `test_loss`；
-- Evaluation request/result 明确拥有 dataset、protocol 与 result identity。
+- immutable public `TrainingRunOutcome` 同时保存完整 final 与 phase-test canonical
+  mappings、checkpoint selection 和 artifact paths；
+- training manifest 成功时持久化 completed outcome，training/reporter/logger 失败时不
+  发布 outcome。
+
+Standalone Evaluation 后续由 E1 单独关闭；它复用现有 `MetricSpec`/MetricEngine，
+不是 E0 交付的一部分。
 
 退出条件：
 
@@ -1581,16 +1719,18 @@ codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
 - test phase mapping 不参与 monitor/HPO；
 - focused Metrics/Trainer tests 通过。
 
-### Stage E1：独立 checkpoint Evaluation vertical slice
+`TrainingRunRequest`/`run_training()` library-first seam 仍未实现。E1 已实现拥有
+dataset、protocol 与 result identity 的 path-first Evaluation runtime；已有
+`EvaluationRunRequest` 数据 contract 尚不是该 runtime 的执行入口。
+
+### Stage E1：独立 checkpoint Evaluation vertical slice（complete，2026-08-01）
 
 交付：
 
 - standalone `EvaluationConfig`；
-- checkpoint subject resolver 与只读 inference state projection；
-- 复用 checkpoint sampling 已有的只读 subject projection；Latent Phase 1 已验证
-  embedded auxiliary asset，后续 codec provider 只增加 concrete descriptor/state，
-  不重新实现第二套 resolver；
-- sampling/task composition 提供的窄 inference capability seam；
+- `load_checkpoint_subject()` 安全读取 v12 payload，
+  `resolve_checkpoint_subject()` 只构造并 strict load 显式 raw/EMA primary model；
+- 向 Builder 注入已选权重的 opaque primary-model inference capability；
 - `EvaluationBuilder -> EvaluationPlan` registry path；
 - `EvaluationRunner`；
 - `run_evaluation()` 与 `stochaflow evaluate`；
@@ -1598,30 +1738,36 @@ codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
 - single-machine strict completeness；
 - 一个独立 custom EvaluationBuilder contract fixture。
 
-首个 built-in/reference vertical slice 使用确定性 paired SR 或简单 supervised evaluator，
-避免一开始被 FID/reference cache 掩盖基础 contract。
+首个 contract vertical slice 使用独立 custom supervised Evaluator/Metric/DataBuilder
+fixture，证明 core 不依赖 image batch、内置模型签名或 task name。E1 关闭时不包含
+SR/FID/KID EvaluationBuilder；AFHQ/FID/KID 的首个 profile 后续由 E3 子阶段关闭。
 
 退出条件：
 
 - 删除/不可用 optimizer state 不影响 evaluation；
 - raw/EMA variant 被准确解析和记录；
 - CLI/library result 等价；
-- checkpoint、split、sample count、metric/profile provenance 完整；
-- EvaluationBuilder 不重组 Process/Dynamics/Sampler，且与 Sampling operation 使用同一
-  inference capability；
+- checkpoint、split、sample count、Builder/metric 声明与 extension provenance 完整；
+- EvaluationBuilder 不重组 Process/Dynamics/Sampler，core 也不按算法 family 分支；
 - Runner 对 custom batch/model 无 task-specific 分支。
 
-### Stage E2：Prediction artifact 与 offline scoring
+退出条件已经由 config/builder/subject/artifact/runtime/CLI focused tests 与完整 E1
+black-box contract 覆盖。E1 的边界是 live checkpoint evaluation、单机单设备、显式
+raw/EMA、validation/test、strict expected count 和 immutable result bundle；E2 已在该
+边界上补齐 artifact/offline scoring，E3 又关闭 AFHQ-v2 vertical slice；其余 quality
+profiles 仍为 pending。
+
+### Stage E2：Prediction artifact 与 offline scoring（complete，2026-08-01）
 
 交付：
 
 - versioned prediction manifest；
 - streaming task sink；
-- safe shard formats；
-- sample ID join/completeness；
+- strict canonical JSONL safe shard format 与 content/path authentication；
+- ordered sample plan、sample/input/replicate ID join 与双层 completeness；
 - `PredictionArtifactSubject`；
 - live 与 offline scoring 数值一致测试；
-- deterministic gallery。
+- deterministic gallery ID selection。
 
 退出条件：
 
@@ -1630,14 +1776,44 @@ codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
 - missing/duplicate/corrupt shard fail closed；
 - offline result 保留 producer lineage。
 
-### Stage E3：生成与 SR quality profiles
+退出条件已经由 prediction primitive、subject loader、live/offline runtime 与 failure focused
+tests 覆盖：offline replay 不构造 model、不 forward、不重建 DataBuilder，也不修改 producer
+bytes/mtime；shard/record/file enumeration 顺序不影响按 sample plan 的 join；same-count wrong
+IDs、missing/duplicate/unexpected/corrupt/digest mismatch 均拒绝；新 result 保留 producer、
+source subject、resolved weights、data/split、profile、training config 与 extension provenance。
+gallery 默认以 protocol/sample hash 稳定选择，也支持显式 IDs；当前只冻结 gallery IDs，
+不渲染图片。
 
-交付：
+### Stage E3：生成与 SR quality profiles（partial）
+
+#### AFHQ-v2 class-aware Gaussian vertical slice（complete，2026-08-01）
+
+已交付：
+
+- core `REGISTRIES.metrics` 的 strict `fid`/`kid` adapters；
+- public `afhq-v2.class-conditional-generation` EvaluationBuilder 与
+  `afhq-v2.class-aware-distribution` Metric；
+- `formal-ddim50-cfg2-official-test.yaml`，固定 full official test
+  493/491/483 class counts、EMA、DDIM-50、CFG 2.0、seed 与 metric parameters；
+- `formal-ddim50-cfg2-official-test-epsilon.yaml`，固定 epsilon/fixed official protocol，
+  以 production run/selected-epoch placeholder fail closed；已完成的 equal-budget A/B
+  曾显式替换为两臂各自的 `latest.pt` EMA；
+- checkpoint runtime 注入 pinned raw/EMA model 与 writer-free
+  `EvaluationSamplingCapability`，并通过 shared SamplingBuilder execution seam 执行；
+- aggregate/per-class reference/generated exact completeness；
+- live prediction artifact、offline replay、producer lineage 与 legacy oracle parity coverage。
+
+AFHQ slice 已使 public formal run 在架构与配置上 ready，epsilon A/B authority 也已冻结。
+随后完成的一轮 corrected、equal-budget、full-official-test controlled A/B 已验证两臂
+`latest.pt` EMA、exact sample identity 和完整 result publication；该单 seed/epoch 结果未显示
+P2 收益。正式 200-epoch long run、重复 seed 与 promotion-quality evidence 仍属于运行验收，
+不属于该 slice 的已完成声明。
+
+#### E3 剩余交付
 
 - paired SR PSNR/SSIM/LPIPS profile；
-- FID/KID distribution binding；
 - content-addressed reference cache；
-- Gaussian generation profile；
+- 其他通用 Gaussian generation profile；
 - codec reconstruction profile；
 - decoded latent generation、class fidelity 和 memorization profile；
 - consistency NFE 1/2/4 cases；
@@ -1770,7 +1946,12 @@ uv run pytest tests/test_sampling_runtime.py
 uv run pytest tests/test_experiment_runner.py
 ```
 
-完整分支合并前：
+完整 E3/E4 未来分支合并前（不阻塞当前 AFHQ slice）：
+
+以下清单是其余 E3 profiles、reference cache、performance/curve 与 E4
+comparison/selection/gate 全部实现后的完整能力门禁。当前 pixel/P2 分支只关闭已经实现的
+AFHQ-v2 class-aware E3 vertical slice 及其 live/offline evidence；deterministic SR、
+reference-cache 和 gate-fail 项尚属未来范围，不能反向作为当前 AFHQ slice 的合并门槛。
 
 - 全量 `uv run pytest`；
 - 一个 tiny training -> checkpoint -> phase test；

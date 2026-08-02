@@ -3,7 +3,7 @@
 本教程实现一个最小的条件 inference recipe。扩展保留内置
 `DiscreteGaussianDenoisingProcess`、`GaussianModelDynamics` 和 DDPM/DDIM，只在
 `SamplingBuilder` 中组装 condition、classifier-free guidance、初始噪声和模型调用；
-训练侧同时把 recipe identity 与固定 prediction semantics 写入 v11 checkpoint。
+训练侧同时把 recipe identity 与固定 prediction semantics 写入 v12 checkpoint。
 
 适用前提是 checkpoint 中的模型已经按以下签名训练：
 
@@ -125,7 +125,7 @@ class ConditionalGaussianBuilder(SamplingBuilder):
             )
         shape = self.context.shape
         if shape is None:
-            raise ValueError("conditional-demo.gaussian requires sampling.shape")
+            raise ValueError("conditional-demo.gaussian requires sample.shape")
 
         weights = params.get("weights", "auto")
         if weights not in {"auto", "raw", "ema"}:
@@ -306,14 +306,15 @@ return TrainingPlan(
 )
 ```
 
-这样 `prediction_type` 由实际训练组合确定。sample request 不能临时选择这个 Builder，
+这样 `prediction_type` 由实际训练组合确定。独立 sample config 不能临时选择这个 Builder，
 也不能把 contract 改成另一种 prediction parameterization。
 
-下面是一个 partial sample request。它复用 checkpoint 中的 model、Process、recipe 和
-插件 selection，只声明希望改变的 request fields：
+下面是一个完整的独立 sample config。model、Process、recipe 与必要插件 provenance
+来自 checkpoint；sampler、options、shape、数量、batch、seed 和 writers 都由本次
+invocation 完整声明，不从训练配置继承：
 
 ```yaml
-sampling:
+sample:
   shape: [1, 2, 2]
   num_samples: 8
   batch_size: 4
@@ -334,9 +335,10 @@ sampling:
       params: {}
 ```
 
-request 不能是完整外部 experiment config。若确实需要另一个 writer/provider plugin，
-可写 `extensions.plugins`；该列表只追加到 checkpoint selection，不能删除产生 model、
-Process 或 recipe 的 required plugins，也不能用新插件替换 checkpoint recipe。
+sample config 不是第二份 training experiment config。若确实需要另一个 writer/provider
+plugin，可另外写顶层 `extensions.plugins`；该列表只追加到 checkpoint 证明的 required
+plugins，不能删除产生 model、Process 或 recipe 的插件，也不能用新插件替换 checkpoint
+recipe。
 
 运行：
 
@@ -347,15 +349,18 @@ stochaflow sample \
   --output-dir outputs/conditional-samples
 ```
 
-同一个 recipe 可以改用 DDPM；只原子替换顶层 sampler declaration：
+同一个 recipe 可以改用 DDPM；复制上一份完整 config，并只把其中 `sample.sampler` 的值
+替换为：
 
 ```yaml
-sampler:
-  name: ddpm
-  params:
-    start_time: null
-    end_time: 0
+name: ddpm
+params:
+  start_time: null
+  end_time: 0
 ```
+
+这段 YAML 只是替换值，不是可单独传给 `--config` 的片段；复制后的文件仍须完整声明
+`sample` 的所有 invocation fields。
 
 DDPM 与 DDIM 都只依赖 `GaussianDenoisingDynamics` 行为，不读取 condition、guidance 或
 模型签名。若扩展只是改变 Gaussian prediction，例如条件模型、CFG 或能归一化为一致

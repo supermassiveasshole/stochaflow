@@ -24,6 +24,7 @@ experiment configuration resolve predictably.
 | `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/training.py` | Composes the model and objective and defines one training step. |
 | `src/__STOCHAFLOW_PACKAGE_NAME__/stochaflow_ext/sampling.py` | Produces predictions with a direct-transform SamplingBuilder. |
 | `experiments/example/train.yaml` | Selects the installed plugin and configures the example run. |
+| `experiments/example/sample.yaml` | Defines one complete checkpoint-backed inference invocation. |
 | `tests/test_extensions.py` | Checks registration and deterministic epoch shuffle behavior. |
 | `data/` | Reserved for project-owned data; the generated synthetic example does not read it. |
 
@@ -85,7 +86,6 @@ outputs/example/<run-id>/
   tensorboard/
     __STOCHAFLOW_PROJECT_SLUG__-example/
       events.out.tfevents.*
-  samples/final/samples.pt
 ```
 
 Inspect the local and diagnostic metrics in TensorBoard:
@@ -124,18 +124,16 @@ regression predictions and does not construct a numerical Sampler:
 ```bash
 stochaflow sample \
   --checkpoint outputs/example/<run-id>/checkpoints/best.pt \
+  --config experiments/example/sample.yaml \
   --output-dir outputs/checkpoint-sample
 ```
 
 The command writes `samples.pt` and `resolved_sampling.yaml` to the selected
 output directory. The checkpoint supplies the internal recipe and fixed
 contract. In particular, the model's validated input width is captured in that
-contract rather than repeated in `sampling.options`. With no request file, the
-checkpoint also supplies all sampling defaults.
+contract rather than repeated in `sample.options`.
 
-An optional request file must be used with an explicit `--checkpoint`, may
-contain only `sampling` and optional `extensions`, and cannot select a
-SamplingBuilder. Ordinary fields inherit the checkpoint when omitted;
-`sampling.options` shallow-merges by key, while `sampling.sampler` and
-`sampling.writers` replace their checkpoint defaults atomically when present.
+The required sample config is a complete, independent invocation. It may
+contain only `sample` and optional additive `extensions`, cannot select a
+SamplingBuilder, and never inherits mutable defaults from the training config.
 An option cannot override a field in the checkpoint's fixed recipe contract.

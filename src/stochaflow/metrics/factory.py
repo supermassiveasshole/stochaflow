@@ -19,6 +19,7 @@ def build_metric(
 
     validate_metric_spec(spec)
     import_module("stochaflow.metrics.builtin")
+    import_module("stochaflow.metrics.reference")
     metric = registry.create(spec.name, **spec.params)
     if not isinstance(metric, Metric):
         raise TypeError(

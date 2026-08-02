@@ -289,8 +289,8 @@ epoch 旁的 mutable `best.pt` 已被后续 epoch 覆盖，当前格式无法重
 Strict resume 还要求合法的 `epoch`、`global_step` 和 RNG snapshot；缺失或损坏会在修改训练
 资产前拒绝。只有 strict training resume 会从 checkpoint 恢复 RNG snapshot。普通
 checkpoint 读取不修改全局 RNG；checkpoint-backed inference 不恢复该 snapshot，但会按
-resolved `sampling.seed`（为 `null` 时使用 checkpoint config 的 `experiment.seed`）
-重置 Python、NumPy 与 Torch 全局 RNG。strict resume 恢复适用的 CPU/CUDA/MPS 全局
+完整 sample config 中显式的 `sample.seed` 重置 Python、NumPy 与 Torch 全局 RNG，
+不会回退到训练配置的 `experiment.seed`。strict resume 恢复适用的 CPU/CUDA/MPS 全局
 RNG；跨 backend 或不同 CUDA topology 不保证逐位复现。
 DataBuilder/DataLoader/Sampler/worker 的运行态不进入 checkpoint。内置图像 recipe 会从
 seed 与 epoch 重建 shuffle/batch 索引，但 worker 中的随机 crop/flip state 不恢复，因此
@@ -304,27 +304,26 @@ reference provider 会在 MPS 运行中把 FID feature accumulation 和 compute 
 KID 不使用这条 fallback，仍保留配置的 runtime device。CPU transfer 可能增加 diagnostic
 耗时，但不会改变训练资产所在设备。
 
-### `sample` 拒绝完整 config 或缺少 checkpoint
+### `sample` 拒绝 config 或缺少 checkpoint
 
-v11 `sample` 必须显式提供 `--checkpoint`。可选 `--config` 是 partial sample request，
-不是另一份完整实验配置；顶层只能包含 `sampling` 与 optional `extensions`。model、
-Process、TrainingBuilder 和内部 SamplingBuilder 都由 checkpoint config/recipe 决定。
+v12 `sample` 必须同时显式提供 `--checkpoint` 和 `--config`。config 是一次完整、独立的
+sample invocation，顶层只能包含 `sample` 与 optional `extensions`；`sample` 内的
+sampler、options、shape、num_samples、batch_size、seed 和 writers 都必须声明。model、
+Process、TrainingBuilder 和内部 SamplingBuilder 则由 checkpoint config/recipe 决定。
 
-若要改变可调 inference 行为，只声明需要覆盖的字段。普通字段继承 checkpoint；
-`sampling.options` 做一层 key merge，`sampling.sampler` 与 `sampling.writers` 在显式
-提供时原子替换。`sampling.run_after_training`、`sampling.builder`、完整
-`experiment/model/process` 等字段会被明确拒绝。
+sample config 不继承或合并 checkpoint 训练配置中的 mutable sampling defaults；训练配置
+也不再接受顶层 `sampling`。`experiment/model/process` 等训练字段、`sample.builder` 和
+旧 `sampling.run_after_training` 都会被明确拒绝。
 
-### sample request 无法覆盖某个 option
+### sample config 无法覆盖某个 option
 
-checkpoint v11 的 `inference_recipe.contract` 固定训练时语义。request 的
-`sampling.options` 若使用同名 key 会失败；例如 Gaussian recipe 已固定
-`prediction_type`，不能把 epsilon checkpoint 当作 v-prediction 使用。
-`sampling.options.sampler` 也始终非法，应把可替换求解器声明放在
-`sampling.sampler`。如果 recipe contract 自己固定 sampler，则顶层 sampler 同样不能
-替换；需要新的训练/recipe，而不是绕过 contract。
+checkpoint v12 的 `inference_recipe.contract` 固定训练时语义。`sample.options` 若使用
+同名 key 会失败；例如 Gaussian recipe 已固定 `prediction_type`，不能把 epsilon
+checkpoint 当作 v-prediction 使用。`sample.options.sampler` 也始终非法，应把可替换
+求解器声明放在 `sample.sampler`。如果 recipe contract 自己固定 sampler，则该字段同样
+不能替换；需要新的训练/recipe，而不是绕过 contract。
 
-### sample request 的插件没有替换 checkpoint selection
+### sample config 的插件没有替换 checkpoint selection
 
 这是预期行为。`extensions.plugins` 是 additive list：checkpoint-required plugins
 始终保留，请求只能追加新的 provider。`plugins: null` 被拒绝，空列表或
@@ -333,13 +332,14 @@ checkpoint v11 的 `inference_recipe.contract` 固定训练时语义。request �
 
 ### 预期 EMA 采样但 manifest 显示 raw
 
-同时检查 `ema.enabled`、`ema.use_for_sampling` 和 checkpoint 是否包含 EMA state。
-旧 checkpoint 或训练期间禁用 EMA 时不能事后恢复 EMA 权重。
+`sample.options.weights: auto` 在 checkpoint 含 EMA model state 时自动选择 EMA，否则
+选择 raw；训练配置不再有 `ema.use_for_sampling`。需要强约束时显式写 `ema`，缺少 EMA
+state 会立即失败。旧 checkpoint 或训练期间禁用 EMA 时不能事后恢复 EMA 权重。
 
 ### trajectory 不生成
 
 对 `standard_denoising` 设置
-`sampling.options.trajectory.enabled: true` 和正整数 `every_steps`。所有 Sampler
+`sample.options.trajectory.enabled: true` 和正整数 `every_steps`。所有 Sampler
 共用 observer 契约，不再提供 sampler-specific trajectory 方法。还需声明能保存
 trajectory 的 writer，例如 `tensor` 或 `image`。
 
@@ -369,12 +369,11 @@ lifecycle，不要让 Builder 绕过 writer 直接写 artifact。详细公式和
 边界见 [Sampling artifact 容量](sampling-capacity.md)。文档中的
 RSS 和编码峰值只能视为对应主机/backend 的证据，不是跨平台保证。
 
-### `sampling.shape is required`
+### `sample.shape is required`
 
 `standard_denoising` 需要固定 shape。把单样本形状（不含 batch 维）写入
-`sampling.shape`。该值与 DataBuilder 独立，sample request 可以显式覆盖
-checkpoint 默认值。自定义 SamplingBuilder 可以在 shape 为 null 时构造自己的
-initial state。
+`sample.shape`。该值与 DataBuilder 独立，不从 checkpoint 训练配置继承。自定义
+SamplingBuilder 可以在 shape 为 null 时构造自己的 initial state。
 
 ### image writer 报 NCHW 或通道错误
 
@@ -383,20 +382,22 @@ Tensor 只声明 `tensor` writer，或注册领域 writer。
 
 ### `checkpoint format version ... is unsupported`
 
-当前 checkpoint writer/runtime 只支持 v11。它保存 primary model、可选
+当前 checkpoint writer/runtime 只支持 v12。它保存 primary model、可选
 Process/Objective、可选 EMA model、带 concrete class identity 的 optimizer/scheduler、
 按稳定名称组织的 training assets、metric monitor policy，以及始终存在的
-`inference_recipe` 字段。v10 及更早
+`inference_recipe` 字段。v11 及更早
 不读取、不补写 recipe，也不能 strict resume 或用于 `sample`；请使用新 schema 启动
 fresh run。
 
-### 蒸馏 resume 找不到 teacher/calibrator bootstrap state
+### Legacy distillation fixture resume 找不到 teacher/calibrator bootstrap state
 
-TrainingBuilder 在核心加载 checkpoint 之前必须先构造结构兼容的完整 TrainingPlan。因此
+以下说明只用于仓库的 legacy installed-acceptance fixture，不代表 maintained distillation
+task 或兼容性承诺。TrainingBuilder 在核心加载 checkpoint 之前必须先构造结构兼容的完整
+TrainingPlan。因此
 strict resume 仍要求项目配置中的 teacher 与 calibrator bootstrap 文件可读取；它们只是
 acquisition/构造资源，文件中的值随后会被 checkpoint 的同名
 `training_assets_state_dict` 覆盖。不要根据 output path 或文件是否存在猜测
-fresh/resume。checkpoint-only sampling 不构造 TrainingBuilder，也不读取 bootstrap：
+fresh/resume。checkpoint-backed sampling 不构造 TrainingBuilder，也不读取 bootstrap：
 它从 checkpoint declaration 重建并加载 embedded calibrator，teacher 与 distillation
 Objective 保持 training-only。若 sampling 仍读取任一 bootstrap，说明项目
 SamplingBuilder 错误地依赖了训练 acquisition 配置。
@@ -410,7 +411,7 @@ partial-noised initial state 使用 public state time `t` 时，显式 DDIM sche
 
 ### checkpoint state 不是 weights-only 安全值
 
-当前 v11 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor
+当前 v12 保存前递归拒绝 extension/custom class、任意 pickle object、custom Tensor
 subclass 和其他 `torch.load(..., weights_only=True)` 默认值域之外的对象。自定义
 module、optimizer 或 scheduler 的 extra state 应转换为 Tensor、primitive、
 list/tuple/dict 等普通 container；不要添加 `safe_globals` 或依赖导入 extension class

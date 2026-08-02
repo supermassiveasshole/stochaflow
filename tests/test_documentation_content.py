@@ -15,6 +15,7 @@ MNIST_README = (
 AFHQ_README = (
     PROJECT_ROOT / "examples" / "showcases" / "afhq-v2" / "README.md"
 )
+AFHQ_TUTORIAL = DOCS_ROOT / "tutorials" / "afhq-v2.md"
 
 
 def test_homepage_quick_start_installs_the_release_wheel() -> None:
@@ -108,6 +109,30 @@ def test_homepage_presents_mnist_before_afhq() -> None:
     assert legacy_afhq_asset not in homepage
 
 
+def test_afhq_p2_evaluation_documents_source_checkout_install_contract() -> None:
+    """Keep unreleased AFHQ Evaluation on the current-checkout install path."""
+
+    required_fragments = (
+        "正式 P2 Evaluation 当前必须从本仓库 checkout",
+        (
+            "uv sync --project examples/showcases/afhq-v2 --locked "
+            "--extra quality"
+        ),
+        "`--no-deps --offline`",
+        "只验证 wheel 内容、隔离后的 extension entry point 与当前 core wheel",
+        "不验证 AFHQ wheel 的 released-core resolver",
+        "core/AFHQ 0.2 release",
+        "post-release、non-blocking 的 follow-up",
+        "不是当前 source-checkout P2 readiness 的 merge blocker",
+    )
+
+    for path in (AFHQ_README, AFHQ_TUTORIAL):
+        content = path.read_text(encoding="utf-8")
+        normalized = " ".join(content.split())
+        assert all(fragment in normalized for fragment in required_fragments), path
+        assert "releases/download/v0.2" not in content
+
+
 def test_homepage_cards_override_furo_container_padding_reset() -> None:
     """Keep custom content containers from rendering flush against their borders."""
 
@@ -185,7 +210,14 @@ def test_maintained_examples_publish_grounded_results() -> None:
     assert "mnist_ddim50_epoch_0183_trajectory.gif" in mnist
     assert "exact parameter count 是 105,197,187" in normalized_afhq
     assert "已从 current result surface 移除" in normalized_afhq
-    assert "本 README 不发布 AFHQ quality 数值" in normalized_afhq
+    assert (
+        "本 README 不发布 corrected ADM 的 production long-run quality baseline"
+        in normalized_afhq
+    )
+    assert (
+        "单 epoch 受控 A/B 数值只属于 pipeline/protocol readiness evidence"
+        in normalized_afhq
+    )
     assert "Aggregate FID | **30.240**" not in afhq
     assert "Aggregate KID | **0.005310 ± 0.000701**" not in afhq
     assert "afhq_v2_adm_ddim50_epoch_0170_samples.png" not in afhq

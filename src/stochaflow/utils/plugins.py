@@ -11,7 +11,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from importlib import import_module, metadata
 from threading import RLock
@@ -133,6 +133,12 @@ class ExtensionActivationPlan:
     provenance: tuple[ExtensionPluginProvenance, ...]
     version_mismatches: tuple[ExtensionVersionMismatch, ...]
     selection_policy: ExtensionSelectionPolicy
+    _activation_receipt_token: object = field(
+        default_factory=object,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "config", deepcopy(self.config))
@@ -145,6 +151,11 @@ class ResolvedExtensions:
     config: StochaflowConfig
     provenance: tuple[ExtensionPluginProvenance, ...]
     acceptance_audit: tuple[ExtensionVersionAcceptance, ...]
+    _activation_receipt_token: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "config", deepcopy(self.config))
@@ -660,7 +671,33 @@ def activate_extension_plugins(
         config=_materialized_config(plan),
         provenance=selection,
         acceptance_audit=acceptance_audit,
+        _activation_receipt_token=plan._activation_receipt_token,
     )
+
+
+def require_resolved_extensions_for_plan(
+    plan: ExtensionActivationPlan,
+    extensions: ResolvedExtensions,
+) -> None:
+    """Reject an activation receipt produced for a different preflight plan."""
+
+    if not isinstance(cast(object, plan), ExtensionActivationPlan):
+        raise TypeError("extension activation plan must be ExtensionActivationPlan")
+    if not isinstance(cast(object, extensions), ResolvedExtensions):
+        raise TypeError("resolved extensions must be ResolvedExtensions")
+    if extensions._activation_receipt_token is not plan._activation_receipt_token:
+        raise ValueError(
+            "resolved extensions activation receipt belongs to a different "
+            "extension plan"
+        )
+    if extensions.provenance != plan.provenance:
+        raise ValueError(
+            "resolved extensions provenance does not match its activation plan"
+        )
+    if extensions.config != _materialized_config(plan):
+        raise ValueError(
+            "resolved extensions config does not match its activation plan"
+        )
 
 
 def _reset_extension_activation_state_for_testing() -> None:
@@ -691,4 +728,5 @@ __all__ = [
     "extension_plugin_provenance_to_dicts",
     "parse_extension_plugin_provenance",
     "prepare_extension_plugins",
+    "require_resolved_extensions_for_plan",
 ]

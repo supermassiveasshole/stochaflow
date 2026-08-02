@@ -2,8 +2,9 @@
 
 import hashlib
 import random
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 from copy import deepcopy
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,6 +17,7 @@ from torch import nn
 from torch.optim import SGD
 from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 
+import stochaflow.training as training_api
 from stochaflow.data import (
     DataArtifactBinding,
     DataArtifactBindings,
@@ -37,8 +39,8 @@ from stochaflow.utils.checkpoint import (
     CheckpointState,
     capture_rng_state,
 )
-from stochaflow.utils.config import ConfigError, load_config, load_config_dict
-from stochaflow.utils.logging import ExperimentLogger
+from stochaflow.utils.config import ComponentConfig, ConfigError, load_config
+from stochaflow.utils.logging import ExperimentLogger, LocalLogger
 from stochaflow.utils.plugins import ResolvedExtensions
 from stochaflow.utils.sampling_recipe import (
     SamplingRecipe,
@@ -173,7 +175,6 @@ def _args() -> Namespace:
         observability_config=None,
         device=None,
         output_dir=None,
-        skip_final_sample=True,
     )
 
 
@@ -190,7 +191,7 @@ def _options(
 
 def _training_components(
     trainer: RecordingTrainer,
-    logger: RecordingLogger,
+    logger: Any,
 ) -> Any:
     return SimpleNamespace(
         trainer=trainer,
@@ -210,6 +211,100 @@ def _inference_recipe() -> SamplingRecipe:
         name="standard_denoising",
         contract={"prediction_type": "v"},
     )
+
+
+def test_training_run_outcome_is_public_and_deeply_immutable(tmp_path) -> None:
+    outcome_type = training_api.TrainingRunOutcome
+    final_metrics = {"train/loss": 0.5}
+    phase_test_metrics = {"test/loss": 0.25}
+    outcome = outcome_type(
+        output_dir=tmp_path,
+        final_epoch=2,
+        final_metrics=final_metrics,
+        latest_checkpoint=None,
+        best_epoch=None,
+        best_metric_name=None,
+        best_metric_value=None,
+        best_checkpoint=None,
+        selected_checkpoint=None,
+        selected_checkpoint_kind=None,
+        stopped_early=False,
+        phase_test_metrics=phase_test_metrics,
+        manifest_path=tmp_path / "run_manifest.yaml",
+        metrics_path=None,
+        log_path=None,
+    )
+
+    assert outcome_type.__module__ == "stochaflow.training.outcome"
+    assert not hasattr(outcome, "__dict__")
+    final_metrics["train/loss"] = 9.0
+    phase_test_metrics["test/loss"] = 8.0
+    assert outcome.final_metrics["train/loss"] == 0.5
+    assert outcome.phase_test_metrics["test/loss"] == 0.25
+    with pytest.raises(FrozenInstanceError):
+        setattr(outcome, "final_" + "epoch", 3)
+    with pytest.raises(TypeError):
+        cast(dict[str, float], outcome.final_metrics)["train/loss"] = 1.0
+    with pytest.raises(TypeError):
+        cast(dict[str, float], outcome.phase_test_metrics)["test/loss"] = 1.0
+
+
+def _minimal_outcome_kwargs(tmp_path: Path) -> dict[str, Any]:
+    return {
+        "output_dir": tmp_path,
+        "final_epoch": 2,
+        "final_metrics": {"train/loss": 0.5},
+        "latest_checkpoint": None,
+        "best_epoch": None,
+        "best_metric_name": None,
+        "best_metric_value": None,
+        "best_checkpoint": None,
+        "selected_checkpoint": None,
+        "selected_checkpoint_kind": None,
+        "stopped_early": False,
+        "phase_test_metrics": {},
+        "manifest_path": tmp_path / "run_manifest.yaml",
+        "metrics_path": None,
+        "log_path": None,
+    }
+
+
+def test_training_run_outcome_final_selection_must_match_latest(tmp_path) -> None:
+    kwargs = _minimal_outcome_kwargs(tmp_path)
+    kwargs.update(
+        latest_checkpoint=tmp_path / "checkpoints" / "latest.pt",
+        selected_checkpoint=tmp_path / "checkpoints" / "other.pt",
+        selected_checkpoint_kind="final",
+    )
+
+    with pytest.raises(ValueError, match=r"final selection.*latest checkpoint"):
+        training_api.TrainingRunOutcome(**kwargs)
+
+
+def test_training_run_outcome_best_epoch_cannot_exceed_final_epoch(
+    tmp_path,
+) -> None:
+    kwargs = _minimal_outcome_kwargs(tmp_path)
+    kwargs.update(
+        best_epoch=3,
+        best_metric_name="valid/loss",
+        best_metric_value=0.4,
+    )
+
+    with pytest.raises(ValueError, match=r"best_epoch.*final_epoch"):
+        training_api.TrainingRunOutcome(**kwargs)
+
+
+@pytest.mark.parametrize("value", [0, 1, "false"])
+def test_training_run_outcome_requires_exact_stopped_early_bool(
+    tmp_path,
+    value: object,
+) -> None:
+    kwargs = _minimal_outcome_kwargs(tmp_path)
+    kwargs["stopped_early"] = value
+
+    with pytest.raises(TypeError, match=r"stopped_early.*bool"):
+        training_api.TrainingRunOutcome(**kwargs)
 
 
 def _training_loop_state(
@@ -343,34 +438,8 @@ def _write_observability_config(path: Path, value: Any) -> Path:
     return path
 
 
-def _load_mnist_config_with_final_sampling():
-    raw = yaml.safe_load(MNIST_TRAIN_CONFIG.read_text(encoding="utf-8"))
-    assert isinstance(raw, dict)
-    raw["sampling"] = {
-        "run_after_training": True,
-        "sampler": {"name": "ddpm", "params": {}},
-        "options": {
-            "weights": "auto",
-            "clip_denoised": True,
-            "trajectory": {"enabled": False, "every_steps": 1},
-        },
-        "shape": [1, 32, 32],
-        "num_samples": 64,
-        "batch_size": 64,
-        "seed": None,
-        "writers": [
-            {"name": "tensor", "params": {}},
-            {
-                "name": "image",
-                "params": {
-                    "grid_nrow": 8,
-                    "gif_fps": 8,
-                    "denormalize": True,
-                },
-            },
-        ],
-    }
-    return load_config_dict(raw)
+def _load_mnist_config():
+    return load_config(MNIST_TRAIN_CONFIG)
 
 
 def _resume_args(
@@ -465,6 +534,76 @@ def test_runner_disables_best_and_skips_test_without_validation(
     assert logger.closed
 
 
+def test_phase_test_metrics_preserve_custom_and_system_facts() -> None:
+    config = _load_mnist_config()
+    trainer = RecordingTrainer()
+    observed: dict[str, Any] = {}
+
+    def evaluate_epoch(dataloader, **kwargs):
+        del dataloader
+        observed.update(kwargs)
+        return {
+            "loss": 0.25,
+            "num_batches": 2.0,
+            "duration_seconds": 0.125,
+            "test/metrics/custom": 0.75,
+        }
+
+    trainer.evaluate_epoch = evaluate_epoch
+    training = _training_components(trainer, RecordingLogger())
+
+    metrics = experiment_runner._evaluate_test_split(
+        training,
+        _loaders(test=True),
+        _options(config),
+        reporter=experiment_runner.RichTrainingReporter(),
+    )
+
+    assert metrics == {
+        "test/loss": 0.25,
+        "test/metrics/custom": 0.75,
+        "system/test/num_batches": 2.0,
+        "system/test/duration_seconds": 0.125,
+    }
+    assert observed["metric_prefix"] == "test"
+
+
+def test_local_log_paths_are_absent_without_local_backend(tmp_path) -> None:
+    config = _load_mnist_config()
+    config.experiment.output_dir = str(tmp_path)
+    config.logging.backends = [ComponentConfig(name="tensorboard")]
+
+    assert experiment_runner._local_log_paths(config) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_value"),
+    [
+        ("metrics_filename", "../escaped-metrics.jsonl"),
+        ("text_filename", "ABSOLUTE_PATH"),
+    ],
+)
+def test_local_log_paths_reject_paths_outside_run_directory(
+    tmp_path,
+    field: str,
+    unsafe_value: str,
+) -> None:
+    config = _load_mnist_config()
+    output_dir = tmp_path / "run"
+    config.experiment.output_dir = str(output_dir)
+    value = (
+        str(tmp_path / "escaped.log")
+        if unsafe_value == "ABSOLUTE_PATH"
+        else unsafe_value
+    )
+    config.logging.backends = [
+        ComponentConfig(name="local", params={field: value})
+    ]
+
+    with pytest.raises(ValueError, match=r"local.*(?:filename|path|output)"):
+        experiment_runner._local_log_paths(config)
+
+
 def test_resolve_monitor_returns_validated_configuration_value() -> None:
     config = load_config(MNIST_TRAIN_CONFIG)
     config.trainer.early_stopping.monitor = "valid/metrics/prediction_mae"
@@ -510,7 +649,7 @@ def test_resolve_monitor_does_not_depend_on_loader_availability() -> None:
 
 
 def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
-    config = _load_mnist_config_with_final_sampling()
+    config = _load_mnist_config()
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
@@ -555,18 +694,14 @@ def test_runner_allows_cli_epochs_override(monkeypatch, tmp_path):
     selected = manifest["selected_components"]
     assert build_kwargs["checkpoint_metadata"]["selected_components"] == selected
     assert config.process is not None
-    assert config.sampling.run_after_training
     assert selected["data_builder"] == config.data.name
     assert selected["model"] == config.model.name
     assert selected["training_builder"] == config.training.name
     assert selected["process"] == config.process.name
     assert "sampling_builder" not in selected
-    assert selected["sampling_recipe"] == "standard_denoising"
-    assert config.sampling.sampler is not None
-    assert selected["sampling_sampler"] == config.sampling.sampler.name
-    assert selected["sampling_artifact_writers"] == [
-        writer.name for writer in config.sampling.writers
-    ]
+    assert selected["inference_recipe"] == "standard_denoising"
+    assert "sampler" not in selected
+    assert "artifact_writers" not in selected
 
 
 def test_runner_persists_effective_enabled_progress_override(
@@ -601,45 +736,289 @@ def test_runner_persists_effective_enabled_progress_override(
     assert manifest["config"]["trainer"]["show_progress"] is True
 
 
-def test_runner_samples_selected_best_checkpoint(monkeypatch, tmp_path):
-    config = _load_mnist_config_with_final_sampling()
+def test_runner_returns_complete_outcome_and_persists_it_in_manifest(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = _load_mnist_config()
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "outcome"
+    metrics_filename = "outcome-metrics.jsonl"
+    text_filename = "outcome.log"
+    config.logging.backends = [
+        ComponentConfig(
+            name="local",
+            params={
+                "metrics_filename": metrics_filename,
+                "text_filename": text_filename,
+            },
+        )
+    ]
+    final_metrics = {
+        "train/loss": 0.5,
+        "train/metrics/custom": 0.6,
+        "valid/loss": 0.4,
+        "valid/metrics/custom": 0.7,
+        "system/trainer/epoch": 1.0,
+        "system/train/num_batches": 2.0,
+        "system/valid/num_batches": 1.0,
+    }
+    phase_test_metrics = {
+        "test/loss": 0.25,
+        "test/metrics/custom": 0.75,
+        "system/test/num_batches": 2.0,
+        "system/test/duration_seconds": 0.125,
+    }
+    trainer = RecordingTrainer()
+    trainer.best_epoch = 1
+    trainer.best_metric_value = 0.4
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    latest_checkpoint = checkpoint_dir / "latest.pt"
+    latest_checkpoint.touch()
+    best_checkpoint = checkpoint_dir / "best.pt"
+    best_checkpoint.touch()
+    trainer.checkpoint_dir = checkpoint_dir
+    trainer.best_checkpoint_path = best_checkpoint
+    trainer.fit = lambda *args, **kwargs: [dict(final_metrics)]
+    trainer.evaluate_epoch = lambda *args, **kwargs: {
+        "loss": 0.25,
+        "num_batches": 2.0,
+        "duration_seconds": 0.125,
+        "test/metrics/custom": 0.75,
+    }
+    logger = LocalLogger(
+        output_dir=str(tmp_path),
+        run_name="outcome",
+        console=False,
+        metrics_filename=metrics_filename,
+        text_filename=text_filename,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+
+    outcome = _run_single(
+        config,
+        _loaders(validation=True, test=True),
+        _options(config),
+    )
+
+    outcome_type = training_api.TrainingRunOutcome
+    manifest_path = tmp_path / "run_manifest.yaml"
+    metrics_path = tmp_path / metrics_filename
+    log_path = tmp_path / text_filename
+    assert isinstance(outcome, outcome_type)
+    assert outcome.output_dir == tmp_path
+    assert outcome.final_epoch == 1
+    assert dict(outcome.final_metrics) == final_metrics
+    assert outcome.latest_checkpoint == latest_checkpoint
+    assert outcome.best_epoch == 1
+    assert outcome.best_metric_name == "valid/loss"
+    assert outcome.best_metric_value == 0.4
+    assert outcome.best_checkpoint == best_checkpoint
+    assert outcome.selected_checkpoint == best_checkpoint
+    assert outcome.selected_checkpoint_kind == "best"
+    assert outcome.stopped_early is False
+    assert dict(outcome.phase_test_metrics) == phase_test_metrics
+    assert outcome.manifest_path == manifest_path
+    assert outcome.metrics_path == metrics_path
+    assert outcome.log_path == log_path
+
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "completed"
+    assert manifest["outcome"] == {
+        "output_dir": str(tmp_path),
+        "final_epoch": 1,
+        "final_metrics": final_metrics,
+        "latest_checkpoint": str(latest_checkpoint),
+        "best_epoch": 1,
+        "best_metric_name": "valid/loss",
+        "best_metric_value": 0.4,
+        "best_checkpoint": str(best_checkpoint),
+        "selected_checkpoint": str(best_checkpoint),
+        "selected_checkpoint_kind": "best",
+        "stopped_early": False,
+        "phase_test_metrics": phase_test_metrics,
+        "manifest_path": str(manifest_path),
+        "metrics_path": str(metrics_path),
+        "log_path": str(log_path),
+    }
+
+
+def test_run_manifest_stays_running_when_training_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = _load_mnist_config()
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "failed-outcome"
+    trainer = RecordingTrainer()
+    logger = RecordingLogger()
+
+    def fail_fit(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("training failed")
+
+    trainer.fit = fail_fit
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+
+    with pytest.raises(RuntimeError, match="training failed"):
+        _run_single(config, _loaders(), _options(config))
+
+    manifest = yaml.safe_load(
+        (tmp_path / "run_manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "running"
+    assert "outcome" not in manifest
+    assert logger.closed
+    assert logger.closed
+
+
+def test_run_manifest_stays_running_when_final_reporter_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = _load_mnist_config()
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "reporter-failure"
+    trainer = RecordingTrainer()
+    logger = RecordingLogger()
+
+    class FailingFinalReporter:
+        def on_run_start(self, summary: object) -> None:
+            del summary
+
+        def on_run_end(self, summary: object) -> None:
+            del summary
+            raise RuntimeError("final reporter failed")
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "RichTrainingReporter",
+        FailingFinalReporter,
+    )
+
+    with pytest.raises(RuntimeError, match="final reporter failed"):
+        _run_single(config, _loaders(), _options(config))
+
+    manifest = yaml.safe_load(
+        (tmp_path / "run_manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "running"
+    assert "outcome" not in manifest
+    assert logger.closed
+
+
+def test_run_manifest_stays_running_when_logger_close_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = _load_mnist_config()
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "logger-close-failure"
+    trainer = RecordingTrainer()
+
+    class CloseFailingLogger(RecordingLogger):
+        def close(self) -> None:
+            self.closed = True
+            raise RuntimeError("logger close failed")
+
+    logger = CloseFailingLogger()
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+
+    with pytest.raises(RuntimeError, match="logger close failed"):
+        _run_single(config, _loaders(), _options(config))
+
+    manifest = yaml.safe_load(
+        (tmp_path / "run_manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "running"
+    assert "outcome" not in manifest
+    assert logger.closed
+
+
+def test_fit_result_preserves_terminal_early_stop_before_best_restore(
+    tmp_path,
+) -> None:
+    config = _load_mnist_config()
+    config.experiment.output_dir = str(tmp_path)
+    trainer = RecordingTrainer()
+    best_checkpoint = tmp_path / "checkpoints" / "best.pt"
+    best_checkpoint.parent.mkdir()
+    best_checkpoint.touch()
+    trainer.best_checkpoint_path = best_checkpoint
+
+    def fit(*args, **kwargs):
+        del args, kwargs
+        trainer.stopped_early = True
+        return [{"train/loss": 0.5, "system/trainer/epoch": 1.0}]
+
+    def restore_best(*args, **kwargs):
+        del args, kwargs
+        trainer.stopped_early = False
+
+    trainer.fit = fit
+    training = _training_components(trainer, RecordingLogger())
+    training.checkpoint_manager = SimpleNamespace(load=restore_best)
+
+    result = experiment_runner._fit_and_select_best(
+        training,
+        config,
+        _loaders(validation=True),
+        _options(config),
+        start_epoch=1,
+        reporter=cast(Any, SimpleNamespace()),
+    )
+
+    assert result.stopped_early is True
+    assert trainer.stopped_early is False
+
+
+def test_runner_does_not_sample_selected_best_checkpoint(monkeypatch, tmp_path):
+    config = _load_mnist_config()
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
     trainer.best_checkpoint_path = tmp_path / "checkpoints" / "best.pt"
     logger = RecordingLogger()
     training = _training_components(trainer, logger)
-    observed = {}
     monkeypatch.setattr(
         experiment_runner,
         "build_training_components",
         lambda config, **kwargs: training,
     )
-    monkeypatch.setattr(
-        experiment_runner,
-        "run_sampling",
-        lambda **kwargs: observed.update(kwargs)
-        or SimpleNamespace(artifacts={"samples": tmp_path / "samples.png"}),
-    )
-    args = _args()
-    args.skip_final_sample = False
-
     _run_single(
         config,
         _loaders(validation=True),
-        _options(config, args),
+        _options(config),
     )
 
-    assert observed["checkpoint"] == trainer.best_checkpoint_path
-    assert observed["output_dir"] == tmp_path / "samples" / "final"
+    assert not hasattr(experiment_runner, "run_sampling")
+    assert not (tmp_path / "samples").exists()
     assert logger.closed
 
 
-def test_runner_samples_final_checkpoint_without_validation(
+def test_runner_does_not_sample_latest_checkpoint_without_validation(
     monkeypatch,
     tmp_path,
 ) -> None:
-    config = _load_mnist_config_with_final_sampling()
+    config = _load_mnist_config()
     config.experiment.output_dir = str(tmp_path)
     config.experiment.exp_id = "test"
     trainer = RecordingTrainer()
@@ -651,57 +1030,27 @@ def test_runner_samples_final_checkpoint_without_validation(
     final_checkpoint = checkpoint_dir / "latest.pt"
     final_checkpoint.touch()
     logger = RecordingLogger()
-    observed = {}
     monkeypatch.setattr(
         experiment_runner,
         "build_training_components",
         lambda config, **kwargs: _training_components(trainer, logger),
     )
-    monkeypatch.setattr(
-        experiment_runner,
-        "run_sampling",
-        lambda **kwargs: observed.update(kwargs)
-        or SimpleNamespace(artifacts={"samples": tmp_path / "samples.png"}),
-    )
-    args = _args()
-    args.skip_final_sample = False
+    _run_single(config, _loaders(), _options(config))
 
-    _run_single(config, _loaders(), _options(config, args))
-
-    assert observed["checkpoint"] == final_checkpoint
+    assert final_checkpoint.is_file()
+    assert not (tmp_path / "samples").exists()
     assert trainer.fit_kwargs["track_best"] is False
     assert logger.closed
 
 
-def test_runner_skips_disabled_final_sample(monkeypatch, tmp_path):
-    config = load_config(MNIST_TRAIN_CONFIG)
-    config.experiment.output_dir = str(tmp_path)
-    config.experiment.exp_id = "test"
-    config.sampling.run_after_training = False
-    trainer = RecordingTrainer()
-    trainer.best_checkpoint_path = tmp_path / "checkpoints" / "best.pt"
-    logger = RecordingLogger()
-    monkeypatch.setattr(
-        experiment_runner,
-        "build_training_components",
-        lambda config, **kwargs: _training_components(trainer, logger),
-    )
+def test_training_parser_does_not_accept_skip_final_sample() -> None:
+    parser = ArgumentParser()
+    experiment_runner.add_training_arguments(parser)
 
-    def unexpected_sampling(**kwargs):
-        del kwargs
-        raise AssertionError("final sampling must be skipped without a builder")
-
-    monkeypatch.setattr(experiment_runner, "run_sampling", unexpected_sampling)
-    args = _args()
-    args.skip_final_sample = False
-
-    _run_single(
-        config,
-        _loaders(),
-        _options(config, args),
-    )
-
-    assert logger.closed
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["--config", str(MNIST_TRAIN_CONFIG), "--skip-final-sample"]
+        )
 
 
 def test_runner_closes_logger_when_resume_loading_fails(monkeypatch, tmp_path):
@@ -1701,6 +2050,7 @@ def test_runner_builds_registered_data_builder(monkeypatch, tmp_path):
     args.config = Path("unused.yaml")
     args.artifact_verification_workers = 3
     observed = {}
+    expected_outcome = object()
 
     def stub_builder(
         data_config,
@@ -1724,11 +2074,12 @@ def test_runner_builds_registered_data_builder(monkeypatch, tmp_path):
     monkeypatch.setattr(
         experiment_runner,
         "_run_single_run",
-        lambda *args, **kwargs: None,
+        lambda *args, **kwargs: expected_outcome,
     )
 
-    experiment_runner.run_experiment_from_args(args)
+    outcome = experiment_runner.run_experiment_from_args(args)
 
+    assert outcome is expected_outcome
     assert observed == {
         "builder_config": config.data,
         "seed": config.experiment.seed,

@@ -1,13 +1,14 @@
 # Stable Diffusion Component-Native 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：下一条产品主线，尚未进入实现；共享 latent production substrate 稳定后启动
+- 状态：Post-A3 roadmap re-decision 的下游候选，尚未进入实现；只有 latent 路线被重新
+  确认且共享 production substrate 稳定后才可排期
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)；本文拥有 Stable
   Diffusion family contract，统一排期拥有跨计划执行顺序
 - 初始制定日期：2026-07-28
-- 本次排期修订日期：2026-07-29
-- 当前主线：Stable Diffusion 1.x-compatible component import、text
+- 本次排期修订日期：2026-08-02
+- 候选范围：Stable Diffusion 1.x-compatible component import、text
   conditioning、UNet training/fine-tuning 与 512×512 sampling
 - 共享前置：
   [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)

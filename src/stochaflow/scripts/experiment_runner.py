@@ -1,7 +1,6 @@
 """Shared command-line runner helpers for config-driven experiments."""
 
 import argparse
-import gc
 import hashlib
 import math
 import warnings
@@ -11,7 +10,6 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
-import torch
 import yaml
 
 from stochaflow.data import (
@@ -20,11 +18,15 @@ from stochaflow.data import (
     build_data_loaders,
 )
 from stochaflow.data.artifact_io import MAX_ARTIFACT_VERIFICATION_WORKERS
-from stochaflow.sampling.runtime import run_sampling
+from stochaflow.metrics.config import METRIC_TAG_SEGMENT_PATTERN
 from stochaflow.scripts.artifact_reporting import (
     RichArtifactVerificationReporter,
 )
 from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
+from stochaflow.training.outcome import (
+    CheckpointSelectionKind,
+    TrainingRunOutcome,
+)
 from stochaflow.training.precision import validate_precision_support
 from stochaflow.training.reporting import (
     FinalSummary,
@@ -52,6 +54,7 @@ from stochaflow.utils.factory import (
     resolve_device,
 )
 from stochaflow.utils.iterables import try_length
+from stochaflow.utils.logging import resolve_local_log_path
 from stochaflow.utils.plugins import (
     ExtensionPluginProvenance,
     ExtensionSelectionPolicy,
@@ -61,7 +64,7 @@ from stochaflow.utils.plugins import (
 )
 from stochaflow.utils.run_manifest import (
     extension_runtime_metadata,
-    selected_component_identities,
+    selected_training_component_identities,
     write_yaml_manifest,
 )
 from stochaflow.utils.seed import set_seed
@@ -114,7 +117,6 @@ class ExperimentRunOptions:
     artifact_verification_workers: int | None
     resume_checkpoint: Path | None
     device: str | None
-    sample_after_training: bool
 
     @classmethod
     def from_namespace(
@@ -155,7 +157,6 @@ class ExperimentRunOptions:
             ),
             resume_checkpoint=args.resume,
             device=args.device,
-            sample_after_training=not args.skip_final_sample,
         )
 
 
@@ -164,12 +165,15 @@ class TrainingResult:
     """Selected model state and summary values after fitting."""
 
     final_epoch: int
+    final_metrics: dict[str, float]
+    latest_checkpoint: Path | None
     best_epoch: int | None
     best_metric_name: str | None
     best_metric_value: float | None
     best_checkpoint: Path | None
     selected_checkpoint: Path | None
-    selected_checkpoint_kind: str | None
+    selected_checkpoint_kind: CheckpointSelectionKind | None
+    stopped_early: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,11 +294,6 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.Argument
             "does not bypass checkpoint state compatibility."
         ),
     )
-    parser.add_argument(
-        "--skip-final-sample",
-        action="store_true",
-        help="Skip the best-checkpoint acceptance sample after training.",
-    )
     return parser
 
 
@@ -312,20 +311,27 @@ def _make_timestamped_output_dir(base_output_dir: str) -> tuple[str, Path]:
     return output_dir.name, output_dir
 
 
-def _local_log_paths(config: StochaflowConfig) -> tuple[Path, Path]:
+def _local_log_paths(
+    config: StochaflowConfig,
+) -> tuple[Path | None, Path | None]:
     """Resolve local logger text and metrics paths from the run configuration."""
 
     output_dir = Path(config.experiment.output_dir)
-    text_filename = "train.log"
-    metrics_filename = "metrics.jsonl"
+
     for backend in config.logging.backends:
         if backend.name == "local":
-            text_filename = str(backend.params.get("text_filename", text_filename))
-            metrics_filename = str(
-                backend.params.get("metrics_filename", metrics_filename)
+            text_path = resolve_local_log_path(
+                output_dir,
+                backend.params.get("text_filename", "train.log"),
+                field="text_filename",
             )
-            break
-    return output_dir / metrics_filename, output_dir / text_filename
+            metrics_path = resolve_local_log_path(
+                output_dir,
+                backend.params.get("metrics_filename", "metrics.jsonl"),
+                field="metrics_filename",
+            )
+            return metrics_path, text_path
+    return None, None
 
 
 def _dataset_size(loader: object | None) -> int | None:
@@ -1216,7 +1222,16 @@ def _fit_and_select_best(
     if not history:
         raise RuntimeError("trainer returned no epoch history")
 
+    stopped_early = training.trainer.stopped_early
     final_epoch = start_epoch + len(history) - 1
+    final_metrics = dict(history[-1])
+    checkpoint_dir = training.trainer.checkpoint_dir
+    latest_checkpoint = (
+        Path(checkpoint_dir) / "latest.pt"
+        if checkpoint_dir is not None
+        and (Path(checkpoint_dir) / "latest.pt").is_file()
+        else None
+    )
     validation_available = loaders.validation is not None
     best_checkpoint = (
         training.trainer.best_checkpoint_path
@@ -1237,21 +1252,20 @@ def _fit_and_select_best(
             best_checkpoint,
             map_location=training.trainer.device,
         )
-    elif not validation_available:
-        checkpoint_dir = training.trainer.checkpoint_dir
-        if checkpoint_dir is not None:
-            final_checkpoint = Path(checkpoint_dir) / "latest.pt"
-            if final_checkpoint.is_file():
-                selected_checkpoint = final_checkpoint
-                selected_checkpoint_kind = "final"
+    elif not validation_available and latest_checkpoint is not None:
+        selected_checkpoint = latest_checkpoint
+        selected_checkpoint_kind = "final"
     return TrainingResult(
         final_epoch=final_epoch,
+        final_metrics=final_metrics,
+        latest_checkpoint=latest_checkpoint,
         best_epoch=best_epoch,
         best_metric_name=best_metric_name,
         best_metric_value=best_metric_value,
         best_checkpoint=best_checkpoint,
         selected_checkpoint=selected_checkpoint,
         selected_checkpoint_kind=selected_checkpoint_kind,
+        stopped_early=stopped_early,
     )
 
 
@@ -1261,9 +1275,9 @@ def _evaluate_test_split(
     options: ExperimentRunOptions,
     *,
     reporter: RichTrainingReporter,
-) -> float | None:
+) -> dict[str, float]:
     if loaders.test is None:
-        return None
+        return {}
     metrics = training.trainer.evaluate_epoch(
         loaders.test,
         show_progress=options.show_progress,
@@ -1271,7 +1285,55 @@ def _evaluate_test_split(
         metric_prefix="test",
         reporter=reporter,
     )
-    return metrics["loss"]
+    validated = _checkpoint_epoch_metrics(
+        metrics,
+        path="test epoch metrics",
+    )
+    required = {"loss", "num_batches", "duration_seconds"}
+    missing = sorted(required - set(validated))
+    if missing:
+        raise ValueError(
+            "test epoch metrics are missing required field(s): "
+            + ", ".join(missing)
+        )
+    def is_canonical_test_metric(name: str) -> bool:
+        segments = name.split("/")
+        return (
+            len(segments) in {3, 4}
+            and segments[:2] == ["test", "metrics"]
+            and all(
+                METRIC_TAG_SEGMENT_PATTERN.fullmatch(segment) is not None
+                for segment in segments[2:]
+            )
+        )
+
+    unexpected = sorted(
+        name
+        for name in validated
+        if name not in required and not is_canonical_test_metric(name)
+    )
+    if unexpected:
+        raise ValueError(
+            "test epoch metrics contain non-canonical field(s): "
+            + ", ".join(unexpected)
+        )
+    num_batches = validated["num_batches"]
+    if num_batches <= 0.0 or not num_batches.is_integer():
+        raise ValueError("test epoch metrics num_batches must be a positive integer")
+    if validated["duration_seconds"] < 0.0:
+        raise ValueError(
+            "test epoch metrics duration_seconds must be non-negative"
+        )
+    return {
+        "test/loss": validated["loss"],
+        **{
+            name: value
+            for name, value in validated.items()
+            if is_canonical_test_metric(name)
+        },
+        "system/test/num_batches": validated["num_batches"],
+        "system/test/duration_seconds": validated["duration_seconds"],
+    }
 
 
 def _checkpoint_data_artifacts(
@@ -1316,7 +1378,7 @@ def _run_single_run(
     runtime_options: dict[str, Any],
     data_artifacts: DataArtifactBindings | None = None,
     config_overlays: list[dict[str, Any]] | None = None,
-) -> None:
+) -> TrainingRunOutcome:
     config.trainer.num_epochs = options.num_epochs
     config.trainer.show_progress = options.show_progress
     if options.device is not None:
@@ -1346,9 +1408,9 @@ def _run_single_run(
         config,
         checkpoint_metadata=checkpoint_metadata,
     )
-    selected_components = selected_component_identities(
+    selected_components = selected_training_component_identities(
         config,
-        sampling_recipe=(
+        inference_recipe=(
             training.plan.inference_recipe.name
             if training.plan.inference_recipe is not None
             else None
@@ -1356,26 +1418,26 @@ def _run_single_run(
     )
     checkpoint_metadata["selected_components"] = selected_components
     training.trainer.checkpoint_metadata = checkpoint_metadata
-    write_yaml_manifest(
-        Path(config.experiment.output_dir) / "run_manifest.yaml",
-        {
-            "kind": "training",
-            "config_source": config_source,
-            "config": config.to_dict(),
-            **extension_metadata,
-            "selected_components": selected_components,
-            "config_overlays": deepcopy(overlay_history),
-            "lineage": lineage,
-            "startup_cwd": str(startup_cwd),
-            "runtime_options": runtime_options,
-            "data_artifacts": (
-                data_artifacts.to_dict() if data_artifacts is not None else None
-            ),
-        },
-    )
+    manifest_path = Path(config.experiment.output_dir) / "run_manifest.yaml"
+    manifest: dict[str, Any] = {
+        "kind": "training",
+        "status": "running",
+        "config_source": config_source,
+        "config": config.to_dict(),
+        **extension_metadata,
+        "selected_components": selected_components,
+        "config_overlays": deepcopy(overlay_history),
+        "lineage": lineage,
+        "startup_cwd": str(startup_cwd),
+        "runtime_options": runtime_options,
+        "data_artifacts": (
+            data_artifacts.to_dict() if data_artifacts is not None else None
+        ),
+    }
+    write_yaml_manifest(manifest_path, manifest)
     reporter = RichTrainingReporter()
     logger = training.logger
-    logger_closed = False
+    close_attempted = False
     try:
         reporter.on_run_start(
             RunSummary(
@@ -1403,65 +1465,58 @@ def _run_single_run(
             start_epoch=start_epoch,
             reporter=reporter,
         )
-        test_loss = _evaluate_test_split(
+        phase_test_metrics = _evaluate_test_split(
             training,
             loaders,
             options,
             reporter=reporter,
         )
-        stopped_early = training.trainer.stopped_early
-
-        artifact_paths: dict[str, Path] | None = None
-        if options.sample_after_training and config.sampling.run_after_training:
-            if training.plan.inference_recipe is None:
-                raise RuntimeError(
-                    "sampling.run_after_training requires the TrainingPlan to "
-                    "provide an inference recipe"
-                )
-            if result.selected_checkpoint is None:
-                raise RuntimeError(
-                    "post-training sampling requires a selected best or final "
-                    "checkpoint"
-                )
-            sampling_device = str(training.trainer.device)
-            logger.close()
-            logger_closed = True
-            del training
-            gc.collect()
-            if sampling_device.startswith("cuda"):
-                torch.cuda.empty_cache()
-            elif sampling_device.startswith("mps"):
-                torch.mps.empty_cache()
-            sampling_result = run_sampling(
-                checkpoint=result.selected_checkpoint,
-                output_dir=Path(config.experiment.output_dir) / "samples" / "final",
-                device_name=sampling_device,
-            )
-            artifact_paths = sampling_result.artifacts
-
         metrics_path, log_path = _local_log_paths(config)
+        outcome = TrainingRunOutcome(
+            output_dir=Path(config.experiment.output_dir),
+            final_epoch=result.final_epoch,
+            final_metrics=result.final_metrics,
+            latest_checkpoint=result.latest_checkpoint,
+            best_epoch=result.best_epoch,
+            best_metric_name=result.best_metric_name,
+            best_metric_value=result.best_metric_value,
+            best_checkpoint=result.best_checkpoint,
+            selected_checkpoint=result.selected_checkpoint,
+            selected_checkpoint_kind=result.selected_checkpoint_kind,
+            stopped_early=result.stopped_early,
+            phase_test_metrics=phase_test_metrics,
+            manifest_path=manifest_path,
+            metrics_path=metrics_path,
+            log_path=log_path,
+        )
         reporter.on_run_end(
             FinalSummary(
-                best_epoch=result.best_epoch,
-                best_metric_name=result.best_metric_name,
-                best_metric_value=result.best_metric_value,
-                test_loss=test_loss,
-                stopped_early=stopped_early,
-                best_checkpoint=result.best_checkpoint,
-                selected_checkpoint=result.selected_checkpoint,
-                selected_checkpoint_kind=result.selected_checkpoint_kind,
-                output_dir=config.experiment.output_dir,
-                metrics_path=metrics_path,
-                log_path=log_path,
-                artifacts=artifact_paths,
+                best_epoch=outcome.best_epoch,
+                best_metric_name=outcome.best_metric_name,
+                best_metric_value=outcome.best_metric_value,
+                phase_test_metrics=outcome.phase_test_metrics,
+                stopped_early=outcome.stopped_early,
+                best_checkpoint=outcome.best_checkpoint,
+                selected_checkpoint=outcome.selected_checkpoint,
+                selected_checkpoint_kind=outcome.selected_checkpoint_kind,
+                output_dir=outcome.output_dir,
+                metrics_path=outcome.metrics_path,
+                log_path=outcome.log_path,
+                artifacts=None,
             )
         )
+        close_attempted = True
+        logger.close()
+        manifest["status"] = "completed"
+        manifest["outcome"] = outcome.to_manifest()
+        write_yaml_manifest(manifest_path, manifest)
+        return outcome
     finally:
-        if not logger_closed:
+        if not close_attempted:
             logger.close()
 
 
-def run_experiment_from_args(args: argparse.Namespace) -> None:
+def run_experiment_from_args(args: argparse.Namespace) -> TrainingRunOutcome:
     """Run one registered data builder as one independent experiment."""
 
     inputs = _resolve_training_inputs(args)
@@ -1546,12 +1601,11 @@ def run_experiment_from_args(args: argparse.Namespace) -> None:
         "artifact_verification_workers": (
             options.artifact_verification_workers
         ),
-        "skip_final_sample": args.skip_final_sample,
         "force_extension_version_mismatch": (
             getattr(args, "force_extension_version_mismatch", False)
         ),
     }
-    _run_single_run(
+    return _run_single_run(
         config,
         loaders,
         options,

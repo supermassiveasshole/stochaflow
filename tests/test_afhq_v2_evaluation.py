@@ -21,6 +21,7 @@ from stochaflow.data import (
 )
 from stochaflow.sampling.runtime import (
     ResolvedSamplingInputs,
+    SamplingCheckpointIdentity,
     SamplingRunResult,
 )
 from stochaflow.training.diagnostics import ReferenceMetricProvider
@@ -28,7 +29,11 @@ from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     capture_rng_state,
 )
-from stochaflow.utils.config import load_config, load_config_dict
+from stochaflow.utils.config import (
+    load_config,
+    load_config_dict,
+    load_sample_config,
+)
 from stochaflow.utils.factory import build_model, build_process
 from stochaflow.utils.plugins import (
     ExtensionActivationPlan,
@@ -233,20 +238,23 @@ def _resolved_inputs(
         contract={"prediction_type": "v"},
     )
     base = load_config(_PRODUCTION_CONFIG)
-    request = yaml.safe_load(request_path.read_text(encoding="utf-8"))
-    merged = base.to_dict()
-    merged["extensions"] = request["extensions"]
-    merged["sampling"] = request["sampling"]
-    config = load_config_dict(merged)
+    sample_config = load_sample_config(request_path)
     plan = ExtensionActivationPlan(
-        config=config,
+        config=base,
         provenance=(),
         version_mismatches=(),
         selection_policy=ExtensionSelectionPolicy.EXACT,
     )
     return ResolvedSamplingInputs(
-        config=config,
-        checkpoint_path=checkpoint_path,
+        checkpoint_config=base,
+        sample_config=sample_config,
+        checkpoint_identity=SamplingCheckpointIdentity(
+            path=checkpoint_path.resolve(),
+            sha256="0" * 64,
+            format_version=CHECKPOINT_FORMAT_VERSION,
+            epoch=1,
+            global_step=0,
+        ),
         checkpoint={
             "format_version": CHECKPOINT_FORMAT_VERSION,
             "inference_recipe": sampling_recipe_to_dict(recipe),
@@ -255,7 +263,7 @@ def _resolved_inputs(
             "inference_asset_state_dicts": {},
         },
         recipe=recipe,
-        config_source="sample-request",
+        sample_config_path=request_path.resolve(),
         extension_plan=plan,
     )
 
@@ -342,7 +350,8 @@ def _tiny_checkpoint(
 def test_checked_in_evaluation_protocol_is_frozen_and_balanced() -> None:
     document = evaluation.load_evaluation_document(_EVALUATION_CONFIG)
     protocol = document.protocol
-    sampling = document.sample_request["sampling"]
+    assert set(document.sample_request) == {"extensions", "sample"}
+    sampling = document.sample_request["sample"]
     options = sampling["options"]
 
     assert protocol.class_mapping == {"cat": 0, "dog": 1, "wild": 2}
@@ -448,8 +457,8 @@ def test_evaluation_uses_core_sampling_strict_test_data_and_fake_providers(
         output_dir: str | Path | None,
         device_name: str | None,
     ) -> SamplingRunResult:
-        assert inputs.config.data.name == "class_labeled_image"
-        assert extensions.config.sampling.num_samples == 6
+        assert inputs.checkpoint_config.data.name == "class_labeled_image"
+        assert inputs.sample_config.sample.num_samples == 6
         assert device_name == "cpu"
         events.append("sampling")
         target = Path(cast(Path, output_dir))
@@ -684,7 +693,10 @@ def test_real_image_collection_shuts_down_workers_after_batch_failure(
 
 
 def test_result_checkpoint_header_drops_tensor_state(tmp_path: Path) -> None:
-    config_path = _small_evaluation_config(tmp_path / "evaluation.yaml")
+    evaluation_path = _small_evaluation_config(tmp_path / "evaluation.yaml")
+    document = evaluation.load_evaluation_document(evaluation_path)
+    config_path = tmp_path / "sample-request.yaml"
+    config_path.write_bytes(evaluation.sample_request_bytes(document))
     inputs = _resolved_inputs(
         config_path,
         tmp_path / "best.pt",
@@ -704,7 +716,8 @@ def test_result_checkpoint_header_drops_tensor_state(tmp_path: Path) -> None:
         "inference_asset_descriptors": {},
         "inference_asset_state_dicts": {},
     }
-    assert retained.config is inputs.config
+    assert retained.checkpoint_config is inputs.checkpoint_config
+    assert retained.sample_config is inputs.sample_config
     assert retained.extension_plan is inputs.extension_plan
     assert "model_state_dict" in inputs.checkpoint
 

@@ -486,13 +486,20 @@ def _materialize_output(
                     )
                 )
             observations = tuple(retained)
-        batches.append(SamplingBatch(samples=samples, trajectory=observations))
+        batches.append(
+            SamplingBatch(
+                samples=samples,
+                num_samples=count,
+                trajectory=observations,
+            )
+        )
         remaining -= count
     return validate_sampling_output(
         SamplingOutput(
             batches=tuple(batches),
             metadata={"capacity_profile": profile.name},
-        )
+        ),
+        expected_num_samples=profile.num_samples,
     )
 
 

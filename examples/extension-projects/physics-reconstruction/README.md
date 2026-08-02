@@ -1,9 +1,9 @@
 # Physics reconstruction extension
 
-This is an independently installable Stochaflow reference project for
-three-frame Kolmogorov-vorticity reconstruction. It demonstrates the extension
-boundaries, not a pretrained model or a claim that the paper's reported accuracy
-has been reproduced.
+This is a legacy installed-acceptance and architecture fixture for three-frame
+Kolmogorov-vorticity reconstruction. It is not a maintained reconstruction task,
+quality benchmark, or formal Evaluation surface, and it does not claim that a
+pretrained model or the paper's reported accuracy has been reproduced.
 
 The package owns task-specific data, model, training, dynamics, guided solver,
 and artifact policies. Stochaflow still owns the registry, CLI, automatic
@@ -42,17 +42,21 @@ because standardized vorticity is not constrained to `[-1, 1]`.
 
 ## Tiny end-to-end run
 
-Run commands from this project root so `data/` and `outputs/` resolve here.
-Neither `uv` nor editable installation is required; these are ordinary Python
-packaging and console-entry-point workflows.
+This fixture follows the current source checkout's core contract and makes no
+compatibility promise for the older core wheel named in its legacy metadata.
+From the Stochaflow repository root, install the current core first and then
+install this extension without dependency resolution. Run the experiment from
+the project root so `data/` and `outputs/` resolve there.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[test]"
+python -m pip install -e ".[dev]"
+python -m pip install --no-deps -e examples/extension-projects/physics-reconstruction
+cd examples/extension-projects/physics-reconstruction
 python -m stochaflow_physics_reconstruction.tools.prepare_tiny_data \
   --output-dir data/tiny
-stochaflow train --config experiments/tiny/train.yaml --skip-final-sample
+stochaflow train --config experiments/tiny/train.yaml
 ```
 
 The training config selects
@@ -66,8 +70,9 @@ external file. Strict resume supplies the expected identity and therefore
 always performs full verification before Dataset construction. The resulting
 artifact binding is stored in the run manifest and checkpoint.
 
-Use the emitted run directory or checkpoint for each independent sampling
-policy:
+Training emits a v12 checkpoint and never starts an implicit final sample. Use
+the emitted run directory or checkpoint with one complete config for each
+independent sampling policy:
 
 ```bash
 stochaflow sample --checkpoint outputs/tiny/<run> \
@@ -86,7 +91,7 @@ stochaflow sample --checkpoint outputs/tiny/<run> \
 The installed-wheel acceptance run exercises all three sampling policies after
 fresh training and strict resume:
 
-| Partial request | Resolved sampler | Published reconstruction |
+| Sample config | Resolved sampler | Published reconstruction |
 | --- | --- | --- |
 | `sample-baseline-ddim.yaml` | `ddim` | float32 `[4, 3, 8, 8]` |
 | `sample-baseline-ddpm.yaml` | `ddpm` | float32 `[4, 3, 8, 8]` |
@@ -98,19 +103,20 @@ records extension provenance plus the resolved sampler. This is a deterministic
 integration result for artifact shape, dtype, lineage, and policy selection—not
 a scientific reconstruction-quality claim.
 
-These files are partial sampling requests, not second training configurations.
-They contain only fields that select or differ from the checkpoint defaults:
-the baseline files select a `sampler`, while guided variants also override the
-relevant task `options`. Shape, counts, source/reference paths, writers, and the
-checkpoint-required extension are inherited unless a request explicitly changes
-them. The files do not expose the internal `SamplingBuilder` name or repeat
-`prediction_type`; the checkpoint's inference recipe fixes both the
-reconstruction workflow and its trained prediction semantics.
+These files are complete standalone sample configs, not second training
+configurations or partial overlays. Each declares its sampler, options, shape,
+counts, batch size, seed, source/reference paths, and writers. The checkpoint
+supplies the trained model and Process, fixed inference recipe, embedded state,
+and required extension provenance. The configs do not expose the internal
+`SamplingBuilder` name or repeat `prediction_type`; the checkpoint's inference
+recipe fixes both the reconstruction workflow and its trained prediction
+semantics.
 
-Every request uses a mathematically aligned public state schedule: the marginal
-is sampled at `partial_noise_time`, the first reverse source is that same state,
-and the final target is clean state `0`. This intentionally avoids the legacy
-off-by-one path in which initial noising and the first reverse source differed.
+Every sample profile uses a mathematically aligned public state schedule: the
+marginal is sampled at `partial_noise_time`, the first reverse source is that
+same state, and the final target is clean state `0`. This intentionally avoids
+the legacy off-by-one path in which initial noising and the first reverse source
+differed.
 
 ## Prepare the 40-trajectory dataset
 
@@ -140,8 +146,9 @@ shapes, and the expected 1272 trajectory-major triplets before sampling.
 
 The production configs are executable declarations, but real scientific
 training needs an appropriate denoiser architecture, compute budget, data
-license review, and independent metric validation. The default final sampling
-is final-state only and writes 1272 float32 samples of shape `[3, 256, 256]`.
+license review, and independent metric validation. The explicit production
+sample profiles publish only their final states and write 1272 float32 samples
+of shape `[3, 256, 256]`.
 
 ## Real-batch capacity evidence
 
@@ -189,14 +196,13 @@ stochaflow train \
   --epochs 1 \
   --limit-batches 1 \
   --limit-test-batches 1 \
-  --skip-final-sample \
   --no-progress
 ```
 
-The `real-smoke` overlays reduce only the output count and batch size to one,
-select the freshly updated raw weights, and retain the production solver math:
-30 accepted transitions from state time 240 for baseline DDIM and 40 accepted
-transitions from state time 320 for guided DDIM.
+The `real-smoke` sample configs reduce only the output count and batch size to
+one, select the freshly updated raw weights, and retain the production solver
+math: 30 accepted transitions from state time 240 for baseline DDIM and 40
+accepted transitions from state time 320 for guided DDIM.
 
 ```bash
 stochaflow sample \

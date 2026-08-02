@@ -88,17 +88,19 @@ progress 和 batch limits 等文档化安全运行时覆盖。可选的
 
 ### Config 与 checkpoint 权威
 
-Stochaflow 先为每个命令选择唯一 base config，再应用该 workflow 明确允许的覆盖；不会把
-config、checkpoint 和 CLI 当作三份对等配置做通用 merge。
+Stochaflow 为训练/恢复选择唯一训练 config authority；`sample` 则显式保留两条平行权威：
+checkpoint 提供 state 与 fixed recipe，完整 sample config 提供本次 mutable invocation。
+二者不会合并为一份配置，也不会与 CLI 做通用 merge。
 
-| Workflow | 权威 base config | Checkpoint 角色 | 后续覆盖 |
+| Workflow | 配置权威 | Checkpoint 角色 | 后续覆盖 |
 | --- | --- | --- | --- |
 | `train --config ...` | 外部完整 config | 无 | train CLI flags |
 | `train --resume ...` | checkpoint config | 完整训练 state | 安全 train runtime flags；可选 observability config |
-| `sample --checkpoint ...` | checkpoint config + v11 `inference_recipe` | 推理 state | 可选 partial sample request；sample CLI runtime flags |
+| `sample --checkpoint ... --config ...` | 必填、完整且独立的 `sample:` config | v12 推理 state + fixed `inference_recipe` | sample CLI runtime flags |
+| `evaluate --config ...` | 必填、完整且独立的 evaluation config | config 内 subject 引用的 v12 inference state、training config 与 data identity | device/output 与 extension-version acceptance |
 
 config 字段覆盖进入 resolved config；`limit-batches`、deterministic、启动 cwd、lineage、
-skip-final-sample 和插件 version acceptance 等 invocation 事实进入独立 manifest，而不是
+插件 version acceptance 等 invocation 事实进入独立 manifest，而不是
 扩张组件 schema。
 
 目录输入和默认输出遵循下表；显式 checkpoint 文件始终按原路径使用：
@@ -107,8 +109,9 @@ skip-final-sample 和插件 version acceptance 等 invocation 事实进入独立
 | --- | --- | --- |
 | `train --resume <run-or-root>` | 递归查找最近修改的 `checkpoints/latest.pt` | 在原 run 的 output root 下创建新的兄弟 run |
 | `sample --checkpoint <run-or-root>` | 递归查找最近修改的 `checkpoints/best.pt` | `<checkpoint-run>/samples/<timestamp>/` |
+| `evaluate --config <file>` | config 中的 checkpoint path；相对路径以 config 目录为基准 | `<checkpoint-run>/evaluations/<timestamp>/`，或显式的新 output directory |
 
-`sample` 始终要求显式 `--checkpoint`；目录只是一种便利输入，会递归选择最近修改的
+`sample` 始终要求显式 `--checkpoint` 与 `--config`；checkpoint 目录只是一种便利输入，会递归选择最近修改的
 `best.pt`。没有 validation 的 run 不创建 best；对这类 run 采样时应显式传
 `checkpoints/latest.pt`，它表示 final checkpoint，而不是经过验证集选择的 best。需要冻结
 精确 lineage 时也应传 checkpoint 文件。`train --output-dir` 是新建 timestamped run 的
@@ -137,24 +140,31 @@ outputs/<experiment>/<YYYYMMDD_HHMMSS>/
         manifest.yaml
         denoiser/
         <sampler-profile>/
-  samples/
-    final/
-      samples.png
-      samples.pt
-      resolved_sampling.yaml
 ```
+
+训练 run 不自动创建 sample artifact。独立 `sample` 调用默认写入 checkpoint run 下唯一的
+`samples/<timestamp>/`，其中包含 writers 产物与 `resolved_sampling.yaml`。
 
 `resolved_config.yaml` 只保存最终可重建组件配置；`run_manifest.yaml` 另外记录 config
 来源、实际插件 provenance、version acceptance、启动 cwd、runtime-only CLI options、
-checkpoint lineage 和 `selected_components`。同一 component identity 摘要也写入 checkpoint
-metadata；sampling 的 `resolved_sampling.yaml` 根据最终 sampling config 写入同样的字段。
-它只列出 typed 顶层配置所选择的 framework component names（可选项显式为 `null`，列表
-保持声明顺序），不会递归解释 Builder/Process 的私有 `params`，也不表示 sampling
-invocation 实际构建了训练或数据组件。完整 config 仍是重建权威，摘要只用于审计。
+checkpoint lineage 和 `selected_components`。同一 training-owned 摘要也写入 checkpoint
+metadata；sampling 的 `resolved_sampling.yaml` 使用另一投影，只组合 checkpoint-owned
+model/Process/recipe 与 sample config 选择的 Sampler/writers。两侧都不递归解释
+Builder/Process 的私有 `params`，也不伪造另一 authority 的组件。完整 checkpoint config
+与完整 sample config 分别保持重建和 invocation 权威，摘要只用于审计。
+
+训练 manifest 创建时先写入 `status: running`。只有训练、可选 phase test、终端最终报告
+和 logger 关闭都成功后，才原子更新为 `status: completed` 并写入 `outcome`。该 outcome
+记录最终 epoch 与完整 canonical `final_metrics`、latest/best/selected checkpoint 及选择
+类型、`stopped_early`、完整 `phase_test_metrics`、manifest 路径，以及可选 local
+metrics/log 路径。没有 test split 时 `phase_test_metrics` 是空 mapping；没有 local logger
+时两个日志路径为 `null`。失败或收尾未完成的 manifest 不发布 `outcome`，因此消费者只应
+把 `status: completed` 视为可消费的成功结果。
+
 启用 TensorBoard、W&B、diagnostic 或 trajectory 后会增加对应子目录/artifact。
 `artifacts.checkpoint_every` 控制编号 checkpoint 的频率；`latest.pt` 在每个完成 epoch 后
 更新。`best.pt` 只由 `valid/loss` 或 `valid/metrics/<id>[/<subkey>]` 更新；没有 validation
-时默认关闭 best tracking，训练后的自动采样明确使用 final `latest.pt`。
+时默认关闭 best tracking。此时显式采样应传 final `latest.pt`。
 
 ## 恢复训练
 
@@ -213,7 +223,7 @@ resume 仍创建新的兄弟 run，因此 local 日志和 TensorBoard event 文�
 checkpoint 再次 resume 且不传该选项时，使用的就是先前已固化的 effective config 和
 审计链。
 
-`--resume` 与 `--config` 互斥。当前 checkpoint v11 保存 resolved config、primary
+`--resume` 与 `--config` 互斥。当前 checkpoint v12 保存 resolved config、primary
 inference model、可选 Process/Objective、可选 EMA model、optimizer、scheduler、EMA、具名
 training assets、训练进度，以及始终存在的 fixed `inference_recipe` 字段。它只保存
 `data: {name, params}`，不保存 Dataset、PyTorch Sampler、DataLoader、partition 或数值
@@ -236,11 +246,11 @@ config 和 extension provenance 必须与所选 checkpoint 一致；通过校验
 没有 validation 的 run 不保存 best selection state，也不依赖 `best.pt`；它的
 `latest.pt` 是 final checkpoint。显式请求 best tracking 或 early stopping 却没有
 validation DataLoader 会在训练循环前失败。
-Strict resume 还要求合法的 `epoch`、`global_step` 和 v11 RNG snapshot，并在 selected state
+Strict resume 还要求合法的 `epoch`、`global_step` 和 v12 RNG snapshot，并在 selected state
 与 inherited-best 全部验证后恢复 Python、NumPy、Torch CPU 及适用的 CUDA/MPS RNG。
 普通 checkpoint load 不修改全局 RNG。checkpoint-backed inference 不恢复 checkpoint
-RNG snapshot，而是按 resolved `sampling.seed`（为 `null` 时使用 checkpoint config 的
-`experiment.seed`）重新初始化 Python、NumPy 与 Torch 全局 RNG。device override 仍受
+RNG snapshot，而是按完整 sample config 中显式的 `sample.seed` 重新初始化 Python、
+NumPy 与 Torch 全局 RNG，不回退到训练配置的 `experiment.seed`。device override 仍受
 支持，但跨设备、CUDA topology 或 backend 版本不保证逐位一致。
 
 checkpoint 不保存 DataBuilder、Dataset、DataLoader iterator/worker、Sampler 或用户私有
@@ -252,7 +262,7 @@ generator 的 runtime state。内置图像 recipe 会由 experiment seed 与 epo
 恢复时应显式传 `--output-dir`。DataBuilder 私有 params 中的相对路径遵循同一 cwd 规则，
 核心不会猜测并重写不透明字段。
 
-当前 v11 payload 只允许 Tensor、primitive 与普通 container，并始终由
+当前 v12 payload 只允许 Tensor、primitive 与普通 container，并始终由
 `torch.load(..., weights_only=True)` 读取；旧 checkpoint 格式不迁移。扩展代码/class
 不会 freeze 在 checkpoint 中；恢复与 inference 环境需要安装记录的 entry-point
 distribution。实现变化造成的不兼容由 state/资产/recipe 契约报错，Stochaflow 不保存或
@@ -372,8 +382,8 @@ diagnostics:
 冲突都会严格校验。
 
 这里的 `diagnostics[].params.sampling.shape` 由训练期 diagnostic 自己拥有，用于构造
-它的固定监控样本；它不会读取或借用顶层 `sampling.shape`。同理，checkpoint-backed
-sample profile 只配置独立 inference request，不会改变训练 diagnostics。
+它的固定监控样本；它不会读取或借用独立 sample workflow 的 `sample.shape`。同理，
+checkpoint-backed sample profile 不会改变训练 diagnostics。
 
 Local logger 记录 artifact 路径，TensorBoard 和 W&B 同时显示 PNG。启用 KID/FID
 前需要 `uv sync --extra quality`，并且本次训练必须有 validation DataLoader。参考指标
@@ -397,12 +407,11 @@ epoch diagnostic 汇总。
 Physics 任务执行重建，direct-transform 任务也可以产生 prediction。数值 `Sampler`
 只是某些 recipe 的内部协作，不是运行该命令的前提。
 
-v11 checkpoint 除模型、可选 EMA/Process state 和训练配置外，还保存
+v12 checkpoint 除模型、可选 EMA/Process state 和训练配置外，还保存
 `inference_recipe`。它固定内部 `SamplingBuilder` identity 与不可覆盖的 contract；
-`null` 表示该 checkpoint 不支持 `sample`。CLI 仍允许完整 sampling defaults 已保存在
-checkpoint 时省略 request 文件，但维护中的 MNIST authoring 文件刻意不声明 sampler、
-shape 或 writers，其 resolved v11 defaults 不足以形成完整调用，因此应显式提供
-sample profile：
+`null` 表示该 checkpoint 不支持 `sample`。CLI 始终要求显式 checkpoint 和完整 sample
+config，checkpoint 不提供 sampler、options、shape、数量、batch、seed 或 writers 的
+mutable defaults：
 
 ```bash
 stochaflow sample \
@@ -410,10 +419,10 @@ stochaflow sample \
   --config examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml
 ```
 
-要修改允许变化的 request 字段，可提供 partial sample request：
+完整 sample config 例如：
 
 ```yaml
-sampling:
+sample:
   shape: [1, 32, 32]
   num_samples: 64
   batch_size: 16
@@ -433,10 +442,10 @@ sampling:
 ```bash
 stochaflow sample \
   --checkpoint outputs/mnist/<run>/checkpoints/best.pt \
-  --config path/to/sample-request.yaml
+  --config path/to/sample.yaml
 ```
 
-仓库提供两份可直接使用的 MNIST request profile：
+仓库提供两份可直接使用的 MNIST sample profile：
 
 ```bash
 stochaflow sample \
@@ -448,78 +457,51 @@ stochaflow sample \
   --config examples/built-in/image-generation/configs/sample/mnist-ddim-50.yaml
 ```
 
-request 顶层只允许 `sampling` 与可选 `extensions`。其中不允许
-`sampling.run_after_training` 或 `sampling.builder`：是否训练后自动运行属于训练
-workflow，内部 Builder 则由 checkpoint recipe 决定。字段应用规则固定为：
+config 顶层只允许 `sample` 与可选 `extensions`。`sample` 内的 sampler、options、shape、
+num_samples、batch_size、seed 和 writers 是完整调用权威，不能省略后指望继承 checkpoint
+训练配置。`options` 不能含 `sampler`，也不能覆盖 recipe fixed contract 中的字段；
+`extensions.plugins` 只能追加插件，不能删除 checkpoint-required plugins，也不能写
+`null` 来选择整个环境。训练配置不接受顶层 `sampling`，训练结束也不会自动采样。
 
-- 未出现的字段继承 checkpoint config；
-- `shape`、`num_samples`、`batch_size` 和 `seed` 按字段替换；
-- `options` 只在第一层按 key merge，嵌套 value 原子替换；
-- 显式 `sampler` 和 `writers` 分别原子替换 checkpoint 默认声明；
-- `options` 不能含 `sampler`，也不能覆盖 recipe fixed contract 中的字段；
-- `extensions.plugins` 只能追加插件，不能删除 checkpoint-required plugins，也不能写
-  `null` 来选择整个环境。
-
-当前 sample request contract 是包含顶层 `sampling:` 的 mapping；sampler、options、
-shape/batching、seed 和 writers 都位于该 section 内，而不是直接放在文档根。
-
-例如只改变输出数量时，不需要复制 sampler、options 或 writers：
-
-```yaml
-sampling:
-  num_samples: 8
-  batch_size: 4
-```
-
-如果要修改 trajectory 的一个嵌套成员，需要提供完整的新 trajectory value，因为浅合并
-只发生在 `options` 的第一层：
-
-```yaml
-sampling:
-  options:
-    trajectory:
-      enabled: false
-      every_steps: 1
-```
-
-CLI 不提供 sampler-specific flags；solver 参数属于 `sampling.sampler.params`。这样
+CLI 不提供 sampler-specific flags；solver 参数属于 `sample.sampler.params`。这样
 checkpoint recipe 可以组合 condition、guidance、多个内部组件或非固定 shape initial
 state，而无需扩充核心 CLI。
 
-### 固定 contract 与可调 request
+### 固定 contract 与完整 sample config
 
 训练侧 `TrainingBuilder` 根据实际训练语义返回 `TrainingPlan.inference_recipe`。例如
-Gaussian denoising 把 `prediction_type` 固化进 contract，避免 request 把 epsilon 模型
-当作 v-prediction 使用。运行时按以下顺序构造内部 Builder 参数：
+Gaussian denoising 把 `prediction_type` 固化进 contract，避免 sample config 把 epsilon
+模型当作 v-prediction 使用。运行时按以下顺序构造内部 Builder 参数：
 
 ```text
-checkpoint sampling.options
-        ← shallow merge request options
-        + resolved sampling.sampler
+complete sample.options
+        + complete sample.sampler
         + immutable inference_recipe.contract
 ```
 
-request 与 fixed contract 发生 key 冲突时直接失败，而不是让请求覆盖训练语义。内部 recipe
-name、contract 和最终 resolved sampling settings 都写入 `resolved_sampling.yaml`。
+sample config 与 fixed contract 发生 key 冲突时直接失败，而不是覆盖训练语义。内部 recipe
+name、contract 和完整 sample settings 都写入 `resolved_sampling.yaml`。
 
 ### 权重、shape 与输出
 
-`standard_denoising` 使用 `sampling.shape`，它不含 batch 维且与 DataBuilder 独立；
+`standard_denoising` 使用 `sample.shape`，它不含 batch 维且与 DataBuilder 独立；
 自定义 recipe 可以在 shape 为 null 时运行。`weights: auto` 通常位于
-`sampling.options`：当 checkpoint config 的 `ema.enabled` 与
-`ema.use_for_sampling` 都为 true 且 checkpoint 含 EMA state 时选择 EMA，否则选择 raw。
+`sample.options`：checkpoint 含 EMA model state 时选择 EMA，否则选择 raw；训练配置不再
+提供 `ema.use_for_sampling`。
 正式评估应显式请求 `raw` 或 `ema`。
 
-每次 inference 都写 `resolved_sampling.yaml`，其中记录 checkpoint lineage、v11 recipe、
-完整最终 config、request source、实际插件 provenance/version acceptance、启动 cwd、
-runtime options，以及 recipe metadata/artifacts。`sampling.writers` 决定其他输出：
+每次 inference 都写 `resolved_sampling.yaml`，其中记录 checkpoint path、稳定 bytes 的
+SHA-256、format version、epoch/global step lineage、v12 recipe、完整 sample config 及其
+source、实际插件 provenance/version acceptance、启动 cwd、runtime options，以及 recipe
+metadata/artifacts。manifest 中的 writer artifact 使用 bundle-relative portable path。
+`sample.writers` 决定其他输出：
 `tensor` 写 PT，`image` 写 PNG/GIF；开启 trajectory 后，两者会写各自支持的
 trajectory artifact。
 
 默认输出是 checkpoint run 下唯一的 `samples/<timestamp>/`。显式 `--output-dir` 指向
-最终目录，而不是自动创建 timestamp 子目录；普通 sampling writer 不是事务式发布器，
-因此正式或并发运行应使用新的空目录，不能把它等同于 AFHQ formal evaluator 的 immutable
-publication。
+最终目录，而不是自动创建 timestamp 子目录。该最终目录必须尚不存在：runtime 先在同级
+私有 staging 内完成全部 writers 和 manifest，再用 no-replace rename 原子发布；任一步失败
+都会清理 staging 且不留下最终目录。已有目录会 fail closed，内容不会被覆盖或合并。
 
 所有注册 Sampler 通过相同的完整 `sample(dynamics, initial_state, ...)` 生命周期执行，但
 不共享万能数学接口。内置 DDPM/DDIM 要求 Gaussian Dynamics；其他算法 family 可定义
@@ -532,6 +514,274 @@ trajectory 是 observer 对 initial、accepted step 和唯一 final observation 
 改变 solver 循环。保留的 state 在 observation 到达时复制，内置 Tensor 路径会立即转存到
 CPU，避免后续原地更新污染历史或让显存随 trajectory 长度增长。`trajectory.pt` 按声明
 顺序保存 step index、coordinate 和 state。
+
+## 独立 checkpoint Evaluation
+
+`stochaflow evaluate` 对一个配置显式引用的冻结 authority 运行独立 protocol。当前支持：
+
+- `checkpoint`：安全读取 v12 checkpoint，显式解析 raw/EMA，构造 checkpoint DataBuilder
+  的 validation/test split，并执行 live inference；
+- `prediction_artifact`：认证一个已经 complete 的 versioned prediction manifest 与 shards，
+  按 exact sample plan 提供 records，并在不构造 checkpoint model 或原 DataBuilder 的情况
+  下重新计算 metrics。
+
+两条路径都不恢复 optimizer、scheduler、GradScaler 或 training RNG，不继续训练，也不调用
+`stochaflow sample` operation。需要完整生成的 task 可以消费 runtime 注入的窄
+`EvaluationSamplingCapability`，通过同一个 SamplingBuilder execution seam 取得
+writer-free in-memory output。具体 task batch/record、模型签名和 metric channel 仍由已安装
+extension 注册的 `EvaluationBuilder` 与 Metric 解释。
+
+### Live checkpoint evaluation
+
+一份完整 evaluation config 例如：
+
+```yaml
+version: 1
+name: candidate-a-validation
+purpose: selection_candidate
+
+extensions:
+  plugins: [my-project]
+
+subject:
+  kind: checkpoint
+  path: ../outputs/run/checkpoints/best.pt
+  weights: ema
+
+data:
+  source: checkpoint
+  split: validation
+
+evaluation:
+  name: my-project.supervised-evaluation
+  params: {profile: paired-v1}
+
+metrics:
+  - id: prediction_mae
+    name: my-project.mae
+    channel: predictions.targets
+    params: {}
+
+protocol:
+  id: paired-validation-v1
+  expected_examples: 100
+  strict_complete: true
+```
+
+evaluation schema 与 training/sample schema 平行而不合并。顶层必填字段是 `version`、
+`name`、`purpose`、`subject`、`data`、`evaluation`、`metrics` 和 `protocol`；
+`extensions` 可省略。unknown 或 duplicate field 失败。当前约束是：
+
+- `subject.kind` 与 `data.source` 必须选择同一个 authority：都为 `checkpoint` 或都为
+  `prediction_artifact`；
+- checkpoint subject 的 `weights` 必须显式写 `raw` 或 `ema`，不能写 sampling 的
+  `auto`；prediction-artifact subject 不接受 `weights`；
+- subject 相对路径以 evaluation YAML 所在目录为基准，而不是进程 cwd；
+- split 只能为 `validation` 或 `test`；offline config 的 split 必须与 producer manifest
+  冻结的 split 相同；
+- `selection_candidate` 必须使用 validation，`final_test` 必须使用 test，`benchmark`
+  可以显式使用其中任一 split；
+- `protocol.expected_examples` 必须是正整数；`strict_complete` 默认 `true`，duplicate
+  sample ID、超额样本或最终数量不足都会 fail closed；
+- `evaluation.name` 选择注册的 `EvaluationBuilder`；`metrics[].channel` 必须由其
+  Evaluator 声明，core 不定义通用 prediction/target/image batch schema。
+
+运行命令：
+
+```bash
+stochaflow evaluate \
+  --config path/to/evaluation.yaml \
+  --device cuda \
+  --output-dir outputs/evaluations/candidate-a
+```
+
+只有 `--config` 必填。`--device`、`--output-dir` 与
+`--force-extension-version-mismatch` 是 runtime options；CLI 没有独立 `--checkpoint`
+或 arbitrary config patch。省略 output 时，runtime 根据 subject path 在相邻
+`evaluations/<timestamp>/` 选择新目录。显式 output directory 必须不存在，当前没有
+overwrite/resume；目标冲突在评估前 fail closed。
+
+Python 的 path-first API 返回 immutable `EvaluationRunOutcome`：
+
+```python
+from stochaflow.evaluation import run_evaluation
+
+outcome = run_evaluation(
+    "path/to/evaluation.yaml",
+    output_dir="outputs/evaluations/candidate-a",
+    device_name="cuda",
+)
+print(outcome.metrics, outcome.result_path)
+```
+
+需要自行控制插件 activation 的宿主可以先调用 `resolve_evaluation_inputs()`，再把明确
+激活得到的 `ResolvedExtensions` 交给 `run_resolved_evaluation()`。当前
+`EvaluationRunRequest` 是数据 contract，不是 `run_evaluation()` 的参数形式。
+
+没有 artifact sink 的成功目录包含：
+
+```text
+candidate-a/
+├── resolved_evaluation.yaml
+├── result.json
+└── evaluation_manifest.yaml
+```
+
+`result.json` 保存 protocol digest、checkpoint SHA-256/format/epoch/global step、
+requested/resolved weights、lineage、DataBuilder/split/artifact identity、
+`eval/metrics/*`、`eval/measurements/*`、sample completeness 与 extension/builder/metric
+provenance。manifest 最后发布并记录 result SHA-256；任何加载、评估、完整性或写入失败
+都会清理未完成目录。`strict_complete: false` 时数量不足可产生显式 `incomplete` result，
+而不是伪装为 complete。
+
+### 从 live run 发布 predictions
+
+prediction artifact 是 opt-in task contract，不是每次 checkpoint evaluation 的隐式副作用。
+Builder 若从 `EvaluationBuilderContext.artifact_root` 创建
+`JsonlPredictionArtifactSink`（或兼容的 `EvaluationArtifactSink`），并把它放入
+`EvaluationPlan.artifact_sink`，Evaluator 必须在每个 `EvaluationStepOutput.records` 中
+返回与 `sample_ids` 同序的 typed `PredictionRecord`。runtime 逐 batch 流式写 unpublished
+shards；只有 sink finalize、protocol completeness policy 和 ordered sample plan 全部通过时，
+成功目录才会额外包含：
+
+```text
+candidate-a/
+├── predictions/
+│   ├── prediction_manifest.json
+│   └── predictions.jsonl
+├── resolved_evaluation.yaml
+├── result.json
+└── evaluation_manifest.yaml
+```
+
+`predictions.jsonl` 是内置 sink 的默认 shard 名；custom sink 可以发布一个或多个 manifest
+声明的 portable relative shard paths。`result.json` 和 completion manifest 的 `artifacts`
+会以相对路径引用 `predictions/prediction_manifest.json`，并记录 manifest SHA-256 与整个
+artifact digest。
+
+prediction manifest schema v1 冻结：
+
+- producer evaluation identity/authority/protocol、normalized training config 与 extension
+  provenance；
+- 原 source subject identity/content digest、resolved weights、inference profile/digest；
+- producer data identity、governed split、preprocess/postprocess；
+- ordered `sample_id`/`input_id`/`replicate_index` plan 与 digest；
+- canonical JSONL shard format、path、size、record count 与 SHA-256；
+- expected/observed/missing/unexpected/duplicate/failed/skipped completeness；
+- deterministic gallery sample IDs。
+
+gallery 是可审计的 ID selection，不是自动生成的图片目录。默认选择由 protocol ID 与
+sample ID 的稳定 hash 决定，不受 input/shard 枚举顺序影响；task 也可以在发布 API 中显式
+声明 IDs。manifest 发布后，loader 会重算并验证这项选择。
+
+safe loader 只接受 strict canonical JSON/JSONL 和 normalized portable relative paths，不
+反序列化 pickle。manifest、artifact 或 shard digest/size/count 不匹配，missing、duplicate、
+unexpected record，`sample_id` 与 input/replicate identity 不匹配，incomplete status，或
+sink/sample-plan 与实际 evaluation IDs 不一致，都会失败且不发布 result。启用 prediction
+sink 时 artifact 自身只允许对其声明的 exact sample plan 为 complete；若
+`strict_complete: false` 让 evaluation 相对更大的 protocol count 产生 `incomplete` result，
+这与 artifact 对自身 sample plan 的 completeness 是两个必须分别读取的状态。
+
+### Offline scoring
+
+offline config 继续使用同一个 `stochaflow evaluate` 命令，只更换 subject/data authority；
+`subject.path` 可以指向 artifact 根目录或 `prediction_manifest.json`：
+
+```yaml
+version: 1
+name: candidate-a-offline-rescore
+purpose: selection_candidate
+
+extensions:
+  plugins: [my-project]
+
+subject:
+  kind: prediction_artifact
+  path: ../candidate-a/predictions/prediction_manifest.json
+
+data:
+  source: prediction_artifact
+  split: validation
+
+evaluation:
+  name: my-project.supervised-evaluation
+  params: {profile: paired-v1}
+
+metrics:
+  - id: prediction_mae
+    name: my-project.mae
+    channel: predictions.targets
+    params: {}
+
+protocol:
+  id: paired-validation-v1
+  expected_examples: 100
+  strict_complete: true
+```
+
+```bash
+stochaflow evaluate \
+  --config path/to/offline-evaluation.yaml \
+  --device cpu \
+  --output-dir outputs/evaluations/candidate-a-offline
+```
+
+offline loader 先认证 producer manifest 和所有 shards，再按 sample ID 精确 join 并恢复
+manifest 的 ordered sample plan；目录枚举、文件名排序或 shard 内 record 顺序都不是 join
+authority。Builder 收到 `ResolvedPredictionArtifactSubject`、`inference=None` 和已排序的
+`PredictionRecord`；它负责解释 task-private payload 并产生 metric updates，不得重新运行
+模型或扫描 producer 目录。runtime 最后还要求 Evaluator 返回的完整 ordered IDs 与
+artifact sample plan 完全相同，因此“数量相同但 ID 错误”也会失败。
+
+新的 offline `result.json` 以 prediction artifact 为 subject，记录 artifact/manifest 与
+sample-plan digest、producer identity、原 source subject 与 resolved weights、data/split、
+inference/pre/postprocess/gallery 和 extension lineage。producer artifact 按字节保持不变；
+offline run 发布自己的 immutable result bundle，不覆盖 live result 或 producer manifest。
+常规 offline Builder 不声明新 sink，因此 `artifacts` 为空。`gate_result_path` 仍为 `None`。
+
+### AFHQ-v2 formal full-test profile
+
+maintained AFHQ-v2 source-checkout showcase 已提供 pixel-image generation Evaluation profile：
+`experiments/evaluation/formal-ddim50-cfg2-official-test.yaml`。在该文件中只把
+`subject.path` 替换为与其 v-prediction/fixed-variance recipe contract 匹配的唯一冻结 v12
+checkpoint，然后运行：
+
+```bash
+uv run --project examples/showcases/afhq-v2 stochaflow evaluate \
+  --config examples/showcases/afhq-v2/experiments/evaluation/formal-ddim50-cfg2-official-test.yaml \
+  --device cuda \
+  --output-dir outputs/afhq-v2/evaluations/adm-ddim50-cfg2-official-test
+```
+
+profile 使用完整 authenticated official test split：cat/dog/wild 分别为
+493/491/483，共 1,467 个 reference 与相同 allocation 的 generated samples。它固定 EMA、
+sampling seed `20260726`、deterministic DDIM-50、CFG 2.0、KID 100 subsets /
+subset size 300 / metric seed `20260726` 与
+FID feature 2048，并通过 `REGISTRIES.metrics` 的 `kid`/`fid` providers 同时报告 aggregate
+和 per-class 结果。
+
+checkpoint runtime 先解析并固定 subject 的 raw/EMA variant，再向 AFHQ Builder 注入绑定
+该 primary model 的 sampling capability；Builder 不能再次选择权重。capability 从 checkpoint
+恢复 Process/assets，并通过 shared SamplingBuilder execution seam 生成，不运行普通 writers。
+AFHQ sink 把同序 real/fake/class records 发布到 `predictions/`，所以复制这份 profile、把
+`subject.kind`/`data.source` 改为 `prediction_artifact` 并指向该 manifest 后，可用同一个
+`stochaflow evaluate` 完成 offline replay，而不加载 checkpoint、model 或原 DataBuilder。
+P2 epsilon checkpoint 不匹配这份 v-prediction contract。P2 production 使用 fail-closed 的
+`formal-ddim50-cfg2-official-test-epsilon.yaml`，必须把其中的 run/selected-epoch placeholder
+替换为 validation policy 冻结的唯一 subject。历史 standard/P2 A/B 使用同一
+epsilon/fixed protocol fields，并在预算终点显式替换为各自 `latest.pt` EMA；两臂具有相同
+topology/data/order/optimizer-update budget/EMA lifecycle，未按不可比的 `valid/loss` 选择
+`best.pt`。
+
+旧 `stochaflow-afhq-v2-evaluate` 与旧
+`experiments/evaluation/ddim50-cfg2-kid-fid.yaml` 只作为历史结果对照；它们不属于当前
+maintained P2 evidence surface，也不提供 compatibility guarantee。
+
+当前 runtime 提供通用 prediction persistence/replay substrate；core FID/KID providers 与上述 AFHQ
+profile 已闭合当前普通像素图像生成的 formal Evaluation vertical slice。SR、consistency、
+latent、distillation 等任务不属于本次缺口清单；若未来实现相应任务，其 monitoring 与
+Evaluation protocol 必须在同一任务变更中一起交付，而不是提前扩张当前 runtime。reference
+cache、performance curve、通用 comparison/gate 是可选后续增强，不阻塞 P2 训练与正式评估。
 
 ## 大规模 sampling 容量
 

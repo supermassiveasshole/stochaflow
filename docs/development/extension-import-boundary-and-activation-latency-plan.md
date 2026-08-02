@@ -14,7 +14,7 @@
   [扩展公共 API](../api/extensions.md)、
   [扩展与 Registry](../configuration/extensions.md)、
   [参考扩展项目](../configuration/reference-projects.md)、
-  [框架架构](../framework.md)
+  [正式架构说明](../../ARCHITECTURE.md)
 
 > **Rebase notice:** 下文关于 checkpoint v10、partial sample request、98-name export
 > surface、Physics/KD installed-wheel acceptance 的“必须保持”表述只保留为旧测量证据，

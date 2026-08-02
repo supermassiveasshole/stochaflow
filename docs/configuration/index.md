@@ -1,8 +1,8 @@
 # Stochaflow 配置手册
 
-本手册是 `stochaflow train`、`stochaflow sample`、内置组件和自定义扩展的
-可查阅说明。顶层配置采用严格 schema；`data.params` 的语义由所选 DataBuilder
-拥有。
+本手册是 `stochaflow train`、`stochaflow sample`、`stochaflow evaluate`、内置组件和
+自定义扩展的可查阅说明。training、sample 与 evaluation 使用各自独立的 strict schema；
+`data.params` 的语义由所选 DataBuilder 拥有。
 
 ```{toctree}
 :maxdepth: 2
@@ -22,14 +22,14 @@ troubleshooting
 
 | 任务 | 入口 |
 | --- | --- |
-| 先了解框架包含什么、各扩展角色如何协作 | [框架特性与架构](../framework.md) |
+| 先了解框架包含什么、各扩展角色如何协作 | [框架概览与当前能力](../framework.md) |
 | 查某个 YAML 字段、默认值或 CLI 覆盖 | [完整字段参考](reference.md) |
 | 配置图像、超分辨率或自定义数据构建 | [数据构建](data-pipeline.md) |
-| 实现端到端 conditional diffusion 超分辨率 | [条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md) |
+| 了解自行实现 conditional super-resolution 所需边界 | [条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md) |
 | 注册自定义 DataBuilder、writer 或其他组件 | [扩展与 Registry](extensions.md) |
 | 理解 config/checkpoint 权威并跨环境移动实验 | [Checkpoint、配置权威与可移植性](compatibility-and-migration.md) |
-| 查看 Physics reconstruction 与蒸馏的完整扩展 | [纵向扩展参考项目](reference-projects.md) |
-| 训练、smoke run、恢复和 checkpoint 采样 | [常用工作流](workflows.md) |
+| 查看 Physics reconstruction 与蒸馏的 legacy architecture fixtures | [纵向扩展参考项目](reference-projects.md) |
+| 训练、smoke run、恢复、checkpoint 采样和独立评估 | [常用工作流](workflows.md) |
 | 配置 learned-range variance、P2 training 或 respaced DDPM | {ref}`Gaussian variance、P2 与 respaced DDPM <gaussian-variance-p2-respaced-ddpm>` |
 | 用 TensorBoard 查看 loss、学习率、样本网格并比较运行 | [TensorBoard 使用指南](../tutorials/tensorboard.md) |
 | 估算大规模输出与 trajectory 内存 | [Sampling artifact 容量](sampling-capacity.md) |
@@ -91,7 +91,7 @@ GitHub [v0.1.0 Release](https://github.com/supermassiveasshole/stochaflow/releas
 | --- | --- |
 | `stochaflow` | 核心 runtime、phase metrics、TensorBoard logger 和 CLI |
 | `stochaflow[wandb]` | W&B logger |
-| `stochaflow[quality]` | KID/FID diagnostic |
+| `stochaflow[quality]` | KID/FID diagnostic 与 formal Evaluation providers |
 | `stochaflow[docs]` | 本地构建文档与研究图表 |
 | `stochaflow[dev]` | Pytest、Ruff 与 Pyright；面向源码贡献 |
 
@@ -145,15 +145,16 @@ test loss 为 **0.07363**。DDPM-1000、DDIM-50 样本与完整轨迹见
 [MNIST example result](https://github.com/supermassiveasshole/stochaflow/tree/main/examples/built-in/image-generation)。
 上面的有界命令只验证工作流，不等价于这次收敛训练。
 
-两个 sample profile 都保留当前顶层 `sampling:` request envelope，只选择 sampler、
-request options 和 writers；checkpoint 继续提供固化的 inference recipe。训练配置启用
+两个 sample profile 都是顶层 `sample:` 的完整独立调用配置，显式声明 sampler、
+options、shape、数量、batch、seed 和 writers；checkpoint 只提供 state 与固化的
+inference recipe。训练配置启用
 逐 step warmup-cosine LR scheduler、EMA、TensorBoard 和固定 seed 的 DDIM-50
 `diffusion_quality` 对照。diagnostics 属于训练配置，不会由 sample profile 改写。
 顶层 `metrics` 则消费 TrainingStrategy 明确公开的 channel，在 train、validation 或
 test phase 内聚合普通标量；每个 declaration、每个 phase 都使用独立 Metric 状态。
 它不解释通用 batch schema，也不接管需要额外采样、参考数据或 artifact 的
-`diagnostics`。`torchmetrics` 因此属于基础安装，`quality` extra 仍只补充 KID/FID
-所需依赖。
+`diagnostics`。`torchmetrics` 因此属于基础安装，`quality` extra 只补充 KID/FID
+diagnostic/formal Evaluation 所需的 Inception dependencies。
 该对照每 100 step 记录 timestep 分桶损失、噪声对齐统计，
 并在 5 个固定噪声时刻记录 `x0` 重建 MSE/PSNR；每 10 轮用 EMA 生成固定的 32 张
 样本网格。轨迹动画默认关闭，以减少 I/O 和视觉噪声。reference KID/FID 也默认关闭：
@@ -191,7 +192,7 @@ uv run stochaflow sample \
   --config examples/built-in/image-generation/configs/sample/mnist-ddpm.yaml
 ```
 
-## 最小完整配置
+## 最小完整训练配置
 
 下面只填写 schema 必填项以及内置 UNet/噪声 schedule 的必需参数；其余部分使用
 [字段参考](reference.md)中的默认值。这个配置使用 MNIST 完整 train split，不创建
@@ -237,15 +238,21 @@ training:
 objective:
   name: mse
   params: {reduction: mean}
+```
 
-sampling:
-  run_after_training: true
-  shape: [1, 32, 32]
+训练配置不含采样字段，也不会在训练结束时自动调用 `sample`。采样使用另一份完整配置：
+
+```yaml
+sample:
   sampler: {name: ddim, params: {num_inference_steps: 100, eta: 0.0}}
   options:
     weights: auto
     clip_denoised: true
     trajectory: {enabled: false, every_steps: 1}
+  shape: [1, 32, 32]
+  num_samples: 16
+  batch_size: 16
+  seed: 123
   writers:
     - {name: tensor, params: {}}
     - {name: image, params: {grid_nrow: 4}}
@@ -256,8 +263,8 @@ schema，不导入第三方代码。runner 随后发现并预检所选
 `stochaflow.extensions` entry points，在任何插件导入前处理 checkpoint provenance 和
 version policy，再激活插件、执行跨组件校验并构建组件。训练、resume 和
 checkpoint-backed inference 因而使用同一套显式插件选择与审计结果。这里的
-`prediction_type` 来自 TrainingBuilder 固化到 v11 checkpoint 的 recipe contract，
-不会在 sampling request 中重复声明。
+`prediction_type` 来自 TrainingBuilder 固化到 v12 checkpoint 的 recipe contract，
+不会在 sample config 中重复声明。
 
 (gaussian-variance-p2-respaced-ddpm)=
 ## Gaussian variance、P2 与 respaced DDPM
@@ -358,10 +365,11 @@ training:
 weighting policy registry、通用 Composer 或按 policy 名称分派的标准 Gaussian
 Builder。任何开发期 `loss_weighting` 配置都不受支持，也没有 alias 或自动迁移。
 
-ancestral 250-step sampling 通过 DDPM 配置表达：
+在一份完整 `sample:` profile 中，ancestral 250-step sampling 的 Sampler 片段写作如下；
+shape、数量、batch、seed、options 和 writers 仍须按完整 invocation contract 声明：
 
 ```yaml
-sampling:
+sample:
   sampler:
     name: ddpm
     params: {num_inference_steps: 250}
@@ -375,10 +383,12 @@ generalized `eta` transition，并在 learned-range checkpoint 上明确忽略 v
 class-conditional learned-range CFG 只 guide prediction half。scale 0/1 返回完整
 unconditional/conditional `2C` output；其他 scale 保留 conditional variance half。
 `prediction_type` 与 `variance.mode` 写入 checkpoint inference recipe，独立 sample
-request 不可覆盖。P2 Builder identity、`k/gamma` 与 `variance.mode` 是
+config 不可覆盖。P2 Builder identity、`k/gamma` 与 `variance.mode` 是
 training/resume facts，不应放进 sample profile。
 
 ## 配置层次
+
+完整训练配置使用以下顶层段：
 
 | 顶层段 | 作用 |
 | --- | --- |
@@ -391,11 +401,19 @@ training/resume facts，不应放进 sample profile。
 | `objective` | 可选、可复用的标量训练目标；由 TrainingBuilder 决定是否需要 |
 | `optimizer` / `lr_scheduler` | 原生 PyTorch target、构造参数与调度器推进周期 |
 | `ema` | 模型参数指数移动平均 |
-| `sampling` | 训练后 inference 开关，以及 checkpoint recipe 的可调 request defaults |
 | `diagnostics` | 扩散特有的训练期诊断 |
 | `trainer` | epoch、设备、梯度和提前停止 |
 | `logging` | 日志频率与后端 |
 | `artifacts` | checkpoint 周期 |
+
+完整 sample invocation 使用另一份顶层 `sample` 配置，并可带独立的 `extensions` 插件追加
+声明；它不是训练配置的一部分。
+
+独立 evaluation config 又使用自己的 `version`、`name`、`purpose`、`subject`、`data`、
+`evaluation`、`metrics` 与 `protocol` 顶层 schema；它显式引用 checkpoint 或 complete
+prediction artifact，并由注册的 EvaluationBuilder 解释 live batch 或 offline record。
+完整示例、CLI、prediction manifest、result/manifest 和当前 runtime contract 见
+[独立 checkpoint Evaluation](workflows.md#独立-checkpoint-evaluation)。
 
 ## PyTorch optimizer 与 LR scheduler
 
@@ -440,7 +458,7 @@ bucket
 : `multi_resolution_image` recipe 的命名尺寸；私有 sampler 保证一个 batch 内形状一致。
 
 base bucket
-: 只定义图像 recipe 动态 batch 的像素预算基准；采样输出由 `sampling.shape` 独立声明。
+: 只定义图像 recipe 动态 batch 的像素预算基准；采样输出由 `sample.shape` 独立声明。
 
 Registry
 : 名称到 Stochaflow 组件类/构造器的显式映射。`extensions.plugins` 选择已安装
@@ -465,7 +483,8 @@ examples/built-in/image-generation/configs/
 └── overlays/mnist-observability.yaml
 ```
 
-其中只有 `train/mnist.yaml` 是完整训练配置；两个 `sample/` 文件是 checkpoint-bound
-partial request，overlay 只用于 strict resume 的 diagnostics/logging。仓库不再维护
+其中只有 `train/mnist.yaml` 是完整训练配置；两个 `sample/` 文件是完整、独立的
+checkpoint-bound sample invocation config，overlay 只用于 strict resume 的
+diagnostics/logging。仓库不再维护
 独立的 CIFAR-10、Flowers102 或 multi-source runnable YAML；这是示例收敛，不是对底层
 数据来源或 recipe 能力的否定。

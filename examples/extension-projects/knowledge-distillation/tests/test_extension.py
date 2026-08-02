@@ -456,7 +456,6 @@ def test_sampling_consumes_only_declared_calibrator_state() -> None:
         raw_state_dict=state,
         ema_state_dict=None,
         device=torch.device("cpu"),
-        prefer_ema=False,
     )
     calibrator = LogitCalibrator(num_classes=2)
     with torch.no_grad():
@@ -515,7 +514,6 @@ def test_sampling_revalidates_extension_owned_calibrator_capability() -> None:
         raw_state_dict=model_state,
         ema_state_dict=None,
         device=torch.device("cpu"),
-        prefer_ema=False,
     )
     descriptors = _calibrator_descriptors()
     descriptors["calibrator"]["declaration"] = {
@@ -568,7 +566,6 @@ def test_sampling_requires_checkpoint_input_width_contract() -> None:
         raw_state_dict=state,
         ema_state_dict=None,
         device=torch.device("cpu"),
-        prefer_ema=False,
     )
     builder = StudentPredictionBuilder(
         SamplingBuilderContext(

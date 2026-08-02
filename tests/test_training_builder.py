@@ -727,7 +727,6 @@ def test_distillation_builder_drives_runtime_and_checkpoint(tmp_path: Path) -> N
     raw["diagnostics"] = []
     raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False
-    raw["sampling"]["run_after_training"] = False
     components = build_training_components(load_config_dict(raw))
 
     strategy = components.plan.strategy
@@ -804,7 +803,6 @@ def test_custom_builder_trains_without_process_or_objective(tmp_path: Path) -> N
     raw["diagnostics"] = []
     raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False
-    raw["sampling"]["run_after_training"] = False
 
     components = build_training_components(load_config_dict(raw))
     loss = components.trainer.train_batch(torch.tensor([[1.0], [2.0]]))
@@ -831,7 +829,6 @@ def test_standard_factory_projects_inference_assets_into_checkpoint(
     raw["diagnostics"] = []
     raw["lr_scheduler"] = None
     raw["ema"]["enabled"] = False
-    raw["sampling"]["run_after_training"] = False
 
     components = build_training_components(load_config_dict(raw))
     state = components.checkpoint_manager.build_state()

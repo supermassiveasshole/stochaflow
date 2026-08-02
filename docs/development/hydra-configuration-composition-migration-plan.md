@@ -1,14 +1,15 @@
 # Hydra 配置组合与 Train/Sample 边界迁移计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：分段排期，尚未进入实现；A0 ADM topology correctness 后执行 P0
-  C0/C1，H0–H3 为 latent vertical slice 后的 P2，H4 为 Later
+- 状态：分段实施；C0/C1 已于 2026-08-01 关闭，C2 尚未完成；H0–H3 为 latent
+  vertical slice 后的 P2，H4 为 Later
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)；本文拥有配置
   contract，统一排期拥有跨计划执行顺序
 - 制定日期：2026-07-29
 - 调研基线：Hydra 1.3.4 stable
-- 兼容性：breaking；不兼容旧训练 YAML、旧 sample request 或旧 checkpoint
+- 兼容性：breaking；当前 checkpoint v12 不兼容旧训练 YAML、旧 sample request 或
+  v11 及更早 checkpoint
 - 首轮维护案例：MNIST 与 AFHQ-v2
 - 退出首轮维护：CIFAR-10、Flowers102、MNIST + Flowers102，以及 Physics
   Reconstruction、Knowledge Distillation 两个 extension reference project
@@ -17,21 +18,24 @@
   AFHQ frozen evaluation、capacity trial policy、adaptive HPO
 - 关联决策：
   [Sampling Request Config Refactor](sampling-request-config-refactor.md)、
-  [正式 Gaussian loss 架构](../framework.md)、
+  [正式架构说明](../../ARCHITECTURE.md)、
   [Extension 导入边界与激活延迟优化计划](extension-import-boundary-and-activation-latency-plan.md)、
   [自动化模型调优开发计划](automated-model-tuning-plan.md)
 
-实施快照（2026-07-29）：
+实施快照（2026-08-01）：
 
 - C2 的 built-in 子集已提前收束为 `configs/train/mnist.yaml`、
   `configs/sample/mnist-{ddpm,ddim-50}.yaml` 和
   `configs/overlays/mnist-observability.yaml`；CIFAR-10、Flowers102 与 multi-source
   不再作为 maintained runnable built-in examples。
-- Gaussian diagnostics 已改为从自己的 `params.sampling.shape` 取得训练期采样形状，
-  不再借用顶层 `sampling.shape`。
-- 这不代表 C1 已完成：当前 sample profile 仍使用 checkpoint-v10 的
-  `sampling:` partial-request envelope，`StochaflowConfig.sampling`、自动 final
-  sample 和 checkpoint defaults 仍等待 C1 一次性删除。
+- C0/C1 已关闭：Gaussian diagnostics 从自己的 `params.sampling.shape` 取得训练期采样
+  形状；`StochaflowConfig` 不含 `sampling`，`EMAConfig` 不含
+  `use_for_sampling`；独立 `SampleInvocationConfig` 使用完整 `sample:` envelope。
+- `sample` 同时要求 checkpoint 与 config；checkpoint state/fixed recipe 和 sample config
+  并列持有、不 merge；seed 不回退到 training，device 默认为 `auto`，EMA `weights=auto`
+  只看 EMA state availability。
+- auto final sample、`--skip-final-sample` 和旧 partial-request merge 已删除；checkpoint
+  format 已 bump 至 v12 并拒绝 v11；训练与 sampling manifest 分别投影各自 authority。
 - C2 的 AFHQ 目录迁移以及 Physics/KD active-tree 退出仍未完成。
 
 ## 1. 本轮结论
@@ -41,15 +45,15 @@
 
 排期拆成三段：
 
-1. C0/C1 作为 pretrained AE/latent diffusion 前的短 P0，只修正 plain
-   Train/Sample authority 并一次性 bump checkpoint；
+1. C0/C1 已作为 pretrained AE/latent diffusion 前的短 P0 关闭，修正 plain
+   Train/Sample authority 并一次性 bump checkpoint 至 v12；
 2. C2 是 retained-example cleanup，可在 latent Phase 1–3 旁路进行，但必须在 H2
    parity 前完成；
 3. H0–H3 在 AFHQ latent vertical slice 后、The Met/Stable Diffusion 配置扩张前
    完成；H4 不进入当前主线。
 
-因此“先做 C0/C1”不等于“latent 必须等待完整 Hydra 迁移”。这个拆分避免 inference
-asset 和 sample/decode 先适配 checkpoint v10，随后又被 C1 重写。
+因此 C0/C1 的关闭不等于完整 Hydra 迁移已完成。这个拆分避免 inference asset 和
+sample/decode 继续适配旧 checkpoint authority 后再被重写。
 
 目标用户模型固定为两个独立 workflow：
 
@@ -99,11 +103,14 @@ checkpoint + sample config
 13. **保留简洁的 role-scoped `name`，但不掩盖其 grammar。** 首轮不改成
     `provider: torch`、`class_name` 或 `target`；配置参考、错误信息和 `--check` 必须按
     role 明确显示该字段接受 Registry identity 还是两个受限 native identifier。
-14. **P2 research variation 不扩张 production authoring tree。** corrected ADM
-    topology 是唯一 ADM production recipe 的组成；standard/P2 A/B 由 benchmark
-    protocol 在同一 readable base config 上选择具体 P2 TrainingBuilder，并产生 frozen
-    resolved configs，不永久增加 `train-adm-baseline.yaml`/`train-adm-p2.yaml`，也不把
-    训练变化伪装成 sample profile。
+14. **P2 research variation 只增加有明确产品 gate 的 production recipe。** corrected ADM
+    topology 由 v-prediction baseline 与显式 maintained `train-adm-128-p2.yaml` 共用；后者
+    只服务 A3 单臂 absolute-quality closeout，不建立任意 weighting authoring tree。若未来
+    需要 standard/P2 superiority claim，应从同一 P2 production profile 只把 `gamma` 改为
+    0 并冻结 matched resolved config，而不是复用 v-prediction baseline 或把训练变化伪装成
+    sample profile。`smoke/train-adm-128-p2.yaml` 与
+    `profiling/train-adm-128-p2.yaml` 仅是 bounded wiring/full-topology readiness lanes，
+    不属于 production authoring tree，也不携带 production budget/capacity/quality 声明。
 
 推荐的最终边界是：
 
@@ -141,9 +148,11 @@ Hydra 不替代：
 
 ## 2. 为什么必须先拆 Train 与 Sample
 
-### 2.1 仓库中的实际重复
+本节记录 C0/C1 实施前的基线与问题证据；不是当前 runtime 行为。
 
-当前 built-in image-generation example 有三组 DDPM/DDIM 训练配置：
+### 2.1 C1 前仓库中的实际重复
+
+C1 前的 built-in image-generation example 有三组 DDPM/DDIM 训练配置：
 
 | Dataset | 两份 train 的真实差异 |
 | --- | --- |
@@ -184,9 +193,9 @@ sample/mnist-ddpm
 sample/mnist-ddim-50
 ```
 
-### 2.2 当前 schema 的隐藏耦合
+### 2.2 C1 前 schema 的隐藏耦合
 
-当前 `StochaflowConfig.sampling` 同时承担四种职责：
+C1 前的 `StochaflowConfig.sampling` 同时承担四种职责：
 
 1. 是否在训练结束后自动采样；
 2. checkpoint 中的 mutable sampling defaults；
@@ -195,7 +204,7 @@ sample/mnist-ddim-50
 
 这四种职责没有共同 lifecycle。
 
-尤其是 `build_training_components()` 当前把 `config.sampling.shape` 注入 diagnostics。
+尤其是 `build_training_components()` 当时把 `config.sampling.shape` 注入 diagnostics。
 `GaussianQualityEngine` 在没有该值时直接失败。因此删除训练 YAML 中的 `sampling`
 不能只做文件重命名；必须先解除这项 runtime coupling。
 
@@ -349,7 +358,7 @@ class StochaflowConfig:
 - `sampling.writers`。
 
 `EMAConfig` 同时删除 `use_for_sampling`。它不是 EMA 的训练生命周期，而是推理权重
-选择策略；当前 `options.weights=auto` 与 `ema.use_for_sampling` 形成了隐式双重
+选择策略；C1 前 `options.weights=auto` 与 `ema.use_for_sampling` 形成了隐式双重
 precedence。训练配置只保留：
 
 ```python
@@ -1165,8 +1174,10 @@ framework wheel 只提供一个最小 controller bootstrap：
 
 ### 10.1 抽出 programmatic invocation
 
-当前 runner 将 argparse、authority resolution、preflight、run creation 和 execution
-混在一起。先抽出：
+当前 runner 已由 E0 返回 immutable `TrainingRunOutcome`，包含完整 final/phase-test
+metric mappings、checkpoint selection 与 completed outcome manifest；失败不发布 outcome。
+但 argparse、authority resolution、preflight、run creation 和 execution 仍混在一起，
+library-first request seam 尚未抽出。H1 仍需实现：
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -1180,7 +1191,7 @@ class TrainingInvocation:
 
 def run_training_invocation(
     invocation: TrainingInvocation,
-) -> TrainingResult:
+) -> TrainingRunOutcome:
     ...
 ```
 
@@ -1280,8 +1291,8 @@ configuration_composition:
 
 ### 10.5 Sample runtime 不再合并 TrainingConfig
 
-当前 `resolve_sampling_inputs()` 通过复制 checkpoint `StochaflowConfig`、替换其中
-`sampling`，生成一个混合对象。目标实现改为并列持有两种 authority：
+C1 前的 `resolve_sampling_inputs()` 通过复制 checkpoint `StochaflowConfig`、替换其中
+`sampling`，生成一个混合对象。C1 已改为并列持有两种 authority：
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -1304,7 +1315,7 @@ runtime 使用 `checkpoint_config` 重建 model 与 Process，使用 `sample_con
 
 ## 11. 迁移阶段
 
-### Phase C0：冻结当前行为与确认删除范围
+### Phase C0：冻结当前行为与确认删除范围（Done，2026-08-01）
 
 目标：建立 breaking migration 前的事实基线。
 
@@ -1323,7 +1334,10 @@ runtime 使用 `checkpoint_config` 重建 model 与 Process，使用 `sample_con
 - retained examples 的真实差异有 typed structural diff；
 - 删除范围不触及无关 core contracts。
 
-### Phase C1：拆分 TrainingConfig 与 SampleConfig
+完成记录：baseline、删除清单与 retained profile 的 resolved invocation 值已由 C1
+迁移测试覆盖；不再为旧 schema 维护 dual-authority golden。
+
+### Phase C1：拆分 TrainingConfig 与 SampleConfig（Done，2026-08-01）
 
 目标：在不引入 Hydra 前先得到正确的 plain-YAML boundary。
 
@@ -1349,6 +1363,10 @@ runtime 使用 `checkpoint_config` 重建 model 与 Process，使用 `sample_con
 - diagnostic sample 仍可运行；
 - sample compatibility 仍由 checkpoint recipe fail closed；
 - strict resume 不受 sample config 影响。
+
+完成记录：上述条件已闭合；runtime 使用 checkpoint v12，配置参考生成器同时覆盖
+`StochaflowConfig` 与 `SampleInvocationConfig`，训练与 sampling manifest 使用各自摘要
+投影。C2/H0–H4 的未完成状态不影响本 phase 关闭。
 
 ### Phase C2：收敛 examples
 
@@ -1399,6 +1417,9 @@ codec 或 AFHQ latent correctness 的功能前置；它可以在 Latent Phase 1�
 ### Phase H1：Fresh single-run launcher
 
 目标：提供只支持 fresh training 的 native frontend。
+
+E0 outcome foundation 是本 phase 可复用的已完成前置，不表示 `TrainingInvocation`、Hydra
+frontend 或 H1 的其他完成条件已经关闭。
 
 修改：
 
@@ -1538,6 +1559,8 @@ Adaptive HPO 仍由独立计划负责。
 
 ### 12.3 Runner
 
+- plain runner 返回 immutable `TrainingRunOutcome`，成功 manifest 发布 completed
+  outcome；training/reporter/logger 失败时不发布 outcome；
 - train 成功后不自动调用 sampling；
 - 不再存在 skip-final-sample option；
 - training selected-component manifest 不记录 sampler/writers，只记录 inference recipe；

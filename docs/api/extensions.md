@@ -1,15 +1,21 @@
 # Extension 公共 API
 
-第三方 extension 应只依赖：
+第三方 extension 的训练、采样、数据与 Registry 契约应依赖：
 
 ```python
 from stochaflow.extensions import ...
 ```
 
+独立 EvaluationBuilder 及其 plan/step contracts 从专用公共模块导入：
+
+```python
+from stochaflow.evaluation import ...
+```
+
 不要从 `stochaflow.data`、`stochaflow.training`、`stochaflow.processes`、
 `stochaflow.sampling` 或 `stochaflow.utils` 的内部模块路径导入契约。内部文件可以在尚未
-发布的重构中移动；`stochaflow.extensions.__all__` 是 extension 作者的公共入口和本页的
-唯一符号清单。
+发布的重构中移动；`stochaflow.extensions.__all__` 与 `stochaflow.evaluation.__all__`
+是 extension 作者应使用的公共入口。
 
 ## 配置与 Registry
 
@@ -189,6 +195,8 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 | `ErrorOnNanMeanMetric` | 内置 `mean` 注册项的具体实现 |
 | `SingleOutputMeanSquaredError` | 内置单输出 `mse` 注册项的具体实现 |
 | `SingleOutputMeanAbsoluteError` | 内置单输出 `mae` 注册项的具体实现 |
+| `FrechetInceptionDistanceMetric` | 内置 `fid` image-distribution adapter；需要 optional `quality` dependencies |
+| `KernelInceptionDistanceMetric` | 内置 `kid` image-distribution adapter；返回稳定 `mean`/`std` mapping，需要 optional `quality` dependencies |
 
 Strategy 使用 `stochaflow.extensions.MetricChannelProvider` 声明 channel，并可从
 `stochaflow.extensions` 导入 `MetricUpdate`。构造校验、payload detach 和训练 phase
@@ -209,6 +217,8 @@ binding 是框架内部协作，不是 extension facade 的公共 helper API。
 | `mean` | scalar mean；固定 `nan_strategy="error"` |
 | `mse` | scalar mean squared error；固定 `squared=True`、`num_outputs=1` |
 | `mae` | scalar mean absolute error；固定 `num_outputs=1` |
+| `fid` | TorchMetrics-backed FID；输入必须是 finite floating RGB NCHW `[0, 1]` images |
+| `kid` | TorchMetrics-backed KID；输入必须是 finite floating RGB NCHW `[0, 1]` images |
 
 `mse` 和 `mae` 不提供 vector-valued `num_outputs>1` 模式。需要分类、按类别、结构化
 mapping 或其他任务 metric 时，extension 应注册一个明确的 `Metric` 实现，并通过
@@ -247,6 +257,66 @@ best checkpoint 与 early stopping 只接受 `valid/loss` 或
 Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trainer 尚未实现；不要把
 一个 extension metric 的 reduction 声明解读为 distributed training 支持。
 
+## Evaluation
+
+`stochaflow.evaluation` 当前公共 runtime 与 maintained AFHQ pixel-image profile 使用的
+组合契约包括：
+
+| 符号 | 用途 |
+| --- | --- |
+| `EvaluationBuilder` | 独立 task evaluation 的唯一注册组合入口 |
+| `EvaluationBuilderContext` | 只读 params、resolved subject、selected data/data identity、可选 pinned inference model/sampling capability、artifact staging root、MetricSpecs 与 protocol |
+| `EvaluationPlan` | Evaluator、data、metric declarations、protocol、subject/data identity、可选 artifact sink 与 core-managed modules |
+| `Evaluator` | structural batch evaluation contract；声明 `metric_channels` 并返回 `EvaluationStepOutput` |
+| `EvaluationStepOutput` | 显式 example count、稳定 sample IDs、metric update groups、不透明 records 与 measurements |
+| `EvaluationProtocol` | protocol id、positive expected count 与 strict completeness policy |
+| `EvaluationSamplingRequest` | task profile 拥有的 writer-free sampling options/sampler/shape/count/batch/seed 与可选 frozen recipe contract |
+| `EvaluationSamplingCapability` | 已绑定 checkpoint assets 与 pinned raw/EMA model 的窄 `execute()` protocol；offline subject 不提供 |
+| `CheckpointEvaluationSamplingCapability` | 通过 shared SamplingBuilder execution seam 实现上述 protocol 的 core checkpoint adapter |
+| `EvaluationArtifactSink` | 流式消费已经评估的 step output，finalize 为 complete `PredictionArtifactDraft`，失败时 abort |
+| `JsonlPredictionArtifactSink` | 内置 canonical JSONL sink；按 exact `PredictionSampleIdentity` 校验 typed `PredictionRecord` |
+| `PredictionArtifactSubjectConfig` | `subject.kind: prediction_artifact` 的 strict offline authority |
+| `PredictionArtifactSubjectInputs` / `ResolvedPredictionArtifactSubject` | 已认证 manifest、shards、sample plan、records 与 producer lineage 的只读 view |
+| `EvaluationResult` | 可移植、immutable subject/data/metrics/measurements/completeness/provenance facts |
+| `EvaluationRunOutcome` | 本地 immutable paths 和 scalar views |
+
+Builder 通过 `REGISTRIES.evaluation_builders.register(name)` 注册。它必须保留 context 注入
+的 subject、data、data identity、MetricSpecs 与 protocol。checkpoint 路径会在 extension
+激活后才构造 model，把配置中的 `raw` 或 `ema` 解析为 concrete variant，并要求 Builder
+把该 model 列入 `EvaluationPlan.modules`。同一路径还提供绑定这一个 model/variant 的
+`EvaluationSamplingCapability`：它从 checkpoint 恢复 Process 与 inference assets，使用
+`PinnedInferenceModelProvider` 并调用 shared SamplingBuilder execution seam，返回 validated
+in-memory batches 而不运行 writers。Builder 不接收可再次选择权重的 provider。
+
+`prediction_artifact` 路径不构造 model 或 DataBuilder；context 的 `inference` 与
+`sampling` 都为 `None`，data 是按 manifest sample plan 排序的 `PredictionRecord`，Builder
+的 modules 可以为空。两条路径都不构造 TrainingPlan、optimizer、scheduler 或 checkpoint
+loader。
+
+Evaluator 拥有 batch/model/channel 语义，core 只传递 opaque batch、执行
+`torch.inference_mode()`、检查 count/全局唯一 sample IDs、推进 task-neutral
+MetricEngine、聚合 measurements 和发布 immutable result。若 checkpoint Builder 在
+`EvaluationPlan.artifact_sink` 声明 sink，runtime 会将每个 step output 同步送入 sink；
+finalize 后的 draft 必须与实际 ordered sample IDs 完全一致，才会在 result 下发布
+`predictions/`。`JsonlPredictionArtifactSink` 要求 `EvaluationStepOutput.records` 是与
+`sample_ids` 同序的 typed `PredictionRecord`，并从 `context.artifact_root` 创建 unpublished
+shard。异常路径调用 `abort()` 并删除未发布 staging。
+
+offline runtime 会认证 manifest/artifact/shard digest、strict schema、portable path、exact
+sample identity/completeness、split 与 deterministic gallery selection，再按 sample plan
+join records；它不会依赖 shard 文件名或枚举顺序，也不会修改 producer artifact。新 result
+保留 producer、原 source subject、resolved weights、data、inference profile、training
+config 与 extension provenance。core `fid`/`kid` adapters 与 maintained AFHQ-v2
+source-checkout full-official-test Builder/Metric/profile 已闭合 pixel-image vertical slice；它固定完整
+493/491/483 class allocation，支持 live predictions 与 offline replay。SR、其他
+consistency、latent/codec 与 distillation 不属于这个 milestone 的待补 profile；未来任务
+必须同步交付自己的 monitoring/checkpoint inference/Evaluation。reference cache、
+performance/curve 和 comparison/gate 是可选增强。
+
+完整注册示例与 strict YAML 见
+[自定义 EvaluationBuilder](../configuration/extensions.md#自定义-evaluationbuilder)和
+[独立 checkpoint Evaluation](../configuration/workflows.md#独立-checkpoint-evaluation)。
+
 ## Training
 
 | 符号 | 用途 |
@@ -255,7 +325,7 @@ Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trai
 | `TrainingBuilderContext` | primary model、可选 Process/Objective、私有 `params` 与受控 model/objective factory |
 | `TrainingPlan` | Strategy、primary model、可选 Process/Objective、具名 auxiliary modules、inference asset projections 和可选 fixed inference recipe |
 | `InferenceAssetProjection` | 将一个 managed auxiliary module 投影为 checkpoint-owned inference asset |
-| `SamplingRecipe` | checkpoint 内部 SamplingBuilder identity 与不可由 sample request 覆盖的 JSON-safe contract |
+| `SamplingRecipe` | checkpoint 内部 SamplingBuilder identity 与不可由独立 sample config 覆盖的 JSON-safe contract |
 | `ManagedTrainingModule` | 辅助 `nn.Module` 及其 core-managed mode policy |
 | `TrainingStrategy` | 只定义 batch interpretation、forward、loss 与 metric 计算 |
 | `DenoiserChannelLayout` | model 可选暴露的静态 `in_channels`/`out_channels` capability；Gaussian Builder 据此在组合时预检 fixed `C` 或 learned-range `2C` 输出 |
@@ -547,7 +617,7 @@ reduction。
 | `SamplingObservation` | initial/accepted/final sampling lifecycle observation |
 | `SamplingObserver` | observation consumer protocol |
 | `TrajectoryObserver` | 按间隔保留 initial、accepted 与 final observations |
-| `SamplingBuilder` | checkpoint recipe 内部的任务级 inference 组合与执行入口；sample request 不直接选择 |
+| `SamplingBuilder` | checkpoint recipe 内部的任务级 inference 组合与执行入口；sample config 不直接选择 |
 | `SamplingBuilderContext` | resolved recipe params、可选 Process、model/asset providers、device、seed、shape/count/batch size |
 | `InferenceModelProvider` | 在 Builder 中选择 raw/EMA inference model 的受控入口 |
 | `InferenceAssetProvider` | 按 checkpoint slot 和 role 延迟重建声明的 embedded `nn.Module` |
@@ -612,10 +682,10 @@ class SamplingArtifactWriter(ABC):
     ) -> Mapping[str, Path]: ...
 ```
 
-`SamplingBuilderContext.params` 由 runtime 组合：checkpoint `sampling.options` 的
-resolved shallow merge、可选顶层 `sampling.sampler`，以及最后加入且不可覆盖的
-`SamplingRecipe.contract`。`options` 不得包含保留 key `sampler`；与 contract 冲突会在
-Builder 构造前失败。Context 还提供可选 Process、InferenceModelProvider、
+`SamplingBuilderContext.params` 由 runtime 组合：独立完整 config 的 `sample.options`、
+可选 `sample.sampler`，以及最后加入且不可覆盖的 `SamplingRecipe.contract`。sample
+config 不从 training config 或 checkpoint 继承 invocation 字段；与 fixed contract 冲突
+会在 Builder 构造前失败。Context 还提供可选 Process、InferenceModelProvider、
 InferenceAssetProvider、device、seed、可选单 item shape、num_samples 和 batch_size。
 asset provider 复用 model Registry，只在 `get()` 请求某个 slot 后构造和 strict-load
 该 module；未请求的合法资产不会被构造。它先校验 slot 与 role，Builder 再校验
@@ -626,10 +696,19 @@ Builder 的 batches 不能为空，metadata key
 必须是字符串且整个 mapping 可 JSON 序列化。trajectory 的 step index 必须严格递增。
 Writer 返回值必须非空，跨 writer artifact key 必须唯一，所有路径在返回时必须存在。
 
-`stochaflow sample` 始终要求显式 v11 checkpoint。可选 request YAML 顶层只允许
-`sampling` 与 optional `extensions`，不能声明 `run_after_training` 或 Builder。
-未提供的 request 字段继承 checkpoint；`options` 浅合并，`sampler`/`writers` 原子替换，
-插件 selection 只允许 additive 扩展。
+`stochaflow sample` 始终要求显式 v12 checkpoint 和显式 `--config`。YAML 顶层必须包含
+完整 `sample` mapping，并可选包含 `extensions`；`sample` 必须声明 `sampler`（direct
+transform 可为 null）、`options`、`shape`、`num_samples`、`batch_size`、整数 `seed` 和
+非空 `writers`，其中 `options.weights` 必须显式为 `raw`、`ema` 或 `auto`。`auto` 在
+checkpoint 含 EMA state 时选择 EMA，否则选择 raw；training config 不再拥有
+sampling weight-selection policy。checkpoint 只提供 model/Process、fixed inference
+recipe、embedded assets 与 required plugin provenance。`extensions.plugins` 只能添加
+本次 inference 所需插件，不能删除 checkpoint-required plugins 或替换 recipe。
+
+```bash
+stochaflow sample --checkpoint outputs/run/checkpoints/best.pt \
+  --config experiments/sample.yaml
+```
 
 ## Plugin discovery、provenance 与 activation
 

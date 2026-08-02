@@ -15,10 +15,10 @@ VectorPath Process
 probability path 或 numerical solver 时不需要虚构 Process、Dynamics 或 Sampler。
 
 本页聚焦 sampling-side family contract，不重复 DataBuilder、model 和 TrainingBuilder。
-开始前需要一个由项目训练侧生成的 checkpoint：其 primary model 对 vector-field 路径实现
-`model(state, time) -> Tensor`，所用完整 config 分别声明匹配的 `VectorPath` 或
-`process: null`，并已选择本教程的 `generation-demo` 插件。训练资产如何组成 checkpoint
-见[扩展手册](../configuration/extensions.md)；
+开始前需要一个由项目训练侧生成的 v12 checkpoint：其 primary model 对
+vector-field 路径实现 `model(state, time) -> Tensor`，所用完整 config 分别声明匹配的
+`VectorPath` 或 `process: null`，并已选择本教程的 `generation-demo` 插件。训练资产如何
+组成 checkpoint 见[扩展手册](../configuration/extensions.md)；
 可直接执行 train → resume → sample 的完整包见
 [纵向扩展参考项目](../configuration/reference-projects.md)。本教程中的 CLI 从该前置
 checkpoint 开始，不把采样侧代码误称为完整训练项目。
@@ -237,7 +237,7 @@ class VectorFlowBuilder(SamplingBuilder):
             raise TypeError("vector-flow builder requires VectorPath")
         shape = self.context.shape
         if shape is None:
-            raise ValueError("vector-flow builder requires sampling.shape")
+            raise ValueError("vector-flow builder requires sample.shape")
         weights = params.get("weights", "raw")
         if weights not in {"auto", "raw", "ema"}:
             raise ValueError("weights must be auto, raw, or ema")
@@ -397,11 +397,11 @@ process:
 inference_recipe=SamplingRecipe(name="generation-demo.vector-flow")
 ```
 
-训练完成后，可用下面的 partial sample request 更换 solver 参数。Process、recipe 和
-插件 selection 仍来自 checkpoint：
+训练完成后，可用下面的完整独立 sample config 选择 solver 参数。Process、recipe 和
+必要插件 provenance 来自 checkpoint；本次 invocation 的可变字段全部由 config 声明：
 
 ```yaml
-sampling:
+sample:
   shape: [4]
   num_samples: 16
   batch_size: 8
@@ -445,10 +445,12 @@ process: null
 inference_recipe=SamplingRecipe(name="generation-demo.direct")
 ```
 
-partial sample request 继续复用 checkpoint 中的 recipe 和插件 selection：
+direct transform 同样使用完整独立 sample config；checkpoint 继续提供 fixed recipe 和
+必要插件 provenance：
 
 ```yaml
-sampling:
+sample:
+  sampler: null
   shape: null
   num_samples: 12
   batch_size: 4
@@ -470,7 +472,8 @@ stochaflow sample \
 ```
 
 该路径仍使用 checkpoint model provider、统一 `SamplingOutput`、writers 和 resolved
-sampling manifest，但完全不创建 Process、Dynamics 或 Sampler。`process: null` 也会
+sampling manifest，但完全不创建 Process、Dynamics 或 Sampler。sample config 中仍须以
+`sampler: null` 明确没有 numerical sampler。`process: null` 也会
 保留在 resolved config；checkpoint 不包含 `process_state_dict`。
 
 这两条路径共同说明边界：`Process + Dynamics + Sampler` 是组织有数值生成过程的 family

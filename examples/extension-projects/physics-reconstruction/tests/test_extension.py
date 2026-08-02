@@ -602,7 +602,10 @@ def test_writer_publishes_memmap_and_cleans_partial_commit(
     second = torch.full((1, 3, 8, 8), -3.0, dtype=torch.float64)
     context = SamplingArtifactContext(
         tmp_path,
-        (SamplingBatch(first), SamplingBatch(second)),
+        (
+            SamplingBatch(first, num_samples=2),
+            SamplingBatch(second, num_samples=1),
+        ),
         {"metrics": {"num_samples": 3}},
     )
     writer = ReconstructionArtifactWriter()

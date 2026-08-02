@@ -108,7 +108,7 @@ def resolve_sampling_recipe_params(
         )
     if "sampler" in option_values:
         raise ValueError(
-            "sampling options cannot contain sampler; use sampling.sampler"
+            "sample.options cannot contain sampler; use sample.sampler"
         )
     if sampler is not None:
         if "sampler" in validated.contract:

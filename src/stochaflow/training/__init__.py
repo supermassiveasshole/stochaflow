@@ -41,6 +41,7 @@ from .objectives import (
     compute_objective,
 )
 from .optimization import WarmupCosineLR
+from .outcome import CheckpointSelectionKind, TrainingRunOutcome
 from .precision import (
     PRECISION_KINDS,
     PrecisionKind,
@@ -66,6 +67,7 @@ from .trainer import Trainer
 __all__ = [
     "PRECISION_KINDS",
     "Batch",
+    "CheckpointSelectionKind",
     "ClassConditionalDiffusionQualityDiagnostic",
     "ClassConditionalGaussianDenoisingTrainingBuilder",
     "ClassConditionalGaussianDenoisingTrainingStrategy",
@@ -105,6 +107,7 @@ __all__ = [
     "TrainingBuilderContext",
     "TrainingDiagnostic",
     "TrainingPlan",
+    "TrainingRunOutcome",
     "TrainingStrategy",
     "WarmupCosineLR",
     "build_precision_runtime",

@@ -7,8 +7,8 @@ fields:
   experiment.output_dir: {description: 运行目录根路径；训练会在其下创建时间戳子目录。, cli: "train --output-dir"}
   experiment.exp_id: {description: 运行实例标识；通常由 runner 在创建时间戳目录后写入。}
 
-  extensions: {description: 从当前 Python 环境选择并激活标准 entry-point Registry 扩展。}
-  extensions.plugins: {description: 要加载的 stochaflow.extensions entry-point 名称；null 选择当前环境中的全部插件。, constraints: 非 null 时为无重复的非空名称列表；空列表禁用第三方插件。}
+  extensions: {description: 从当前 Python 环境选择并激活标准 entry-point Registry 扩展；训练配置拥有完整 selection，sample config 只能追加 inference-time 插件。}
+  extensions.plugins: {description: 要加载的 stochaflow.extensions entry-point 名称；训练配置中的 null 选择当前环境全部插件，sample config 则要求显式列表并把它作为 checkpoint-required selection 的 additions。, constraints: 列表元素是无重复的非空名称；空列表不追加 sample 插件。}
 
   data: {description: 由 data_builders Registry 构建的一次训练运行数据入口。}
   data.name: {description: data_builders Registry 名称。}
@@ -44,20 +44,18 @@ fields:
   ema.decay: {description: 历史 EMA 权重的保留系数。, constraints: 大于等于零且小于一。}
   ema.update_after_step: {description: 在全局 step 达到该值后才开始更新 EMA。, constraints: 非负整数。}
   ema.update_every: {description: 每隔多少个 optimizer step 更新一次 EMA。, constraints: 正整数。}
-  ema.use_for_sampling: {description: 采样和诊断 artifact 是否优先使用 EMA 权重。}
-  sampling: {description: checkpoint-bound inference 的可覆盖请求默认值，以及训练后是否自动运行该 recipe。}
-  sampling.run_after_training: {description: 训练完成后是否用已选择 checkpoint 运行其固化 inference recipe；有 validation 时选择 best，无 validation 时选择 final latest checkpoint。, interactions: train --skip-final-sample 可仅对本次调用禁止执行；sample request 不允许声明该字段。}
-  sampling.sampler: {description: 交给 checkpoint inference recipe 的可替换数值 Sampler 声明；null 仅适用于不需要 Sampler 或由固定 contract 决定求解器的 recipe。, interactions: sample request 显式提供时原子替换 checkpoint 默认值；不能覆盖 recipe fixed contract 中的 sampler。}
-  sampling.sampler.name: {description: samplers Registry 名称。}
-  sampling.sampler.params: {description: 原样交给所选 Sampler 的构造参数 mapping。}
-  sampling.options: {description: checkpoint inference recipe 拥有的任务级可调参数，例如 weights、condition、guidance、trajectory 或输入 locator。, interactions: sample request 只做一层 key merge；不得含 sampler，也不得覆盖 checkpoint fixed contract 字段。}
-  sampling.shape: {description: 单个 inference state 的可选形状，不含 batch 维；null 允许 recipe 自行决定输入或 state。, constraints: 非 null 时为非空正整数列表。}
-  sampling.num_samples: {description: 一次 checkpoint-backed inference 产生的总 item 数。, constraints: 正整数。}
-  sampling.batch_size: {description: inference 时每批 item 数，与 DataBuilder 独立。, constraints: 正整数。}
-  sampling.seed: {description: inference 专用随机种子；null 使用 checkpoint config 的 experiment.seed。}
-  sampling.writers: {description: 按声明顺序运行的 sampling_artifact_writers 组件。, constraints: 至少一个。, interactions: sample request 显式提供时原子替换 checkpoint 默认列表。}
-  "sampling.writers[].name": {description: sampling_artifact_writers Registry 名称。}
-  "sampling.writers[].params": {description: writer 构造参数；图像网格与 GIF 参数属于 image writer。}
+  sample: {description: 一次 checkpoint-backed inference 的完整独立调用配置；它不会与 checkpoint 中保存的训练配置合并。}
+  sample.sampler: {description: 交给 checkpoint inference recipe 的数值 Sampler 声明；null 只适用于不需要 Sampler 或由 recipe fixed contract 固定求解器的任务。, interactions: 不能覆盖 recipe fixed contract 中固定的 sampler。}
+  sample.sampler.name: {description: samplers Registry 名称。}
+  sample.sampler.params: {description: 原样交给所选 Sampler 的构造参数 mapping。}
+  sample.options: {description: 本次 inference 的完整任务级可调参数，例如 weights、condition、guidance、trajectory 或输入 locator。, interactions: 不与 checkpoint 训练配置做 key merge，也不得覆盖 recipe fixed contract 字段。}
+  sample.shape: {description: 单个 inference state 的形状，不含 batch 维；null 只适用于 recipe 自行决定输入或 state 的任务。, constraints: 非 null 时为非空正整数列表。}
+  sample.num_samples: {description: 本次 checkpoint-backed inference 产生的总 item 数。, constraints: 正整数。}
+  sample.batch_size: {description: 本次 inference 每批 item 数，与 DataBuilder 独立。, constraints: 正整数。}
+  sample.seed: {description: 本次 inference 的显式随机种子；不会回退到训练配置的 experiment.seed。}
+  sample.writers: {description: 本次调用按声明顺序运行的 sampling_artifact_writers 组件。, constraints: 至少一个。}
+  "sample.writers[].name": {description: sampling_artifact_writers Registry 名称。}
+  "sample.writers[].params": {description: writer 构造参数；图像网格与 GIF 参数属于 image writer。}
   diagnostics: {description: 训练期间按声明顺序实例化的 diagnostics Registry 组件列表。}
   "diagnostics[].name": {description: diagnostics Registry 名称。}
   "diagnostics[].params": {description: diagnostic 构造参数；logger 与 output_dir 由运行时注入；需要采样的 diagnostic 必须在自己的参数中声明 shape。}
@@ -275,7 +273,7 @@ registries:
   sampling_artifact_writers:
     description: 将生成 batch 写成模态相关 artifact，并返回已存在的文件路径。
     base: stochaflow.sampling.SamplingArtifactWriter
-    config_path: sampling.writers[].name / sampling.writers[].params
+    config_path: sample.writers[].name / sample.writers[].params
     entries:
       tensor:
         description: 保存 samples.pt 和可选 trajectory.pt。
@@ -320,7 +318,7 @@ registries:
   samplers:
     description: 在与算法 family 兼容的 Dynamics 和 initial state 上执行完整 solver 生命周期。
     base: stochaflow.sampling.Sampler
-    config_path: sampling.sampler；也可由 checkpoint inference recipe 的 fixed contract 私有决定
+    config_path: sample.sampler；也可由 checkpoint inference recipe 的 fixed contract 私有决定
     entries:
       ddim:
         description: 支持非均匀 state schedule 与 eta 随机性的 DDIM solver；具体类公开 schedule resolver 与 selected-pair transition primitive。
@@ -337,38 +335,38 @@ registries:
           schedule: {description: 可选、严格递减且唯一的显式 public-state schedule；与 num_inference_steps、start_time/end_time 互斥。}
 
   sampling_builders:
-    description: checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingPlan 固化 recipe name 与 contract，sample request 不直接选择 Builder。
+    description: checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingPlan 固化 recipe name 与 contract，独立 sample config 不直接选择 Builder。
     base: stochaflow.sampling.SamplingBuilder
-    config_path: checkpoint.inference_recipe.name；运行参数来自 fixed contract、sampling.options 与 sampling.sampler
+    config_path: checkpoint.inference_recipe.name；运行参数来自 fixed contract、sample.options 与 sample.sampler
     entries:
       class_conditional_denoising:
         description: 为离散 Gaussian denoising 显式分配 class labels，并通过 classifier-free guidance 组合条件与 null prediction；支持 checkpoint 固化的 fixed 或 learned_range variance。
         runtime_parameters: [context]
         inspect: context_parameters
         parameters:
-          weights: {description: "来自 `sampling.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`。"}
-          prediction_type: {description: "训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample request 不可覆盖。"}
-          variance: {description: "训练时固化的 `{mode: fixed|learned_range}`；sample request 不可覆盖。learned_range 要求模型输出 `[prediction(C), variance(C)]`；CFG scale 0/1 返回完整对应分支，其他 scale 只引导 prediction half 并保留 conditional variance half。"}
-          clip_denoised: {description: "来自 `sampling.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。"}
-          guidance_scale: {description: "来自 `sampling.options.guidance_scale`；有限非负 CFG scale。"}
-          conditions: {description: "来自 `sampling.options.conditions` 的必填有序列表；count 总和必须等于 sampling.num_samples。"}
-          sampler.name: {description: "来自顶层 `sampling.sampler.name` 的 Gaussian-family Sampler；若 recipe contract 固定 sampler，则请求不得替换。"}
-          sampler.params: {description: "来自顶层 `sampling.sampler.params` 的构造 mapping。"}
-          trajectory.enabled: {description: "来自 `sampling.options.trajectory.enabled`；是否保留 solver observations，默认 `false`。"}
-          trajectory.every_steps: {description: "来自 `sampling.options.trajectory.every_steps`；accepted-step 保留间隔，默认 `1`。"}
+          weights: {description: "来自 `sample.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`。"}
+          prediction_type: {description: "训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample config 不可覆盖。"}
+          variance: {description: "训练时固化的 `{mode: fixed|learned_range}`；sample config 不可覆盖。learned_range 要求模型输出 `[prediction(C), variance(C)]`；CFG scale 0/1 返回完整对应分支，其他 scale 只引导 prediction half 并保留 conditional variance half。"}
+          clip_denoised: {description: "来自 `sample.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。"}
+          guidance_scale: {description: "来自 `sample.options.guidance_scale`；有限非负 CFG scale。"}
+          conditions: {description: "来自 `sample.options.conditions` 的必填有序列表；count 总和必须等于 sample.num_samples。"}
+          sampler.name: {description: "来自顶层 `sample.sampler.name` 的 Gaussian-family Sampler；若 recipe contract 固定 sampler，则 sample config 不得替换。"}
+          sampler.params: {description: "来自顶层 `sample.sampler.params` 的构造 mapping。"}
+          trajectory.enabled: {description: "来自 `sample.options.trajectory.enabled`；是否保留 solver observations，默认 `false`。"}
+          trajectory.every_steps: {description: "来自 `sample.options.trajectory.every_steps`；accepted-step 保留间隔，默认 `1`。"}
       standard_denoising:
-        description: 固定 Tensor shape 的标准 Gaussian denoising sampling recipe；要求 sampling.shape、离散 Gaussian Process，以及返回 fixed C 或 learned_range 2C Tensor 的 model(state, model_time)。
+        description: 固定 Tensor shape 的标准 Gaussian denoising sampling recipe；要求 sample.shape、离散 Gaussian Process，以及返回 fixed C 或 learned_range 2C Tensor 的 model(state, model_time)。
         runtime_parameters: [context]
         inspect: context_parameters
         parameters:
-          weights: {description: "来自 `sampling.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`；选择 `ema` 时 checkpoint 必须含 EMA state。"}
-          prediction_type: {description: "训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample request 不可覆盖。"}
-          variance: {description: "训练时固化的 `{mode: fixed|learned_range}`；sample request 不可覆盖。DDPM 消费 learned variance，DDIM 只消费 prediction half 并明确忽略 variance half。"}
-          clip_denoised: {description: "来自 `sampling.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。"}
-          sampler.name: {description: "来自顶层 `sampling.sampler.name` 的 Sampler；必须兼容离散 Gaussian Dynamics。"}
-          sampler.params: {description: "来自顶层 `sampling.sampler.params` 的构造 mapping。"}
-          trajectory.enabled: {description: "来自 `sampling.options.trajectory.enabled`；是否保留 trajectory observations，默认 `false`。"}
-          trajectory.every_steps: {description: "来自 `sampling.options.trajectory.every_steps`；accepted-step 保留间隔，默认 `1`；initial/final 始终保留。"}
+          weights: {description: "来自 `sample.options.weights` 的模型权重选择；默认 `auto`，支持 `auto`、`raw`、`ema`；选择 `ema` 时 checkpoint 必须含 EMA state。"}
+          prediction_type: {description: "训练时固化在 checkpoint recipe contract 中的模型输出参数化；sample config 不可覆盖。"}
+          variance: {description: "训练时固化的 `{mode: fixed|learned_range}`；sample config 不可覆盖。DDPM 消费 learned variance，DDIM 只消费 prediction half 并明确忽略 variance half。"}
+          clip_denoised: {description: "来自 `sample.options.clip_denoised`；是否把预测 clean state 裁剪到 `[-1, 1]`，默认 `true`。"}
+          sampler.name: {description: "来自顶层 `sample.sampler.name` 的 Sampler；必须兼容离散 Gaussian Dynamics。"}
+          sampler.params: {description: "来自顶层 `sample.sampler.params` 的构造 mapping。"}
+          trajectory.enabled: {description: "来自 `sample.options.trajectory.enabled`；是否保留 trajectory observations，默认 `false`。"}
+          trajectory.every_steps: {description: "来自 `sample.options.trajectory.every_steps`；accepted-step 保留间隔，默认 `1`；initial/final 始终保留。"}
 
   training_builders:
     description: 组装 primary model、可选 Process/Objective、TrainingStrategy 和辅助训练资产。
@@ -442,6 +440,21 @@ registries:
         description: 对 prediction-target update 聚合 mean absolute error。
         parameters:
           num_outputs: {description: 同时聚合的输出数量；默认 1。}
+      fid:
+        description: 对归一化 RGB real/fake image update 计算 Frechet Inception Distance；仅在构造时加载 optional quality 依赖与 Inception 权重。
+        parameters:
+          feature: {description: Inception 特征维度；支持 64、192、768 或 2048。}
+          antialias: {description: 调整输入到 Inception 尺寸时是否使用抗锯齿。}
+      kid:
+        description: 对归一化 RGB real/fake image update 计算 Kernel Inception Distance 的 mean/std；仅在构造时加载 optional quality 依赖与 Inception 权重。
+        parameters:
+          feature: {description: Inception 特征维度；支持 64、192、768 或 2048。}
+          subsets: {description: 用于估计 KID 分布的随机子集数量；必须为正整数。}
+          subset_size: {description: 每个 KID 子集的样本数；必须至少为 2。}
+          degree: {description: 多项式核次数；必须为正整数。}
+          gamma: {description: 可选的正多项式核缩放系数；null 使用 provider 默认值。}
+          coef: {description: 正多项式核常数项。}
+          seed: {description: KID 随机子集抽样的固定非负种子；compute 会隔离并恢复调用方 RNG 状态。}
 
   optimizers:
     description: 构建第三方 PyTorch Optimizer 扩展；标准 torch.optim 类通过受限原生 provider 解析，不复制为 Registry entry。
@@ -536,11 +549,14 @@ cli:
   "train.--artifact-verification-workers": {description: 覆盖所有 source.materialization.verification_workers；必须为 `1..8` 范围内的整数，仅影响本次 artifact 哈希并行度。}
   "train.--resume": {description: 从显式 checkpoint 文件或运行目录执行严格完整恢复；使用 checkpoint 保存的配置和训练状态，并与 --config 互斥。}
   "train.--observability-config": {description: 仅在 strict resume 启动时原子替换 diagnostics，并逐字段覆盖显式 logging 字段；顶层只允许 diagnostics 与 logging。}
-  "train.--skip-final-sample": {description: 即使 sampling.run_after_training 为 true，也跳过本次训练完成后的 selected-best checkpoint inference。}
   "train.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}
-  "sample.--config": {description: 可选 partial sample request；顶层只允许 sampling 与 optional extensions，且不能声明 sampling.run_after_training 或 Builder。}
-  "sample.--checkpoint": {description: 必填 checkpoint 文件或运行目录；目录递归选择最近修改的 best.pt。}
-  "sample.--device": {description: 覆盖采样设备。}
+  "sample.--config": {description: 必填的完整 sample invocation config；顶层只允许 sample 与 optional extensions，不读取或合并 checkpoint 训练配置中的 mutable sampling defaults。}
+  "sample.--checkpoint": {description: 必填 checkpoint v12 文件或运行目录；目录递归选择最近修改的 best.pt。}
+  "sample.--device": {description: 覆盖本次采样设备；未提供时由运行时按 auto 选择可用设备。}
   "sample.--output-dir": {description: 覆盖生成 artifact 的目录。}
   "sample.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}
+  "evaluate.--config": {description: 必填的完整 strict evaluation config；其 subject 显式引用 checkpoint，并定义 data、EvaluationBuilder、metrics 与 protocol。}
+  "evaluate.--device": {description: 覆盖本次 evaluation 设备；未提供时由运行时按 auto 选择可用设备。}
+  "evaluate.--output-dir": {description: 覆盖 evaluation result bundle 目录；该目录必须不存在。}
+  "evaluate.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}
   "init.NAME": {description: 新项目目录、distribution 和 extension entry-point 使用的 canonical ASCII slug。}

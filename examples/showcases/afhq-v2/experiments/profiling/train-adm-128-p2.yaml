@@ -1,0 +1,135 @@
+experiment:
+  name: afhq_v2_adm_128_p2_profile
+  seed: 20260726
+  output_dir: outputs/afhq-v2/p2-profile
+
+extensions:
+  plugins: [stochaflow-afhq-v2]
+
+data:
+  name: class_labeled_image
+  params:
+    source:
+      name: afhq-v2.official
+      materialization:
+        cache_root: ./data
+        policy: require
+        verification: full
+      params:
+        resolution: 128
+    partition:
+      validation_per_class: 300
+      seed: stochaflow-afhq-v2-validation-v1
+    image:
+      size: [128, 128]
+      channels: 3
+      normalize: true
+      random_horizontal_flip: true
+    loader:
+      batch_size: 1
+      num_workers: 2
+      shuffle: true
+      drop_last: true
+      pin_memory: true
+      persistent_workers: true
+      prefetch_factor: 4
+      steps_per_epoch: 8
+
+model:
+  name: adm_unet
+  params:
+    input_size: 128
+    in_channels: 3
+    out_channels: 3
+    base_channels: 128
+    channel_multipliers: [1, 1, 2, 3, 4]
+    num_res_blocks: 2
+    attention_resolutions: [32, 16, 8]
+    attention_head_channels: 64
+    num_classes: 3
+    dropout: 0.1
+
+process:
+  name: discrete_gaussian
+  params:
+    schedule:
+      name: cosine_alpha_bar
+      params:
+        num_timesteps: 1000
+        s: 0.008
+        max_beta: 0.999
+
+training:
+  name: class_conditional_p2_gaussian_denoising
+  params:
+    condition_dropout: 0.1
+    k: 1.0
+    gamma: 1.0
+    variance: {mode: fixed}
+
+objective:
+  name: mse
+  params:
+    reduction: mean
+
+metrics:
+  - id: prediction_mae
+    name: mae
+    channel: gaussian.prediction_target
+    phases: [validation, test]
+    params: {}
+  - id: clean_reconstruction_mse
+    name: mse
+    channel: gaussian.clean_reconstruction
+    phases: [validation, test]
+    params: {}
+
+optimizer:
+  name: torch.optim.AdamW
+  params:
+    lr: 1.0e-4
+    weight_decay: 0.0
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+lr_scheduler:
+  name: warmup_cosine
+  interval: step
+  params:
+    warmup_steps: 1
+    total_steps: 8
+    min_lr_ratio: 0.05
+
+ema:
+  enabled: true
+  decay: 0.9999
+  update_after_step: 0
+  update_every: 1
+
+diagnostics: []
+
+trainer:
+  num_epochs: 1
+  device: auto
+  precision: bf16-mixed
+  accumulate_grad_batches: 1
+  max_grad_norm: 1.0
+  show_progress: true
+  early_stopping:
+    enabled: false
+    monitor: valid/loss
+    mode: min
+    patience: 20
+    min_delta: 0.0
+
+logging:
+  log_every: 1
+  backends:
+    - name: local
+      params:
+        console: true
+        append: false
+  torch_logs: {}
+
+artifacts:
+  checkpoint_every: 1

@@ -172,6 +172,18 @@ def build_data_loaders(
         raise TypeError(
             f"data builder '{config.name}' must return DataLoaders"
         )
+    if strict_resume and expected_artifacts is not None:
+        actual_artifacts = loaders_value.artifact_bindings
+        if actual_artifacts is None:
+            raise ValueError(
+                f"data builder '{config.name}' must return artifact bindings "
+                "for strict resume"
+            )
+        if actual_artifacts != expected_artifacts:
+            raise ValueError(
+                f"data builder '{config.name}' returned artifact bindings that "
+                "do not match strict-resume checkpoint identity"
+            )
     return loaders_value
 
 

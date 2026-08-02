@@ -198,10 +198,9 @@ def _evaluation_protocol(value: object) -> AFHQV2EvaluationProtocol:
 
 
 def _sampling_protocol(
-    request: dict[str, Any],
+    sampling_value: object,
     protocol: AFHQV2EvaluationProtocol,
 ) -> None:
-    sampling_value = request.get("sampling")
     if isinstance(sampling_value, dict) and "builder" in sampling_value:
         raise ValueError(
             "legacy sampling.builder is unsupported; use sampling.sampler "
@@ -342,9 +341,9 @@ def load_evaluation_document(path: str | Path) -> AFHQV2EvaluationDocument:
         )
     request = {
         "extensions": cast(dict[str, Any], raw["extensions"]),
-        "sampling": cast(dict[str, Any], raw["sampling"]),
+        "sample": cast(dict[str, Any], raw["sampling"]),
     }
-    _sampling_protocol(request, protocol)
+    _sampling_protocol(raw["sampling"], protocol)
     return AFHQV2EvaluationDocument(
         protocol=protocol,
         sample_request=request,
@@ -366,7 +365,7 @@ def sample_request_bytes(document: AFHQV2EvaluationDocument) -> bytes:
 def sampling_parameters(document: AFHQV2EvaluationDocument) -> dict[str, Any]:
     """Return the validated class-conditional options and sampler declaration."""
 
-    sampling = document.sample_request["sampling"]
+    sampling = document.sample_request["sample"]
     options = cast(
         dict[str, Any],
         sampling["options"],

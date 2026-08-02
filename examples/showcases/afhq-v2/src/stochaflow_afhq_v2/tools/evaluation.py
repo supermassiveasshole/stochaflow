@@ -72,7 +72,7 @@ def _validate_sampling_result(
         raise ValueError("sampling metadata class allocation does not match protocol")
     if metadata.get("sampler") != params["sampler"]:
         raise ValueError("sampling metadata sampler does not match protocol")
-    expected_seed = cast(int, document.sample_request["sampling"]["seed"])
+    expected_seed = cast(int, document.sample_request["sample"]["seed"])
     if sampling.seed != expected_seed:
         raise ValueError("sampling runtime seed does not match evaluation protocol")
 
@@ -114,12 +114,15 @@ def evaluate_checkpoint(
         evaluation_inputs.verify_checkpoint_snapshot(snapshot)
         inputs = replace(
             inputs,
-            checkpoint_path=source_checkpoint,
+            checkpoint_identity=replace(
+                inputs.checkpoint_identity,
+                path=source_checkpoint,
+            ),
         )
         evaluation_inputs.validate_data_config(inputs)
         expected_bindings = evaluation_inputs.checkpoint_data_bindings(inputs)
         execution_device = resolve_device(
-            device_name or inputs.config.trainer.device
+            device_name or inputs.checkpoint_config.trainer.device
         )
         validate_execution_device(execution_device)
         factory = provider_factory or default_provider_factory

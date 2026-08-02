@@ -13,12 +13,24 @@ if TYPE_CHECKING:
         SingleOutputMeanSquaredError,
     )
     from stochaflow.metrics.factory import build_metric
+    from stochaflow.metrics.reference import (
+        FrechetInceptionDistanceMetric,
+        KernelInceptionDistanceMetric,
+    )
     from stochaflow.metrics.runtime import MetricEngine, MetricRuntimeError
 
 _LAZY_METRIC_EXPORTS = {
     "ErrorOnNanMeanMetric": (
         "stochaflow.metrics.builtin",
         "ErrorOnNanMeanMetric",
+    ),
+    "FrechetInceptionDistanceMetric": (
+        "stochaflow.metrics.reference",
+        "FrechetInceptionDistanceMetric",
+    ),
+    "KernelInceptionDistanceMetric": (
+        "stochaflow.metrics.reference",
+        "KernelInceptionDistanceMetric",
     ),
     "SingleOutputMeanAbsoluteError": (
         "stochaflow.metrics.builtin",
@@ -57,6 +69,8 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "ErrorOnNanMeanMetric",
+    "FrechetInceptionDistanceMetric",
+    "KernelInceptionDistanceMetric",
     "MetricEngine",
     "MetricRuntimeError",
     "MetricSpec",

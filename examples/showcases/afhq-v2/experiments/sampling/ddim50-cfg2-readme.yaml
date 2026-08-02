@@ -1,4 +1,4 @@
-sampling:
+sample:
   sampler:
     name: ddim
     params:

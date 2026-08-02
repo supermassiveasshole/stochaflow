@@ -10,6 +10,7 @@ import torch
 
 from stochaflow.training.gaussian import (
     ClassConditionalGaussianDenoisingTrainingStrategy,
+    ClassConditionalP2GaussianDenoisingTrainingStrategy,
 )
 from stochaflow.utils.checkpoint import (
     CheckpointManager,
@@ -26,6 +27,8 @@ def _raw_config(
     *,
     model_name: str,
     model_params: dict[str, Any],
+    training_name: str,
+    training_params: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "experiment": {
@@ -50,11 +53,8 @@ def _raw_config(
             },
         },
         "training": {
-            "name": "class_conditional_gaussian_denoising",
-            "params": {
-                "prediction_type": "v",
-                "condition_dropout": 0.5,
-            },
+            "name": training_name,
+            "params": training_params,
         },
         "objective": {"name": "mse", "params": {"reduction": "mean"}},
         "optimizer": {
@@ -75,7 +75,6 @@ def _raw_config(
             "decay": 0.9,
             "update_after_step": 0,
             "update_every": 1,
-            "use_for_sampling": True,
         },
         "trainer": {
             "num_epochs": 2,
@@ -138,23 +137,48 @@ def _microbatches() -> list[tuple[torch.Tensor, dict[str, torch.Tensor]]]:
         ),
     ],
 )
+@pytest.mark.parametrize(
+    ("training_name", "training_params", "strategy_type"),
+    [
+        (
+            "class_conditional_gaussian_denoising",
+            {"prediction_type": "v", "condition_dropout": 0.5},
+            ClassConditionalGaussianDenoisingTrainingStrategy,
+        ),
+        (
+            "class_conditional_p2_gaussian_denoising",
+            {
+                "condition_dropout": 0.5,
+                "k": 1.0,
+                "gamma": 1.0,
+                "variance": {"mode": "fixed"},
+            },
+            ClassConditionalP2GaussianDenoisingTrainingStrategy,
+        ),
+    ],
+)
 def test_registered_conditional_stack_resumes_at_epoch_boundary(
     tmp_path: Path,
     model_name: str,
     model_params: dict[str, Any],
+    training_name: str,
+    training_params: dict[str, Any],
+    strategy_type: type[ClassConditionalGaussianDenoisingTrainingStrategy],
 ) -> None:
     config = load_config_dict(
         _raw_config(
             tmp_path / "uninterrupted",
             model_name=model_name,
             model_params=model_params,
+            training_name=training_name,
+            training_params=training_params,
         )
     )
     set_seed(config.experiment.seed)
     uninterrupted = build_training_components(config)
     assert isinstance(
         uninterrupted.plan.strategy,
-        ClassConditionalGaussianDenoisingTrainingStrategy,
+        strategy_type,
     )
     uninterrupted.trainer.train_epoch(
         _microbatches(),
@@ -162,7 +186,7 @@ def test_registered_conditional_stack_resumes_at_epoch_boundary(
         show_progress=False,
     )
     checkpoint = uninterrupted.checkpoint_manager.save(
-        tmp_path / f"{model_name}.pt",
+        tmp_path / f"{model_name}-{training_name}.pt",
         epoch=1,
         global_step=uninterrupted.trainer.global_step,
         config=config.to_dict(),
@@ -179,6 +203,8 @@ def test_registered_conditional_stack_resumes_at_epoch_boundary(
             tmp_path / "resumed",
             model_name=model_name,
             model_params=model_params,
+            training_name=training_name,
+            training_params=training_params,
         )
     )
     resumed = build_training_components(resumed_config)

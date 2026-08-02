@@ -33,7 +33,7 @@ else:
     ExponentialMovingAverage = Any
 
 
-CHECKPOINT_FORMAT_VERSION = 11
+CHECKPOINT_FORMAT_VERSION = 12
 _PRECISION_KINDS = frozenset(("fp32", "bf16-mixed", "fp16-mixed"))
 
 _CHECKPOINT_LEAF_TYPES = (type(None), bool, int, float, complex, str, bytes)
@@ -465,7 +465,7 @@ class CheckpointManager:
         checkpoint_metadata.setdefault("extension_plugins", [])
         state["metadata"] = checkpoint_metadata
         _validate_checkpoint_value(state, path="checkpoint")
-        _validate_v11_checkpoint_header(state)
+        _validate_v12_checkpoint_header(state)
         return state
 
     def save(
@@ -499,7 +499,7 @@ class CheckpointManager:
             raise TypeError("checkpoint payload must be an exact dictionary")
         _validate_checkpoint_value(payload, path="checkpoint")
         state = cast(CheckpointState, payload)
-        _validate_v11_checkpoint_header(state)
+        _validate_v12_checkpoint_header(state)
         _ensure_parent_directory(checkpoint_path)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{checkpoint_path.name}.",
@@ -1039,12 +1039,7 @@ class CheckpointManager:
             map_location=map_location,
             weights_only=True,
         )
-        if type(raw_state) is not dict:
-            raise TypeError(
-                f"checkpoint at '{checkpoint_path}' must contain a dictionary payload"
-            )
-        _validate_checkpoint_value(raw_state, path="checkpoint")
-        return _normalize_checkpoint_header(cast(CheckpointState, raw_state))
+        return validate_checkpoint_payload(raw_state, source=checkpoint_path)
 
 
 def capture_rng_state() -> dict[str, Any]:
@@ -1364,6 +1359,22 @@ def _parse_rng_tensor(value: object, *, path: str) -> torch.Tensor:
     return tensor.detach().cpu().clone()
 
 
+def validate_checkpoint_payload(
+    payload: object,
+    *,
+    source: str | Path | None = None,
+) -> CheckpointState:
+    """Validate and normalize one already deserialized checkpoint payload."""
+
+    if type(payload) is not dict:
+        location = f" at '{Path(source)}'" if source is not None else ""
+        raise TypeError(
+            f"checkpoint{location} must contain a dictionary payload"
+        )
+    _validate_checkpoint_value(payload, path="checkpoint")
+    return _normalize_checkpoint_header(cast(CheckpointState, payload))
+
+
 def _normalize_checkpoint_header(state: CheckpointState) -> CheckpointState:
     """Validate the only supported checkpoint header."""
 
@@ -1375,12 +1386,12 @@ def _normalize_checkpoint_header(state: CheckpointState) -> CheckpointState:
             f"checkpoint format version {version!r} is unsupported; "
             f"expected version {CHECKPOINT_FORMAT_VERSION}"
         )
-    _validate_v11_checkpoint_header(state)
+    _validate_v12_checkpoint_header(state)
     return state
 
 
-def _validate_v11_checkpoint_header(state: CheckpointState) -> None:
-    """Validate the exact inference and precision topology of a v11 checkpoint."""
+def _validate_v12_checkpoint_header(state: CheckpointState) -> None:
+    """Validate the exact inference and precision topology of a v12 checkpoint."""
 
     version = cast(object, state.get("format_version"))
     if type(version) is not int or version != CHECKPOINT_FORMAT_VERSION:
@@ -1397,7 +1408,7 @@ def _validate_v11_checkpoint_header(state: CheckpointState) -> None:
         path="checkpoint.inference_asset_descriptors",
     )
     if "inference_recipe" not in state:
-        raise TypeError("v11 checkpoint is missing inference_recipe")
+        raise TypeError("v12 checkpoint is missing inference_recipe")
     inference_recipe_value = state["inference_recipe"]
     if inference_recipe_value is not None:
         sampling_recipe_from_dict(inference_recipe_value)
@@ -1467,14 +1478,14 @@ def _validate_v11_checkpoint_header(state: CheckpointState) -> None:
             + ", ".join(unexpected)
         )
 
-    _validate_v11_ema_payload(state)
+    _validate_v12_ema_payload(state)
     _validate_checkpoint_config(state, precision_kind=precision_kind)
     _validate_extension_plugin_metadata(state)
     parse_rng_state(state.get("rng_state"))
 
 
-def _validate_v11_ema_payload(state: CheckpointState) -> None:
-    """Validate the self-contained EMA projection shared by v11 readers."""
+def _validate_v12_ema_payload(state: CheckpointState) -> None:
+    """Validate the self-contained EMA projection shared by v12 readers."""
 
     has_ema_state = "ema_state_dict" in state
     has_ema_projection = "ema_model_state_dict" in state
@@ -1533,6 +1544,15 @@ def _validate_checkpoint_config(
         return
     if type(config_value) is not dict:
         raise TypeError("checkpoint config must be an exact dictionary")
+    if "sampling" in config_value:
+        raise ValueError(
+            "v12 checkpoint config cannot contain legacy sampling defaults"
+        )
+    ema_value = cast(object, config_value.get("ema"))
+    if isinstance(ema_value, dict) and "use_for_sampling" in ema_value:
+        raise ValueError(
+            "v12 checkpoint config cannot contain ema.use_for_sampling"
+        )
     trainer_value = cast(object, config_value.get("trainer"))
     if trainer_value is None:
         return

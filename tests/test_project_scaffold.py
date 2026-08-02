@@ -36,6 +36,7 @@ EXPECTED_FILES = {
     ".gitignore",
     "README.md",
     "data/.gitkeep",
+    "experiments/example/sample.yaml",
     "experiments/example/train.yaml",
     "notebooks/.gitkeep",
     "pyproject.toml",
@@ -182,7 +183,6 @@ def test_create_project_writes_deterministic_installable_distribution(
         "decay": 0.9,
         "update_after_step": 0,
         "update_every": 1,
-        "use_for_sampling": True,
     }
     assert config["diagnostics"] == [
         {
@@ -194,16 +194,27 @@ def test_create_project_writes_deterministic_installable_distribution(
         "local",
         "tensorboard",
     ]
-    assert config["sampling"] == {
-        "run_after_training": True,
-        "shape": None,
-        "num_samples": 8,
-        "batch_size": 4,
-        "options": {
-            "input_min": -1.0,
-            "input_max": 1.0,
+    assert "sampling" not in config
+    sample_config = yaml.safe_load(
+        (first / "experiments/example/sample.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sample_config == {
+        "extensions": {"plugins": []},
+        "sample": {
+            "sampler": None,
+            "options": {
+                "weights": "ema",
+                "input_min": -1.0,
+                "input_max": 1.0,
+            },
+            "shape": None,
+            "num_samples": 8,
+            "batch_size": 4,
+            "seed": 42,
+            "writers": [{"name": "tensor", "params": {}}],
         },
-        "writers": [{"name": "tensor", "params": {}}],
     }
     for relative_path in sorted(EXPECTED_FILES):
         if relative_path.endswith(".py"):
@@ -224,6 +235,7 @@ def test_generated_readme_documents_the_complete_user_path(tmp_path: Path) -> No
         "stochaflow_ext/training.py",
         "stochaflow_ext/sampling.py",
         "experiments/example/train.yaml",
+        "experiments/example/sample.yaml",
         "tests/test_extensions.py",
     ):
         assert generated_path in readme
@@ -237,6 +249,7 @@ def test_generated_readme_documents_the_complete_user_path(tmp_path: Path) -> No
         "--resume outputs/example/<run-id>",
         "stochaflow sample \\",
         "--checkpoint outputs/example/<run-id>/checkpoints/best.pt",
+        "--config experiments/example/sample.yaml",
         "tensorboard --logdir outputs/example/<run-id>/tensorboard",
     ):
         assert command in readme
@@ -585,7 +598,6 @@ def test_generated_wheel_runs_train_resume_and_checkpoint_sampling(
         "1",
         "--limit-validation-batches",
         "1",
-        "--skip-final-sample",
         "--no-progress",
     )
     initial_run = _only_directory(project / "outputs/example")
@@ -620,7 +632,6 @@ def test_generated_wheel_runs_train_resume_and_checkpoint_sampling(
         "1",
         "--limit-validation-batches",
         "1",
-        "--skip-final-sample",
         "--no-progress",
     )
     resumed_run = _only_directory(resumed_root)
@@ -647,7 +658,6 @@ def test_generated_wheel_runs_train_resume_and_checkpoint_sampling(
         "1",
         "--limit-validation-batches",
         "1",
-        "--skip-final-sample",
         "--no-progress",
     )
     second_resumed_run = _only_directory(second_resumed_root)
@@ -663,6 +673,8 @@ def test_generated_wheel_runs_train_resume_and_checkpoint_sampling(
         "sample",
         "--checkpoint",
         str(second_resumed_run),
+        "--config",
+        "experiments/example/sample.yaml",
         "--output-dir",
         str(sample_output),
         "--device",

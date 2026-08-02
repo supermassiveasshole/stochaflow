@@ -405,7 +405,7 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
             )
         if self.context.shape is not None and tuple(self.context.shape) != source.sample_shape:
             raise ValueError(
-                f"sampling.shape {self.context.shape} does not match source "
+                f"sample.shape {self.context.shape} does not match source "
                 f"{source.sample_shape}"
             )
         sampler = cast(
@@ -506,6 +506,7 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
             batches.append(
                 SamplingBatch(
                     samples=reconstructed.detach().to(device="cpu", copy=True),
+                    num_samples=count,
                     trajectory=trajectory,
                 )
             )
@@ -571,7 +572,7 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
         weights = pop_string(
             params,
             "weights",
-            path="sampling.options",
+            path="sample.options",
             default="auto",
         )
         if weights not in {"auto", "raw", "ema"}:
@@ -587,7 +588,7 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
         clip_denoised = pop_bool(
             params,
             "clip_denoised",
-            path="sampling.options",
+            path="sample.options",
             default=False,
         )
         if clip_denoised:
@@ -598,33 +599,33 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
         partial_noise_time = pop_int(
             params,
             "partial_noise_time",
-            path="sampling.options",
+            path="sample.options",
         )
         conditioning_strength = pop_float(
             params,
             "conditioning_strength",
-            path="sampling.options",
+            path="sample.options",
             default=1.0,
             minimum=0.0,
         )
         correction_strength = pop_float(
             params,
             "correction_strength",
-            path="sampling.options",
+            path="sample.options",
             default=1.0,
             minimum=0.0,
         )
         source = cls._source(
-            required_mapping(params, "source", path="sampling.options"),
-            path="sampling.options.source",
+            required_mapping(params, "source", path="sample.options"),
+            path="sample.options.source",
         )
         reference_raw = optional_mapping(
             params,
             "reference",
-            path="sampling.options",
+            path="sample.options",
         )
         reference = (
-            cls._source(reference_raw, path="sampling.options.reference")
+            cls._source(reference_raw, path="sample.options.reference")
             if reference_raw is not None
             else None
         )
@@ -632,32 +633,32 @@ class ReconstructionSamplingBuilder(SamplingBuilder):
         if alignment_value is not None and (
             not isinstance(alignment_value, str) or not alignment_value.strip()
         ):
-            raise ValueError("sampling.options.alignment must be a path string")
+            raise ValueError("sample.options.alignment must be a path string")
         alignment = Path(alignment_value) if alignment_value is not None else None
         sampler = cls._component(
-            required_mapping(params, "sampler", path="sampling"),
-            path="sampling.sampler",
+            required_mapping(params, "sampler", path="sample"),
+            path="sample.sampler",
         )
         trajectory_raw = optional_mapping(
             params,
             "trajectory",
-            path="sampling.options",
+            path="sample.options",
         ) or {}
         enabled = pop_bool(
             trajectory_raw,
             "enabled",
-            path="sampling.options.trajectory",
+            path="sample.options.trajectory",
             default=False,
         )
         every_steps = pop_int(
             trajectory_raw,
             "every_steps",
-            path="sampling.options.trajectory",
+            path="sample.options.trajectory",
             default=1,
         )
         reject_unknown(
             trajectory_raw,
-            path="sampling.options.trajectory",
+            path="sample.options.trajectory",
         )
         reject_unknown(params, path="resolved sampling recipe")
         return ReconstructionConfig(

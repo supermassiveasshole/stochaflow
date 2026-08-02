@@ -1,6 +1,6 @@
 # Complete DDPM sampling profile for the MNIST checkpoint.
 # Both sample profiles use the same EMA weights, seed, and 6x6 sample grid.
-sampling:
+sample:
   sampler:
     name: ddpm
     params: {}

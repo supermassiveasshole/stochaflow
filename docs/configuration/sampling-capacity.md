@@ -117,7 +117,7 @@ Builder 返回所有中心场 batch 后才开始。
 trajectory 可以在与主重建分开的采样调用中生成。Physics AI 参考项目
 对 preview 使用以下容量限制：
 
-- `sampling.num_samples <= 8`；
+- `sample.num_samples <= 8`；
 - `trajectory.every_steps >= 10`；
 - accepted steps 不超过主 profile 的 40；
 - preview 可以用 tensor/image writer，但不与 1272-sample 主 artifact 合并。

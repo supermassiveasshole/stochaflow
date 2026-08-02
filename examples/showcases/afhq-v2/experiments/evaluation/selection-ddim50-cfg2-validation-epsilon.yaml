@@ -1,0 +1,79 @@
+version: 1
+name: afhq-v2-adm-epsilon-ddim50-cfg2-validation-v1
+purpose: selection_candidate
+
+extensions:
+  plugins: [stochaflow-afhq-v2]
+
+# Replace REPLACE_WITH_RUN_ID and the zero-padded epoch filename for each
+# policy-eligible candidate. Compare candidates only on this validation protocol.
+# The official test profile remains a one-shot final evaluation after one subject
+# has been selected.
+subject:
+  kind: checkpoint
+  path: ../../../../../outputs/afhq-v2/adm-128-p2/REPLACE_WITH_RUN_ID/checkpoints/epoch_0200.pt
+  weights: ema
+
+data:
+  source: checkpoint
+  split: validation
+
+evaluation:
+  name: afhq-v2.class-conditional-generation
+  params:
+    class_mapping: {cat: 0, dog: 1, wild: 2}
+    expected_per_class: {cat: 300, dog: 300, wild: 300}
+    sampling:
+      recipe:
+        name: class_conditional_denoising
+        contract:
+          prediction_type: epsilon
+          variance: {mode: fixed}
+      sampler:
+        name: ddim
+        params:
+          num_inference_steps: 50
+          eta: 0.0
+      options:
+        weights: ema
+        clip_denoised: true
+        guidance_scale: 2.0
+        conditions:
+          - {class_label: 0, count: 300}
+          - {class_label: 1, count: 300}
+          - {class_label: 2, count: 300}
+        trajectory:
+          enabled: false
+          every_steps: 5
+      shape: [3, 128, 128]
+      num_samples: 900
+      batch_size: 30
+      seed: 20260726
+    gallery_count: 12
+
+metrics:
+  - id: distribution
+    name: afhq-v2.class-aware-distribution
+    channel: afhq-v2.image-pairs
+    params:
+      class_mapping: {cat: 0, dog: 1, wild: 2}
+      expected_real: {cat: 300, dog: 300, wild: 300}
+      expected_fake: {cat: 300, dog: 300, wild: 300}
+      providers:
+        - name: kid
+          params:
+            feature: 2048
+            subsets: 100
+            subset_size: 200
+            degree: 3
+            coef: 1.0
+            seed: 20260726
+        - name: fid
+          params:
+            feature: 2048
+            antialias: true
+
+protocol:
+  id: afhq-v2-adm-epsilon-ddim50-cfg2-validation-v1
+  expected_examples: 900
+  strict_complete: true

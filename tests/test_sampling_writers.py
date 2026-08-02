@@ -24,6 +24,7 @@ def _context(tmp_path: Path, *, rank: int = 4, trajectory: bool = False):
         batches=(
             SamplingBatch(
                 samples=samples,
+                num_samples=2,
                 trajectory=(
                     (
                         SamplingObservation(0, 2, samples + 1, False, {}),
@@ -103,6 +104,22 @@ class MetadataWriter(SamplingArtifactWriter):
         return {"metadata": path}
 
 
+@REGISTRIES.sampling_artifact_writers.register("stage4_outside_writer")
+class OutsideWriter(SamplingArtifactWriter):
+    def write(self, context: SamplingArtifactContext):
+        path = context.output_dir.parent / "outside.txt"
+        path.write_text("outside", encoding="utf-8")
+        return {"outside": path}
+
+
+@REGISTRIES.sampling_artifact_writers.register("stage4_alias_writer")
+class AliasWriter(SamplingArtifactWriter):
+    def write(self, context: SamplingArtifactContext):
+        path = context.output_dir / "shared.txt"
+        path.write_text("shared", encoding="utf-8")
+        return {"first": path, "second": path}
+
+
 def test_custom_writer_receives_sampling_output_metadata(tmp_path: Path) -> None:
     artifacts = write_sampling_artifacts(
         [ComponentConfig(name="stage3_metadata_writer")],
@@ -133,4 +150,19 @@ def test_writer_contract_rejects_duplicate_keys_and_missing_paths(
         write_sampling_artifacts(
             [ComponentConfig(name="stage2_missing_writer")],
             _context(tmp_path / "missing"),
+        )
+
+
+def test_writer_contract_rejects_outside_and_aliased_paths(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="outside its output directory"):
+        write_sampling_artifacts(
+            [ComponentConfig(name="stage4_outside_writer")],
+            _context(tmp_path / "outside-root"),
+        )
+    with pytest.raises(ValueError, match="duplicate artifact path"):
+        write_sampling_artifacts(
+            [ComponentConfig(name="stage4_alias_writer")],
+            _context(tmp_path / "alias-root"),
         )

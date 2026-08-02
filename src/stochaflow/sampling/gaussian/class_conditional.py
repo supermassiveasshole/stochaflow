@@ -83,7 +83,7 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
                 "class_conditional_denoising requires DiscreteGaussianDenoisingProcess"
             )
         if self.context.shape is None:
-            raise ValueError("class_conditional_denoising requires sampling.shape")
+            raise ValueError("class_conditional_denoising requires sample.shape")
         config = self._parse_params(self.context.params)
         if config.variance_mode == "learned_range" and not isinstance(
             process,
@@ -177,6 +177,7 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
             batches.append(
                 SamplingBatch(
                     samples=final_state.detach().to(device="cpu", copy=True),
+                    num_samples=count,
                     trajectory=lifecycle.observations,
                 )
             )
@@ -364,7 +365,7 @@ class ClassConditionalDenoisingBuilder(SamplingBuilder):
         if allocated != num_samples:
             raise ValueError(
                 "class_conditional_denoising condition counts must sum to "
-                f"sampling.num_samples ({num_samples}), got {allocated}"
+                f"sample.num_samples ({num_samples}), got {allocated}"
             )
         return torch.tensor(
             [

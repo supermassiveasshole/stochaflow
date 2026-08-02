@@ -1,21 +1,21 @@
 # Latent Diffusion 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：当前产品主线；Phase 1 inference asset projection 已完成，Phase 2–3
-  尚未实现且为 P1，Phase 4A–4C 为 P1/P2，开放数据与正式 Evaluation 为 P2
+- 状态：Post-A3 roadmap re-decision candidate；不属于当前 pixel/P2/Evaluation 分支。
+  Phase 1 inference asset projection 已完成，Phase 2–4 与 latent-specific E3 formal
+  quality profile 尚未实现且未排期
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)；本文拥有 latent
   capability contract，统一排期拥有跨计划执行顺序
 - 初始制定日期：2026-07-26
-- 本次修订日期：2026-07-30
-- 排期前置：Phase 1 已完成；先完成 A0 ADM topology correctness、B1/C1
-  Train/Sample authority、正式 Metrics API 和 A1 learned-range/P2 core，再进入本计划
-  Phase 2；这是当前单人实施顺序，不表示 codec 架构依赖 ADM、P2 或 MetricEngine，
-  A2 长实验可与 Phase 2 并行
-- 当前主线：冻结的预训练图像 codec + conditional latent Gaussian diffusion
+- 本次修订日期：2026-08-02
+- 排期前置：当前分支合并后先完成 A3 single-arm P2 production-quality evidence，再由
+  根 [`ROADMAP.md`](../../ROADMAP.md) 明确决定是否恢复本计划。A0、B1/C1、正式 Metrics、
+  A1 与 Phase 1 已完成是技术前置事实，不构成自动启动 Phase 2 的排期授权
+- 候选产品路线：冻结的预训练图像 codec + conditional latent Gaussian diffusion
 - 首个 reference denoiser：DiT-S/2 → DiT-B/2；它是验收实现，不是该计划的
   abstraction boundary
-- 并行关联主线：同一 codec/latent contract 上的 Stable Diffusion
+- 下游候选路线：同一 codec/latent contract 上的 Stable Diffusion
   component-native interoperability、text conditioning 与 UNet training；
   由
   [Stable Diffusion Component-Native 支持计划](stable-diffusion-component-native-support-plan.md)
@@ -31,7 +31,7 @@
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
   [正式 Metrics 扩展 API](../api/extensions.md#metrics)、
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)、
-  [正式 Gaussian loss 架构](../framework.md)
+  [正式架构说明](../../ARCHITECTURE.md)
 
 ## 1. 本轮结论
 
@@ -1044,7 +1044,11 @@ latent default。
 P2 是 parameterization-dependent 的具体 Gaussian TrainingStrategy/TrainingBuilder
 组合。只有在 latent epsilon baseline、codec reconstruction 和 decoded evaluation
 protocol 稳定后，才能以相同 topology/data/budget 做 standard/P2 builder A/B；pixel
-AFHQ 的收益不能直接推广到 latent DiT，更不能把 P2 参数放进 codec 或 Process 配置。
+AFHQ 现在已冻结 equal-budget `latest.pt` EMA 的 epsilon/fixed A/B evaluation authority，
+并已完成单 seed、单 epoch 的 full-official-test controlled result。该轮 P2 在 aggregate
+与各类 FID/KID 上都略差，且 KID delta 与 std 同量级，因此只证明 protocol readiness，
+不提供统计显著或 production long-run 收益；结果不能直接推广到 latent DiT，更不能把 P2
+参数放进 codec 或 Process 配置。
 
 learned variance 后续需要：
 

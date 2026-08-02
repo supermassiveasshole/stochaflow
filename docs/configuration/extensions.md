@@ -13,13 +13,14 @@ CLI 安装在同一 Python environment。Stochaflow 不扫描源码目录、工�
 | Registry | 扩展契约 | YAML 选择位置 |
 | --- | --- | --- |
 | `data_builders` | `DataBuilder` 类 | `data.name` |
-| `sampling_artifact_writers` | `SamplingArtifactWriter` 类 | `sampling.writers[].name` |
+| `sampling_artifact_writers` | `SamplingArtifactWriter` 类 | `sample.writers[].name` |
 | `models` | `torch.nn.Module` 类 | `model.name` |
 | `noise_schedules` | `GaussianNoiseSchedule` 类 | `process.params.schedule` |
 | `processes` | `Process` 类 | `process.name` |
-| `samplers` | `Sampler` 类 | `sampling.sampler`，或 checkpoint recipe 的 fixed contract |
-| `sampling_builders` | `SamplingBuilder` 类 | `TrainingPlan.inference_recipe.name` 固化进 checkpoint；sample request 不直接选择 |
+| `samplers` | `Sampler` 类 | `sample.sampler`，或 checkpoint recipe 的 fixed contract |
+| `sampling_builders` | `SamplingBuilder` 类 | `TrainingPlan.inference_recipe.name` 固化进 checkpoint；sample config 不直接选择 |
 | `training_builders` | `TrainingBuilder` 类 | `training.name` |
+| `evaluation_builders` | `EvaluationBuilder` 类 | 独立 evaluation config 的 `evaluation.name` |
 | `objectives` | `torch.nn.Module` 类 | `objective.name` |
 | `metrics` | `torchmetrics.Metric` 类 | `metrics[].name` |
 | `optimizers` | 第三方 `torch.optim.Optimizer` 子类 | `optimizer.name` |
@@ -118,9 +119,12 @@ distribution 的聚合注册模块，`my-project.physics-operator` 选择该模�
 - 写 `plugins: null`：显式选择当前环境发现的全部插件；
 - 写非空列表：只选择精确匹配的 entry-point names；
 - resolved config 始终保存经过解析的确定插件列表，不保存 `null`；
-- partial sample request 若明确包含 `extensions.plugins`，该列表只追加插件；不能删除
+- sample config 若明确包含 `extensions.plugins`，该列表只追加插件；不能删除
   checkpoint-required selection，也不能写 `null`。仅写 `extensions: {}` 或空列表保留
-  checkpoint selection。
+  checkpoint selection；
+- evaluation config 的显式插件列表同样只追加 checkpoint-required selection；省略
+  `extensions`、写 `plugins: []` 或写 `plugins: null` 都表示没有 additions，不表示扫描并
+  激活整个环境。
 
 `load_config()` 与 `load_config_dict()` 是无副作用解析函数，不导入插件。runtime 先发现
 distribution metadata、解析 selection，并在任何插件代码运行前检查 checkpoint 中保存的
@@ -146,32 +150,33 @@ point、缺失插件、非 module target、非法 distribution metadata 或导�
 checkpoint 保存 entry-point name、distribution、version 和 target，但不保存或 freeze
 extension class/source。恢复时必须在当前 CLI 环境安装相应 distribution：
 
-- strict resume 与 checkpoint-only inference 使用 checkpoint selection；partial sample
-  request 可以追加插件，但不能删除 checkpoint provenance 中的 required selection；
+- strict resume、checkpoint-only inference 与 checkpoint evaluation 使用 checkpoint
+  selection；sample/evaluation config 可以追加插件，但不能删除 checkpoint provenance
+  中的 required selection；
 - 复用的同名插件仍必须通过 identity/version 检查，新增插件也进入本次 sampling manifest；
 - name、distribution 或 target 变化是 identity mismatch，始终失败；
 - 仅 version 不一致时，CLI 会在导入插件前集中警告并在交互式终端询问，默认答案为 No；
 - 非交互式运行默认失败；`--force-extension-version-mismatch` 可明确接受版本差异，但不会
   绕过 identity 或 checkpoint state compatibility；
-- 接受方式与 expected/current version 写入 run/sampling manifest 和后续 checkpoint
-  metadata。
+- 接受方式与 expected/current version 写入对应 run/sampling/evaluation manifest 和后续
+  checkpoint metadata。
 
 editable install 在版本号不变时修改源码无法由 distribution metadata 检测。checkpoint
 不是源码或 Python 环境快照；依赖锁定仍由用户选择的包管理器和 lockfile 负责。扩展实现
 变化导致的 state shape、资产拓扑或运行逻辑不兼容，会在既有构建/加载边界报错，核心不为
 任意第三方实现提供源码兼容保证。
 
-训练 manifest、checkpoint metadata 和 sampling manifest 还保存
-`selected_components`，列出最终 typed config 选择的 DataBuilder、model、
-TrainingBuilder、Objective、Process、optimizer、scheduler、checkpoint sampling recipe、
-writers、
-loggers 和 diagnostics。这个摘要保留显式 `null` 与列表顺序，但不会遍历任何 `params`：
+训练 manifest/checkpoint metadata 与 sampling manifest 分别保存自己的
+`selected_components`。训练侧列出 DataBuilder、model、TrainingBuilder、Objective、
+Process、optimizer、scheduler、checkpoint inference recipe、loggers 和 diagnostics；
+sampling 侧列出 checkpoint model/Process/recipe，以及本次 sample config 选择的 Sampler
+和 writers。两个 authority 不合并。摘要保留显式 `null` 与列表顺序，但不会遍历任何 `params`：
 具体 sampler、noise schedule、teacher、source 或 condition 仍由其 Builder/Process
 私有拥有。它用于快速审计，不冻结 class/source，不参与 Registry dispatch、plugin
 ownership 推断或 compatibility 判断；checkpoint 中的完整 config 与 runtime state
 仍是恢复权威。
 
-当前 checkpoint v11 使用 `torch.load(..., weights_only=True)`，payload 只允许
+当前 checkpoint v12 使用 `torch.load(..., weights_only=True)`，payload 只允许
 Tensor、primitive 和普通 container，且不读取旧格式。扩展组件的 `state_dict`、
 extra state 与 `SamplingRecipe.contract` 也必须编码为受支持的数据类型；不能要求
 `safe_globals`、保存自定义 class instance 或 custom Tensor subclass。这个约束让 runtime
@@ -247,10 +252,11 @@ extension 只实现领域 build/load callback，不自行计算最终 identity�
 locking、publication 或 quarantine。完整符号与 callback 契约见
 [Extension 公共 API](../api/extensions.md)。
 
-需要查看跨 data/training/sampling 三条扩展轴的完整实现时，参考两个彼此独立、可安装的
-[纵向扩展项目](reference-projects.md)。它们分别展示 Physics reconstruction 对离散
+需要查看跨 data/training/sampling 三条扩展轴的 legacy architecture fixture 时，参考两个
+彼此独立、可安装的[纵向扩展项目](reference-projects.md)。它们分别展示 Physics reconstruction 对离散
 Gaussian primitive 的复用与扩展，以及 frozen-teacher distillation 的多资产 checkpoint
-组合；两者都只使用这里公开的稳定入口，不依赖 checkout 源码路径。
+组合；两者都只使用这里公开的稳定入口，不依赖 checkout 源码路径，但不是 maintained
+task、quality benchmark 或 formal Evaluation surface。
 
 ## 自定义 Process、Sampler 与 SamplingBuilder
 
@@ -579,7 +585,7 @@ API。Plan 通过稳定名称声明辅助 `nn.Module`，核心统一管理 devic
 EMA 只跟踪 primary model，Process、Objective 和 auxiliary modules 始终保存 raw state。
 这个片段是普通 paired regression，不是 diffusion super-resolution。Gaussian 条件超分
 还必须由 Strategy 采样 marginal、构造 prediction target 并把 LR condition 传给模型；
-完整组合见[条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md)。
+extension 边界草图见[条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md)。
 
 ### 自定义 Metric 与 Strategy channel
 
@@ -710,9 +716,10 @@ epoch 的 canonical scalar mapping。strict resume 因而要求同一插件
 identity/version policy 和同一 metric/Strategy 配置，但仍需由项目 lockfile 固定
 TorchMetrics 及其他依赖。
 
-### Frozen-teacher 蒸馏
+### Frozen-teacher 蒸馏架构边界（非 maintained task）
 
-蒸馏不需要 Trainer 的任务分支。自定义 Builder 构建并加载 teacher、关闭其梯度，再用
+以下片段只说明 managed auxiliary ownership，不宣称当前维护蒸馏任务或正式评估。
+自定义 Builder 构建并加载 teacher、关闭其梯度，再用
 稳定名称把它交给 Plan；Strategy 只定义 student/teacher forward 和损失组合：
 
 ```python
@@ -820,6 +827,104 @@ learned-range diagnostics 只用 prediction half 做 reconstruction/DDIM，仍�
 `diffusion_quality` 时会得到清晰的不兼容错误。该能力不让 Strategy 构建 Sampler、运行
 diagnostic 或管理 artifact，因此不改变 Strategy 的训练计算职责。
 
+## 自定义 EvaluationBuilder
+
+独立 evaluation 的唯一任务组合入口是 `EvaluationBuilder`。它从
+`stochaflow.evaluation` 导入，并注册到 `REGISTRIES.evaluation_builders`。checkpoint authority
+下，core 已经安全加载 checkpoint、激活插件、显式选择 raw/EMA primary model、构建
+checkpoint DataBuilder 与目标 split；prediction-artifact authority 下，core 认证完整
+manifest/shards，并按 exact sample plan 注入 typed records，此时 `context.inference` 为
+`None`。Builder 不重建 TrainingPlan、optimizer 或 checkpoint provider，也不能重新选择权重。
+
+最小形状：
+
+```python
+from torch import nn
+
+from stochaflow.evaluation import (
+    EvaluationBuilder,
+    EvaluationPlan,
+    EvaluationStepOutput,
+)
+from stochaflow.extensions import MetricUpdate, REGISTRIES
+
+
+class PairedEvaluator:
+    metric_channels = frozenset({"my-project.prediction-target"})
+
+    def __init__(self, model: nn.Module) -> None:
+        self.model = model
+
+    def evaluate_batch(self, batch):
+        inputs, targets, sample_ids = batch
+        predictions = self.model(inputs)
+        return EvaluationStepOutput(
+            num_examples=len(sample_ids),
+            sample_ids=tuple(sample_ids),
+            metric_update_groups=(
+                {
+                    "my-project.prediction-target": MetricUpdate(
+                        args=(predictions, targets),
+                    )
+                },
+            ),
+        )
+
+
+@REGISTRIES.evaluation_builders.register("my-project.paired-evaluation")
+class PairedEvaluationBuilder(EvaluationBuilder):
+    def build(self):
+        model = self.context.inference
+        if not isinstance(model, nn.Module):
+            raise TypeError("paired evaluation requires an nn.Module")
+        return EvaluationPlan(
+            evaluator=PairedEvaluator(model),
+            data=self.context.data,
+            metric_specs=self.context.metric_specs,
+            protocol=self.context.protocol,
+            subject=self.context.subject,
+            data_identity=self.context.data_identity,
+            modules={"primary": model},
+        )
+```
+
+`EvaluationBuilderContext.params`、subject、data identity、MetricSpec 和 protocol 都是
+只读 snapshot。Builder 必须原样保留注入的 subject/data/data identity/specs/protocol。
+checkpoint 路径的 `EvaluationPlan.modules` 必须声明已注入 model，core 才能统一管理
+device/mode 与 `torch.inference_mode()` 生命周期；offline 路径不提供 model，modules 可以
+为空。Evaluator 自己解释 live batch 或 `PredictionRecord.payload`、模型签名、channel
+payload 和稳定 sample IDs；core 只做完整性、MetricEngine 与 publication。
+
+完整生成 profile 不应在 EvaluationBuilder 中重组 Process/Dynamics/Sampler，也不应从
+checkpoint 再次选择权重。checkpoint runtime 会把已经绑定同一 pinned raw/EMA model、
+Process 与 inference assets 的 `EvaluationSamplingCapability` 放入 `context.sampling`；
+Builder 用 task-owned `EvaluationSamplingRequest` 调用它。该 capability 经 shared
+SamplingBuilder execution seam 返回 validated in-memory batches，不运行普通 writers。
+offline subject 的 `context.sampling` 为 `None`，因此 replay 不能重新生成。
+
+需要让 live checkpoint evaluation 产生可重放 predictions 时，Builder 从
+`context.artifact_root` 创建一个实现 `EvaluationArtifactSink` 的 sink，并放入
+`EvaluationPlan.artifact_sink`。内置 `JsonlPredictionArtifactSink` 接受一份 task-defined
+exact `PredictionSampleIdentity` plan；Evaluator 同时把与 `sample_ids` 同序的 typed
+`PredictionRecord` 放进 `EvaluationStepOutput.records`。runtime 会逐 step 调用 `consume()`，
+成功后 `finalize()`，失败则 `abort()`。只有 complete draft 会随 result 原子发布为
+`predictions/`；sink、observed evaluation IDs 与 ordered sample plan 任一不一致都会失败。
+
+同一个 Builder 可以根据 subject 是否为 `ResolvedPredictionArtifactSubject` 选择 offline
+Evaluator。offline data 已按 authenticated
+sample plan join，不应扫描目录或自行载入 pickle；Builder 只解释 typed payload 并产生
+metric updates。producer artifact 保持只读，新的 result 继续记录其 artifact/sample-plan
+digest 与 producer/source-subject lineage。
+
+配置的 `evaluation.name` 选择 Builder；`evaluation.params` 是其私有参数，
+`metrics[].channel` 必须出现在 Evaluator 的 `metric_channels`。当前 runtime 已提供 artifact
+sink、prediction subject 与 offline replay；core `fid`/`kid` providers 与 maintained AFHQ-v2
+source-checkout full-official-test Builder/Metric/profile 已闭合 pixel-image slice。
+SR、consistency、latent/codec 与 distillation 不属于当前待补项；未来任务必须同步交付自己的
+monitoring/checkpoint inference/Evaluation。reference cache、performance/curve 是可选增强。
+完整 schema、CLI 与结果目录见
+[独立 checkpoint Evaluation](workflows.md#独立-checkpoint-evaluation)。
+
 ## 自定义 DataBuilder
 
 ```python
@@ -884,8 +989,17 @@ class NetCDFWriter(SamplingArtifactWriter):
 ```
 
 ```yaml
-sampling:
+sample:
+  sampler:
+    name: ddim
+    params: {num_inference_steps: 50, eta: 0.0}
+  options:
+    weights: auto
+    trajectory: {enabled: false, every_steps: 1}
   shape: [64, 64, 4]
+  num_samples: 8
+  batch_size: 4
+  seed: 123
   writers:
     - name: tensor
       params: {}

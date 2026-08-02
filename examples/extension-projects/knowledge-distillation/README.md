@@ -3,7 +3,9 @@
 This independent Python distribution demonstrates Stochaflow's training and
 inference-asset composition boundaries with a frozen teacher, a checkpointed
 auxiliary objective, and an embedded logit calibrator. It is an architecture
-reference, not a benchmark or a claim about distillation accuracy.
+reference, not a benchmark or a claim about distillation accuracy. It is a
+legacy installed-acceptance fixture, not a maintained distillation task or
+formal Evaluation surface.
 
 The extension registers a deterministic in-memory synthetic classification
 `DataBuilder`, student and teacher models, cross-entropy and temperature-KL
@@ -13,13 +15,18 @@ objectives, a `TrainingBuilder`/`TrainingStrategy`, a registered
 
 ## Install and run
 
-Run commands from this project root so relative `data/` and `outputs/` paths
-resolve predictably. Any PEP 517-compatible installer works; uv is optional.
+This fixture follows the current source checkout's core contract and makes no
+compatibility promise for the older core wheel named in its legacy metadata.
+From the Stochaflow repository root, install the current core first and then
+install this extension without dependency resolution. Run the experiment from
+the project root so relative `data/` and `outputs/` paths resolve predictably.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[test]"
+python -m pip install -e ".[dev]"
+python -m pip install --no-deps -e examples/extension-projects/knowledge-distillation
+cd examples/extension-projects/knowledge-distillation
 python tools/create_teacher_bootstrap.py \
   --teacher-output data/teacher.pt \
   --calibrator-output data/calibrator.pt
@@ -40,14 +47,17 @@ Strict resume uses the checkpoint's saved configuration:
 stochaflow train --resume outputs/tiny/<run-id> --epochs 3
 ```
 
-Checkpoint-only sampling follows the checkpoint's calibrated student-prediction
-recipe. It constructs the primary student and requests only the declared
-`calibrator` inference asset. It does not construct the training builder,
-teacher, or distillation objective, so both bootstrap files may be removed
-before this command:
+Checkpoint-backed sampling combines the checkpoint's calibrated
+student-prediction recipe with a complete, explicit sample invocation. It
+constructs the primary student and requests only the declared `calibrator`
+inference asset. It does not construct the training builder, teacher, or
+distillation objective, so both bootstrap files may be removed before this
+command:
 
 ```bash
-stochaflow sample --checkpoint outputs/tiny/<run-id>
+stochaflow sample \
+  --checkpoint outputs/tiny/<run-id> \
+  --config experiments/tiny/sample.yaml
 ```
 
 Sampling writes `samples.pt` containing calibrated student logits and a
@@ -57,7 +67,7 @@ embedded state visibly authoritative: every output row equals that bias vector.
 
 ## Accepted reference result
 
-The installed-wheel, checkpoint-only acceptance run produces a tensor with
+The installed-wheel, checkpoint-backed acceptance run produces a tensor with
 shape `[8, 4]`. Every row is exactly:
 
 ```text

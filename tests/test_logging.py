@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Any
 
+import pytest
 from PIL import Image
 
 from stochaflow.utils import logging as logging_module
@@ -70,6 +71,33 @@ def test_local_logger_records_image_path_and_caption(tmp_path) -> None:
     text = (tmp_path / "train.log").read_text(encoding="utf-8")
     assert str(path) in text
     assert "caption=preview" in text
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("metrics_filename", "../escaped-metrics.jsonl"),
+        ("text_filename", "../escaped.log"),
+    ],
+)
+def test_local_logger_rejects_path_escape_before_opening_files(
+    tmp_path,
+    field: str,
+    value: str,
+) -> None:
+    run_dir = tmp_path / "run"
+    unsafe_kwargs: dict[str, Any] = {field: value}
+
+    with pytest.raises(ValueError, match="within the run directory"):
+        LocalLogger(
+            output_dir=str(run_dir),
+            run_name="unsafe",
+            console=False,
+            **unsafe_kwargs,
+        )
+
+    assert not run_dir.exists()
+    assert not (tmp_path / Path(value).name).exists()
 
 
 def test_tensorboard_logger_writes_image_summary(tmp_path) -> None:

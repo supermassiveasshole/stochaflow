@@ -73,7 +73,6 @@ def _adm_inference_provider(
         raw_state_dict=state,
         ema_state_dict=None,
         device=torch.device("cpu"),
-        prefer_ema=False,
     )
 
 
@@ -383,7 +382,6 @@ def test_class_conditioned_adm_runs_builtin_cfg_sampling_builder() -> None:
                 raw_state_dict=state,
                 ema_state_dict=None,
                 device=torch.device("cpu"),
-                prefer_ema=False,
             ),
             device=torch.device("cpu"),
             seed=11,

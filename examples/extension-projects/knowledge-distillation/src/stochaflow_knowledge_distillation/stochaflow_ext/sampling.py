@@ -45,7 +45,7 @@ class StudentPredictionBuilder(SamplingBuilder):
             raise ValueError("student prediction sampling does not use a Process")
         if self.context.shape is not None:
             raise ValueError(
-                "student prediction sampling requires sampling.shape: null"
+                "student prediction sampling requires sample.shape: null"
             )
 
         params: dict[str, Any] = dict(self.context.params)
@@ -111,7 +111,9 @@ class StudentPredictionBuilder(SamplingBuilder):
                 )
             logits = logits.detach().cpu()
             predicted_classes.extend(logits.argmax(dim=1).tolist())
-            batches.append(SamplingBatch(samples=logits))
+            batches.append(
+                SamplingBatch(samples=logits, num_samples=inputs.shape[0])
+            )
         return SamplingOutput(
             batches=tuple(batches),
             metadata={

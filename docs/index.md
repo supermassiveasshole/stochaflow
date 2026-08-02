@@ -4,22 +4,31 @@
   <p class="sf-eyebrow">Configuration-driven generative modeling</p>
   <p class="sf-lead">
     Stochaflow 把数据准备、组件组合、自动训练、严格恢复、checkpoint-backed
-    inference、诊断与结果 artifact 串成一条可扩展研究工作流。
+    inference、独立 evaluation、诊断与结果 artifact 串成一条可扩展研究工作流。
   </p>
   <ul class="sf-pills" aria-label="当前核心能力">
     <li class="sf-pill">Python 3.12+</li>
     <li class="sf-pill">PyTorch</li>
     <li class="sf-pill">DDPM / DDIM</li>
     <li class="sf-pill">可安装扩展</li>
-    <li class="sf-pill">Checkpoint v11</li>
+    <li class="sf-pill">Checkpoint v12</li>
+    <li class="sf-pill">Standalone Evaluation</li>
   </ul>
 </div>
 
 当前内置实现聚焦 pixel-space 离散 Gaussian diffusion，包括无条件与类别条件训练、
 fixed/learned-range variance、epsilon-only P2 training、full/respaced ancestral
-DDPM、DDIM、EMA、CFG 和结果 writers。项目可以通过普通 Python distribution 接入
-自己的数据、训练策略、生成算法与 artifact；latent diffusion、pretrained
-autoencoder 和 distributed training 尚未实现。
+DDPM、DDIM、EMA、CFG、结果 writers 与独立 checkpoint evaluation runtime。项目可以
+通过普通 Python distribution 接入自己的数据、训练策略、生成算法与 artifact；
+latent diffusion、pretrained
+autoencoder 和 distributed training 尚未实现。当前 evaluation core 已支持显式 raw/EMA、
+validation/test completeness、versioned prediction artifact、按 exact sample plan 的 offline
+scoring 与 immutable result bundle。core FID/KID providers 与 maintained AFHQ-v2
+source-checkout
+full-official-test public profile 已闭合普通 pixel-space 图像生成。通用 runtime 不自动使
+SR、consistency、latent/codec 或 distillation 成为受支持任务；未来任务必须同步交付自己的
+monitoring、checkpoint inference 与 formal Evaluation。reference cache、comparison/gate 是
+可选增强，不是当前 P2 缺口。
 
 ```{toctree}
 :maxdepth: 2
@@ -27,7 +36,6 @@ autoencoder 和 distributed training 尚未实现。
 :hidden:
 
 framework
-design/scope
 platform-support
 configuration/index
 tutorials/tensorboard
@@ -118,14 +126,19 @@ manifest 共同固定一次运行的来源。
 :::
 ::::
 
-先阅读[框架特性与架构](framework.md)了解稳定职责边界；长期非目标与新公共抽象的
-准入规则记录在[架构范围](design/scope.md)。
+先阅读[框架概览与当前能力](framework.md)了解当前行为与工作流；长期产品范围、
+非目标与新公共抽象的准入规则记录在
+[项目规范](https://github.com/supermassiveasshole/stochaflow/blob/main/SPEC.md)，
+架构所有权与依赖方向记录在
+[架构说明](https://github.com/supermassiveasshole/stochaflow/blob/main/ARCHITECTURE.md)。
 
 ## 结果一览
 
 MNIST 卡片来自仓库记录的固定协议，不把短 smoke run 当作质量 benchmark。AFHQ-v2
 卡片描述 canonical ADM 拓扑切换后的当前可运行 surface；corrected ADM 尚无已发布的
-长训练质量结果。
+长训练质量结果。P2 tiny/full-topology bounded runs 只证明 readiness；独立 schema-v3
+RTX 4090 sweep 提供 operational capacity evidence。单 epoch、单 seed 的 exact-sample
+formal A/B 已完成且未显示 P2 收益，但不是统计显著或 production promotion evidence。
 
 ::::{container} sf-results
 :::{container} sf-result-card
@@ -148,7 +161,7 @@ checkpoint 的 validation v-prediction loss 为 **0.07189**。
 residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与样本不作为 corrected
 模型或 P2 的证据。
 
-<p class="sf-result-meta">fresh training required · quality result pending</p>
+<p class="sf-result-meta">public formal · measured RTX 4090 capacity · one-epoch P2 A/B no benefit · long-run pending</p>
 
 [查看 AFHQ-v2 数据、配置与按类评估流程](tutorials/afhq-v2.md)
 :::
@@ -156,13 +169,15 @@ residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与�
 
 ## 按目标继续
 
-- [架构范围与非目标](design/scope.md)：长期职责边界、明确拒绝的复杂度和新公共抽象的
-  准入门槛。
-- [框架特性与架构](framework.md)：稳定职责边界、当前内置能力和 extension 心智模型。
+- [项目规范](https://github.com/supermassiveasshole/stochaflow/blob/main/SPEC.md)：
+  长期产品范围、明确非目标和新公共抽象的准入门槛。
+- [架构说明](https://github.com/supermassiveasshole/stochaflow/blob/main/ARCHITECTURE.md)：
+  稳定所有权、依赖方向与组合边界。
+- [框架概览与当前能力](framework.md)：当前内置能力、工作流和 extension 心智模型。
 - [平台支持政策](platform-support.md)：Supported、Deprecated / best effort 等级和
   当前 CI 验证矩阵。
 - [配置手册](configuration/index.md)：从最小 YAML 到多源数据、K-fold、自定义组件、
-  训练恢复与排错。
+  训练恢复、checkpoint evaluation 与排错。
 - [完整字段参考](configuration/reference.md)：由 dataclass、Registry 和 CLI 自动生成。
 - [TensorBoard 使用指南](tutorials/tensorboard.md)：启用日志、比较多次运行、解读
   loss/LR/diagnostic 面板并排查 event 路径。
@@ -171,14 +186,14 @@ residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与�
 - [AFHQ-v2 数据准备与训练](tutorials/afhq-v2.md)：安全下载、确定性 managed artifact、
   离线验证、strict resume 与 128×128 showcase。
 - [纵向扩展参考项目](configuration/reference-projects.md)：Physics reconstruction 与
-  frozen-teacher distillation 的独立可安装实现。
+  frozen-teacher distillation 的 legacy install/architecture fixtures，不是 maintained task。
 - [复用 Gaussian family 教程](tutorials/reuse-gaussian-components.md)与
   [自定义生成 family 教程](tutorials/custom-generation-family.md)：两条独立最小扩展路径。
-- [条件 Gaussian 超分辨率](tutorials/super-resolution.md)：从内置 SR 数据 recipe 到
-  condition-aware 训练和复用 DDPM/DDIM 的完整组合。
+- [条件 Gaussian 超分辨率](tutorials/super-resolution.md)：从内置 data-only SR recipe
+  说明项目自行实现 condition-aware task 时需要遵守的 extension 边界。
 - [Checkpoint、配置权威与可移植性](configuration/compatibility-and-migration.md)：
-  checkpoint v11、canonical epoch metric mapping、fixed inference recipe、partial sample
-  request 和跨环境恢复边界。
+  checkpoint v12、canonical epoch metric mapping、fixed inference recipe、完整独立
+  sample invocation 和跨环境恢复边界。
 - [扩展公共 API](api/extensions.md)：第三方 extension 的稳定 Python import surface。
 - [Sampling artifact 容量](configuration/sampling-capacity.md)：整体物化生命周期、
   内存估算、trajectory 限制和参考主机证据。

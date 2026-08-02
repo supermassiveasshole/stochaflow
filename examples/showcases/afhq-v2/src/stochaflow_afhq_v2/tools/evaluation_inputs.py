@@ -147,7 +147,7 @@ def checkpoint_data_bindings(
 def validate_data_config(inputs: ResolvedSamplingInputs) -> None:
     """Enforce the frozen AFHQ-v2 test-data protocol."""
 
-    config = inputs.config
+    config = inputs.checkpoint_config
     if config.data.name != BUILDER_NAME:
         raise ValueError(
             "AFHQ-v2 evaluation requires the built-in "

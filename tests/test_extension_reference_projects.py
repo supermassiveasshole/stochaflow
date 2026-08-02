@@ -22,13 +22,13 @@ from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 from stochaflow.utils.config import (
-    apply_sample_request,
-    load_config,
-    parse_sample_request,
+    load_sample_config,
 )
 
 _REPOSITORY: Final = Path(__file__).resolve().parents[1]
 _REFERENCE_ROOT: Final = _REPOSITORY / "examples/extension-projects"
+_AFHQ_ROOT: Final = _REPOSITORY / "examples/showcases/afhq-v2"
+_AFHQ_DIRECTORY: Final = "afhq-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,10 +142,10 @@ def _copy_stochaflow_source(destination: Path) -> Path:
     return destination
 
 
-def _copy_reference_project(project: FixtureReferenceProject, destination: Path) -> Path:
+def _copy_installable_project(source: Path, destination: Path) -> Path:
     return Path(
         shutil.copytree(
-            project.source,
+            source,
             destination,
             ignore=shutil.ignore_patterns(
                 ".venv",
@@ -162,6 +162,10 @@ def _copy_reference_project(project: FixtureReferenceProject, destination: Path)
             ),
         )
     )
+
+
+def _copy_reference_project(project: FixtureReferenceProject, destination: Path) -> Path:
+    return _copy_installable_project(project.source, destination)
 
 
 def _build_wheel(source: Path, output: Path) -> Path:
@@ -220,6 +224,8 @@ def _create_installed_environment(
     root: Path,
     wheels: tuple[Path, ...],
 ) -> tuple[Path, Path, dict[str, str]]:
+    """Install current-checkout wheels without resolving published dependencies."""
+
     uv = shutil.which("uv")
     assert uv is not None, "the repository test environment requires the uv CLI"
     harness = root / "harness"
@@ -287,6 +293,10 @@ def installed_reference_environment(
         )
         for project in _PROJECTS
     }
+    project_copies[_AFHQ_DIRECTORY] = _copy_installable_project(
+        _AFHQ_ROOT,
+        source_root / _AFHQ_DIRECTORY,
+    )
     wheel_root = root / "wheels"
     wheel_root.mkdir()
     wheels = {
@@ -298,6 +308,10 @@ def installed_reference_environment(
             )
             for project in _PROJECTS
         },
+        _AFHQ_DIRECTORY: _build_wheel(
+            project_copies[_AFHQ_DIRECTORY],
+            wheel_root / _AFHQ_DIRECTORY,
+        ),
     }
     python, cli, environment = _create_installed_environment(
         root,
@@ -512,17 +526,14 @@ def test_physics_real_smoke_profiles_preserve_production_solver_math(
             encoding="utf-8"
         )
     )
-    checkpoint_defaults = load_config(
-        _PHYSICS.source / "experiments/production/train.yaml"
-    ).sampling
-    production = apply_sample_request(
-        checkpoint_defaults,
-        parse_sample_request(production_document["sampling"]),
-    )
-    smoke = apply_sample_request(
-        checkpoint_defaults,
-        parse_sample_request(smoke_document["sampling"]),
-    )
+    assert set(production_document) == {"sample"}
+    assert set(smoke_document) == {"sample"}
+    production = load_sample_config(
+        _PHYSICS.source / "experiments/production" / profile
+    ).sample
+    smoke = load_sample_config(
+        _PHYSICS.source / "experiments/real-smoke" / profile
+    ).sample
 
     assert smoke.shape == production.shape == [3, 256, 256]
     assert smoke.num_samples == smoke.batch_size == 1
@@ -566,6 +577,161 @@ def test_reference_project_wheels_have_isolated_entry_points(
         assert dict(entry_points["stochaflow.extensions"]) == {
             project.plugin: project.target
         }
+
+
+def test_afhq_formal_evaluation_activates_with_current_core_wheel(
+    installed_reference_environment: FixtureInstalledReferenceEnvironment,
+) -> None:
+    """Verify packaged AFHQ content and activation against the current core wheel."""
+
+    installed = installed_reference_environment
+    wheel = installed.wheels[_AFHQ_DIRECTORY]
+    entry_points = _entry_points_from_wheel(wheel)
+    assert dict(entry_points["stochaflow.extensions"]) == {
+        "stochaflow-afhq-v2": "stochaflow_afhq_v2.stochaflow_ext"
+    }
+    with zipfile.ZipFile(wheel) as archive:
+        members = tuple(archive.namelist())
+    assert (
+        "stochaflow_afhq_v2/stochaflow_ext/evaluation.py" in members
+    )
+
+    script = r"""
+import importlib
+from importlib import metadata
+import json
+from pathlib import Path
+import sys
+
+from torchmetrics import Metric
+
+from stochaflow.evaluation import EvaluationBuilder, load_evaluation_config
+from stochaflow.extensions import (
+    REGISTRIES,
+    activate_extension_plugins,
+    prepare_extension_plugins,
+)
+from stochaflow.utils.config import load_config
+
+arguments = json.loads(sys.argv[1])
+environment_root = Path(arguments["environment_root"]).resolve()
+for raw_path in sys.path:
+    candidate = Path(raw_path or ".").resolve()
+    assert all(
+        candidate != Path(value).resolve()
+        for value in arguments["forbidden"]
+    )
+
+import stochaflow
+assert Path(stochaflow.__file__).resolve().is_relative_to(environment_root)
+distribution = metadata.distribution("stochaflow-afhq-v2")
+assert Path(distribution.locate_file("")).resolve().is_relative_to(environment_root)
+matches = [
+    item
+    for item in distribution.entry_points
+    if item.group == "stochaflow.extensions"
+]
+assert [(item.name, item.value) for item in matches] == [
+    ("stochaflow-afhq-v2", "stochaflow_afhq_v2.stochaflow_ext")
+]
+
+builder_name = "afhq-v2.class-conditional-generation"
+metric_name = "afhq-v2.class-aware-distribution"
+assert builder_name not in REGISTRIES.evaluation_builders.names()
+assert metric_name not in REGISTRIES.metrics.names()
+assert "stochaflow_afhq_v2.stochaflow_ext.evaluation" not in sys.modules
+
+profiles = [load_evaluation_config(path) for path in arguments["profiles"]]
+assert {
+    profile.evaluation.params["sampling"]["recipe"]["contract"][
+        "prediction_type"
+    ]
+    for profile in profiles
+} == {"epsilon", "v"}
+assert {
+    profile.name: (profile.purpose, profile.data.split, profile.protocol.expected_examples)
+    for profile in profiles
+} == {
+    "afhq-v2-adm-ddim50-cfg2-official-test-v1": ("final_test", "test", 1467),
+    "afhq-v2-adm-epsilon-ddim50-cfg2-official-test-v1": (
+        "final_test",
+        "test",
+        1467,
+    ),
+    "afhq-v2-adm-epsilon-ddim50-cfg2-validation-v1": (
+        "selection_candidate",
+        "validation",
+        900,
+    ),
+}
+for profile in profiles:
+    assert profile.extensions.plugins == ("stochaflow-afhq-v2",)
+    assert profile.evaluation.name == builder_name
+    assert len(profile.metrics) == 1
+    assert profile.metrics[0].name == metric_name
+    assert profile.protocol.strict_complete is True
+
+training_config = load_config(arguments["training_config"])
+assert training_config.experiment.name == "afhq_v2_adm_128_p2"
+assert training_config.training.name == "class_conditional_p2_gaussian_denoising"
+assert training_config.trainer.device == "cuda"
+plan = prepare_extension_plugins(training_config)
+assert [
+    (item.name, item.distribution, item.target)
+    for item in plan.provenance
+] == [
+    (
+        "stochaflow-afhq-v2",
+        "stochaflow-afhq-v2",
+        "stochaflow_afhq_v2.stochaflow_ext",
+    )
+]
+activate_extension_plugins(plan)
+
+formal_module = importlib.import_module(
+    "stochaflow_afhq_v2.stochaflow_ext.evaluation"
+)
+assert Path(formal_module.__file__).resolve().is_relative_to(environment_root)
+builder_type = REGISTRIES.evaluation_builders[builder_name]
+metric_type = REGISTRIES.metrics[metric_name]
+assert builder_type is formal_module.AFHQV2GenerationEvaluationBuilder
+assert metric_type is formal_module.AFHQV2ClassAwareDistributionMetric
+assert issubclass(builder_type, EvaluationBuilder)
+assert issubclass(metric_type, Metric)
+"""
+    afhq_copy = installed.projects[_AFHQ_DIRECTORY]
+    arguments = {
+        "environment_root": str(installed.root / "harness/.venv"),
+        "forbidden": [
+            str(_REPOSITORY / "src"),
+            str(_AFHQ_ROOT / "src"),
+            *(str(path / "src") for path in installed.projects.values()),
+        ],
+        "training_config": str(
+            afhq_copy / "experiments/production/train-adm-128-p2.yaml"
+        ),
+        "profiles": [
+            str(
+                afhq_copy
+                / "experiments/evaluation/formal-ddim50-cfg2-official-test.yaml"
+            ),
+            str(
+                afhq_copy
+                / "experiments/evaluation/"
+                "formal-ddim50-cfg2-official-test-epsilon.yaml"
+            ),
+            str(
+                afhq_copy
+                / "experiments/evaluation/"
+                "selection-ddim50-cfg2-validation-epsilon.yaml"
+            ),
+        ],
+    }
+    _run(
+        [installed.python, "-c", script, json.dumps(arguments)],
+        cwd=installed.root / "harness",
+        environment=installed.environment,
+    )
 
 
 @pytest.mark.parametrize("project", _PROJECTS, ids=lambda item: item.directory)
@@ -673,11 +839,12 @@ from stochaflow.extensions import (
     prepare_extension_plugins,
 )
 from stochaflow.training.builder import build_training_plan
-from stochaflow.utils.config import load_config
+from stochaflow.utils.config import load_config, load_sample_config
 from stochaflow.utils.factory import build_model, build_objective, build_process
 
 arguments = json.loads(sys.argv[1])
 config = load_config(arguments["config"])
+sample = load_sample_config(arguments["sample_config"]).sample
 plugin_plan = prepare_extension_plugins(config)
 assert [
     (item.name, item.distribution, item.target)
@@ -724,11 +891,10 @@ assert config.objective.name == "mse"
 assert config.optimizer.name == "torch.optim.Adam"
 assert config.lr_scheduler is not None
 assert config.lr_scheduler.name == "torch.optim.lr_scheduler.CosineAnnealingLR"
-assert config.sampling.run_after_training is True
-assert config.sampling.sampler is not None
-assert config.sampling.sampler.name == "ddim"
-assert "prediction_type" not in config.sampling.options
-assert [writer.name for writer in config.sampling.writers] == [
+assert sample.sampler is not None
+assert sample.sampler.name == "ddim"
+assert "prediction_type" not in sample.options
+assert [writer.name for writer in sample.writers] == [
     "physics-reconstruction.reconstruction-artifacts"
 ]
 
@@ -761,6 +927,10 @@ assert training_plan.auxiliary_modules == {}
         "config": str(
             installed.projects[_PHYSICS.directory]
             / "experiments/production/train.yaml"
+        ),
+        "sample_config": str(
+            installed.projects[_PHYSICS.directory]
+            / "experiments/production/sample-baseline-ddim.yaml"
         ),
         "plugin": _PHYSICS.plugin,
         "distribution": _PHYSICS.distribution,
@@ -846,7 +1016,6 @@ def test_distillation_cli_train_resume_and_offline_calibrated_sample(
         "1",
         "--limit-test-batches",
         "1",
-        "--skip-final-sample",
         "--no-progress",
     )
     first_run = _only_run(project_root / "outputs/tiny")
@@ -938,7 +1107,6 @@ def test_distillation_cli_train_resume_and_offline_calibrated_sample(
         "1",
         "--limit-test-batches",
         "1",
-        "--skip-final-sample",
         "--no-progress",
     )
     resumed_run = _only_run(resumed_root)
@@ -1002,7 +1170,10 @@ import sys
 from stochaflow.sampling.runtime import resolve_sampling_inputs
 
 assert socket.socket.__name__ == "OfflineSocket"
-inputs = resolve_sampling_inputs(config_path=None, checkpoint=Path(sys.argv[1]))
+inputs = resolve_sampling_inputs(
+    config_path=Path(sys.argv[2]),
+    checkpoint=Path(sys.argv[1]),
+)
 payload = inputs.checkpoint
 assert set(payload["inference_asset_descriptors"]) == {"calibrator"}
 assert set(payload["inference_asset_state_dicts"]) == {"calibrator"}
@@ -1016,6 +1187,7 @@ assert all("distillation_objective" not in key for key in payload)
             "-c",
             projection_check,
             resumed_checkpoint,
+            project_root / "experiments/tiny/sample.yaml",
         ],
         cwd=external_cwd,
         environment=offline_environment,
@@ -1028,6 +1200,8 @@ assert all("distillation_objective" not in key for key in payload)
             "sample",
             "--checkpoint",
             resumed_run,
+            "--config",
+            project_root / "experiments/tiny/sample.yaml",
             "--output-dir",
             sample_root,
             "--device",
@@ -1094,7 +1268,6 @@ def test_physics_cli_train_resume_and_sample_variants(
         "1",
         "--limit-test-batches",
         "1",
-        "--skip-final-sample",
         "--no-progress",
     )
     first_run = _only_run(first_output)
@@ -1137,7 +1310,6 @@ def test_physics_cli_train_resume_and_sample_variants(
         "1",
         "--limit-test-batches",
         "1",
-        "--skip-final-sample",
         "--no-progress",
     )
     resumed_run = _only_run(resumed_root)
@@ -1178,7 +1350,7 @@ def test_physics_cli_train_resume_and_sample_variants(
         manifest_path = sample_root / "resolved_sampling.yaml"
         _assert_manifest_provenance(manifest_path, _PHYSICS)
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-        num_samples = manifest["sampling"]["num_samples"]
+        num_samples = manifest["sample"]["num_samples"]
         assert reconstruction.shape == (num_samples, 3, 8, 8)
         assert reconstruction.dtype == np.float32
         metrics = json.loads(

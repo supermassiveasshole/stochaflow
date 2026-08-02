@@ -139,41 +139,25 @@ class ExperimentConfig:
     exp_id: str | None = None
 
 
-@dataclass(slots=True)
-class SamplingConfig:
-    """Checkpoint-bound sampling defaults without composition internals."""
+@dataclass(frozen=True, slots=True)
+class SampleConfig:
+    """Complete mutable inputs for one checkpoint-backed sample invocation."""
 
-    run_after_training: bool = False
-    sampler: ComponentConfig | None = None
-    options: dict[str, Any] = field(default_factory=dict)
-    shape: list[int] | None = None
-    num_samples: int = 16
-    batch_size: int = 16
-    seed: int | None = None
-    writers: list[ComponentConfig] = field(
-        default_factory=lambda: [ComponentConfig(name="tensor")]
-    )
+    sampler: ComponentConfig | None
+    options: dict[str, Any]
+    shape: list[int] | None
+    num_samples: int
+    batch_size: int
+    seed: int
+    writers: list[ComponentConfig]
 
 
 @dataclass(frozen=True, slots=True)
-class SampleRequest:
-    """Typed partial override for one checkpoint-bound sampling invocation."""
+class SampleInvocationConfig:
+    """Standalone sample authority and optional inference-only plugins."""
 
-    sampler: ComponentConfig | None = None
-    options: dict[str, Any] = field(default_factory=dict)
-    shape: list[int] | None = None
-    num_samples: int | None = None
-    batch_size: int | None = None
-    seed: int | None = None
-    writers: list[ComponentConfig] = field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class ParsedSampleRequest:
-    """A typed request together with the fields explicitly supplied by its user."""
-
-    request: SampleRequest
-    provided_fields: frozenset[str]
+    sample: SampleConfig
+    extensions: ExtensionsConfig = field(default_factory=ExtensionsConfig)
 
 
 @dataclass(slots=True)
@@ -193,7 +177,6 @@ class EMAConfig:
     decay: float = 0.9999
     update_after_step: int = 0
     update_every: int = 1
-    use_for_sampling: bool = True
 
 
 @dataclass(slots=True)
@@ -258,7 +241,6 @@ class StochaflowConfig:
     )
     lr_scheduler: LRSchedulerConfig | None = None
     ema: EMAConfig = field(default_factory=EMAConfig)
-    sampling: SamplingConfig = field(default_factory=SamplingConfig)
     diagnostics: list[ComponentConfig] = field(default_factory=list)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -341,7 +323,6 @@ class StochaflowConfig:
                 raise ConfigError("process.name must be a non-empty registry name")
             if not isinstance(cast(object, self.process.params), dict):
                 raise ConfigError("process.params must be a mapping")
-        _validate_sampling_config(self.sampling, path="sampling")
         optimizer_name = cast(object, self.optimizer.name)
         if not isinstance(optimizer_name, str) or not optimizer_name.strip():
             raise ConfigError("optimizer.name must be a non-empty string")
@@ -481,103 +462,16 @@ def coerce_config_section(cls: type[Any], raw: Any, path: str) -> Any:
     return _coerce_dataclass(cls, deepcopy(raw), path)
 
 
-def parse_sample_request(raw: object) -> ParsedSampleRequest:
-    """Parse a strict partial sampling request without applying checkpoint defaults."""
-
-    if not isinstance(raw, dict):
-        raise ConfigError("config.sampling must be a mapping")
-    request = cast(
-        SampleRequest,
-        coerce_config_section(SampleRequest, raw, "config.sampling"),
-    )
-    _validate_sample_request(
-        request,
-        provided_fields=frozenset(raw),
-        path="sampling",
-    )
-    return ParsedSampleRequest(request, frozenset(raw))
-
-
-def apply_sample_request(
-    base: SamplingConfig,
-    parsed: ParsedSampleRequest,
-) -> SamplingConfig:
-    """Apply a typed field-wise request to checkpoint sampling defaults."""
-
-    request = parsed.request
-    provided = parsed.provided_fields
-    sampler = (
-        deepcopy(request.sampler)
-        if "sampler" in provided
-        else deepcopy(base.sampler)
-    )
-    shape = deepcopy(request.shape) if "shape" in provided else deepcopy(base.shape)
-    num_samples = (
-        cast(int, request.num_samples)
-        if "num_samples" in provided
-        else base.num_samples
-    )
-    batch_size = (
-        cast(int, request.batch_size)
-        if "batch_size" in provided
-        else base.batch_size
-    )
-    seed = request.seed if "seed" in provided else base.seed
-    writers = (
-        deepcopy(request.writers)
-        if "writers" in provided
-        else deepcopy(base.writers)
-    )
-    options = deepcopy(base.options)
-    if "options" in provided:
-        options.update(deepcopy(request.options))
-    result = SamplingConfig(
-        run_after_training=base.run_after_training,
-        sampler=sampler,
-        options=options,
-        shape=shape,
-        num_samples=num_samples,
-        batch_size=batch_size,
-        seed=seed,
-        writers=writers,
-    )
-    _validate_sampling_config(result, path="sampling")
-    return result
-
-
-def _validate_sampling_config(config: SamplingConfig, *, path: str) -> None:
-    if not isinstance(cast(object, config.run_after_training), bool):
-        raise ConfigError(f"{path}.run_after_training must be boolean")
+def _validate_sample_config(config: SampleConfig, *, path: str) -> None:
     if config.sampler is not None:
         _validate_component(config.sampler, path=f"{path}.sampler")
     _validate_options(config.options, path=f"{path}.options")
     _validate_shape(config.shape, path=f"{path}.shape")
     _positive_int(config.num_samples, path=f"{path}.num_samples")
     _positive_int(config.batch_size, path=f"{path}.batch_size")
-    _optional_int(config.seed, path=f"{path}.seed")
+    if not isinstance(cast(object, config.seed), int) or isinstance(config.seed, bool):
+        raise ConfigError(f"{path}.seed must be an integer")
     _validate_writers(config.writers, path=f"{path}.writers")
-
-
-def _validate_sample_request(
-    request: SampleRequest,
-    *,
-    provided_fields: frozenset[str],
-    path: str,
-) -> None:
-    if "sampler" in provided_fields and request.sampler is not None:
-        _validate_component(request.sampler, path=f"{path}.sampler")
-    if "options" in provided_fields:
-        _validate_options(request.options, path=f"{path}.options")
-    if "shape" in provided_fields:
-        _validate_shape(request.shape, path=f"{path}.shape")
-    if "num_samples" in provided_fields:
-        _positive_int(request.num_samples, path=f"{path}.num_samples")
-    if "batch_size" in provided_fields:
-        _positive_int(request.batch_size, path=f"{path}.batch_size")
-    if "seed" in provided_fields:
-        _optional_int(request.seed, path=f"{path}.seed")
-    if "writers" in provided_fields:
-        _validate_writers(request.writers, path=f"{path}.writers")
 
 
 def _validate_component(value: ComponentConfig, *, path: str) -> None:
@@ -598,7 +492,7 @@ def _validate_options(value: object, *, path: str) -> None:
             raise ConfigError(f"{path} keys must be non-empty strings")
     if "sampler" in value:
         raise ConfigError(
-            f"{path}.sampler is reserved; use the top-level sampling.sampler field"
+            f"{path}.sampler is reserved; use the top-level sample.sampler field"
         )
 
 
@@ -618,13 +512,6 @@ def _validate_shape(value: object, *, path: str) -> None:
 def _positive_int(value: object, *, path: str) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ConfigError(f"{path} must be a positive integer")
-
-
-def _optional_int(value: object, *, path: str) -> None:
-    if value is not None and (
-        not isinstance(value, int) or isinstance(value, bool)
-    ):
-        raise ConfigError(f"{path} must be an integer or null")
 
 
 def _validate_writers(value: object, *, path: str) -> None:
@@ -656,4 +543,40 @@ def load_config_dict(raw: dict[str, Any]) -> StochaflowConfig:
 
     config = _coerce_dataclass(StochaflowConfig, raw, "config")
     config.validate()
+    return config
+
+
+def load_sample_config(path: str | Path) -> SampleInvocationConfig:
+    """Load one complete sample invocation without checkpoint defaults."""
+
+    config_path = Path(path)
+    with config_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{config_path} must contain a top-level mapping")
+    config = cast(
+        SampleInvocationConfig,
+        _coerce_dataclass(SampleInvocationConfig, raw, "config"),
+    )
+    _validate_sample_config(config.sample, path="sample")
+    plugins = config.extensions.plugins
+    plugins_value = cast(object, plugins)
+    if plugins is None or not isinstance(plugins_value, list):
+        raise ConfigError("sample extensions.plugins must be an explicit list")
+    seen: set[str] = set()
+    for index, declared_plugin in enumerate(plugins):
+        plugin = cast(object, declared_plugin)
+        if not isinstance(plugin, str) or not plugin.strip():
+            raise ConfigError(
+                f"extensions.plugins[{index}] must be a non-empty string"
+            )
+        if plugin != plugin.strip():
+            raise ConfigError(
+                f"extensions.plugins[{index}] must not contain surrounding whitespace"
+            )
+        if plugin in seen:
+            raise ConfigError(
+                f"extensions.plugins contains duplicate entry-point name '{plugin}'"
+            )
+        seen.add(plugin)
     return config

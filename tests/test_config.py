@@ -13,11 +13,12 @@ from stochaflow.utils.config import (
     StochaflowConfig,
     load_config,
     load_config_dict,
-    parse_sample_request,
+    load_sample_config,
 )
 
 BUILTIN_CONFIGS = Path("examples/built-in/image-generation/configs")
 BUILTIN_TRAIN_CONFIG = BUILTIN_CONFIGS / "train/mnist.yaml"
+BUILTIN_SAMPLE_CONFIG = BUILTIN_CONFIGS / "sample/mnist-ddim-50.yaml"
 
 
 def _multi_resolution_config_raw() -> dict[str, Any]:
@@ -155,18 +156,10 @@ def test_load_mnist_train_config() -> None:
         "total_steps": 78000,
         "min_lr_ratio": 0.05,
     }
-    assert not config.sampling.run_after_training
-    assert config.sampling.sampler is None
-    assert "prediction_type" not in config.sampling.options
     assert config.ema.enabled
     assert config.ema.decay == 0.9995
     assert config.ema.update_after_step == 100
     assert config.ema.update_every == 1
-    assert config.ema.use_for_sampling
-    assert config.sampling.num_samples == 16
-    assert config.sampling.batch_size == 16
-    assert config.sampling.shape is None
-    assert [writer.name for writer in config.sampling.writers] == ["tensor"]
     assert config.trainer.num_epochs == 200
     assert not config.trainer.early_stopping.enabled
     assert config.trainer.early_stopping.monitor == "valid/loss"
@@ -243,17 +236,10 @@ def test_builtin_config_tree_separates_train_sample_and_overlays() -> None:
 
     for sample_path in sample_paths:
         document = yaml.safe_load(sample_path.read_text(encoding="utf-8"))
-        assert set(document) == {"sampling"}
-        parsed = parse_sample_request(document["sampling"])
-        assert parsed.provided_fields == {
-            "sampler",
-            "options",
-            "shape",
-            "num_samples",
-            "batch_size",
-            "seed",
-            "writers",
-        }
+        assert set(document) == {"sample"}
+        parsed = load_sample_config(sample_path)
+        assert parsed.sample.seed == 123
+        assert parsed.sample.options["weights"] == "ema"
 
 
 def test_config_parsing_does_not_import_declared_plugins(
@@ -474,7 +460,7 @@ def test_config_to_dict_preserves_top_level_sections() -> None:
     assert "model" in data
     assert "training" in data
     assert "ema" in data
-    assert "sampling" in data
+    assert "sampling" not in data
     assert data["lr_scheduler"] is not None
     assert "diagnostics" in data
     assert "trainer" in data
@@ -654,19 +640,12 @@ def test_ema_config_rejects_invalid_decay() -> None:
         load_config_dict(raw)
 
 
-def test_sampling_section_is_optional() -> None:
+def test_training_config_rejects_legacy_sampling_section() -> None:
     raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
-    raw.pop("sampling")
+    raw["sampling"] = {"run_after_training": True}
 
-    config = load_config_dict(raw)
-
-    assert not config.sampling.run_after_training
-    assert config.sampling.sampler is None
-    assert config.sampling.options == {}
-    assert config.sampling.shape is None
-    assert config.sampling.num_samples == 16
-    assert config.sampling.batch_size == 16
-    assert [writer.name for writer in config.sampling.writers] == ["tensor"]
+    with pytest.raises(ConfigError, match=r"unknown config field.*config\.sampling"):
+        load_config_dict(raw)
 
 
 @pytest.mark.parametrize(
@@ -679,12 +658,18 @@ def test_sampling_section_is_optional() -> None:
         (("writers", 0, "name"), ""),
     ],
 )
-def test_sampling_config_rejects_non_positive_values(path, value) -> None:
-    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
-    target = raw["sampling"]
+def test_sample_config_rejects_invalid_values(
+    tmp_path: Path,
+    path: tuple[object, ...],
+    value: object,
+) -> None:
+    raw = yaml.safe_load(BUILTIN_SAMPLE_CONFIG.read_text(encoding="utf-8"))
+    target = raw["sample"]
     for key in path[:-1]:
         target = target[key]
     target[path[-1]] = value
+    source = tmp_path / "sample.yaml"
+    source.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigError, match="sampling"):
-        load_config_dict(raw)
+    with pytest.raises(ConfigError, match="sample"):
+        load_sample_config(source)

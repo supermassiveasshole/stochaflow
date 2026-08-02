@@ -6,15 +6,18 @@ from typing import Any, NamedTuple, cast
 
 import pytest
 import torch
+from rich.console import Console
 from torch import nn
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 
 from stochaflow.training import (
     DeviceTransferableBatch,
+    FinalSummary,
     FitStartEvent,
     InferenceAssetProjection,
     ManagedTrainingModule,
+    RichTrainingReporter,
     SupervisedTrainingStrategy,
     TrainBatchEndEvent,
     TrainEpochEndEvent,
@@ -103,6 +106,38 @@ class RecordingReporter:
     def on_epoch_end(self, **kwargs) -> None:
         del kwargs
         self.epoch_summaries += 1
+
+
+def test_final_reporter_renders_complete_phase_test_metrics(tmp_path) -> None:
+    console = Console(record=True, width=160, color_system=None)
+    reporter = RichTrainingReporter(console=console)
+    phase_test_metrics = {
+        "test/loss": 0.25,
+        "test/metrics/custom": 0.75,
+        "system/test/num_batches": 2.0,
+        "system/test/duration_seconds": 0.125,
+    }
+
+    reporter.on_run_end(
+        FinalSummary(
+            best_epoch=1,
+            best_metric_name="valid/loss",
+            best_metric_value=0.4,
+            phase_test_metrics=phase_test_metrics,
+            stopped_early=False,
+            best_checkpoint=tmp_path / "checkpoints" / "best.pt",
+            selected_checkpoint=tmp_path / "checkpoints" / "best.pt",
+            selected_checkpoint_kind="best",
+            output_dir=tmp_path,
+            metrics_path=None,
+            log_path=None,
+            artifacts=None,
+        )
+    )
+
+    rendered = console.export_text()
+    for name in phase_test_metrics:
+        assert name in rendered
 
 
 class CountingScheduler(LRScheduler):
@@ -937,6 +972,6 @@ def test_checkpoint_manager_rejects_unsupported_format(tmp_path) -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"checkpoint format version 7 is unsupported; expected version 11",
+        match=r"checkpoint format version 7 is unsupported; expected version 12",
     ):
         checkpoint_manager.load(checkpoint)

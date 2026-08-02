@@ -1,8 +1,9 @@
 # 自动化模型调优开发计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：Later，尚未进入实现；等待 stable latent baseline、Evaluation 与 reusable
-  single-run seam
+- 状态：Later，尚未进入实现；E0 immutable outcome 与 E1 standalone checkpoint
+  Evaluation 已可复用，但仍等待 library-first training request/observer seam、stable
+  latent baseline，以及 E4 selection/gate policy
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25
@@ -46,9 +47,10 @@ validation phase metric 选择和提前终止 trial，并保留完整可复现�
 - **调优是高于单次训练的独立 workflow**，使用独立 tuning YAML 引用一份完整 base
   training config；不在 `StochaflowConfig` 中塞入 `tuning` 字段，也不让普通
   checkpoint 携带 study scheduler 状态。
-- **先抽取可复用的单次训练执行器**。当前 `_run_single_run()` 返回 `None`、直接拥有
-  UI/日志/采样和目录副作用，不是稳定的 trial API。HPO 不应递归调用 CLI、解析日志
-  文件或复制 `Trainer.fit()`。
+- **先抽取可复用的单次训练执行器**。E0 已让 `_run_single_run()` 返回 immutable
+  `TrainingRunOutcome`，但它仍直接拥有 CLI-shaped orchestration、UI/日志和目录副作用，
+  也没有 request/observer control seam，因此还不是稳定的 trial API。HPO 不应递归调用
+  CLI、解析日志文件或复制 `Trainer.fit()`。
 - **core 依赖窄的 engine/Trainable adapter，不实现搜索或调度平台**。Ray Tune 路径
   应直接复用其 `Tuner`、`Searcher`、`TrialScheduler`、resource 与 restore；只有
   lightweight Optuna-native 路径才使用 Optuna ask-and-tell。不得为了“统一”而在
@@ -116,13 +118,14 @@ sampler、pruner、storage 或 scheduler。若成熟 provider 已满足需求，
 | run manifest 与 resolved config | study lineage 基础 |
 | diagnostic cadence/FID/KID | trial 的附加观测；不作为 selection/pruning objective |
 
-### 2.2 必须先修的执行边界
+### 2.2 E0 后仍须修正的执行边界
 
 1. `run_experiment_from_args()` 同时解析 CLI、激活 extension、构建 DataLoaders、创建
-   timestamp 目录、训练、测试、采样和终端输出。
-2. `_run_single_run()` 返回 `None`，`TrainingResult` 只含 best epoch/loss/checkpoint，
-   没有统一 canonical epoch metric mapping、最终状态或失败分类。
-3. `Trainer.fit()` 没有一个能报告 canonical validation mapping 并返回
+   timestamp 目录、训练、phase test 和终端输出。
+2. E0 已提供完整 final/test canonical mappings、immutable `TrainingRunOutcome` 和
+   completed outcome manifest，但还没有 library-first `TrainingRunRequest` 或失败/prune
+   classification。
+3. `Trainer.fit()` 仍没有一个能报告 canonical validation mapping 并返回
    continue/prune decision 的窄
    observer；`TrainingDiagnostic` 不是控制接口。
 4. 当前 monitor 已限制为 `valid/loss` 或 `valid/metrics/...`；HPO 需要复用这条边界，
@@ -132,8 +135,9 @@ sampler、pruner、storage 或 scheduler。若成熟 provider 已满足需求，
    不同的 plugin selection。
 7. config 只表达一个 run，没有“候选参数名 -> config path -> distribution”的上层
    schema。
-8. 训练结束默认执行 test 和 final sampling；大多数 HPO trial 不应付出这些成本，也
-   不应反复读取 test。
+8. 普通训练仍可执行 phase test；大多数 HPO trial 不应付出这项成本，也不应反复读取
+   test。训练已不再自动 final sample；E1 formal Evaluation 已是独立 operation，但 trial
+   orchestration 仍不得隐式运行它或把 test result 反馈给搜索。
 
 因此实现顺序必须是 reusable run executor -> tuning orchestration，不能先写一个循环
 调用 CLI 的脚本。
@@ -729,7 +733,9 @@ Builder 在 Python 中组合。core runner 不按 builder name 分支。
 
 本能力复用 Hydra H1 为 plain/Hydra CLI 抽取的 `TrainingInvocation` 和
 `run_training_invocation()` lifecycle，不再从 runner 平行抽取第二套执行路径。
-在该共享 seam 上补齐结构化 request/outcome：
+E0 已先落地 immutable `TrainingRunOutcome`、完整 final/phase-test mappings、checkpoint
+selection 和 completed outcome manifest；失败不发布 outcome。下面的 library-first
+request/observer seam 仍未实现：
 
 ```python
 def run_training(
@@ -745,18 +751,17 @@ def run_training(
 并适配到唯一 `TrainingInvocation`。AutoML 的 `TrialObserver` 是
 `TrainingRunObserver` 的 engine adapter，不改变 library entry point。
 
-`TrainingRunOutcome` 至少含：
+当前 `TrainingRunOutcome` 已含：
 
-- run status；
 - final/best epoch；
 - plain canonical epoch metric mappings；
-- selected checkpoint；
-- phase-test metric mapping（若显式运行）；
-- 独立 EvaluationResult reference（通常仅在 study 结束后产生）；
-- sampling artifact（若显式运行）；
+- best/latest/selected checkpoint 与 selection kind；
+- phase-test metric mapping；
 - output directory 和 manifest paths；
-- stopped-early/pruned 标记；
-- failure classification。
+- stopped-early 标记。
+
+run/prune status、failure classification、observer control，以及独立 EvaluationResult 或
+sampling references 都属于后续 seam/operation，当前 outcome 不提前声明这些字段。
 
 CLI `train` 变成该函数的 adapter。HPO 直接调用库级入口，不构造
 `argparse.Namespace`，不解析 stdout/JSONL，不递归启动 `stochaflow train`。
@@ -1046,13 +1051,16 @@ checkpoint 恢复一个候选的训练状态。不能拿另一个 trial 的 best
 
 ### 阶段 T0：single-run seam
 
+其中 E0 outcome sub-slice 已完成；library-first request、observer/control、trial policy 与
+Hydra H1 invocation 仍待实现，不能据此把 T0 标为完成。
+
 1. 以当前 Training 的 plain canonical validation mapping 定义 epoch observer payload；
 2. 确认 latent codec、posterior artifact、dataset split、sample/evaluation protocol
    与正式 baseline 已冻结；
 3. 复用 Hydra H1 的 `TrainingInvocation`/`run_training_invocation()`；
-4. 增加 epoch observer/control contract 与 `TrainingRunOutcome`；
+4. 复用已落地的 `TrainingRunOutcome`，增加 epoch observer/control contract；
 5. 让 CLI train 仅做参数解析和 reporter adapter；
-6. 可配置 trial 中跳过 phase test/final sampling；trial 不触发 formal
+6. 可配置 trial 中跳过 phase test；trial 不触发 sampling 或 formal
    final-test Evaluation；
 7. 不改变普通 `stochaflow train` 默认行为。
 

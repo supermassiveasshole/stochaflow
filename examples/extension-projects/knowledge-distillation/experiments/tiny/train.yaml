@@ -69,20 +69,6 @@ lr_scheduler: null
 ema:
   enabled: false
 
-sampling:
-  run_after_training: true
-  shape: null
-  num_samples: 8
-  batch_size: 4
-  sampler: null
-  options:
-    weights: raw
-    mean: 0.0
-    std: 1.0
-  writers:
-    - name: tensor
-      params: {}
-
 diagnostics: []
 
 trainer:

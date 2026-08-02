@@ -200,6 +200,7 @@ class RegistryCatalog:
         self.samplers: Registry[type[Any]] = Registry("sampler")
         self.sampling_builders: Registry[type[Any]] = Registry("sampling builder")
         self.training_builders: Registry[type[Any]] = Registry("training builder")
+        self.evaluation_builders: Registry[type[Any]] = Registry("evaluation builder")
         self.objectives: Registry[type[Any]] = Registry(
             "objective",
             expected_type=nn.Module,

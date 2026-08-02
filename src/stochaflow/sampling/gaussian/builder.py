@@ -180,7 +180,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
                 "DiscreteGaussianDenoisingProcess capability"
             )
         if self.context.shape is None:
-            raise ValueError("standard_denoising requires sampling.shape")
+            raise ValueError("standard_denoising requires sample.shape")
         if config.variance_mode == "learned_range" and not isinstance(
             process,
             LearnedRangeGaussianVarianceProcess,
@@ -240,6 +240,7 @@ class StandardDenoisingBuilder(SamplingBuilder):
             batches.append(
                 SamplingBatch(
                     samples=final_state.detach().to(device="cpu", copy=True),
+                    num_samples=count,
                     trajectory=lifecycle.observations,
                 )
             )

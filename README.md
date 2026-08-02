@@ -19,10 +19,10 @@ Gaussian diffusion**:
 
 Stochaflow is pre-1.0 research software and currently permits breaking changes.
 Latent diffusion, pretrained autoencoder integration, Stable Diffusion
-components, flow matching, and distributed training are development directions,
-not implemented capabilities. See the [framework overview](docs/framework.md)
-for current behavior and the [architecture scope](docs/design/scope.md) for the
-long-term boundary.
+components, flow matching, and distributed training are neither implemented nor
+scheduled capabilities. See the [framework overview](docs/framework.md)
+for current behavior and the [project specification](SPEC.md) for the long-term
+boundary and explicit non-goals.
 
 ## Quick start
 
@@ -116,8 +116,9 @@ not require retraining.
 | Training | Unconditional and class-conditional Gaussian denoising; fixed or learned-range variance; standard or concrete epsilon-only P2 strategies; supervised training, mixed precision, gradient accumulation, EMA, and a single-optimizer automatic loop |
 | Probability process | Discrete variance-preserving Gaussian process with linear-beta and cosine-alpha-bar schedules, selected-pair marginal coefficients, and learned-range variance bounds |
 | Sampling | Full or uniformly respaced ancestral DDPM, DDIM, class allocation, classifier-free guidance, trajectory observation, and Tensor/PNG/GIF writers |
-| Runtime | Registry-based composition, explicit extension activation, checkpoint v11 strict resume, checkpoint-backed inference, local/TensorBoard/W&B logging, and training diagnostics |
-| CLI | `stochaflow init`, `stochaflow train`, and `stochaflow sample` |
+| Evaluation | Standalone strict checkpoint or prediction-artifact subjects, raw/EMA selection, exact sample completeness, optional streamed canonical-JSONL predictions, offline metric replay, and immutable result bundles |
+| Runtime | Registry-based composition, explicit extension activation, checkpoint v12 strict resume, checkpoint-backed inference, local/TensorBoard/W&B logging, and training diagnostics |
+| CLI | `stochaflow init`, `stochaflow train`, `stochaflow sample`, and `stochaflow evaluate` |
 
 The built-in `super_resolution` capability covers paired data and degradation
 recipes. A complete conditional super-resolution model, training strategy, and
@@ -135,7 +136,7 @@ The actively maintained example surface is deliberately small:
 | Example | Role | Current status |
 | --- | --- | --- |
 | [MNIST](examples/built-in/image-generation/README.md) | Minimal built-in image-generation workflow | One train config, DDPM/DDIM sample profiles, and a resume observability overlay |
-| [AFHQ-v2](examples/showcases/afhq-v2/README.md) | Installable class-conditional data-source showcase | Corrected ADM and pixel DiT production configs with aggregate and per-class evaluation |
+| [AFHQ-v2](examples/showcases/afhq-v2/README.md) | Installable class-conditional generation showcase | Corrected ADM and pixel DiT production configs; measured RTX 4090 capacity; completed one-epoch controlled P2 A/B with no observed benefit; public full-official-test KID/FID evaluation with replayable predictions; long-training quality evidence remains pending |
 
 Separate CIFAR-10, Flowers102, and multi-source training YAMLs are not maintained.
 Their removal does not remove the underlying reusable data sources or recipes.
@@ -192,9 +193,9 @@ results; the corrected production model does not yet have a published
 long-training quality result.
 
 Separately, every newly built Gaussian checkpoint freezes
-`variance.mode`—including `fixed`—beside `prediction_type`. Current v11
+`variance.mode`—including `fixed`—beside `prediction_type`. Current v12
 checkpoints also persist the complete metric-monitor policy and
-observation-based patience state. Pre-change v10 checkpoints are not migrated;
+observation-based patience state. v11 and earlier checkpoints are not migrated;
 the framework does not patch their saved training recipe.
 
 The repository includes:
@@ -204,8 +205,59 @@ The repository includes:
 - a runnable
   [pixel DiT-B/8 training config](examples/showcases/afhq-v2/experiments/production/train-dit-128.yaml),
   for which this README does not claim a completed quality result;
-- checkpoint-backed DDIM/CFG sampling and class-aware evaluation profiles that
-  report aggregate and per-class KID/FID for cat, dog, and wild.
+- a real-AFHQ
+  [tiny P2 wiring smoke](examples/showcases/afhq-v2/experiments/smoke/train-adm-128-p2.yaml)
+  and a
+  [105M BF16 full-topology sanity profile](examples/showcases/afhq-v2/experiments/profiling/train-adm-128-p2.yaml),
+  whose ordinary bounded train invocations are readiness checks rather than
+  capacity or quality benchmarks;
+- a fail-closed CUDA
+  [200-epoch P2 production candidate](examples/showcases/afhq-v2/experiments/production/train-adm-128-p2.yaml)
+  and a machine-readable
+  [closeout policy](examples/showcases/afhq-v2/experiments/evaluation/p2-production-closeout-policy.yaml)
+  that freezes validation checkpoint selection and one-shot official-test
+  acceptance before the long run starts;
+- checkpoint-backed DDIM/CFG sampling and the
+  [formal full-test evaluation profile](examples/showcases/afhq-v2/experiments/evaluation/formal-ddim50-cfg2-official-test.yaml),
+  which pins one raw/EMA variant, reuses the checkpoint-bound SamplingBuilder
+  execution seam, and reports aggregate and per-class KID/FID for cat, dog,
+  and wild;
+- a fail-closed
+  [epsilon/fixed official profile](examples/showcases/afhq-v2/experiments/evaluation/formal-ddim50-cfg2-official-test-epsilon.yaml)
+  whose checked-in subject is a production selected-epoch placeholder. The
+  completed historical A/B substituted each equal-budget arm's `latest.pt` EMA,
+  changed only P2 `gamma` from 0 to 1, and did not select incomparable
+  validation-loss `best.pt` checkpoints.
+
+On the current CUDA workstation, the P2 smoke completed four micro-batches and
+two optimizer updates with EMA, diagnostics, validation/test, and checkpoint
+publication. The full corrected 105,197,187-parameter topology completed eight
+BF16 updates plus validation/test and checkpoint publication at 4.34 compute
+optimizer steps/s. Those two bounded runs remain readiness evidence rather than
+capacity or quality benchmarks.
+
+A separate valid schema-v3 capacity sweep used the corrected topology with P2
+training on an RTX 4090 with 24,564 MiB, PyTorch 2.11, CUDA 12.8, and BF16. Every micro-batch
+candidate completed 5 warmup plus 25 measured optimizer updates with zero
+non-finite loss or gradient observations. The selected micro batch 8 /
+accumulation 4 trial sustained 60.068 images/s with 8.260 GiB peak allocated and
+8.506 GiB peak reserved memory. Both maintained ADM production YAMLs use 8 / 4
+while preserving 420 optimizer updates per epoch and 84,000 total updates. This
+capacity sweep is operational and sustained-run evidence, not a long-training
+quality claim; the full sweep table is in the
+[AFHQ-v2 guide](docs/tutorials/afhq-v2.md).
+
+The controlled one-epoch A/B is now complete under protocol
+`afhq-v2-adm-epsilon-ddim50-cfg2-official-test-v1`. Both arms used the corrected
+105,197,187-parameter ADM, real AFHQ, seed 20260726, BF16, batch 8 /
+accumulation 4, 420 optimizer updates, and their terminal `latest.pt` EMA. On
+the exact 1,467-example official-test plan, aggregate FID changed from
+369.621427 for the `gamma: 0` strict-standard control to 371.250343 for
+`gamma: 1` P2 (delta +1.628916); KID mean changed from 0.476357937 to
+0.479742199 (delta +0.003384262). Every class moved slightly in the same worse
+direction. This closes engineering and protocol readiness, but one seed and one
+epoch do not establish statistical significance or 200-epoch promotion
+evidence; the production long-run gate remains open.
 
 The dataset source is approximately 6.96 GB and is licensed CC BY-NC 4.0.
 Review the [AFHQ-v2 guide](docs/tutorials/afhq-v2.md) before downloading or
@@ -229,8 +281,9 @@ that require `MSEObjective`; they accept `k`, `gamma`, and the Gaussian
 `variance` declaration as private training parameters. The strategies apply
 `(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)` to each sample's simple
 loss without batch renormalization; P2 never weights the variance term.
-Diagnostic `timestep_loss_weight` records this optimization coefficient and is
-unrelated to any `loss_aggregation_weight` used to combine batches for metrics.
+The coefficient remains private to the concrete Strategy: P2 does not publish a
+`timestep_loss_weight` diagnostic. `loss_aggregation_weight` only controls how
+reported batch losses are combined and never becomes the P2 coefficient.
 Other weighting methods are separate TrainingStrategy/TrainingBuilder
 compositions registered through the existing training extension boundary.
 
@@ -292,6 +345,43 @@ task concerns such as model adaptation, conditions, guidance, initialization,
 and compatibility. The core runner does not maintain a global
 model/process/sampler compatibility matrix.
 
+### Standalone evaluation and offline replay
+
+`stochaflow evaluate --config path/to/evaluation.yaml` runs a task-specific
+`EvaluationBuilder` against one frozen authority. A live config pairs
+`subject.kind: checkpoint` with `data.source: checkpoint` and explicitly selects
+`raw` or `ema`. If that Builder attaches an `EvaluationArtifactSink`, the
+successful result also publishes a `predictions/` directory containing a
+versioned `prediction_manifest.json` and content-addressed canonical JSONL
+shards.
+
+The same command can rescore those records without loading the checkpoint,
+constructing the model, or rebuilding the original data loader:
+
+```yaml
+subject:
+  kind: prediction_artifact
+  path: ../live-result/predictions/prediction_manifest.json
+data:
+  source: prediction_artifact
+  split: validation
+```
+
+Offline replay authenticates the manifest and shard digests, joins records by
+the exact ordered sample plan rather than filename order, and carries the
+producer, source-subject, resolved-weight, data, inference-profile, and
+extension lineage into the new immutable result. Missing, duplicate,
+unexpected, corrupt, or identity-mismatched records fail closed. The manifest
+also freezes deterministic gallery sample IDs; it does not itself render a
+gallery. Core FID/KID providers and the maintained AFHQ-v2 source-checkout profile are
+the maintained formal Evaluation surface for ordinary pixel-space image
+generation. This runtime does not make SR, consistency, latent/codec, or
+distillation tasks supported; a future task must deliver its own monitoring,
+checkpoint inference, and formal Evaluation together. Reference caches,
+comparison, and generic result gates are optional enhancements, not P2 gaps. See
+[Standalone checkpoint evaluation](docs/configuration/workflows.md#独立-checkpoint-evaluation)
+for the complete schema and extension contract.
+
 ## Configuration, sampling, and resume
 
 The maintained built-in authoring tree is:
@@ -305,10 +395,10 @@ examples/built-in/image-generation/configs/
 ```
 
 The MNIST train config contains one training recipe. The two sample files are
-checkpoint-backed profiles with the current top-level `sampling:` request
-envelope; they choose request-time solver, output, and writer settings without
-selecting an internal SamplingBuilder. Current checkpoint v11 remains
-authoritative for the fixed inference recipe.
+complete checkpoint-backed invocations with a top-level `sample:` mapping;
+they explicitly choose request-time solver, options, shape, count, batch, seed,
+and writers without selecting an internal SamplingBuilder. The checkpoint v12
+remains authoritative for the fixed inference recipe and model state.
 
 Strict resume restores the saved configuration and full training state:
 
@@ -328,7 +418,7 @@ uv run stochaflow train \
     examples/built-in/image-generation/configs/overlays/mnist-observability.yaml
 ```
 
-Only checkpoint format v11 is currently accepted; older formats are not
+Only checkpoint format v12 is currently accepted; older formats are not
 migrated. Strict resume guarantees only the state explicitly owned by the
 framework and does not promise cross-device or cross-version bitwise equality.
 See the [configuration handbook](docs/configuration/index.md) and
@@ -407,7 +497,7 @@ Process state.
 
 ## Documentation
 
-- [Framework features and architecture](docs/framework.md)
+- [Framework overview and current capabilities](docs/framework.md)
 - [Configuration and workflow handbook](docs/configuration/index.md)
 - [Data configuration and pipelines](docs/configuration/data-pipeline.md)
 - [Extension API](docs/api/extensions.md)
@@ -416,7 +506,7 @@ Process state.
 - [AFHQ-v2 data and training guide](docs/tutorials/afhq-v2.md)
 - [TensorBoard guide](docs/tutorials/tensorboard.md)
 - [Troubleshooting](docs/configuration/troubleshooting.md)
-- [Architecture scope and non-goals](docs/design/scope.md)
+- [Project specification, scope, and non-goals](SPEC.md)
 
 ## Development
 

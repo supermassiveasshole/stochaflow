@@ -1,7 +1,12 @@
-# 纵向扩展参考项目
+# Legacy 纵向扩展架构 fixtures
 
 仓库在 `examples/extension-projects/` 提供两个彼此独立、可安装的 Python
-distribution。它们不是核心内置 recipe，也不规定用户必须采用相同的仓库布局或包管理器。
+distribution。它们只用于 installed acceptance 与架构边界回归，不是 maintained task、
+quality benchmark 或 formal Evaluation surface。它们不是核心内置 recipe，也不规定用户
+必须采用相同的仓库布局或包管理器。
+当前 fixture 使用本 checkout 的新 core contract；仓库测试先构建并安装当前 core wheel，
+再以 `--no-deps` 安装 extension wheel。项目 metadata 中指向旧 release 的 dependency 不是
+这组 fixture 的可执行入口，也不表示兼容旧 core。
 它们用于展示一个任务如何在 extension 内遵守 DataSource/DataArtifact/DataBuilder
 边界，并同时使用 entry point、TrainingBuilder/Strategy、checkpoint、SamplingBuilder
 和领域 writer，而不修改 Stochaflow runner。
@@ -9,7 +14,7 @@ distribution。它们不是核心内置 recipe，也不规定用户必须采用�
 | 项目 | 主要展示 | 不代表 |
 | --- | --- | --- |
 | `physics-reconstruction/` | 条件 Gaussian 训练、partial-noise reconstruction、复用内置 DDPM/DDIM、组合 DDIM primitive 的 physics-guided sampler、领域 artifact | 预训练模型、完整数据分发或论文精度复现 |
-| `knowledge-distillation/` | frozen teacher、managed auxiliary assets、多个 Objective、embedded logit calibrator、checkpoint-only calibrated sampling | 通用蒸馏模式或效果 benchmark |
+| `knowledge-distillation/` | frozen teacher、managed auxiliary assets、多个 Objective、embedded logit calibrator、checkpoint-backed calibrated sampling | 通用蒸馏模式或效果 benchmark |
 
 两个项目都必须先安装到 `stochaflow` CLI 所在的 Python environment，再由 YAML
 `extensions.plugins` 精确选择。配置中的 `data/`、`outputs/` 等相对路径按进程启动目录
@@ -43,15 +48,15 @@ quarantine 全部由 framework store 负责。其 cache 使用
 ### Tiny end-to-end
 
 ```bash
-cd examples/extension-projects/physics-reconstruction
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[test]"
+python -m pip install -e ".[dev]"
+python -m pip install --no-deps -e examples/extension-projects/physics-reconstruction
+cd examples/extension-projects/physics-reconstruction
 python -m stochaflow_physics_reconstruction.tools.prepare_tiny_data \
   --output-dir data/tiny
 stochaflow train \
-  --config experiments/tiny/train.yaml \
-  --skip-final-sample
+  --config experiments/tiny/train.yaml
 ```
 
 使用生成的 run directory 运行三种独立采样策略：
@@ -122,10 +127,11 @@ production path 可以执行，不代表收敛训练、1272-sample 全量运行�
 安装和首次训练：
 
 ```bash
-cd examples/extension-projects/knowledge-distillation
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[test]"
+python -m pip install -e ".[dev]"
+python -m pip install --no-deps -e examples/extension-projects/knowledge-distillation
+cd examples/extension-projects/knowledge-distillation
 python tools/create_teacher_bootstrap.py \
   --teacher-output data/teacher.pt \
   --calibrator-output data/calibrator.pt
@@ -139,11 +145,13 @@ teacher 与 calibrator，随后 checkpoint state 覆盖它们并成为 runtime �
 stochaflow train --resume outputs/tiny/<run-id> --epochs 3
 ```
 
-checkpoint-only sampling 不构建 TrainingBuilder，因此可以在删除两个 bootstrap 文件后
+checkpoint-backed sampling 不构建 TrainingBuilder，因此可以在删除两个 bootstrap 文件后
 构建 student，并只加载 descriptor 所引用的 embedded calibrator：
 
 ```bash
-stochaflow sample --checkpoint outputs/tiny/<run-id>
+stochaflow sample \
+  --checkpoint outputs/tiny/<run-id> \
+  --config experiments/tiny/sample.yaml
 ```
 
 这条路径展示的是 frozen-teacher 组合边界。独立 teacher optimizer、交替更新、offline
@@ -154,7 +162,7 @@ teacher cache 或多 teacher policy 仍由具体 extension 或新的训练循环
 两个项目都通过标准 `[project.entry-points."stochaflow.extensions"]` 声明聚合注册模块。
 安装后不需要源码扫描或 `PYTHONPATH` 注入。仓库测试会从临时副本分别构建 Stochaflow 和
 extension wheel，在隔离环境中验证 entry-point discovery、train、resume 和
-checkpoint-only sample；reference project 不会被打入 Stochaflow wheel。
+checkpoint-backed sample；reference project 不会被打入 Stochaflow wheel。
 
 要创建自己的最小项目，优先从：
 
@@ -163,5 +171,5 @@ stochaflow init my-research-project
 ```
 
 开始，再按任务需要替换生成的 DataBuilder、model、TrainingBuilder/Strategy 和
-SamplingBuilder。完整角色说明见[框架特性与架构](../framework.md)与
+SamplingBuilder。当前角色与工作流概览见[框架概览与当前能力](../framework.md)与
 [扩展与 Registry](extensions.md)。

@@ -90,6 +90,7 @@ _TEMPLATE_MANIFEST: Final = (
     ProjectTemplateFile("data.gitkeep.tmpl", "data/.gitkeep"),
     ProjectTemplateFile("notebooks.gitkeep.tmpl", "notebooks/.gitkeep"),
     ProjectTemplateFile("train.yaml.tmpl", "experiments/example/train.yaml"),
+    ProjectTemplateFile("sample.yaml.tmpl", "experiments/example/sample.yaml"),
     ProjectTemplateFile(
         "package-init.py.tmpl",
         f"src/{_PACKAGE_NAME_SENTINEL}/__init__.py",

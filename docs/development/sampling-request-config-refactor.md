@@ -1,19 +1,20 @@
 # Sampling Request Config Refactor
 
-- 文档性质：已实施的开发决策记录；不属于公开 API
-- 状态：Implemented
+- 文档性质：被取代的历史开发决策记录；不属于公开 API
+- 状态：Superseded by Hydra C1（2026-08-01）
 - 统一排期：
-  [Development Priority Roadmap](development-priority-roadmap.md)；Hydra 计划 C1
-  实施后本文转为被取代的历史决策记录
+  [Development Priority Roadmap](development-priority-roadmap.md)；当前 contract 由
+  [Hydra 计划 C1](hydra-configuration-composition-migration-plan.md)拥有
 - Historical scope：本文 checkpoint v10、partial request、Physics/KD 示例只描述
-  当时实现；C1 不保留兼容性，retained-example cleanup 也不继续维护这些案例
+  当时实现，不描述当前 runtime；C1 不保留兼容性，retained-example cleanup 也不继续
+  维护这些案例
 - 日期：2026-07-28
-- 兼容性：breaking；只支持 checkpoint v10，不迁移旧 sampling config 或 checkpoint
-- 后续提案：`hydra-configuration-composition-migration-plan.md` 的 Phase C1 计划再次
-  breaking，将 train/sample 配置彻底分离；在该 phase 实施前，本文仍准确描述当前代码
-- 2026-07-29 authoring 整理：built-in profile 已移动到 `configs/sample/`，但文件仍
-  使用本文定义的 `sampling:` partial-request envelope；目录移动不等于 C1 schema
-  cutover
+- 历史兼容性：当时只支持 checkpoint v10，不迁移旧 sampling config 或 checkpoint
+- 当前结果：checkpoint v12；训练 schema 不含 `sampling`/`use_for_sampling`；sample CLI
+  同时要求 checkpoint 与完整 `sample:` config；无 auto final sample 或 partial merge
+
+> 以下章节仅保留 v10 设计的决策沿革。当前配置、CLI 与 checkpoint 行为请以 C1 计划和
+> `docs/configuration/` 公开文档为准。
 
 ## 1. 背景与问题
 

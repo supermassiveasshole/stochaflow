@@ -17,6 +17,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 import torch
+import yaml
 from torch import nn
 from torch.optim.lr_scheduler import LRScheduler, StepLR
 
@@ -304,8 +305,7 @@ def _legacy_adm_sampling_config(*, weights: str) -> dict[str, Any]:
         },
         "training": {"name": "class_conditional_gaussian_denoising", "params": {}},
         "objective": {"name": "mse", "params": {}},
-        "sampling": {
-            "run_after_training": False,
+        "_sample": {
             "sampler": {
                 "name": "ddim",
                 "params": {"num_inference_steps": 1, "eta": 0.0},
@@ -324,7 +324,7 @@ def _legacy_adm_sampling_config(*, weights: str) -> dict[str, Any]:
         },
     }
     if weights == "ema":
-        config["ema"] = {"enabled": True, "use_for_sampling": True}
+        config["ema"] = {"enabled": True}
     return config
 
 
@@ -373,7 +373,7 @@ def _inference_asset_descriptors() -> dict[str, InferenceAssetDescriptor]:
     }
 
 
-def test_v11_checkpoint_always_records_header_recipe_and_plugin_metadata() -> None:
+def test_v12_checkpoint_always_records_header_recipe_and_plugin_metadata() -> None:
     manager = CheckpointManager(nn.Linear(1, 1))
 
     default_state = manager.build_state()
@@ -391,7 +391,7 @@ def test_v11_checkpoint_always_records_header_recipe_and_plugin_metadata() -> No
         }
     )
 
-    assert CHECKPOINT_FORMAT_VERSION == 11
+    assert CHECKPOINT_FORMAT_VERSION == 12
     assert default_state.get("precision_kind") == "fp32"
     assert default_state.get("inference_asset_descriptors") == {}
     assert "inference_recipe" in default_state
@@ -419,7 +419,7 @@ def test_v11_checkpoint_always_records_header_recipe_and_plugin_metadata() -> No
         assert rng_state["torch_mps"] is None
 
 
-def test_v11_checkpoint_round_trips_inference_recipe(tmp_path: Path) -> None:
+def test_v12_checkpoint_round_trips_inference_recipe(tmp_path: Path) -> None:
     recipe = SamplingRecipe(
         name="project.generate",
         contract={
@@ -446,7 +446,7 @@ def test_v11_checkpoint_round_trips_inference_recipe(tmp_path: Path) -> None:
     ).restore_payload(payload, path=checkpoint)
 
 
-def test_v11_checkpoint_rejects_non_json_recipe_contract_tuple(
+def test_v12_checkpoint_rejects_non_json_recipe_contract_tuple(
     tmp_path: Path,
 ) -> None:
     payload = CheckpointManager(nn.Linear(1, 1)).build_state()
@@ -957,7 +957,7 @@ def test_inference_asset_descriptor_topology_mismatch_is_atomic(
     "missing_field",
     ["precision_kind", "inference_asset_descriptors", "inference_recipe"],
 )
-def test_v11_header_rejects_missing_required_fields(
+def test_v12_header_rejects_missing_required_fields(
     missing_field: str,
 ) -> None:
     manager = CheckpointManager(nn.Linear(1, 1))
@@ -965,7 +965,7 @@ def test_v11_header_rejects_missing_required_fields(
     state.pop(missing_field)
 
     with pytest.raises((TypeError, ValueError), match=missing_field):
-        manager.restore_payload(state, path="missing-v11-field.pt")
+        manager.restore_payload(state, path="missing-v12-field.pt")
 
 
 @pytest.mark.parametrize(
@@ -1227,6 +1227,7 @@ def test_sampling_runtime_rejects_faithful_legacy_adm_topology(
     weights: str,
 ) -> None:
     config = _legacy_adm_sampling_config(weights=weights)
+    sample = config.pop("_sample")
     process = DiscreteGaussianProcess(config["process"]["params"]["schedule"])
     recipe = SamplingRecipe(
         name="class_conditional_denoising",
@@ -1239,7 +1240,7 @@ def test_sampling_runtime_rejects_faithful_legacy_adm_topology(
         nn.Identity(),
         process=process,
         inference_recipe=recipe,
-    ).build_state(config=config)
+    ).build_state(epoch=1, global_step=0, config=config)
     legacy_state = _legacy_adm_low_storage_cpu_state()
     payload["model_state_dict"] = legacy_state
     if weights == "ema":
@@ -1254,6 +1255,11 @@ def test_sampling_runtime_rejects_faithful_legacy_adm_topology(
         }
     checkpoint = tmp_path / f"legacy-adm-{weights}.pt"
     torch.save(payload, checkpoint)
+    sample_config = tmp_path / f"legacy-adm-{weights}.yaml"
+    sample_config.write_text(
+        yaml.safe_dump({"sample": sample}, sort_keys=False),
+        encoding="utf-8",
+    )
 
     original_build_model = sampling_runtime.build_model
     constructed_models: list[nn.Module] = []
@@ -1267,21 +1273,16 @@ def test_sampling_runtime_rejects_faithful_legacy_adm_topology(
     monkeypatch.setattr(sampling_runtime, "build_model", build_model_on_meta)
     output_dir = tmp_path / f"samples-{weights}"
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"for .*copying from a non-meta parameter.*is a no-op",
-            category=UserWarning,
+    with pytest.raises(
+        ValueError,
+        match=rf"inference\.{weights}_model_state_dict keys do not match runtime",
+    ):
+        run_sampling(
+            checkpoint=checkpoint,
+            config_path=sample_config,
+            output_dir=output_dir,
+            device_name="cpu",
         )
-        with pytest.raises(
-            RuntimeError,
-            match=r"Error\(s\) in loading state_dict for ADMUNet",
-        ):
-            run_sampling(
-                checkpoint=checkpoint,
-                output_dir=output_dir,
-                device_name="cpu",
-            )
 
     assert len(constructed_models) == 1
     assert all(
@@ -1819,11 +1820,11 @@ def test_legacy_v8_checkpoint_is_not_migrated(tmp_path: Path) -> None:
     checkpoint = tmp_path / "legacy-v8.pt"
     torch.save(legacy, checkpoint)
 
-    with pytest.raises(ValueError, match="expected version 11"):
+    with pytest.raises(ValueError, match="expected version 12"):
         CheckpointManager.load_payload(checkpoint)
 
 
-def test_native_v11_tied_ema_does_not_infer_aliases_from_equal_values() -> None:
+def test_native_v12_tied_ema_does_not_infer_aliases_from_equal_values() -> None:
     source_model = FixtureTiedStateModule()
     source_model.first.weight.data.fill_(2.0)
     source_ema = ExponentialMovingAverage(source_model)
@@ -1837,11 +1838,11 @@ def test_native_v11_tied_ema_does_not_infer_aliases_from_equal_values() -> None:
     )
 
     with pytest.raises(ValueError, match=r"second\.weight.*EMA state"):
-        CheckpointManager.save_payload(state, "native-v11-tied-invalid.pt")
+        CheckpointManager.save_payload(state, "native-v12-tied-invalid.pt")
 
 
 @pytest.mark.parametrize("missing_field", ["ema_state_dict", "ema_model_state_dict"])
-def test_shared_v11_header_rejects_incomplete_ema_topology_on_save_and_load(
+def test_shared_v12_header_rejects_incomplete_ema_topology_on_save_and_load(
     tmp_path: Path,
     missing_field: str,
 ) -> None:
@@ -1860,7 +1861,7 @@ def test_shared_v11_header_rejects_incomplete_ema_topology_on_save_and_load(
         CheckpointManager.load_payload(destination)
 
 
-def test_shared_v11_header_rejects_malformed_ema_and_projection(
+def test_shared_v12_header_rejects_malformed_ema_and_projection(
     tmp_path: Path,
 ) -> None:
     model = nn.Linear(1, 1)
@@ -1917,8 +1918,41 @@ def test_legacy_v9_checkpoint_is_not_migrated(tmp_path: Path) -> None:
     checkpoint = tmp_path / "legacy-v9.pt"
     torch.save(payload, checkpoint)
 
-    with pytest.raises(ValueError, match="expected version 11"):
+    with pytest.raises(ValueError, match="expected version 12"):
         CheckpointManager.load_payload(checkpoint)
+
+
+def test_legacy_v11_checkpoint_is_not_migrated(tmp_path: Path) -> None:
+    payload = CheckpointManager(nn.Linear(1, 1)).build_state()
+    payload["format_version"] = 11
+    checkpoint = tmp_path / "legacy-v11.pt"
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(ValueError, match=r"version 11.*expected version 12"):
+        CheckpointManager.load_payload(checkpoint)
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        (
+            {"sampling": {}},
+            "v12 checkpoint config cannot contain legacy sampling defaults",
+        ),
+        (
+            {"ema": {"use_for_sampling": True}},
+            "v12 checkpoint config cannot contain ema.use_for_sampling",
+        ),
+    ],
+)
+def test_v12_checkpoint_rejects_spoofed_mutable_sampling_authority(
+    config: dict[str, object],
+    message: str,
+) -> None:
+    manager = CheckpointManager(nn.Linear(1, 1))
+
+    with pytest.raises(ValueError, match=message):
+        manager.build_state(config=config)
 
 
 @pytest.mark.parametrize(
@@ -1937,7 +1971,7 @@ def test_v8_is_rejected_regardless_of_newer_payload_fields(
     legacy = _legacy_v8_payload(manager)
     legacy[field_name] = {} if field_name.endswith(("dict", "descriptors")) else "fp32"
 
-    with pytest.raises(ValueError, match="expected version 11"):
+    with pytest.raises(ValueError, match="expected version 12"):
         manager.restore_payload(legacy, path="smuggled-v8.pt")
 
 
@@ -1957,7 +1991,7 @@ def test_v8_rejects_smuggled_trainer_precision_fields(
         "fp32" if field_name == "precision" else 1
     )
 
-    with pytest.raises(ValueError, match="expected version 11"):
+    with pytest.raises(ValueError, match="expected version 12"):
         manager.restore_payload(legacy, path="smuggled-config-v8.pt")
 
 
@@ -1970,7 +2004,7 @@ def test_v8_cannot_resume_into_fp16_runtime() -> None:
     target_model = nn.Linear(1, 1)
     original_weight = target_model.weight.detach().clone()
 
-    with pytest.raises(ValueError, match="expected version 11"):
+    with pytest.raises(ValueError, match="expected version 12"):
         CheckpointManager(
             target_model,
             precision_kind="fp16-mixed",
@@ -1983,7 +2017,7 @@ def test_writer_rejects_legacy_v8_payload(tmp_path: Path) -> None:
     legacy = _legacy_v8_payload(CheckpointManager(nn.Linear(1, 1)))
     destination = tmp_path / "legacy.pt"
 
-    with pytest.raises(ValueError, match="writer requires format version 11"):
+    with pytest.raises(ValueError, match="writer requires format version 12"):
         CheckpointManager.save_payload(legacy, destination)
 
     assert not destination.exists()
@@ -2012,7 +2046,7 @@ def test_restore_payload_rejects_v7_and_missing_plugin_metadata(
     manager = CheckpointManager(nn.Linear(1, 1))
     v7 = manager.build_state()
     v7["format_version"] = 7
-    with pytest.raises(ValueError, match=r"version 7.*expected version 11"):
+    with pytest.raises(ValueError, match=r"version 7.*expected version 12"):
         manager.restore_payload(v7, path=tmp_path / "v7.pt")
 
     missing_plugins = manager.build_state()
@@ -2035,7 +2069,7 @@ def test_restore_payload_rejects_legacy_v8_rng_state_without_mps(
     assert rng_state is not None
     rng_state.pop("torch_mps")
 
-    with pytest.raises(ValueError, match="expected version 11"):
+    with pytest.raises(ValueError, match="expected version 12"):
         manager.restore_payload(
             legacy_v8,
             path=tmp_path / "legacy-v8.pt",

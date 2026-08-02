@@ -15,7 +15,7 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 import yaml
 
 from stochaflow.scripts.cli import build_argument_parser
-from stochaflow.utils.config import StochaflowConfig
+from stochaflow.utils.config import SampleInvocationConfig, StochaflowConfig
 from stochaflow.utils.factory import load_builtin_components
 from stochaflow.utils.registry import REGISTRIES
 
@@ -71,6 +71,32 @@ def _field_records(
             element_type = _unwrap_optional(get_args(nested)[0])
             if isinstance(element_type, type) and is_dataclass(element_type):
                 records.extend(_field_records(element_type, f"{path}[]"))
+    return records
+
+
+def _schema_field_records() -> list[tuple[str, Any, Any]]:
+    """Return the fields owned by the training and sample config authorities."""
+
+    records: list[tuple[str, Any, Any]] = []
+    seen: dict[str, tuple[Any, Any]] = {}
+    for schema in (StochaflowConfig, SampleInvocationConfig):
+        for path, annotation, field_info in _field_records(schema):
+            previous = seen.get(path)
+            if previous is None:
+                seen[path] = (annotation, field_info)
+                records.append((path, annotation, field_info))
+                continue
+            previous_annotation, previous_field = previous
+            previous_required, previous_default = _default_value(previous_field)
+            required, default = _default_value(field_info)
+            if (
+                _type_name(previous_annotation) != _type_name(annotation)
+                or previous_required != required
+                or _plain_value(previous_default) != _plain_value(default)
+            ):
+                raise ReferenceError(
+                    f"shared config field '{path}' has incompatible schema definitions"
+                )
     return records
 
 
@@ -147,7 +173,7 @@ def _load_metadata() -> dict[str, Any]:
 
 
 def _validate_fields(metadata: Mapping[str, Any]) -> list[tuple[str, Any, Any]]:
-    records = _field_records(StochaflowConfig)
+    records = _schema_field_records()
     expected = {path for path, _, _ in records}
     field_metadata = metadata.get("fields")
     if not isinstance(field_metadata, Mapping):
@@ -492,6 +518,9 @@ def render_reference() -> str:
         "",
         "本页由运行时 dataclass、Registry、argparse 与中文元数据确定性生成。",
         "修改配置接口后必须运行 `uv run python tools/generate_config_reference.py`。",
+        "",
+        "字段同时覆盖完整训练配置与独立的 `sample:` 调用配置；二者只共享",
+        "`extensions` 插件选择，不合并为一份运行配置。",
         "",
         "字段路径中的 `[]` 表示列表中的每个元素。`params` 是构造关键字参数容器；",
         "框架自有和 Registry 组件的参数见本页后半部分的组件索引。原生依赖 target",

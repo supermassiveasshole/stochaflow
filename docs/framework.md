@@ -1,462 +1,227 @@
-# 框架特性与架构
+# 框架概览与当前能力
 
-Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它负责组织实验生命周期：
-组件选择、训练、采样、checkpoint、日志、diagnostic 和 artifact；任务专属的数据处理、
-模型签名、condition、guidance 与领域输出仍由具体项目拥有。
+> 本文是面向用户和扩展作者的描述性概览，说明当前源码已经提供的能力与工作流。
+> 它不是第二份架构规范。
 
-当前内置算法重点是离散 Gaussian diffusion。框架同时提供稳定的扩展边界，使项目可以
-复用其中一部分组件，也可以接入具有独立数学契约的新算法 family，而不需要修改 runner。
+Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它把数据准备、组件组合、
+训练、checkpoint-backed inference、独立 evaluation、metrics、diagnostics 和 artifact
+发布组织成可验证的工作流，同时把任务专属 batch、模型签名、condition、guidance 与
+领域输出留给具体项目。
+
+产品范围与非目标以
+[SPEC.md](https://github.com/supermassiveasshole/stochaflow/blob/main/SPEC.md)
+为准；职责归属、依赖方向和组合边界以
+[ARCHITECTURE.md](https://github.com/supermassiveasshole/stochaflow/blob/main/ARCHITECTURE.md)
+为准；未来优先级与完成门槛以
+[ROADMAP.md](https://github.com/supermassiveasshole/stochaflow/blob/main/ROADMAP.md)
+为准。本文只描述当前可用 surface，不把计划中的方向写成已实现能力。
+
+## 产品操作
+
+| 命令 | 当前用途 |
+| --- | --- |
+| `stochaflow init` | 生成一个普通、可安装的 extension project |
+| `stochaflow train` | 从完整训练配置启动新 run，或从 checkpoint strict resume |
+| `stochaflow sample` | 使用独立 sample config 消费 v12 checkpoint 的固定 inference recipe |
+| `stochaflow evaluate` | 对 checkpoint 或 prediction artifact 执行独立 formal evaluation |
+
+四个操作拥有各自的配置入口。训练完成不会隐式替代后续 sample 或 evaluate invocation；
+常用命令和配置关系见[工作流手册](configuration/workflows.md)。
+
+```mermaid
+flowchart LR
+    Data["Verified data artifacts"] --> Train["train"]
+    Train --> Checkpoint["Checkpoint v12"]
+    Checkpoint --> Sample["sample"]
+    Checkpoint --> LiveEval["checkpoint evaluation"]
+    LiveEval --> Predictions["Versioned predictions"]
+    Predictions --> OfflineEval["offline evaluation"]
+    Sample --> SampleArtifacts["Sampling artifacts"]
+    LiveEval --> Result["Immutable result bundle"]
+    OfflineEval --> Result
+```
 
 ## 当前能力
 
-| 领域 | 内置能力 | 扩展边界 |
-| --- | --- | --- |
-| 数据 | 普通图像、有标签图像、超分辨率配对、多源多分辨率图像 recipe | `ImageDataSource` 适配兼容 artifact；独立数据生命周期使用自定义 `DataBuilder` |
-| 模型 | 无条件 UNet、canonical unconditional/class-conditional ADM U-Net 与 pixel DiT | 注册满足任务 capability 的普通 `nn.Module`，模型不拥有训练或采样策略 |
-| 训练 | 无条件/类条件 Gaussian denoising、具体 P2 training recipe、fixed/learned-range variance、supervised、混合精度与固定梯度累积 | `TrainingBuilder` 组合资产，`TrainingStrategy` 解释 batch、调用模型并拥有该 recipe 的 loss/metrics |
-| 概率过程 | 离散 VP Gaussian Process、linear/cosine schedule、selected-pair coefficients 与 learned-range bounds | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
-| 采样 | full/respaced ancestral DDPM、DDIM、class-conditional CFG、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
-| 输出 | Tensor、PNG、trajectory grid/GIF | `SamplingArtifactWriter` 可输出 NetCDF、Zarr 等领域格式 |
-| 生命周期 | EMA、checkpoint v11、strict resume、checkpoint-bound inference、diagnostic、Rich/TensorBoard/W&B 日志 | 注册 Objective、diagnostic 和 logger |
-| 项目扩展 | `stochaflow init`、Python packaging entry point、插件 provenance | 普通可安装 Python distribution；不绑定 `uv` 或固定仓库布局 |
-
-内置 `super_resolution` 只负责数据配对和退化，不自动提供条件模型或训练/采样策略。
-完整超分辨率任务仍需项目实现 conditional model、TrainingBuilder/Strategy 与
-SamplingBuilder；这些组件可以继续复用离散 Gaussian Process 和 DDPM/DDIM。
-
-## 类条件 Gaussian 纵向切片
-
-内置类条件能力保持为一组窄协作，而不是全局 condition schema：
-
-- `ClassConditionalDenoiser` 只约定带 class labels 的 denoising prediction；
-- `class_conditional_gaussian_denoising` 解释
-  `(images, {"class_label": labels})`，在训练时执行 condition dropout，并支持
-  epsilon、x0、v 和 score targets；
-- `adm_unet` 与 `dit` 实现同一个模型 capability。ADM 使用 canonical input/output
-  block graph、逐 block skip ledger、scale-shift residual blocks 和 QKV residual
-  attention；DiT 使用 adaLN-Zero、固定二维位置编码与 PyTorch SDPA；
-- `class_conditional_denoising` SamplingBuilder 拥有 label allocation 和
-  classifier-free guidance，并把组装好的 model callable 交给现有 DDPM/DDIM；
-- `class_conditional_diffusion_quality` 使用真实 batch labels 做 reconstruction，并用固定
-  class allocation 和 guidance 生成训练期 diagnostic artifacts。
-
-Process、Sampler 和 `GenerativeDynamics` 根接口都没有增加 class 或 CFG 方法。新的
-单标签图像来源只有同时满足 `class_labeled_image` 的完整 artifact contract，并需要
-相同的 partition、Dataset、augmentation、sampler、loader、resume 与 batch 语义时，
-才只需实现 DataSource。任何一层 runtime recipe 语义不同都应使用独立 DataBuilder。
-新增兼容 denoiser 只需注册模型，不需要修改 runner。完整可运行例子见
-[AFHQ-v2 类条件生成](tutorials/afhq-v2.md)。
-
-`ADMUNet.num_res_blocks` 表示 encoder 在每个 spatial resolution 的 residual block 数
-`R`；decoder 每级固定为 `R + 1`，每个 block 消费一条 skip。
-`attention_resolutions` 填写实际空间尺寸，例如 128 输入下的 `[32, 16, 8]`，不是
-level index 或 downsample factor。middle 始终使用
-`ResBlock → Attention → ResBlock`。`num_classes: null` 创建无条件 ADM；正整数创建
-class embedding 和一个 CFG null class。旧 stage-level skip/Spatial Transformer
-实现的构造字段与 checkpoint 均不兼容，必须 fresh train。
-
-(gaussian-loss-variance-policy)=
-## Gaussian layer ownership、P2 与 variance
-
-Gaussian 代码按 framework layer 组织，而不是放入一个能够编排 Process、Training 和
-Sampling 的横向 family 模块。各 layer 的 `gaussian/` 子包只拥有该 layer 的职责；跨层
-共享仅限 process-free Gaussian family math：prediction 参数化与 raw model-output
-布局。前者包括 `PredictionType`、`GaussianPrediction` 和只接收 Tensor/scales 的
-`normalize_gaussian_prediction()`；后者包括 `VarianceMode`、固定/learned-range 输出
-拆分和 learned-range log-variance 插值。两组函数都只接收 Tensor、shape 或 bounds，
-不接收完整 Process。
-
-| 职责 | 唯一所有者 |
+| 领域 | 当前内置能力 |
 | --- | --- |
-| epsilon/x0/v/score 的纯 Tensor 转换 | process-free Gaussian family math |
-| fixed/learned-range model-output 拆分与 bounds 插值 | process-free Gaussian family math |
-| marginal scales、时间域、schedule、posterior 与 learned-range bounds | `processes.gaussian` |
-| batch 解释、时间采样、training target、SNR、loss/VB 和 model 调用 | 具体 `training.gaussian` `TrainingStrategy` |
-| denoised clipping、Dynamics、model adapter 与 solver semantics | `sampling.gaussian` |
-| recipe 参数解析、资产兼容性与 inference recipe 固化 | 对应的 Gaussian `TrainingBuilder` / `SamplingBuilder` |
-| scalar Objective 与可选逐样本报告能力 | Objective 自身 |
+| 数据 | verified managed/referenced artifacts；普通图像、有标签图像、超分辨率配对和多源多分辨率 image recipes |
+| 模型 | 无条件 UNet、canonical unconditional/class-conditional ADM U-Net、class-conditional pixel DiT |
+| 训练 | supervised 与无条件/类条件 Gaussian denoising；epsilon/x0/v/score targets；fixed/learned-range variance；concrete epsilon-only P2；混合精度、梯度累积、EMA 和单 optimizer 自动循环 |
+| 采样 | full/respaced ancestral DDPM、DDIM、class-conditional CFG、trajectory observations、Tensor/PNG/grid/GIF writers |
+| Metrics | task-neutral `MetricSpec`/`MetricUpdate`/`MetricEngine`，内置 mean/MSE/MAE 与 FID/KID providers |
+| Diagnostics | 训练期 denoiser/sampler observation、reference metrics、artifacts 与显式 failure policy |
+| Evaluation | checkpoint/prediction-artifact subjects、raw/EMA、validation/test、exact completeness、offline replay、optional streamed predictions 与 immutable results |
+| 生命周期 | DataArtifact schema v2、checkpoint v12、strict resume、read-only inference projection、structured outcomes 和 run manifests |
+| 扩展 | standard Python entry point、typed registries、extension provenance、installable reference projects |
 
-这条 layer-first 约定防止 Training 导入 Sampling，也防止 Process 获得 model、Objective
-或 batch 语义。family math 只解释 prediction Tensor、`C`/`2C` layout 和给定 bounds 的
-插值，不知道 Process/time、裁剪、P2、VB、Objective 或 registry。Training 与 Sampling
-分别取得 Process-owned bounds 后调用同一插值函数；Sampling 的 clipping、CFG 和 solver
-语义仍留在 Sampling。目录是实现归属而不是新的公共导入面；extension 仍从
-`stochaflow.extensions` 导入稳定契约。
+内置算法主线仍是 pixel-space 离散 Gaussian diffusion。Latent diffusion、预训练
+autoencoder、Stable Diffusion component-native workflow、flow matching 与 distributed
+training 尚未成为当前内置产品能力。
 
-P2 是一个具体训练 recipe，即“兼容的 epsilon model + P2 TrainingStrategy”的组合，不是
-Process capability、Objective mode 或可插拔 weighting policy。内置 Builder identity 为：
+## 数据与训练工作流
 
-- `p2_gaussian_denoising`：无条件 P2；
-- `class_conditional_p2_gaussian_denoising`：类条件 P2，并另外拥有
-  `condition_dropout`。
+当前数据路径从 `DataSource` 产生 verified `DataArtifact`，再由 `DataBuilder` 组合
+partition、Dataset、PyTorch sampler、collate 和 train/validation/test iterables。
+framework runtime 不解释 batch 字段；图像、class label、condition、target 或其他结构由
+所选 Builder 和 Strategy 约定。
 
-两者把 `prediction_type` 固定为 epsilon，要求 `MSEObjective`，并把有限的 `k > 0`、
-`gamma >= 0` 作为 Strategy 私有参数。配置直接把这些参数放在所选 Builder 下：
+`DataArtifactStore` 为 built-in 与 extension source 提供同一套 schema-v2 cache lifecycle，
+包括 identity、inventory、locator、locking、staging、verification、quarantine、atomic
+publication 和 strict-resume identity comparison。`managed` 与 `referenced` 表示数据内容
+由 cache 管理还是保留在外部目录，不改变统一 artifact handle。详细配置、验证线程和
+ownership 行为见[数据构建与 artifact 生命周期](configuration/data-pipeline.md)。
 
-```yaml
-training:
-  name: p2_gaussian_denoising
-  params:
-    k: 1.0
-    gamma: 1.0
-    variance:
-      mode: fixed
-```
-
-不存在 Gaussian weighting registry、通用 loss composer 或公共 batch-reducer protocol；
-旧 `loss_weighting` component declaration 会作为未知 Builder 参数失败。另一个 weighting
-公式、prediction restriction、model signature 或 batch 语义意味着另一个具体
-TrainingStrategy，并由带项目 namespace 的 TrainingBuilder 注册和组合。
-
-P2 Strategy 使用 cumulative marginal SNR：
-`(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)`。它按样本计算 MSE，只对 simple loss
-应用权重，不进行 batch renormalization。`MSEObjective(reduction="mean")` 对 feature 和
-batch 都取 mean；`sum` 对两者都取 sum。P2 的 batch reduction 是该具体 Strategy 对
-内置 `MSEObjective` 的私有协作，不是公共 Objective reducer contract；`gamma=0` 直接
-委托标准 Strategy，因此两种 reduction 下都严格保持未加权 identity。
-
-Variance 同样由所选 Gaussian Strategy 拥有：
-
-- `variance: {mode: fixed}` 是默认路径，模型输出 `C` channels，不计算 VB；
-- `variance: {mode: learned_range}` 要求模型输出
-  `[prediction(C), variance(C)]`。该 mode 唯一确定内置 detached-mean VB 语义，没有第二个
-  loss 配置字段。variance head 在 selected-pair posterior 与 forward
-  log-variance bounds 之间插值；hybrid loss 定义为 simple loss 加 `0.001 ×` 完整 VLB，
-  在 uniform single-timestep estimator 中实现为 `T / 1000 ×` sampled VB term；
-- P2 与 learned-range 组合仍只权重 simple loss，VB 保持未加权。
-
-内置 UNet/ADM 和任何实现 `DenoiserChannelLayout` 的 extension model 会在 Builder 组合时
-预检 `C`/`2C` 声明；不公开静态 channel layout 的外部 model 仍可组合，并在第一批 raw
-output shape 校验中 fail closed。标准与 P2 Strategy 都不把 SNR 或内部 timestep 系数
-发布为 diagnostic；可用时只报告最终 `per_sample_loss`。`loss_aggregation_weight` 只表示
-batch 对 epoch 报告的统计权重，不参与 autograd，也不是 P2 coefficient。
-
-learned-range class-conditional sampling 中，CFG 只外推 prediction half。scale 0 与 1
-分别返回完整 unconditional/conditional `2C` output；其他 scale 使用 guided prediction
-half 加 conditional variance half。DDPM 消费该 variance，DDIM 明确忽略 variance half
-但仍只用正确的 prediction channels。
-
-## 三层组织方式
-
-`Process + Dynamics + Sampler` 是组织生成算法的方式，不是一套要求所有算法数学兼容的
-万能接口。
-
-```mermaid
-flowchart TB
-    subgraph Framework["框架层"]
-        Registry["Registry / entry point"]
-        Config["Config / checkpoint"]
-        Runtime["Train / sample lifecycle"]
-    end
-
-    subgraph Family["算法 family 层"]
-        Process["可选 Process"]
-        Dynamics["family-specific Dynamics"]
-        Sampler["family-specific Sampler"]
-    end
-
-    subgraph Task["任务层"]
-        Data["DataSource + DataBuilder"]
-        Training["TrainingBuilder + Strategy"]
-        Sampling["SamplingBuilder"]
-        Artifact["Artifact Writer"]
-    end
-
-    Registry --> Runtime
-    Config --> Runtime
-    Process --> Training
-    Process --> Sampling
-    Dynamics --> Sampler
-    Sampler --> Sampling
-    Data --> Training
-    Training --> Runtime
-    Sampling --> Runtime
-    Sampling --> Artifact
-```
-
-### 框架层
-
-框架统一：
-
-- Registry 和已安装 extension 的发现、选择与激活；
-- typed config、resolved config 和 workflow-specific CLI 覆盖；
-- managed training assets 的 device、mode、优化与 checkpoint 生命周期；EMA 只跟踪
-  primary model；
-- 完整的 `Sampler.sample()` 调用生命周期；
-- sampling output 验证、artifact writer 调用与 manifest。
-
-框架不维护 `process name × sampler name` 兼容矩阵，也不按任务名称在 runner 中分支。
-兼容性在拥有完整组合信息的 Builder、Strategy 或 family-specific Sampler 边界检查。
-
-### 算法 family 层
-
-每个 family 只定义自己需要的窄契约：
-
-- 离散 Gaussian family 使用 `DiscreteGaussianDenoisingProcess`、
-  `GaussianDenoisingDynamics` 和 DDPM/DDIM；
-- vector-field family 可以定义自己的 VectorField Dynamics 与 ODE solver；
-- reverse-SDE 或 sigma-space family 可以采用完全不同的 Dynamics 行为。
-
-`GenerativeDynamics` 只是“已经组装的生成方向”的语义根，没有 universal
-`predict()`、`step()`、`drift()`、`score()` 或 `denoise()`。新 family 不必假装兼容
-Gaussian 数学。
-
-离散 Gaussian family 另外公开 selected-pair marginal coefficient snapshot、
-DDPM selected-pair ancestral transition、DDIM selected-pair transition 和各自的
-schedule resolver。这些是 family 内可复用 primitive，不是通用 `Sampler` 根接口。
-DDPM 的 `num_inference_steps` 使用 uniform-section respacing；它从 selected-pair
-coefficients 构造祖先后验，不是 DDIM，也不是跳过 model evaluation 后继续使用 adjacent
-variance。DDIM 复用 coefficient snapshot，但保持自己的 generalized `eta` 数学。项目
-Sampler 可以组合这些 primitive 实现 post-transition correction，而内置 DDPM/DDIM
-也调用同一组 primitive，避免维护重复数学。
-
-### 任务层
-
-任务层拥有 Python 中最难被通用 YAML 正确表达的组合：
-
-- DataSource 决定怎样读取、处理并 materialize 来源为标准 artifact；
-- DataBuilder 消费 artifact，决定划分、Dataset、sampler、collate 和 loader；
-- TrainingBuilder 验证并组合 core 注入的 primary model、可选 Process/Objective，同时
-  构造和声明项目辅助模块；
-- TrainingStrategy 决定怎样解释 structured batch、调用模型并计算 loss/metrics；
-- SamplingBuilder 决定 initial state、condition、guidance、模型 adapter、Sampler 和
-  writer-ready batch；
-- Writer 决定最终文件格式。
-
-condition 不属于通用 Sampler 参数。通常由 SamplingBuilder 把 condition 捕获在模型
-callable 中，再构造 family-specific Dynamics。这样同一个 DDIM 可以复用在无条件生成、
-条件生成和 classifier-free guidance 中。若任务改变的是数值 transition 本身，则应提供
-项目 Sampler，而不是给内置 DDIM 添加任务参数。
-
-## 薄数据边界
-
-核心数据契约只有：
-
-```python
-DataBuilder.build() -> DataLoaders
-```
-
-`DataLoaders` 提供 train、可选 validation/test iterable 和可选
-`steps_per_epoch`。核心不认识 Dataset 类型、split 策略、sample key、bucket metadata、
-condition 字段或图像尺寸。
-
-内置 `image`、`class_labeled_image`、`super_resolution` 和
-`multi_resolution_image` recipe 提供各自的划分与加载策略。新来源只有在 artifact
-满足目标 Builder 的完整 accepted contract，且所需 runtime recipe 语义也一致时，才只需
-实现 DataSource。新的 partition、Dataset、sampler、streaming、resume 或 batch 语义
-属于自定义 DataBuilder，且不需要、也不应被迫支持其他 recipe 的私有能力。具体配置与
-batch 约定见[数据构建](configuration/data-pipeline.md)。
-
-### Data artifact producer lifecycle
-
-`DataSource` 通过统一的 `DataArtifactStore` 把来源变成 schema-v2
-`DataArtifact`。store 拥有 canonical manifest、文件 inventory、identity、locator、
-locking、atomic publication、quarantine 和 strict-resume expected-identity 校验；
-built-in 与 extension 使用同一公共路径。
-
-对已有对象执行 `full` 加载时，store 在 payload loader 前进行一次完整内容验证，
-并复用这次结果作为 loader 输入快照；loader 返回后只执行 link-safe 元数据复查，严格
-比较路径、数量、size、device/inode、mode、mtime 与 ctime，确认 callback 没有修改
-framework-owned artifact。独立的 identity/winner 验证只需要第一轮。文件哈希由通用
-artifact I/O 层使用有界线程池并行完成，结果与错误仍按路径确定性排序。哈希以 1 MiB
-buffer 调用 `hashlib`，CPython 在该调用和文件读取期间释放 GIL，因此独立文件可以同时
-利用多个核心；这里不需要多进程及其额外的启动、IPC 和安全重开成本。
-`DataSourceContext.verification_observer` 只接收这一次内容验证的运行时进度；它不进入
-manifest、identity、配置摘要或 checkpoint。元数据复查不是抵御恶意同机写入的安全
-边界；在缺少稳定 inode/ctime 的文件系统上，能够同时恢复 size/mtime 的极端
-same-size mutation 可能无法由第二轮发现。
-Fresh materialization 的 staging 与 published final object 是两个独立验证边界，
-各自执行上述一次内容认证和一次加载后元数据复查。
-
-`source.materialization.verification_workers` 控制每个 artifact 的哈希线程数；`null`
-默认选择 `min(8, logical CPUs)`，显式值必须在 `1..8` 范围内。`stochaflow train
---artifact-verification-workers N` 可以仅对本次启动覆盖全部 source，适用于 strict
-resume。该并行度属于运行时 I/O policy，不进入 artifact identity 或 digest。
-
-`managed` 与 `referenced` 只是 ownership strategy：
-
-- managed artifact 的实际内容位于 framework cache，可以从固定来源和 materialization
-  recipe 重建；
-- referenced artifact 只把索引/sidecar 放入 cache，represented content 保留在外部目录。
-
-两者使用同一个 runtime handle；差异由 `artifact.identity.kind` 表达。payload 与
-`domain` 仍由 producer family 定义，Builder 再检查更窄的 accepted artifact contract。
-这个 lifecycle 不引入通用 dataset metadata、provenance、capacity 或 Dataset registry。
-
-当前 identity、manifest、locator、cache layout 和 checkpoint binding 都是 schema v2
-breaking contract。框架不读取或迁移旧格式；升级后数据需要重新 materialize，旧
-artifact-aware checkpoint 不能 strict resume。
-
-## 训练组合边界
-
-训练侧的稳定数据流是：
+训练侧的当前组合为：
 
 ```text
-config + injected assets
-        ↓
-TrainingBuilder.build()
-        ↓
-TrainingPlan
-  ├── TrainingStrategy
-  ├── primary model
-  ├── optional Process / Objective
-  ├── named managed auxiliary modules
-  ├── optional inference asset projections
-  └── optional fixed inference recipe
-        ↓
-Trainer lifecycle
+DataBuilder -> DataLoaders
+injected model / optional Process / optional Objective
+              -> TrainingBuilder -> TrainingPlan
+              -> TrainingStrategy + Trainer
+              -> checkpoints + TrainingRunOutcome + manifest
 ```
 
-core 先构造 primary model、可选 Process/Objective，再注入 Builder；Plan 必须原样保留
-这些对象。Builder 可以构造、加载、冻结并声明 auxiliary assets，并可将其中一部分按
-slot 一对一投影为 inference assets；也可以声明一个
-`SamplingRecipe(name, contract)`。projection 的 component declaration 只描述如何从
-checkpoint state 重建 module，不携带训练时 acquisition path。recipe 固定与训练语义绑定的内部 SamplingBuilder
-identity 和 JSON-safe contract；可调 request defaults 仍来自顶层 `sampling`。Strategy
-只负责一次 batch 的训练计算。Trainer 负责自动优化生命周期，包括全部 managed assets
-的 device/mode、backward、一个 optimizer、可选 scheduler 和 checkpoint。EMA 仅跟踪
-primary model；Process、Objective 与 auxiliary modules 只保存 raw state。
+`TrainingBuilder` 可以声明 managed auxiliary modules、其中一部分的 inference projection
+以及固定 `SamplingRecipe`。`TrainingStrategy` 解释 batch 并产生 loss、step scalars 与
+metric updates；Trainer 负责 device/mode、precision、gradient accumulation、backward、
+单 optimizer、可选 scheduler、primary-model EMA 和 checkpoint。若未来实现 frozen-teacher
+task，仍应由 Builder 准备 teacher、Strategy 组合 forward；这是一条架构边界，不是当前
+maintained distillation 能力。
 
-自动循环还拥有 `fp32`、`bf16-mixed`、`fp16-mixed` precision 与固定
-`accumulate_grad_batches`。autocast、GradScaler、unscale/clip/step 顺序和 partial-window
-flush 都属于 Trainer/PrecisionRuntime，不散落在 Strategy 中。scheduler、EMA、global
-step 和 update-level diagnostics 只在 optimizer step 成功后推进。precision 与
-accumulation 会进入 checkpoint v11 的 strict resume 边界，不能用 observability config
-改写。
+当前自动循环支持 `fp32`、`bf16-mixed`、`fp16-mixed` 和固定
+`accumulate_grad_batches`。独立 optimizers、alternating updates 或 manual backward
+尚未由这个循环支持。训练、strict resume、precision、accumulation 和 checkpoint 细节见
+[兼容性与迁移](configuration/compatibility-and-migration.md)。
 
-冻结 teacher 蒸馏仍属于这套边界：Builder 加载并冻结 teacher，Strategy 组合
-student/teacher forward 与 Objective。独立 teacher optimizer、交替更新或 manual
-backward 属于新的训练循环 family，不应被塞入通用 Strategy mode。
+## Checkpoint inference 与采样
 
-标准 PyTorch optimizer 与 LR scheduler 通过受限原生 target 构造，`params` 直接传给
-当前 PyTorch 版本；Stochaflow 不复制上游构造参数和默认值。第三方子类仍可注册到对应
-Registry。
+`stochaflow sample` 同时读取两份明确输入：
 
-## Metrics、模型选择、Diagnostics 与 Evaluation
+- v12 checkpoint 保存训练配置、portable inference state 与固定 recipe contract；
+- 完整 sample config 提供本次 invocation 的 sampler options、shape、数量、batch size、
+  seed 和 writers。
 
-`stochaflow.metrics` 是任务无关的状态化计算层。`MetricSpec` 描述构造和 channel
-binding，`MetricUpdate` 携带 Strategy 已解释过的不透明 `args`/`kwargs`，
-`MetricEngine` 只负责构造、update、compute、reset 和 device lifecycle。它不知道
-train/validation/test、batch schema、checkpoint、monitor、Diagnostic 或 Evaluation。
+sample config 不从训练配置继承可变 sampling defaults，也不能替换 checkpoint 固定的
+内部 SamplingBuilder contract。Read-only inference projection 只重建 raw/EMA primary
+model、可选 Process 和显式声明的 inference assets；optimizer、scheduler、scaler、训练
+RNG、Objective 和未投影 auxiliary modules 不进入该 view。
 
-Training 在自己的配置与 runtime 边界把一个 metric declaration 绑定到 train、
-validation 或 test phase，并为每个 phase 创建隔离的 engine。`channel` 只是 Strategy
-生产的 payload 路由键，不是 metric 名称，也不定义通用 prediction/target/label schema；
-多个 metric 可以消费同一个 channel。`TrainStepOutput.metrics` 仍是 Strategy 已经算好的
-低成本 step scalar，`metric_updates` 则驱动跨完整 epoch 聚合的状态化 metric。训练 phase
-的 update 只在 optimizer lifecycle 成功后提交；validation/test 在成功 evaluation step
-后提交。
+数值 `Sampler` 管理完整 solver lifecycle，任务级 `SamplingBuilder` 负责 initial state、
+condition、guidance、model adapter、inference assets 与 writer-ready output。当前 built-in
+DDPM/DDIM 复用离散 Gaussian family 的 selected-pair coefficient/transition primitives；
+DDPM respacing 保持 ancestral transition，DDIM 保持自己的 generalized `eta` 数学。
 
-每个完成的训练 epoch 只形成一个普通 canonical `dict[str, float]`。history、epoch
-logger、checkpoint metrics 和模型选择消费同一份字典，不再维护逐 key source/provenance
-对象。best checkpoint 与 early stopping 只接受 `valid/loss` 或
-`valid/metrics/<id>[/<subkey>]`；train、test、system、step 和 diagnostic observation
-都不能参与选择。没有 validation loader 时不产生 best，训练后 inference 若启用则明确
-选择 final `latest.pt`，不能把 train loss 伪装成 validation selection。
+当前 sampling output 会在 writers 启动前整体物化，因此适合有界离线请求，不是
+streaming contract。每个 `SamplingBatch` 显式声明 modality-neutral count，core 要求总数
+精确等于完整 sample config 的 `num_samples`。runtime 从同一份稳定 checkpoint bytes
+固定 SHA-256、epoch/global step，在私有 sibling staging 内运行 writers，并把完整 bundle
+原子发布到尚不存在的最终目录。配置示例见[采样工作流](configuration/workflows.md)，容量
+限制见[Sampling artifact 容量](configuration/sampling-capacity.md)。
 
-`TrainingDiagnostic` 是训练期 observation hook。它适合低频、昂贵、需要采样或不能由
-普通 validation metric 表达的内容，并自行写 logger 与 artifacts；callback 返回 `None`，
-其 observation 不进入 epoch history、checkpoint metrics、best 或 early stopping。
-Diagnostic 可以读取 validation batch 做观察，但这种读取不等于正式 Evaluation。
+## Metrics、Diagnostics 与 formal Evaluation
 
-正式 Evaluation 是冻结训练 subject 后的独立生命周期，负责 dataset/protocol、按类别与
-aggregate 结果以及正式 test artifacts。该层尚未作为通用框架能力实现；实现时应复用
-任务无关 `MetricEngine`，而不是让 Metrics 依赖 Evaluation，或让 training Diagnostic
-冒充 Evaluation。
+训练 metrics、Diagnostics 和 formal Evaluation 是三条不同路径：
 
-## Checkpoint inference 与采样组合边界
+- epoch metrics 由 Strategy 产生 task-owned channel payload，再由 phase-local
+  `MetricEngine` 聚合；
+- `TrainingDiagnostic` 用于低频或昂贵的训练期观察，并直接写 logger/artifact；
+- `stochaflow evaluate` 在冻结 subject 上执行独立 protocol，并发布可审计 result。
 
-`stochaflow sample` 表示 checkpoint-backed inference，而不只表示随机图像生成。生成、
-重建和 prediction 都通过同一 operation 解析 v11 checkpoint 中的 `inference_recipe`；
-recipe 为 null 的 checkpoint 不支持该 operation。外部 sample request 只能调整
-checkpoint 已公开的 sampler、options、shape、数量、batch、seed 和 writers，不能重新
-选择内部 SamplingBuilder 或覆盖 fixed contract。
+best checkpoint 与 early stopping 当前只接受 validation loss 或 validation metric。
+Train/test/system scalars 与 Diagnostic observations 不参与模型选择；Diagnostic 读取
+validation batch 也不会自动成为 formal evaluation evidence。
 
-声明为 inference asset 的 auxiliary module 与其 embedded state 一起进入 sampling
-projection；未声明的 teacher、Objective、optimizer、scheduler 和其他 training-only
-资产不会进入该 view。extension 激活后，runtime 才创建
-`InferenceAssetProvider`。具体 SamplingBuilder 以 slot 与语义 role 请求资产，并继续
-验证自己的窄 capability。module 只在首次请求时于 CPU 上完成 exact
-key/shape/dtype/layout 检查与 strict load，成功后迁移到 sampling device、切换为 eval
-并缓存。这里的 requested-only 指 module 构造和加载；`torch.load` 仍会先读取整个
-checkpoint。
+formal Evaluation 当前支持两种 subject：
 
-所有数值 Sampler 共享一个完整执行入口：
+1. **Checkpoint subject**：显式选择 raw 或 EMA，重建 checkpoint DataBuilder 的
+   validation/test split，并可通过共享 SamplingBuilder execution seam 调用完整生成算法。
+2. **Prediction-artifact subject**：认证 versioned manifest、shards、producer lineage 和
+   exact sample plan，再把 typed records 交给 Evaluator；不会构造 checkpoint model、原
+   DataBuilder 或 sampling capability。
 
-```python
-result = sampler.sample(
-    dynamics,
-    initial_state,
-    generator=generator,
-    observer=observer,
-)
-```
+`EvaluationBuilder` 组合 task-specific Evaluator、metric channels 和可选
+prediction-artifact sink。Runtime 在 `torch.inference_mode()` 下验证 count、全局唯一
+sample IDs、protocol completeness、metric updates 和 measurements。成功运行最后发布
+`resolved_evaluation.yaml`、`result.json` 与 `evaluation_manifest.yaml`；只有 Builder
+显式声明 sink 时才额外发布可离线重放的 `predictions/`。
 
-统一的是生命周期，不是单步公式。多步历史、自适应 ODE、predictor-corrector、
-rejection 或一步多次模型求值都可保留在具体 Sampler 内部。任务专属 shape、condition、
-guidance 和 artifact 不进入这个接口。
+当前 core 提供 FID/KID adapters，AFHQ-v2 extension 提供首个 class-aware
+full-official-test public profile，已经覆盖当前普通像素图像生成闭合范围。SR、consistency、
+latent 与 distillation 不被视为这个 milestone 的“待补 profile”；未来任务实现必须同步提供
+自己的 monitoring/Evaluation contract。reference cache、performance/curve、comparison 和
+gate 属于可选增强。完整协议与 offline artifact 行为见
+[评估工作流](configuration/workflows.md)和[扩展手册](configuration/extensions.md)。
 
-没有数值求解过程的 direct transform 可以完全不构造 Process、Dynamics 或 Sampler；
-它只需由 SamplingBuilder 返回合法 `SamplingOutput`。完整例子见
-[自定义生成算法 family](tutorials/custom-generation-family.md)。
+## 内置 Gaussian 工作流
 
-当前 artifact 生命周期是整体物化式：Builder 先返回所有 batch 和保留的 trajectory，
-writer 才开始工作。它适合有界离线采样，但不是 streaming contract。容量估算和安全使用
-方式见 [Sampling artifact 容量](configuration/sampling-capacity.md)。
+离散 Gaussian built-ins 覆盖：
 
-## 配置、checkpoint 与 extension
+- epsilon、x0、v 与 score prediction targets；
+- fixed variance 和 learned-range variance；
+- 标准及 concrete epsilon-only P2 TrainingBuilder；
+- unconditional 与 class-conditional training；
+- full/respaced ancestral DDPM、DDIM 与 classifier-free guidance。
 
-每个 workflow 只有一个权威 base config：
+P2 通过 `p2_gaussian_denoising` 或
+`class_conditional_p2_gaussian_denoising` 选择，不是标准 Builder 上的
+`loss_weighting` option。Learned-range 模型输出 prediction/variance 两个 channel halves；
+P2 只加权 simple loss，variance VB term 保持未加权。DDPM 消费 learned variance，DDIM
+只消费 prediction half。完整公式、字段与示例见
+{ref}`Gaussian variance、P2 与 respaced DDPM <gaussian-variance-p2-respaced-ddpm>`。
 
-| Workflow | Base config | 允许的覆盖 |
-| --- | --- | --- |
-| 新训练 | `train --config` 指向的完整 YAML | 文档化的训练 CLI runtime options |
-| Strict resume | checkpoint 内保存的完整 config | device/output/epoch/limit 等明确 runtime options |
-| Checkpoint inference | 显式 v11 checkpoint 的 config、state 与 `inference_recipe` | 可选 partial sample request；device/output 等 sampling CLI runtime options |
+类条件能力使用窄的 `ClassConditionalDenoiser` capability，而不是全局 condition schema。
+当前 ADM 使用 canonical encoder/decoder block graph、逐 block skip ledger 和 QKV residual
+attention；旧 stage-level topology checkpoint 不兼容。`class_conditional_denoising`
+SamplingBuilder 负责 label allocation 与 CFG，再复用 DDPM/DDIM。完整可运行 surface 见
+[AFHQ-v2 教程](tutorials/afhq-v2.md)。
 
-checkpoint 保存 resolved config、managed state、inference asset descriptors 和 fixed
-inference recipe，但不冻结
-extension 的 Python class、源码、wheel、数据或环境，因此是自描述 artifact，不是
-自包含可执行环境。extension provenance 记录 entry-point name、distribution、version
-和 module target；sample request 只能追加插件，不能删除 checkpoint-required plugin。
-版本差异可以显式接受，身份或 state 不兼容仍会失败。项目应使用自己的
-lockfile/environment specification 固定可复现实验环境。
+内置 `super_resolution` 目前只提供数据配对与退化，不是 maintained end-to-end task。
+真实任务仍需要项目同时提供 compatible conditional model、TrainingBuilder/Strategy、
+SamplingBuilder、monitoring 与 formal Evaluation；边界草图见
+[条件 Gaussian 超分辨率](tutorials/super-resolution.md)。
 
-extension 是普通 Python distribution，通过标准 entry point 声明一个聚合注册模块：
+## State、artifact 与 extension 身份
 
-```toml
-[project.entry-points."stochaflow.extensions"]
-my-project = "my_project.stochaflow_ext"
-```
+| Artifact | 当前兼容边界 |
+| --- | --- |
+| DataArtifact | schema v2 identity、manifest、locator、cache layout 与 checkpoint binding |
+| Checkpoint | format v12，包含完整训练 state、resolved config、inference projections 与 recipe |
+| Sampling result | complete sample authority、checkpoint identity、resolved weights、writers 与 manifest |
+| Prediction artifact | schema v1 records、shard digests、exact sample plan、producer/source lineage |
+| Evaluation result | schema v1 subject、data、protocol、providers、metrics、completeness 与 artifacts |
 
-YAML 再显式选择需要激活的插件：
+不受支持的旧 schema 会 fail closed，除非对应文档明确提供迁移。Checkpoint 与 manifest
+保存 extension entry-point name、distribution、version 和 module target，但不会冻结
+Python source、wheel、数据、驱动或操作系统；项目仍需使用自己的 lockfile 或环境规范。
 
-```yaml
-extensions:
-  plugins: [my-project]
-```
+Extension 是普通 Python distribution，通过
+`[project.entry-points."stochaflow.extensions"]` 暴露一个聚合注册模块。Entry-point name
+选择 distribution/module，Registry component name 选择其中的具体实现；两者是不同身份。
+配置、provenance、版本差异处理和公共 import surface 见
+[扩展与 Registry](configuration/extensions.md)及
+[Extension 公共 API](api/extensions.md)。
 
-这两个名称是不同层级的身份：entry-point name 选择 distribution 的聚合模块，
-组件的 Registry name 选择聚合模块注册的具体实现。组件名称应使用项目命名空间，例如
-`my-project.physics-data`，以降低进程级 Registry 冲突风险。
+## 当前明确保留的限制
 
-## 有意保留的边界
+- 自动训练只有单 optimizer、单 backward lifecycle。
+- DataLoader worker、transform 与 sampler 的全部运行时随机状态不进入 checkpoint。
+- Sampling outputs 在 writer 前整体物化，不支持无界 streaming 或大规模 dense
+  trajectory。
+- Formal evaluation 已覆盖 checkpoint、replayable predictions 和 AFHQ-v2 FID/KID
+  vertical slice，但尚未覆盖所有任务 profile、reference cache、comparison 与 gate。
+- Registry/provenance 能验证声明身份与版本，不能证明同版本 extension source 未变化。
+- `stochaflow init` 生成普通 Python project，但不创建环境、安装依赖、管理源码仓库或
+  驱动框架外实验。
 
-- 当前生产内置 family 是离散 Gaussian diffusion；flow matching、score SDE 和更快
-  solver 仍需 extension 或后续实现。
-- 自动训练循环只有单 optimizer、单 backward 生命周期。
-- DataLoader/worker/transform 的运行时随机状态不进入 checkpoint。
-- sampling output 在 writer 前整体物化；全量大样本 dense trajectory 不受支持。
-- Registry 和 provenance 不证明 extension 源码在相同版本号下没有变化。
-- `stochaflow init` 生成普通 Python 项目，但不创建环境、安装依赖、扫描 monorepo 或
-  驱动 Stochaflow 之外的实验。
+这些限制的未来顺序以 root `ROADMAP.md` 为准，而不是由本页暗示。
 
-## 下一步
+## 继续阅读
 
 - [快速开始与配置](configuration/index.md#五分钟快速开始)
+- [常用训练、恢复、采样和评估工作流](configuration/workflows.md)
+- [数据构建与 artifact 生命周期](configuration/data-pipeline.md)
 - [扩展与 Registry](configuration/extensions.md)
-- [常用训练、恢复和采样工作流](configuration/workflows.md)
-- [Extension 公共 API](api/extensions.md)
-- [条件 Gaussian 超分辨率](tutorials/super-resolution.md)
-- [复用离散 Gaussian 组件](tutorials/reuse-gaussian-components.md)
 - [纵向参考项目](configuration/reference-projects.md)
+- [复用离散 Gaussian 组件](tutorials/reuse-gaussian-components.md)
+- [自定义生成算法 family](tutorials/custom-generation-family.md)

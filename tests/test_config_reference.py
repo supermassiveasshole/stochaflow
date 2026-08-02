@@ -4,7 +4,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from stochaflow.utils.config import StochaflowConfig, load_config
+from stochaflow.utils.config import (
+    SampleInvocationConfig,
+    StochaflowConfig,
+    load_config,
+    load_sample_config,
+)
 
 
 def _component_section(reference: str, anchor: str) -> str:
@@ -28,23 +33,26 @@ def test_generated_config_reference_is_current() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_sampling_reference_exposes_request_defaults_not_builder_selection() -> None:
+def test_reference_separates_complete_sample_invocation_from_training() -> None:
     reference = Path("docs/configuration/reference.md").read_text(encoding="utf-8")
 
     for field_path in (
-        "sampling-run-after-training",
-        "sampling-sampler",
-        "sampling-options",
-        "sampling-shape",
-        "sampling-num-samples",
-        "sampling-batch-size",
-        "sampling-seed",
-        "sampling-writers",
+        "sample",
+        "sample-sampler",
+        "sample-options",
+        "sample-shape",
+        "sample-num-samples",
+        "sample-batch-size",
+        "sample-seed",
+        "sample-writers",
     ):
         assert f"(config-field-path-{field_path})=" in reference
-    assert "(config-field-path-sampling-builder)=" not in reference
+    assert "(config-field-path-sampling)=" not in reference
+    assert "(config-field-path-ema-use-for-sampling)=" not in reference
+    assert "(config-field-path-sample-builder)=" not in reference
     assert "checkpoint.inference_recipe.name" in reference
-    assert "partial sample request" in reference
+    assert "partial sample request" not in reference
+    assert "完整 sample invocation config" in reference
 
 
 def test_context_built_component_private_parameters_are_documented() -> None:
@@ -104,6 +112,20 @@ def test_context_built_component_private_parameters_are_documented() -> None:
     assert "`params` 必须是空 mapping（默认 `{}`）" in supervised
 
 
+def test_reference_indexes_builtin_reference_metrics() -> None:
+    reference = Path("docs/configuration/reference.md").read_text(encoding="utf-8")
+
+    fid = _component_section(reference, "metrics-fid")
+    assert "optional quality" in fid
+    assert "| `feature` |" in fid
+    assert "| `antialias` |" in fid
+
+    kid = _component_section(reference, "metrics-kid")
+    assert "optional quality" in kid
+    for parameter in ("feature", "subsets", "subset_size", "degree", "gamma", "coef"):
+        assert f"| `{parameter}` |" in kid
+
+
 def test_all_builtin_train_configs_load() -> None:
     paths = sorted(
         Path("examples/built-in/image-generation/configs/train").glob("*.yaml")
@@ -111,3 +133,14 @@ def test_all_builtin_train_configs_load() -> None:
 
     assert [path.name for path in paths] == ["mnist.yaml"]
     assert all(isinstance(load_config(path), StochaflowConfig) for path in paths)
+
+
+def test_all_builtin_sample_configs_load() -> None:
+    paths = sorted(
+        Path("examples/built-in/image-generation/configs/sample").glob("*.yaml")
+    )
+
+    assert [path.name for path in paths] == ["mnist-ddim-50.yaml", "mnist-ddpm.yaml"]
+    assert all(
+        isinstance(load_sample_config(path), SampleInvocationConfig) for path in paths
+    )
