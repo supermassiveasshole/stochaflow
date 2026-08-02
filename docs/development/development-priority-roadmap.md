@@ -301,7 +301,8 @@ gate 仍开放。
   epsilon/fixed、BF16、batch 8 / accumulation 4 与 EMA decay 0.9999；
 - 只用 `selection-ddim50-cfg2-validation-epsilon.yaml` 对候选 `epoch_*.pt` EMA 运行
   300/class validation Evaluation，并据预声明规则冻结唯一 subject；训练期 `valid/loss`、
-  diagnostic、phase test 与 official test 都不得参与选择；
+  diagnostic、phase test 与 official test 都不得参与选择；900-example validation 结果只
+  排序候选，不具有 acceptance 权限；
 - subject 冻结后，只对它运行一次 exact 1,467-sample official-test epsilon profile，原子发布
   checkpoint、resolved config、prediction/result manifest、protocol/dataset/sample IDs 与
   provider digests；required acceptance 同时要求 aggregate FID ≤ 35、aggregate KID mean
@@ -313,6 +314,13 @@ gate 仍开放。
 
 A3 的退出条件是完整长跑证据与 gate 结论可审计发布；它不是 P2 必然获益的承诺。A3 关闭后
 必须先更新根 roadmap 作产品重决策，不自动授权 codec/latent 实施。
+
+上述 acceptance 是只适用于 epsilon/fixed P2 production subject 的内部项目门槛；
+standard-v ADM 与 DiT 不继承。该评估使用 AFHQ-v2 官方 test split 和本项目自定义的
+class-conditional 128×128 DDIM-50/CFG 2.0 protocol，不是
+[P2 CVPR 论文](https://openaccess.thecvf.com/content/CVPR2022/html/Choi_Perception_Prioritized_Training_of_Diffusion_Models_CVPR_2022_paper.html)
+及[作者仓库](https://github.com/jychoi118/P2-weighting)中的 unconditional AFHQ-Dog-256
+benchmark；论文报告的 P2 FID 11.55 不能与本项目数值横比。
 
 ### L0 — Pretrained Codec Ready（Post-A3 re-decision candidate，未排期）
 

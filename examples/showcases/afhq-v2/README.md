@@ -485,6 +485,7 @@ P2 production subject selection。机器可读的
 [`p2-production-closeout-policy.yaml`](experiments/evaluation/p2-production-closeout-policy.yaml)
 已经冻结 eligible epochs 20、40、60、80、100、120、140、160、180、200，primary 为
 validation aggregate FID lower，tie-break 为 aggregate KID mean lower、再 earliest epoch。
+这 900 张 validation real/fake 只用于候选排序，没有 pass/fail 或 acceptance 权限。
 训练完成后，对每个候选 EMA 分别运行 validation-only profile；每次替换
 `REPLACE_WITH_RUN_ID`、zero-padded `epoch_XXXX.pt` 与新的 output directory：
 
@@ -525,13 +526,22 @@ uv run --project examples/showcases/afhq-v2 stochaflow evaluate \
 这次 one-shot result 只验收 P2 candidate 的 absolute quality。它必须 exact/complete
 1,467 examples，并同时满足 aggregate FID ≤ 35、aggregate KID mean ≤ 0.01 和每类
 FID ≤ 65；aggregate FID ≤ 30 是 aspirational target。它不能反向改变 selection，也不能
-单独证明 P2 相对 standard 的 superiority。
+单独证明 P2 相对 standard 的 superiority。这些 `internal_project_acceptance`
+thresholds 只适用于 `train-adm-128-p2.yaml` 的 epsilon/fixed P2 subject；standard-v ADM
+和 DiT 配置不继承它们。
 
 profile 消费完整 authenticated official test split：cat/dog/wild 分别为
 493/491/483 张，共 1,467 张 reference，并以相同 class allocation 生成 1,467 张 fake。
 它固定 EMA、seed `20260726`、deterministic DDIM-50、CFG 2.0、128×128 RGB、KID
 100 subsets / subset size 300 / seed `20260726` 和 FID feature 2048。结果同时包含 aggregate 与 per-class
 KID/FID；aggregate 是主要分布指标，per-class 数值只作细分诊断，不能忽略有限样本偏差。
+
+这是“AFHQ-v2 官方 test split + 本项目自定义 class-conditional 128×128 / DDIM-50 /
+CFG 2.0 diffusion protocol”，不是论文复现协议。P2 论文及其
+[作者仓库](https://github.com/jychoi118/P2-weighting)使用 unconditional AFHQ-Dog
+256×256 设置；[CVPR 2022 论文](https://openaccess.thecvf.com/content/CVPR2022/html/Choi_Perception_Prioritized_Training_of_Diffusion_Models_CVPR_2022_paper.html)
+报告的 AFHQ-Dog P2 FID 11.55 因数据子集、分辨率、条件方式、real/fake sample plan 和
+采样协议均不同，不能与这里的 FID 横向比较。
 
 runtime 只把已经解析为 EMA（或另一个 profile 显式选择的 raw）的 primary model 注入
 AFHQ Builder，Builder 不能再次选择权重。生成经由 checkpoint-bound

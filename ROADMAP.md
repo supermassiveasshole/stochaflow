@@ -106,11 +106,14 @@ Post-merge experiment exit evidence:
 - evaluate eligible epoch EMA checkpoints only with the versioned 300-per-class
   `selection-ddim50-cfg2-validation-epsilon.yaml` profile, record one uniquely
   selected subject, and never use `valid/loss` or official-test results for that
-  choice;
+  choice; the 900-example validation result ranks candidates only and has no
+  acceptance authority;
 - run the full 1,467-example official-test profile exactly once for the frozen
   subject and publish the complete immutable result bundle; acceptance requires
   aggregate FID <= 35, aggregate KID mean <= 0.01, and every class FID <= 65,
-  while aggregate FID <= 30 is aspirational;
+  while aggregate FID <= 30 is aspirational. These are internal-project
+  thresholds only for the epsilon/fixed P2 production subject; standard-v ADM
+  and DiT profiles do not inherit them;
 - do not claim that P2 is superior to standard from this single-arm closeout. A
   later superiority claim requires a matched production `gamma: 0` control that
   changes no other training or evaluation field.
@@ -121,6 +124,14 @@ EMA/diagnostic/validation/test/checkpoint lifecycles; the corrected 105,197,187-
 parameter topology completed eight BF16 updates plus validation/test/checkpoint
 publication at 4.34 compute optimizer steps/s. Those runs remain wiring and
 full-topology readiness evidence.
+
+This closeout evaluates the official AFHQ-v2 test split under the project's
+class-conditional 128x128 DDIM-50/CFG 2.0 diffusion protocol. It is not the
+unconditional AFHQ-Dog 256x256 protocol in the
+[P2 CVPR paper](https://openaccess.thecvf.com/content/CVPR2022/html/Choi_Perception_Prioritized_Training_of_Diffusion_Models_CVPR_2022_paper.html)
+and [authors' repository](https://github.com/jychoi118/P2-weighting); in
+particular, the paper's AFHQ-Dog P2 FID 11.55 is not numerically comparable to
+this project's FID.
 
 The target-device capacity requirement now has a valid schema-v3 RTX 4090
 report for the corrected topology under P2 BF16 training. Micro batches 1, 4,

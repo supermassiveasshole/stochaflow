@@ -12,6 +12,8 @@ training:
 selection:
   profile: selection-ddim50-cfg2-validation-epsilon.yaml
   split: validation
+  semantics: ranking_only
+  acceptance_authority: false
   subject_weights: ema
   eligible_epochs: [20, 40, 60, 80, 100, 120, 140, 160, 180, 200]
   checkpoint_filename_format: "epoch_{epoch:04d}.pt"
@@ -31,7 +33,37 @@ official_test:
   run_count: 1
   expected_examples: 1467
   strict_complete: true
+  subject_scope:
+    training_profile: ../production/train-adm-128-p2.yaml
+    training_name: class_conditional_p2_gaussian_denoising
+    model_name: adm_unet
+    prediction_type: epsilon
+    variance_mode: fixed
+    other_profiles_inherit: false
+    excluded_profiles:
+      - ../production/train-adm-128.yaml
+      - ../production/train-dit-128.yaml
   acceptance:
+    kind: internal_project_acceptance
+    paper_reproduction: false
+    criterion_record:
+      status: undocumented_internal_criterion
+      derivation: not_recorded
+      adopted_by: current_p2_closeout_policy
+      first_codified_on: "2026-08-02"
+      first_codified_in_commit: 57223cbdb6f057bf6b9e17b113b598080d17f21a
+    comparison_reference:
+      comparable: false
+      task: unconditional_afhq_dog
+      image_size: [256, 256]
+      reported_result: {sampling_steps: 1000, fid: 11.55}
+      paper: https://openaccess.thecvf.com/content/CVPR2022/html/Choi_Perception_Prioritized_Training_of_Diffusion_Models_CVPR_2022_paper.html
+      author_repository: https://github.com/jychoi118/P2-weighting
+    rationale: >-
+      Freeze a practical absolute-quality gate for this repository's
+      class-conditional 128x128 official-test protocol. The thresholds are not
+      sourced from, or numerically comparable with, the P2 paper's
+      unconditional AFHQ-Dog 256x256 benchmark.
     require_all: true
     thresholds:
       - key: eval/metrics/distribution/aggregate.fid

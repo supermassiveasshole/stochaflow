@@ -433,7 +433,8 @@ uv run --project examples/showcases/afhq-v2 stochaflow evaluate \
 real/fake、EMA、epsilon/fixed、DDIM-50、eta 0、CFG 2.0 和 seed `20260726`。只按预声明规则
 从这些 validation Evaluation results 冻结一个唯一 subject，并保存选择记录。不得使用
 `valid/loss`、diagnostic、phase-test 或 official-test 结果挑 checkpoint；official test 在
-subject 冻结后只运行一次。
+subject 冻结后只运行一次。这里的 900 张 validation real/fake 只有排序权，没有 pass/fail
+或 acceptance 权限。
 
 ## 日志、diagnostic 与 checkpoint
 
@@ -563,7 +564,9 @@ uv run --project examples/showcases/afhq-v2 stochaflow evaluate \
 exact/complete 1,467 examples、aggregate FID ≤ 35、aggregate KID mean ≤ 0.01，且
 cat/dog/wild 各自 FID ≤ 65；aggregate FID ≤ 30 是 aspirational target，不是 pass 所必需。
 所有 required thresholds 必须同时通过。结果不能反向改变候选列表、selection metric 或
-tie-break，也不能单独支持 P2 相对 standard 的 superiority 声明。
+tie-break，也不能单独支持 P2 相对 standard 的 superiority 声明。这组阈值是
+`internal_project_acceptance`，只适用于 `train-adm-128-p2.yaml` 产生的 epsilon/fixed P2
+subject；standard-v ADM 与 DiT 配置不继承它们。
 
 formal profile 固定：
 
@@ -574,6 +577,13 @@ formal profile 固定：
 - aggregate 与 per-class KID/FID；aggregate 是主要分布指标，per-class 结果仅作细分
   诊断；
 - KID 100 subsets、subset size 300、seed `20260726`，FID feature 2048。
+
+因此这里评估的是“AFHQ-v2 官方 test split + 本项目自定义 class-conditional 128×128 /
+DDIM-50 / CFG 2.0 diffusion protocol”，不是论文复现。P2
+[作者仓库](https://github.com/jychoi118/P2-weighting)给出的训练/预训练设置与
+[CVPR 2022 论文](https://openaccess.thecvf.com/content/CVPR2022/html/Choi_Perception_Prioritized_Training_of_Diffusion_Models_CVPR_2022_paper.html)
+中的 AFHQ-Dog-256 benchmark 均为 unconditional 256×256；论文的 P2 FID 11.55 不能与
+这里的数值横比，因为数据子集、分辨率、条件方式、real/fake sample plan 和采样协议不同。
 
 core 先把 checkpoint 中明确选择的 EMA（或另一个 profile 的 raw）解析为一个 pinned
 primary model；AFHQ Builder 没有第二次权重选择权。它消费 checkpoint-bound

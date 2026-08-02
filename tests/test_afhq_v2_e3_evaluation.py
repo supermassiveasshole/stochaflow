@@ -911,6 +911,8 @@ def test_checked_in_p2_closeout_policy_freezes_selection_and_acceptance() -> Non
     assert raw["selection"] == {
         "profile": "selection-ddim50-cfg2-validation-epsilon.yaml",
         "split": "validation",
+        "semantics": "ranking_only",
+        "acceptance_authority": False,
         "subject_weights": "ema",
         "eligible_epochs": list(range(20, 201, 20)),
         "checkpoint_filename_format": "epoch_{epoch:04d}.pt",
@@ -927,43 +929,82 @@ def test_checked_in_p2_closeout_policy_freezes_selection_and_acceptance() -> Non
             {"key": "checkpoint_epoch", "direction": "minimize"},
         ],
     }
-    assert raw["official_test"] == {
-        "profile": "formal-ddim50-cfg2-official-test-epsilon.yaml",
-        "split": "test",
-        "run_count": 1,
-        "expected_examples": 1_467,
-        "strict_complete": True,
-        "acceptance": {
-            "require_all": True,
-            "thresholds": [
-                {
-                    "key": "eval/metrics/distribution/aggregate.fid",
-                    "maximum": 35.0,
-                },
-                {
-                    "key": "eval/metrics/distribution/aggregate.kid_mean",
-                    "maximum": 0.01,
-                },
-                {
-                    "key": "eval/metrics/distribution/cat.fid",
-                    "maximum": 65.0,
-                },
-                {
-                    "key": "eval/metrics/distribution/dog.fid",
-                    "maximum": 65.0,
-                },
-                {
-                    "key": "eval/metrics/distribution/wild.fid",
-                    "maximum": 65.0,
-                },
-            ],
-        },
-        "aspirational": {
+    official_test = raw["official_test"]
+    assert official_test["profile"] == (
+        "formal-ddim50-cfg2-official-test-epsilon.yaml"
+    )
+    assert official_test["split"] == "test"
+    assert official_test["run_count"] == 1
+    assert official_test["expected_examples"] == 1_467
+    assert official_test["strict_complete"] is True
+    assert official_test["subject_scope"] == {
+        "training_profile": "../production/train-adm-128-p2.yaml",
+        "training_name": "class_conditional_p2_gaussian_denoising",
+        "model_name": "adm_unet",
+        "prediction_type": "epsilon",
+        "variance_mode": "fixed",
+        "other_profiles_inherit": False,
+        "excluded_profiles": [
+            "../production/train-adm-128.yaml",
+            "../production/train-dit-128.yaml",
+        ],
+    }
+    acceptance = official_test["acceptance"]
+    assert acceptance["kind"] == "internal_project_acceptance"
+    assert acceptance["paper_reproduction"] is False
+    assert acceptance["criterion_record"] == {
+        "status": "undocumented_internal_criterion",
+        "derivation": "not_recorded",
+        "adopted_by": "current_p2_closeout_policy",
+        "first_codified_on": "2026-08-02",
+        "first_codified_in_commit": (
+            "57223cbdb6f057bf6b9e17b113b598080d17f21a"
+        ),
+    }
+    assert acceptance["comparison_reference"] == {
+        "comparable": False,
+        "task": "unconditional_afhq_dog",
+        "image_size": [256, 256],
+        "reported_result": {"sampling_steps": 1000, "fid": 11.55},
+        "paper": (
+            "https://openaccess.thecvf.com/content/CVPR2022/html/"
+            "Choi_Perception_Prioritized_Training_of_Diffusion_Models_"
+            "CVPR_2022_paper.html"
+        ),
+        "author_repository": "https://github.com/jychoi118/P2-weighting",
+    }
+    rationale = acceptance["rationale"]
+    assert isinstance(rationale, str)
+    assert rationale.strip()
+    assert all(
+        token in rationale
+        for token in ("class-conditional", "128x128", "AFHQ-Dog", "256x256")
+    )
+    assert acceptance["require_all"] is True
+    assert acceptance["thresholds"] == [
+        {
             "key": "eval/metrics/distribution/aggregate.fid",
-            "maximum": 30.0,
+            "maximum": 35.0,
         },
+        {
+            "key": "eval/metrics/distribution/aggregate.kid_mean",
+            "maximum": 0.01,
+        },
+        {"key": "eval/metrics/distribution/cat.fid", "maximum": 65.0},
+        {"key": "eval/metrics/distribution/dog.fid", "maximum": 65.0},
+        {"key": "eval/metrics/distribution/wild.fid", "maximum": 65.0},
+    ]
+    assert official_test["aspirational"] == {
+        "key": "eval/metrics/distribution/aggregate.fid",
+        "maximum": 30.0,
     }
     policy_root = _P2_CLOSEOUT_POLICY.parent
     assert (policy_root / raw["training"]["profile"]).resolve().is_file()
     assert (policy_root / raw["selection"]["profile"]).resolve().is_file()
     assert (policy_root / raw["official_test"]["profile"]).resolve().is_file()
+    subject_scope = official_test["subject_scope"]
+    assert (policy_root / subject_scope["training_profile"]).resolve().is_file()
+    assert all(
+        (policy_root / profile).resolve().is_file()
+        for profile in subject_scope["excluded_profiles"]
+    )

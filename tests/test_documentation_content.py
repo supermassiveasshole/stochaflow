@@ -230,3 +230,27 @@ def test_maintained_examples_publish_grounded_results() -> None:
             if "://" not in path
         ]
         assert all((source.parent / path).resolve().is_file() for path in local_images)
+
+
+def test_afhq_p2_docs_scope_internal_acceptance_and_paper_comparison() -> None:
+    """Keep the project gate distinct from the AFHQ-Dog paper benchmark."""
+
+    paper_url = (
+        "https://openaccess.thecvf.com/content/CVPR2022/html/"
+        "Choi_Perception_Prioritized_Training_of_Diffusion_Models_"
+        "CVPR_2022_paper.html"
+    )
+    repository_url = "https://github.com/jychoi118/P2-weighting"
+
+    for path in (AFHQ_README, AFHQ_TUTORIAL):
+        content = " ".join(path.read_text(encoding="utf-8").split())
+        assert all(token in content for token in ("900", "validation", "排序"))
+        assert "internal_project_acceptance" in content
+        assert all(token in content for token in ("standard-v", "ADM", "DiT"))
+        assert "不是论文复现" in content
+        assert all(
+            token in content for token in ("官方 test split", "128\N{MULTIPLICATION SIGN}128")
+        )
+        assert "11.55" in content
+        assert paper_url in content
+        assert repository_url in content

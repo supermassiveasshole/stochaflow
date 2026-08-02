@@ -60,6 +60,11 @@ is unavailable.
 - Made the P2 production lane fail closed on CUDA, documented deterministic
   launch/resume commands, replaced reusable checkpoint aliases with explicit
   run/selected-epoch placeholders, and fixed KID seeds in formal AFHQ profiles.
+- Clarified that the 900-example P2 validation protocol ranks checkpoints only,
+  while absolute acceptance belongs exclusively to the one-shot 1,467-example
+  epsilon/fixed P2 official-test subject. Marked its frozen FID/KID thresholds
+  as internal project criteria that standard-v ADM and DiT do not inherit, and
+  distinguished them from the paper's non-comparable AFHQ-Dog-256 benchmark.
 - All other tasks and methods are outside the current P2 gate. Any future task
   requires an explicit roadmap decision and must deliver observability,
   checkpoint inference, and formal Evaluation with its first implementation.
