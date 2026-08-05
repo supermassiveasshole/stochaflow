@@ -5,17 +5,55 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import stat
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from stochaflow.data import artifact_io
+
+
+def _directory_stat(
+    *,
+    inode: int = 7,
+    device: int = 9,
+    size: int = 0,
+    modified: float = 2.0,
+) -> os.stat_result:
+    return cast(
+        os.stat_result,
+        SimpleNamespace(
+            st_mode=stat.S_IFDIR,
+            st_ino=inode,
+            st_dev=device,
+            st_size=size,
+            st_mtime_ns=int(modified * 1_000_000_000),
+        ),
+    )
+
+
+def test_directory_state_ignores_allocation_size_but_not_identity_or_mtime() -> None:
+    observed = _directory_stat(size=0)
+
+    assert artifact_io._same_directory_state(
+        observed,
+        _directory_stat(size=131_072),
+    )
+    assert not artifact_io._same_directory_state(
+        observed,
+        _directory_stat(inode=8),
+    )
+    assert not artifact_io._same_directory_state(
+        observed,
+        _directory_stat(modified=4.0),
+    )
 
 
 def test_scan_regular_files_hashes_independent_files_concurrently(

@@ -54,20 +54,28 @@ def interpolate_gaussian_log_variance(
     lower: torch.Tensor,
     upper: torch.Tensor,
 ) -> torch.Tensor:
-    """Interpolate learned-range log-variance bounds from model values."""
+    """Interpolate learned-range log-variance bounds at FP32 or higher.
+
+    Mixed-precision denoisers commonly emit the variance head in BF16 or
+    FP16.  Casting the schedule-derived log bounds down to that dtype loses
+    too much precision near a cosine schedule's terminal state, where the
+    improved-DDPM variational term is most sensitive.  Keep the interpolation
+    in the widest input dtype, with FP32 as the minimum computation dtype.
+    """
 
     if not torch.is_floating_point(variance_values):
         raise TypeError("Gaussian variance values must be floating-point")
     if not torch.is_floating_point(lower) or not torch.is_floating_point(upper):
         raise TypeError("Gaussian log-variance bounds must be floating-point")
-    lower = lower.to(
-        device=variance_values.device,
-        dtype=variance_values.dtype,
+    computation_dtype = torch.promote_types(
+        variance_values.dtype,
+        torch.promote_types(lower.dtype, upper.dtype),
     )
-    upper = upper.to(
-        device=variance_values.device,
-        dtype=variance_values.dtype,
-    )
+    if computation_dtype in {torch.float16, torch.bfloat16}:
+        computation_dtype = torch.float32
+    variance_values = variance_values.to(dtype=computation_dtype)
+    lower = lower.to(device=variance_values.device, dtype=computation_dtype)
+    upper = upper.to(device=variance_values.device, dtype=computation_dtype)
     try:
         lower_shape = torch.broadcast_shapes(variance_values.shape, lower.shape)
         upper_shape = torch.broadcast_shapes(variance_values.shape, upper.shape)

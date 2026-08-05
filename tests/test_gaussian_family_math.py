@@ -99,5 +99,20 @@ def test_family_math_interpolates_learned_range_endpoints() -> None:
         upper=upper,
     )
 
-    assert result.dtype == values.dtype
+    assert result.dtype == torch.float64
     assert result[:, 0, 0, 0].tolist() == [-3.0, -2.0]
+
+
+def test_family_math_promotes_bfloat16_variance_head_before_interpolation() -> None:
+    values = torch.zeros((1, 1, 1, 1), dtype=torch.bfloat16)
+    lower = torch.tensor([[[[-19.734375]]]], dtype=torch.float32)
+    upper = torch.tensor([[[[-12.109375]]]], dtype=torch.float32)
+
+    result = interpolate_gaussian_log_variance(
+        values,
+        lower=lower,
+        upper=upper,
+    )
+
+    assert result.dtype == torch.float32
+    assert torch.equal(result, (lower + upper) / 2.0)

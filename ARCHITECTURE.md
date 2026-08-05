@@ -175,6 +175,16 @@ raw state; EMA tracks only the primary model. Independent optimizers,
 alternating updates, closure-driven optimization, or manual backward require a
 separate training-loop family.
 
+A configured epoch validation evaluator is a narrow collaboration at the
+Trainer boundary. On its absolute epoch cadence it builds an `EvaluationPlan`
+for the current raw or EMA snapshot, executes the task-owned sampling and metric
+protocol, and returns only its declared canonical `valid/metrics/*`
+observations. The Trainer feeds those observations into the same monitor,
+`best.pt`, and early-stopping lifecycle used by ordinary validation metrics.
+The evaluator profile digest, cadence, metric keys, and last completed result
+are strict-resume state; non-due epochs do not reuse a stale value or consume
+patience.
+
 ### 5.3 Sampling
 
 ```text
@@ -215,7 +225,7 @@ checkpoint subject or prediction-artifact subject
     -> immutable EvaluationResult bundle
 ```
 
-Checkpoint evaluation reuses narrow inference composition. Prediction-artifact
+Formal checkpoint evaluation reuses narrow inference composition. Prediction-artifact
 evaluation validates version, producer lineage, sample-plan completeness, and
 record identity before metric replay. Evaluation owns formal protocol and result
 identity; training diagnostics do not substitute for it.
@@ -233,6 +243,13 @@ Offline prediction-artifact evaluation has no checkpoint model, original
 DataBuilder, or sampling capability. It joins authenticated records against the
 artifact's exact sample plan and cannot silently rerun inference.
 
+Training may execute the same plan/runtime against an explicit live snapshot at
+epoch end. This path has no prediction sink or immutable benchmark bundle: it
+returns validation observations to the Trainer's existing checkpoint-selection
+lifecycle. Post-training comparison is the same Evaluation repeated for each
+explicit checkpoint subject followed by an ordinary comparison of result
+metrics; it does not require a second selector runtime.
+
 ## 6. Algorithm-Family Structure
 
 The root `Process`, `GenerativeDynamics`, and `Sampler` roles are deliberately
@@ -249,7 +266,7 @@ For the discrete Gaussian family:
 ```text
 families.gaussian   prediction tensor semantics and C/2C layout
 processes.gaussian  VP path, schedules, marginals, posterior and variance bounds
-training.gaussian   denoising recipes, P2, learned-range hybrid loss
+training.gaussian   denoising recipes and learned-range hybrid loss
 sampling.gaussian   model Dynamics, DDPM/DDIM transitions and CFG composition
 ```
 
@@ -260,10 +277,8 @@ narrowest model-free family layer that has all required inputs.
 Within this family, pure epsilon/x0/v/score conversion and C/2C model-output
 layout belong to `families.gaussian`; schedules, marginals, posterior
 coefficients, and variance bounds belong to `processes.gaussian`; targets, SNR,
-P2 weighting, simple/VB loss, and batch reduction belong to concrete training
-recipes; clipping, model adaptation, CFG, and solver semantics belong to
-sampling. P2 is expressed by concrete epsilon-only TrainingBuilder/Strategy
-recipes, not a generic weighting registry or universal loss composer.
+simple/VB loss, and batch reduction belong to concrete training recipes;
+clipping, model adaptation, CFG, and solver semantics belong to sampling.
 
 A family may expose narrow model-free transition or schedule primitives used by
 multiple solvers. Such primitives do not become requirements of root Process,

@@ -401,6 +401,62 @@ KID 仍使用配置的 runtime device。
 顶层 `combined_metrics` 保存所有 profile 指标的扁平合并结果，便于一次读取完整的
 epoch diagnostic 汇总。
 
+## 训练内 epoch-end validation Evaluation
+
+昂贵的生成质量指标应由完整 Evaluation 产生，而不是塞进普通 batch metric 或
+Diagnostic。`trainer.validation_evaluation` 声明一个 absolute-epoch cadence、raw/EMA
+variant、task-owned EvaluationBuilder、Metrics、exact output keys 和 completeness
+protocol。例如：
+
+```yaml
+trainer:
+  early_stopping:
+    enabled: false
+    monitor: valid/metrics/distribution/aggregate.fid
+    mode: min
+    patience: 20
+    min_delta: 0.0
+  validation_evaluation:
+    enabled: true
+    start_epoch: 20
+    every_epochs: 20
+    include_final: true
+    weights: ema
+    evaluation:
+      name: my-project.class-conditional-generation
+      params:
+        sampling: {profile: validation-ddpm-v1}
+    metrics:
+      - id: distribution
+        name: my-project.class-aware-distribution
+        channel: my-project.image-pairs
+        params: {}
+    metric_keys:
+      - valid/metrics/distribution/aggregate.fid
+      - valid/metrics/distribution/aggregate.kid_mean
+    protocol:
+      id: my-project-validation-v1
+      expected_examples: 900
+      strict_complete: true
+```
+
+EvaluationBuilder 拥有完整验证语义：它选择 validation data，调用当前 checkpoint-bound
+sampling recipe 产生 fake，绑定 real/fake 与 sample IDs，并向 Metric 发出 task-owned
+updates。FID/KID provider 只是 Metric 内部的 stateful computation；它不拥有采样、split、
+checkpoint 或 completeness。
+
+到期 epoch 的结果必须精确包含 `metric_keys` 声明的 canonical
+`valid/metrics/*` surface。Trainer 把它们合并进该 epoch 的 validation observations，并
+复用现有 monitor、`best.pt` 和 early-stopping 逻辑。非到期 epoch 不复用上一次 FID/KID、
+不更新 `best.pt`、也不推进 patience；到期 Evaluation 失败、缺 key、非 finite、重复 ID 或
+数量不完整都会 fail closed。`include_final` 可保证目标训练的最终 epoch 额外评估一次。
+
+profile digest、metric keys、cadence、last evaluated epoch 和最后一组 metrics 都进入
+strict-resume state。训练内运行不配置 prediction sink，也不发布 standalone immutable
+result bundle，所以它是选模用 validation evidence，不是 formal benchmark。要从已经存在
+的多个 checkpoints 选一个，只需对每个 subject 运行同一 standalone validation
+Evaluation，再按同一个 primary metric 比较；无需另一套 selection runtime。
+
 ## Checkpoint-backed inference
 
 `sample` 是统一的 checkpoint-backed inference 命令：MNIST、AFHQ 等生成任务产生图像，
@@ -766,22 +822,20 @@ checkpoint runtime 先解析并固定 subject 的 raw/EMA variant，再向 AFHQ 
 AFHQ sink 把同序 real/fake/class records 发布到 `predictions/`，所以复制这份 profile、把
 `subject.kind`/`data.source` 改为 `prediction_artifact` 并指向该 manifest 后，可用同一个
 `stochaflow evaluate` 完成 offline replay，而不加载 checkpoint、model 或原 DataBuilder。
-P2 epsilon checkpoint 不匹配这份 v-prediction contract。P2 production 使用 fail-closed 的
-`formal-ddim50-cfg2-official-test-epsilon.yaml`，必须把其中的 run/selected-epoch placeholder
-替换为 validation policy 冻结的唯一 subject。历史 standard/P2 A/B 使用同一
-epsilon/fixed protocol fields，并在预算终点显式替换为各自 `latest.pt` EMA；两臂具有相同
-topology/data/order/optimizer-update budget/EMA lifecycle，未按不可比的 `valid/loss` 选择
-`best.pt`。
+subject 必须匹配 profile 固定的 prediction/variance recipe。learned-range-v checkpoint
+需要相应的 `2C` model contract；DDPM 会消费 variance half，而 DDIM 明确只消费 prediction
+half。正式 test 始终只在 validation 选出唯一 checkpoint 后运行一次，不能反向改变
+训练 monitor 或 best checkpoint。
 
 旧 `stochaflow-afhq-v2-evaluate` 与旧
 `experiments/evaluation/ddim50-cfg2-kid-fid.yaml` 只作为历史结果对照；它们不属于当前
-maintained P2 evidence surface，也不提供 compatibility guarantee。
+maintained evidence surface，也不提供 compatibility guarantee。
 
 当前 runtime 提供通用 prediction persistence/replay substrate；core FID/KID providers 与上述 AFHQ
 profile 已闭合当前普通像素图像生成的 formal Evaluation vertical slice。SR、consistency、
 latent、distillation 等任务不属于本次缺口清单；若未来实现相应任务，其 monitoring 与
 Evaluation protocol 必须在同一任务变更中一起交付，而不是提前扩张当前 runtime。reference
-cache、performance curve、通用 comparison/gate 是可选后续增强，不阻塞 P2 训练与正式评估。
+cache、performance curve、通用 comparison/gate 是可选后续增强。
 
 ## 大规模 sampling 容量
 

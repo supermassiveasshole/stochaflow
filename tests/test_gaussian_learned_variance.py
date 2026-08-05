@@ -29,7 +29,10 @@ from stochaflow.sampling import (
 )
 
 _REFERENCE = (
-    Path(__file__).parent / "fixtures" / "gaussian" / "p2_reference.json"
+    Path(__file__).parent
+    / "fixtures"
+    / "gaussian"
+    / "learned_range_reference.json"
 )
 
 
@@ -290,6 +293,47 @@ def test_learned_range_sampling_accepts_mixed_process_and_state_dtype(
 
     assert learned_result.final_state.dtype == fixed_result.final_state.dtype
     assert torch.all(torch.isfinite(learned_result.final_state))
+
+
+def test_cosine_terminal_learned_range_keeps_bfloat16_head_bounds_in_float32() -> None:
+    process = DiscreteGaussianProcess(
+        {
+            "name": "cosine_alpha_bar",
+            "params": {
+                "num_timesteps": 1000,
+                "s": 0.008,
+                "max_beta": 0.999,
+            },
+        }
+    )
+    source_times = torch.tensor([1000])
+    target_times = torch.tensor([999])
+    state = torch.zeros((1, 3, 2, 2), dtype=torch.bfloat16)
+    bounds = process.reverse_log_variance_bounds(
+        source_times,
+        target_times,
+        state.size(),
+    )
+    dynamics = GaussianModelDynamics(
+        process,
+        lambda current, model_times: torch.cat(
+            (torch.zeros_like(current), torch.zeros_like(current)),
+            dim=1,
+        ),
+        variance_mode="learned_range",
+        clip_denoised=False,
+    )
+
+    prediction = dynamics.predict_transition(
+        state,
+        source_times,
+        target_times,
+    )
+
+    assert isinstance(prediction, LearnedVarianceGaussianPrediction)
+    assert prediction.log_variance.dtype == torch.float32
+    expected = (bounds.lower + bounds.upper) / 2.0
+    assert torch.equal(prediction.log_variance, expected.expand_as(state))
 
 
 def test_learned_range_dynamics_rejects_wrong_output_layout() -> None:

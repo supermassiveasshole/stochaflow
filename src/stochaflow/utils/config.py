@@ -191,6 +191,30 @@ class EarlyStoppingConfig:
 
 
 @dataclass(slots=True)
+class ValidationEvaluationProtocolConfig:
+    """Completeness authority for one epoch-end validation Evaluation."""
+
+    id: str = ""
+    expected_examples: int = 0
+    strict_complete: bool = True
+
+
+@dataclass(slots=True)
+class ValidationEvaluationConfig:
+    """Live validation Evaluation profile and absolute-epoch cadence."""
+
+    enabled: bool = False
+    start_epoch: int = 1
+    every_epochs: int = 1
+    include_final: bool = True
+    weights: str = "ema"
+    evaluation: ComponentConfig | None = None
+    metrics: list[MetricSpec] = field(default_factory=list)
+    metric_keys: list[str] = field(default_factory=list)
+    protocol: ValidationEvaluationProtocolConfig | None = None
+
+
+@dataclass(slots=True)
 class TrainerConfig:
     """Generic trainer loop configuration."""
 
@@ -200,7 +224,11 @@ class TrainerConfig:
     accumulate_grad_batches: int = 1
     max_grad_norm: float | None = None
     show_progress: bool = True
+    test_after_fit: bool = True
     early_stopping: EarlyStoppingConfig = field(default_factory=EarlyStoppingConfig)
+    validation_evaluation: ValidationEvaluationConfig = field(
+        default_factory=ValidationEvaluationConfig
+    )
 
 
 @dataclass(slots=True)
@@ -293,6 +321,8 @@ class StochaflowConfig:
                 seen_plugins.add(plugin)
         if self.trainer.num_epochs <= 0:
             raise ConfigError("trainer.num_epochs must be positive")
+        if type(cast(object, self.trainer.test_after_fit)) is not bool:
+            raise ConfigError("trainer.test_after_fit must be a bool")
         precision = cast(object, self.trainer.precision)
         if not isinstance(precision, str) or precision not in {
             "fp32",
@@ -360,6 +390,126 @@ class StochaflowConfig:
             raise ConfigError("trainer.early_stopping.patience must be positive")
         if self.trainer.early_stopping.min_delta < 0:
             raise ConfigError("trainer.early_stopping.min_delta must be non-negative")
+        validation_evaluation = self.trainer.validation_evaluation
+        if type(cast(object, validation_evaluation.enabled)) is not bool:
+            raise ConfigError(
+                "trainer.validation_evaluation.enabled must be a bool"
+            )
+        if type(cast(object, validation_evaluation.include_final)) is not bool:
+            raise ConfigError(
+                "trainer.validation_evaluation.include_final must be a bool"
+            )
+        _positive_int(
+            validation_evaluation.start_epoch,
+            path="trainer.validation_evaluation.start_epoch",
+        )
+        _positive_int(
+            validation_evaluation.every_epochs,
+            path="trainer.validation_evaluation.every_epochs",
+        )
+        if (
+            not isinstance(cast(object, validation_evaluation.weights), str)
+            or validation_evaluation.weights not in {"raw", "ema"}
+        ):
+            raise ConfigError(
+                "trainer.validation_evaluation.weights must be raw or ema"
+            )
+        if validation_evaluation.enabled:
+            if validation_evaluation.start_epoch > self.trainer.num_epochs:
+                raise ConfigError(
+                    "trainer.validation_evaluation.start_epoch must not exceed "
+                    "trainer.num_epochs"
+                )
+            if validation_evaluation.evaluation is None:
+                raise ConfigError(
+                    "enabled trainer.validation_evaluation requires evaluation"
+                )
+            _validate_component(
+                validation_evaluation.evaluation,
+                path="trainer.validation_evaluation.evaluation",
+            )
+            if not validation_evaluation.metrics:
+                raise ConfigError(
+                    "enabled trainer.validation_evaluation requires metrics"
+                )
+            seen_validation_metric_ids: set[str] = set()
+            for index, metric in enumerate(validation_evaluation.metrics):
+                try:
+                    validate_metric_spec(
+                        metric,
+                        path=f"trainer.validation_evaluation.metrics[{index}]",
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ConfigError(str(exc)) from exc
+                if metric.id in seen_validation_metric_ids:
+                    raise ConfigError(
+                        "trainer.validation_evaluation.metrics contains "
+                        f"duplicate metric id {metric.id!r}"
+                    )
+                seen_validation_metric_ids.add(metric.id)
+            if not validation_evaluation.metric_keys:
+                raise ConfigError(
+                    "enabled trainer.validation_evaluation requires metric_keys"
+                )
+            seen_validation_metric_keys: set[str] = set()
+            for index, key in enumerate(validation_evaluation.metric_keys):
+                try:
+                    validated_key = validate_training_monitor_key(
+                        key,
+                        path=(
+                            "trainer.validation_evaluation.metric_keys"
+                            f"[{index}]"
+                        ),
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ConfigError(str(exc)) from exc
+                if not validated_key.startswith("valid/metrics/"):
+                    raise ConfigError(
+                        "trainer.validation_evaluation.metric_keys must use "
+                        "valid/metrics/* keys"
+                    )
+                if validated_key in seen_validation_metric_keys:
+                    raise ConfigError(
+                        "trainer.validation_evaluation.metric_keys contains "
+                        f"duplicate key {validated_key!r}"
+                    )
+                seen_validation_metric_keys.add(validated_key)
+            protocol = validation_evaluation.protocol
+            if protocol is None:
+                raise ConfigError(
+                    "enabled trainer.validation_evaluation requires protocol"
+                )
+            protocol_id = cast(object, protocol.id)
+            if not isinstance(protocol_id, str) or not protocol_id.strip():
+                raise ConfigError(
+                    "trainer.validation_evaluation.protocol.id must be a "
+                    "non-empty string"
+                )
+            if protocol.id != protocol.id.strip():
+                raise ConfigError(
+                    "trainer.validation_evaluation.protocol.id must not contain "
+                    "surrounding whitespace"
+                )
+            _positive_int(
+                protocol.expected_examples,
+                path=(
+                    "trainer.validation_evaluation.protocol.expected_examples"
+                ),
+            )
+            if type(cast(object, protocol.strict_complete)) is not bool:
+                raise ConfigError(
+                    "trainer.validation_evaluation.protocol.strict_complete "
+                    "must be a bool"
+                )
+            if not protocol.strict_complete:
+                raise ConfigError(
+                    "trainer.validation_evaluation.protocol.strict_complete "
+                    "must be true for checkpoint selection"
+                )
+            if validation_evaluation.weights == "ema" and not self.ema.enabled:
+                raise ConfigError(
+                    "EMA validation evaluation requires ema.enabled: true"
+                )
         if self.logging.log_every <= 0:
             raise ConfigError("logging.log_every must be positive")
         if len(self.logging.backends) == 0:

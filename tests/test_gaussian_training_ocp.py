@@ -147,17 +147,10 @@ def test_gaussian_training_does_not_depend_on_sampling_or_policy_registry() -> N
     assert "register_gaussian_simple_loss_weighting" not in source
 
 
-def test_p2_implementation_is_confined_to_its_concrete_recipe_module() -> None:
+def test_gaussian_shared_loss_excludes_timestep_weighting_policy() -> None:
     training_root = (
         REPOSITORY_ROOT / "src" / "stochaflow" / "training" / "gaussian"
     )
-    implementation_files = {
-        path.name
-        for path in training_root.glob("*.py")
-        if path.name != "__init__.py" and "p2" in path.read_text().lower()
-    }
-
-    assert implementation_files == {"p2.py"}
     base_source = (training_root / "strategy.py").read_text(encoding="utf-8")
     shared_loss_source = (training_root / "loss.py").read_text(
         encoding="utf-8"

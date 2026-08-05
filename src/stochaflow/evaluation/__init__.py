@@ -59,6 +59,7 @@ from stochaflow.evaluation.predictions import (
 )
 from stochaflow.evaluation.runtime import (
     ResolvedEvaluationInputs,
+    execute_evaluation_plan,
     resolve_evaluation_inputs,
     run_evaluation,
     run_resolved_evaluation,
@@ -67,6 +68,7 @@ from stochaflow.evaluation.sampling import (
     CheckpointEvaluationSamplingCapability,
     EvaluationSamplingCapability,
     EvaluationSamplingRequest,
+    LiveEvaluationSamplingCapability,
 )
 from stochaflow.evaluation.subject import (
     CheckpointSubjectInputs,
@@ -109,6 +111,7 @@ __all__ = [
     "EvaluationSubjectConfig",
     "Evaluator",
     "JsonlPredictionArtifactSink",
+    "LiveEvaluationSamplingCapability",
     "PredictionArtifactDraft",
     "PredictionArtifactStatus",
     "PredictionArtifactSubjectConfig",
@@ -123,6 +126,7 @@ __all__ = [
     "ResolvedPredictionArtifactSubject",
     "build_evaluation_plan",
     "evaluation_config_to_dict",
+    "execute_evaluation_plan",
     "load_checkpoint_subject",
     "load_evaluation_config",
     "load_evaluation_config_dict",

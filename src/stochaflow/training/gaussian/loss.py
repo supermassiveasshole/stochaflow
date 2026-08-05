@@ -21,6 +21,8 @@ class GaussianLossComputation:
     prediction: GaussianPrediction
     target: torch.Tensor
     per_sample_loss: torch.Tensor | None
+    per_sample_simple_loss: torch.Tensor | None = None
+    per_sample_variational_bound: torch.Tensor | None = None
 
 
 def gaussian_training_target(
@@ -80,9 +82,18 @@ def gaussian_loss_diagnostics(
 ) -> dict[str, torch.Tensor]:
     """Detach the per-sample loss consumed by Gaussian diagnostics."""
 
-    if computation.per_sample_loss is None:
-        return {}
-    return {"per_sample_loss": computation.per_sample_loss.detach()}
+    diagnostics: dict[str, torch.Tensor] = {}
+    if computation.per_sample_loss is not None:
+        diagnostics["per_sample_loss"] = computation.per_sample_loss.detach()
+    if computation.per_sample_simple_loss is not None:
+        diagnostics["per_sample_simple_loss"] = (
+            computation.per_sample_simple_loss.detach()
+        )
+    if computation.per_sample_variational_bound is not None:
+        diagnostics["per_sample_variational_bound"] = (
+            computation.per_sample_variational_bound.detach()
+        )
+    return diagnostics
 
 
 def validate_scalar_objective_loss(

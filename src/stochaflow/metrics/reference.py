@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Hashable
 from importlib import import_module
 from numbers import Real
-from typing import cast
+from typing import Protocol, cast, runtime_checkable
 
 import torch
+from torch import nn
 from torchmetrics import Metric
 
 from stochaflow.utils.registry import REGISTRIES
@@ -39,6 +41,23 @@ def _load_metric_class(
             f"{module_name}.{class_name} must inherit torchmetrics.Metric"
         )
     return cast(type[Metric], metric_class)
+
+
+def _load_inception_feature_extractor_class() -> type[nn.Module]:
+    try:
+        import_module("torch_fidelity")
+        module = import_module("torchmetrics.image.fid")
+        extractor_class = module.NoTrainInceptionV3
+    except (ImportError, ModuleNotFoundError, AttributeError) as error:
+        raise _quality_dependency_error("Inception feature extraction") from error
+    if not isinstance(extractor_class, type) or not issubclass(
+        extractor_class,
+        nn.Module,
+    ):
+        raise TypeError(
+            "torchmetrics.image.fid.NoTrainInceptionV3 must inherit nn.Module"
+        )
+    return cast(type[nn.Module], extractor_class)
 
 
 def _inception_feature(value: object, *, metric_name: str) -> int:
@@ -107,29 +126,164 @@ def _reference_images(images: object, *, metric_name: str) -> torch.Tensor:
     return images
 
 
+def _reference_features(
+    features: object,
+    *,
+    metric_name: str,
+    feature_size: int,
+) -> torch.Tensor:
+    if not isinstance(features, torch.Tensor):
+        raise TypeError(f"{metric_name} features must be a Tensor")
+    if features.ndim != 2:
+        raise ValueError(
+            f"{metric_name} features must have rank 2 (N, {feature_size}), "
+            f"got rank {features.ndim}"
+        )
+    if features.shape[0] <= 0 or features.shape[1] != feature_size:
+        raise ValueError(
+            f"{metric_name} features must have shape (N, {feature_size}) "
+            "with N > 0"
+        )
+    if not features.is_floating_point():
+        raise TypeError(f"{metric_name} features must use a floating-point dtype")
+    if not bool(torch.isfinite(features).all().item()):
+        raise ValueError(f"{metric_name} features must contain only finite values")
+    return features
+
+
 def _scalar_tensor(value: object, *, metric_name: str) -> torch.Tensor:
     if not isinstance(value, torch.Tensor) or value.numel() != 1:
         raise TypeError(f"{metric_name} compute result must be a scalar Tensor")
     return value.reshape(())
 
 
+@runtime_checkable
+class ShareableImageFeatureMetric(Protocol):
+    """Narrow metric capability for sharing one image-feature extraction."""
+
+    def image_feature_extractor_identity(self) -> Hashable:
+        """Return the exact extractor configuration used by this metric."""
+
+        ...
+
+    def extract_image_features(self, images: torch.Tensor) -> torch.Tensor:
+        """Extract one reusable feature batch from normalized images."""
+
+        ...
+
+    def update_image_features(
+        self,
+        features: torch.Tensor,
+        *,
+        real: bool,
+    ) -> None:
+        """Accumulate already-extracted features into this metric's state."""
+
+        ...
+
+
+class PassthroughFeatureExtractor(nn.Module):
+    """Expose precomputed feature tensors through TorchMetrics' module seam."""
+
+    def __init__(self, num_features: int) -> None:
+        super().__init__()
+        self.num_features = num_features
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Return precomputed features unchanged."""
+
+        return features
+
+
 class ReferenceImageDistributionMetric(Metric):
-    """Delegate image-distribution state to one optional TorchMetrics metric."""
+    """Extract Inception features and delegate reference-distribution state."""
 
     metric: Metric
     metric_name: str
+    image_feature_extractor: nn.Module | None
 
-    def __init__(self, metric: Metric, *, metric_name: str) -> None:
+    def __init__(
+        self,
+        metric: Metric,
+        *,
+        metric_name: str,
+        feature: int,
+        antialias: bool,
+    ) -> None:
         super().__init__(sync_on_compute=False)
         self.metric = metric
         self.metric_name = metric_name
+        self.feature = feature
+        self.antialias = antialias
+        self.feature_extractor_class = _load_inception_feature_extractor_class()
+        self.add_module("image_feature_extractor", None)
 
-    def update(self, images: torch.Tensor, *, real: bool) -> None:
-        """Accumulate one normalized real or generated image batch."""
+    def image_feature_extractor_identity(self) -> Hashable:
+        """Return the exact reusable TorchMetrics Inception configuration."""
+
+        return (
+            self.feature_extractor_class,
+            self.feature,
+            self.antialias,
+        )
+
+    def extract_image_features(self, images: torch.Tensor) -> torch.Tensor:
+        """Extract reusable Inception features from normalized images."""
+
+        prepared = _reference_images(images, metric_name=self.metric_name)
+        extractor = self.image_feature_extractor
+        if extractor is None:
+            try:
+                extractor = self.feature_extractor_class(
+                    name="inception-v3-compat",
+                    features_list=[str(self.feature)],
+                    antialias=self.antialias,
+                )
+            except (ImportError, ModuleNotFoundError) as error:
+                raise _quality_dependency_error(self.metric_name) from error
+            extractor.to(prepared.device)
+            self.image_feature_extractor = extractor
+        features = extractor((prepared * 255).byte())
+        return _reference_features(
+            features,
+            metric_name=self.metric_name,
+            feature_size=self.feature,
+        )
+
+    def update_image_features(
+        self,
+        features: torch.Tensor,
+        *,
+        real: bool,
+    ) -> None:
+        """Commit a normal metric update without rerunning Inception."""
+
+        self.update(features, real=real, features_precomputed=True)
+
+    def update(
+        self,
+        images: torch.Tensor,
+        *,
+        real: bool,
+        features_precomputed: bool = False,
+    ) -> None:
+        """Accumulate normalized images or trusted precomputed features."""
 
         if type(real) is not bool:
             raise TypeError(f"{self.metric_name} real must be a bool")
-        prepared = _reference_images(images, metric_name=self.metric_name)
+        if type(features_precomputed) is not bool:
+            raise TypeError(
+                f"{self.metric_name} features_precomputed must be a bool"
+            )
+        prepared = (
+            _reference_features(
+                images,
+                metric_name=self.metric_name,
+                feature_size=self.feature,
+            )
+            if features_precomputed
+            else self.extract_image_features(images)
+        )
         self.metric.update(prepared, real=real)
 
     def reset(self) -> None:
@@ -156,8 +310,8 @@ class FrechetInceptionDistanceMetric(ReferenceImageDistributionMetric):
         )
         try:
             metric = metric_class(
-                feature=feature,
-                normalize=True,
+                feature=PassthroughFeatureExtractor(feature),
+                normalize=False,
                 reset_real_features=True,
                 antialias=antialias,
                 sync_on_compute=False,
@@ -165,7 +319,12 @@ class FrechetInceptionDistanceMetric(ReferenceImageDistributionMetric):
         except (ImportError, ModuleNotFoundError) as error:
             raise _quality_dependency_error("FID") from error
         metric.set_dtype(torch.float64)
-        super().__init__(metric, metric_name="FID")
+        super().__init__(
+            metric,
+            metric_name="FID",
+            feature=feature,
+            antialias=antialias,
+        )
 
     def compute(self) -> torch.Tensor:
         """Return the scalar distance emitted by TorchMetrics."""
@@ -187,6 +346,7 @@ class KernelInceptionDistanceMetric(ReferenceImageDistributionMetric):
         gamma: float | None = None,
         coef: float = 1.0,
         seed: int = 0,
+        antialias: bool = True,
     ) -> None:
         feature = _inception_feature(feature, metric_name="KID")
         subsets = _positive_integer(subsets, path="KID subsets")
@@ -211,6 +371,8 @@ class KernelInceptionDistanceMetric(ReferenceImageDistributionMetric):
             strictly_positive=True,
         )
         self.seed = _random_seed(seed, path="KID seed")
+        if type(antialias) is not bool:
+            raise TypeError("KID antialias must be a bool")
         metric_class = _load_metric_class(
             module_name="torchmetrics.image.kid",
             class_name="KernelInceptionDistance",
@@ -218,8 +380,8 @@ class KernelInceptionDistanceMetric(ReferenceImageDistributionMetric):
         )
         try:
             metric = metric_class(
-                feature=feature,
-                normalize=True,
+                feature=PassthroughFeatureExtractor(feature),
+                normalize=False,
                 reset_real_features=True,
                 subsets=subsets,
                 subset_size=subset_size,
@@ -230,7 +392,12 @@ class KernelInceptionDistanceMetric(ReferenceImageDistributionMetric):
             )
         except (ImportError, ModuleNotFoundError) as error:
             raise _quality_dependency_error("KID") from error
-        super().__init__(metric, metric_name="KID")
+        super().__init__(
+            metric,
+            metric_name="KID",
+            feature=feature,
+            antialias=antialias,
+        )
 
     def compute(self) -> dict[str, torch.Tensor]:
         """Return the stable KID ``mean``/``std`` result mapping."""
@@ -264,4 +431,5 @@ class KernelInceptionDistanceMetric(ReferenceImageDistributionMetric):
 __all__ = [
     "FrechetInceptionDistanceMetric",
     "KernelInceptionDistanceMetric",
+    "ShareableImageFeatureMetric",
 ]

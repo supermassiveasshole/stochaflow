@@ -17,7 +17,6 @@ from stochaflow.training import (
     MetricChannelProvider,
     MetricUpdate,
     MSEObjective,
-    P2GaussianDenoisingTrainingBuilder,
     SupervisedTrainingStrategy,
     TrainStepOutput,
     gaussian_training_target,
@@ -338,7 +337,7 @@ def test_gaussian_strategy_rejects_unhandled_conditions() -> None:
         )
 
 
-def test_p2_builder_composes_learned_range_recipe() -> None:
+def test_gaussian_builder_composes_learned_range_recipe() -> None:
     process = DeterministicGaussianProcess(
         {"name": "linear_beta", "params": {"num_timesteps": 4}}
     )
@@ -356,14 +355,13 @@ def test_p2_builder_composes_learned_range_recipe() -> None:
         del config
         raise AssertionError("Gaussian builder must preserve the injected objective")
 
-    builder = P2GaussianDenoisingTrainingBuilder(
+    builder = GaussianDenoisingTrainingBuilder(
         TrainingBuilderContext(
             params={
+                "prediction_type": "epsilon",
                 "variance": {
                     "mode": "learned_range",
                 },
-                "k": 1.0,
-                "gamma": 1.0,
             },
             primary_model=model,
             process=process,

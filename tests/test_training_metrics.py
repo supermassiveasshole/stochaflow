@@ -15,7 +15,6 @@ from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.training import (
     GaussianDenoisingTrainingStrategy,
     MSEObjective,
-    P2GaussianDenoisingTrainingStrategy,
     SupervisedTrainingStrategy,
     Trainer,
     TrainingPlan,
@@ -653,7 +652,7 @@ def test_gaussian_phase_metrics_run_end_to_end_without_external_data(
     assert trainer.best_checkpoint_path == tmp_path / "checkpoints" / "best.pt"
 
 
-def test_learned_range_p2_metrics_aggregate_uneven_batches_by_samples(
+def test_learned_range_metrics_aggregate_uneven_batches_by_samples(
     tmp_path,
 ) -> None:
     process = DiscreteGaussianProcess(
@@ -668,10 +667,11 @@ def test_learned_range_p2_metrics_aggregate_uneven_batches_by_samples(
     )
     model = TinyLearnedVarianceGaussianDenoiser()
     objective = MSEObjective()
-    strategy = P2GaussianDenoisingTrainingStrategy(
+    strategy = GaussianDenoisingTrainingStrategy(
         model,
         process,
         objective,
+        prediction_type="epsilon",
         variance=GaussianVarianceConfig(mode="learned_range"),
     )
     optimizer = torch.optim.SGD(model.parameters(), lr=0.0)

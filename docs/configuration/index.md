@@ -30,7 +30,7 @@ troubleshooting
 | 理解 config/checkpoint 权威并跨环境移动实验 | [Checkpoint、配置权威与可移植性](compatibility-and-migration.md) |
 | 查看 Physics reconstruction 与蒸馏的 legacy architecture fixtures | [纵向扩展参考项目](reference-projects.md) |
 | 训练、smoke run、恢复、checkpoint 采样和独立评估 | [常用工作流](workflows.md) |
-| 配置 learned-range variance、P2 training 或 respaced DDPM | {ref}`Gaussian variance、P2 与 respaced DDPM <gaussian-variance-p2-respaced-ddpm>` |
+| 配置 learned-range variance 或 respaced DDPM | {ref}`Gaussian variance 与 respaced DDPM <gaussian-variance-respaced-ddpm>` |
 | 用 TensorBoard 查看 loss、学习率、样本网格并比较运行 | [TensorBoard 使用指南](../tutorials/tensorboard.md) |
 | 估算大规模输出与 trajectory 内存 | [Sampling artifact 容量](sampling-capacity.md) |
 | 根据错误信息定位问题 | [排错索引](troubleshooting.md) |
@@ -266,8 +266,8 @@ checkpoint-backed inference 因而使用同一套显式插件选择与审计结�
 `prediction_type` 来自 TrainingBuilder 固化到 v12 checkpoint 的 recipe contract，
 不会在 sample config 中重复声明。
 
-(gaussian-variance-p2-respaced-ddpm)=
-## Gaussian variance、P2 与 respaced DDPM
+(gaussian-variance-respaced-ddpm)=
+## Gaussian variance 与 respaced DDPM
 
 内置 Gaussian training 的兼容默认值是：
 
@@ -285,12 +285,7 @@ Gaussian TrainingBuilder。`prediction_type` 支持 `epsilon`、`x0`、`v` 和 `
 fixed variance 要求模型输出与 state 相同的 `C` channels，并且不计算
 variational-bound term。
 
-P2 不是标准 Builder 上的 weighting option，而是两个拥有完整训练语义的具体
-TrainingBuilder：无条件使用 `p2_gaussian_denoising`，类条件使用
-`class_conditional_p2_gaussian_denoising`。两者固定 epsilon prediction，不接受
-`prediction_type`，并要求 `objective.name: mse`。
-
-paper-compatible P2 + learned-range recipe 写作：
+learned-range recipe 写作：
 
 ```yaml
 model:
@@ -308,10 +303,9 @@ model:
     dropout: 0.1
 
 training:
-  name: p2_gaussian_denoising
+  name: gaussian_denoising
   params:
-    k: 1.0
-    gamma: 1.0
+    prediction_type: v
     variance:
       mode: learned_range
 
@@ -320,44 +314,30 @@ objective:
   params: {reduction: mean}
 ```
 
-模型的前 `C` channels 是 epsilon prediction，后 `C` channels 是 variance
+模型的前 `C` channels 是 v prediction，后 `C` channels 是 variance
 interpolation values。共享的 process-free Gaussian family math 负责校验/拆分该 raw
 output，并使用 Process 提供的 bounds 做插值；Training 与 Sampling 不各自复制这套
-model-output 数学。hybrid loss 为 P2-weighted per-sample simple loss 加未被 P2
-加权的 `0.001 ×` 完整 VLB；uniform single-timestep estimator 将它实现为
+model-output 数学。hybrid loss 为 per-sample simple loss 加 `0.001 ×` 完整 VLB；
+uniform single-timestep estimator 将它实现为
 `T / 1000 ×` sampled VB term，而不是再额外乘一次 `0.001`。VB 的
 mean/prediction branch 会 detach。
-P2 权重精确为
-`(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)`，来自 cumulative marginal SNR，
-不做 batch mean renormalization。`k` 必须 finite 且大于 0，`gamma` 必须 finite 且
-非负；`gamma: 0` 逐元素退化为 constant weight，`k: 1, gamma: 1` 在 VP schedule
-下逐元素等于 `1 - alpha_bar_t`。Process public state 使用 `1..T`，对应 model time
-`0..T-1`；weight 与被采样 noisy state 使用同一个 cumulative marginal，不能错一位或
-改用单步 alpha。
+Process public state 使用 `1..T`，对应 model time `0..T-1`；target、variance bounds
+和 noisy state 必须来自同一个 cumulative marginal，不能错一位或改用单步 alpha。
 
-P2 Builder 固定 `prediction_type: epsilon`，并拒绝其他 prediction 参数。P2 与
-learned-range 的内置实现都要求 `MSEObjective`；普通 fixed-variance Strategy 把 scalar
-reduction 完整交给 Objective，而 P2/learned-range 的逐样本组合与 batch reduction 是
-具体 Gaussian Strategy 对内置 MSE 的私有语义，不建立通用 Objective reducer 契约。
-`MSEObjective` 的 `mean` 是 feature mean + batch mean，`sum` 是 feature sum + batch
-sum；`gamma: 0` 直接使用标准 Strategy 路径，因此两种 reduction 下都严格等价于相应的
-未加权 MSE。learned-range VB 仍按原语义相加且不被 P2 加权。
+learned-range 的内置实现要求 `MSEObjective(reduction="mean")`，因为 simple loss 和
+bits/dim VB 使用明确的相对尺度；`sum` 会把两者置于不匹配的 reduction 语义中并被拒绝。
+Strategy 分别报告 simple loss、variational bound 和组合后的 loss，便于训练监测，但
+Metric/Diagnostic 仍不能替代完整生成 Evaluation。
 
-标准与 P2 Strategy 不把 SNR 或内部 timestep coefficient 发布为 diagnostic；可用时只
-报告最终 `per_sample_loss`。`loss_aggregation_weight` 只控制 batch 的 epoch 统计聚合，
-不参与 autograd，也不是 P2 coefficient。
-
-类条件 P2 配置使用相同的 `k`、`gamma` 和 `variance`，并额外接受
-`condition_dropout`：
+类条件 learned-range 配置另外接受 `condition_dropout`：
 
 ```yaml
 training:
-  name: class_conditional_p2_gaussian_denoising
+  name: class_conditional_gaussian_denoising
   params:
+    prediction_type: v
     condition_dropout: 0.1
-    k: 1.0
-    gamma: 1.0
-    variance: {mode: fixed}
+    variance: {mode: learned_range}
 ```
 
 第三方 weighting 变体应实现并注册自己的 namespaced `TrainingBuilder` 和具体
@@ -383,8 +363,8 @@ generalized `eta` transition，并在 learned-range checkpoint 上明确忽略 v
 class-conditional learned-range CFG 只 guide prediction half。scale 0/1 返回完整
 unconditional/conditional `2C` output；其他 scale 保留 conditional variance half。
 `prediction_type` 与 `variance.mode` 写入 checkpoint inference recipe，独立 sample
-config 不可覆盖。P2 Builder identity、`k/gamma` 与 `variance.mode` 是
-training/resume facts，不应放进 sample profile。
+config 不可覆盖。`prediction_type` 与 `variance.mode` 是 training/resume facts，
+不应放进 sample profile。
 
 ## 配置层次
 

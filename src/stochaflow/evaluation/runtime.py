@@ -252,7 +252,7 @@ def run_resolved_evaluation(
             raise ValueError(
                 "EvaluationPlan.modules must declare the injected checkpoint model"
             )
-        facts = _run_evaluation_plan(plan, device=device)
+        facts = execute_evaluation_plan(plan, device=device)
         if isinstance(subject, ResolvedPredictionArtifactSubject):
             expected_ids = tuple(
                 sample.sample_id for sample in subject.inputs.samples
@@ -452,11 +452,13 @@ def _materialize_live_predictions(
     )
 
 
-def _run_evaluation_plan(
+def execute_evaluation_plan(
     plan: EvaluationPlan,
     *,
     device: torch.device,
 ) -> EvaluationFacts:
+    """Execute one already-composed EvaluationPlan without publishing a bundle."""
+
     runtime_specs = tuple(
         MetricSpec(
             id=spec.id,
@@ -684,6 +686,7 @@ def _default_evaluation_output_dir(checkpoint_path: Path) -> Path:
 
 __all__ = [
     "ResolvedEvaluationInputs",
+    "execute_evaluation_plan",
     "resolve_evaluation_inputs",
     "run_evaluation",
     "run_resolved_evaluation",

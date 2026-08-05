@@ -22,6 +22,9 @@ from stochaflow.metrics.config import METRIC_TAG_SEGMENT_PATTERN
 from stochaflow.scripts.artifact_reporting import (
     RichArtifactVerificationReporter,
 )
+from stochaflow.scripts.epoch_validation import (
+    EvaluationBackedEpochValidator,
+)
 from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
 from stochaflow.training.outcome import (
     CheckpointSelectionKind,
@@ -50,6 +53,7 @@ from stochaflow.utils.config import (
 from stochaflow.utils.device import validate_execution_device
 from stochaflow.utils.factory import (
     TrainingComponents,
+    build_model,
     build_training_components,
     resolve_device,
 )
@@ -1195,9 +1199,36 @@ def _fit_and_select_best(
     """Fit one run, restore its selected checkpoint, and summarize it."""
 
     early_stopping = config.trainer.early_stopping
+    validation_evaluation = config.trainer.validation_evaluation
     monitor = _resolve_monitor(config)
     if early_stopping.enabled and loaders.validation is None:
         raise ValueError("early stopping requires a validation dataloader")
+    if validation_evaluation.enabled and loaders.validation is None:
+        raise ValueError(
+            "validation Evaluation requires a validation dataloader"
+        )
+    epoch_validation_evaluator = None
+    if validation_evaluation.enabled:
+        assert loaders.validation is not None
+        epoch_validation_evaluator = EvaluationBackedEpochValidator(
+            trainer=training.trainer,
+            config=validation_evaluation,
+            validation_data=loaders.validation,
+            data_identity={
+                "source": "training",
+                "split": "validation",
+                "builder": {
+                    "name": config.data.name,
+                    "params": deepcopy(config.data.params),
+                },
+                "artifacts": (
+                    loaders.artifact_bindings.to_dict()
+                    if loaders.artifact_bindings is not None
+                    else None
+                ),
+            },
+            model_factory=build_model,
+        )
     history = training.trainer.fit(
         loaders.train,
         num_epochs=options.num_epochs,
@@ -1208,6 +1239,7 @@ def _fit_and_select_best(
         ),
         validation_dataloader=loaders.validation,
         max_validation_batches=options.max_validation_batches,
+        epoch_validation_evaluator=epoch_validation_evaluator,
         start_epoch=start_epoch,
         close_logger=False,
         early_stopping_patience=(
@@ -1447,7 +1479,11 @@ def _run_single_run(
                 output_dir=config.experiment.output_dir,
                 train_size=_dataset_size(loaders.train),
                 valid_size=_dataset_size(loaders.validation),
-                test_size=_dataset_size(loaders.test),
+                test_size=(
+                    _dataset_size(loaders.test)
+                    if config.trainer.test_after_fit
+                    else None
+                ),
                 batch_size=_batch_size(loaders.train),
             )
         )
@@ -1465,11 +1501,15 @@ def _run_single_run(
             start_epoch=start_epoch,
             reporter=reporter,
         )
-        phase_test_metrics = _evaluate_test_split(
-            training,
-            loaders,
-            options,
-            reporter=reporter,
+        phase_test_metrics = (
+            _evaluate_test_split(
+                training,
+                loaders,
+                options,
+                reporter=reporter,
+            )
+            if config.trainer.test_after_fit
+            else {}
         )
         metrics_path, log_path = _local_log_paths(config)
         outcome = TrainingRunOutcome(

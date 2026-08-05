@@ -109,30 +109,6 @@ def test_homepage_presents_mnist_before_afhq() -> None:
     assert legacy_afhq_asset not in homepage
 
 
-def test_afhq_p2_evaluation_documents_source_checkout_install_contract() -> None:
-    """Keep unreleased AFHQ Evaluation on the current-checkout install path."""
-
-    required_fragments = (
-        "正式 P2 Evaluation 当前必须从本仓库 checkout",
-        (
-            "uv sync --project examples/showcases/afhq-v2 --locked "
-            "--extra quality"
-        ),
-        "`--no-deps --offline`",
-        "只验证 wheel 内容、隔离后的 extension entry point 与当前 core wheel",
-        "不验证 AFHQ wheel 的 released-core resolver",
-        "core/AFHQ 0.2 release",
-        "post-release、non-blocking 的 follow-up",
-        "不是当前 source-checkout P2 readiness 的 merge blocker",
-    )
-
-    for path in (AFHQ_README, AFHQ_TUTORIAL):
-        content = path.read_text(encoding="utf-8")
-        normalized = " ".join(content.split())
-        assert all(fragment in normalized for fragment in required_fragments), path
-        assert "releases/download/v0.2" not in content
-
-
 def test_homepage_cards_override_furo_container_padding_reset() -> None:
     """Keep custom content containers from rendering flush against their borders."""
 
@@ -208,16 +184,18 @@ def test_maintained_examples_publish_grounded_results() -> None:
     assert "mnist_ddim50_epoch_0183_samples.png" in mnist
     assert "mnist_ddpm_epoch_0183_trajectory.gif" in mnist
     assert "mnist_ddim50_epoch_0183_trajectory.gif" in mnist
-    assert "exact parameter count 是 105,197,187" in normalized_afhq
-    assert "已从 current result surface 移除" in normalized_afhq
+    assert "exact parameter count" in normalized_afhq
+    assert "105,197,187" in normalized_afhq
+    assert "current result surface" in normalized_afhq
+    assert "train-adm-128-learned-range-v.yaml" in normalized_afhq
     assert (
-        "本 README 不发布 corrected ADM 的 production long-run quality baseline"
+        "formal-ddpm100-cfg2-official-test-learned-range-v.yaml"
         in normalized_afhq
     )
-    assert (
-        "单 epoch 受控 A/B 数值只属于 pipeline/protocol readiness evidence"
-        in normalized_afhq
-    )
+    assert "aggregate FID" in normalized_afhq
+    assert "`best.pt`" in normalized_afhq
+    assert "EvaluationBuilder" in normalized_afhq
+    assert "Metrics" in normalized_afhq
     assert "Aggregate FID | **30.240**" not in afhq
     assert "Aggregate KID | **0.005310 ± 0.000701**" not in afhq
     assert "afhq_v2_adm_ddim50_epoch_0170_samples.png" not in afhq
@@ -232,25 +210,26 @@ def test_maintained_examples_publish_grounded_results() -> None:
         assert all((source.parent / path).resolve().is_file() for path in local_images)
 
 
-def test_afhq_p2_docs_scope_internal_acceptance_and_paper_comparison() -> None:
-    """Keep the project gate distinct from the AFHQ-Dog paper benchmark."""
+def test_public_docs_do_not_advertise_retired_p2_support() -> None:
+    """Keep the retired experiment out of the supported user surface."""
 
-    paper_url = (
-        "https://openaccess.thecvf.com/content/CVPR2022/html/"
-        "Choi_Perception_Prioritized_Training_of_Diffusion_Models_"
-        "CVPR_2022_paper.html"
+    public_paths = (
+        PROJECT_ROOT / "README.md",
+        DOCS_ROOT / "index.md",
+        DOCS_ROOT / "framework.md",
+        DOCS_ROOT / "api" / "extensions.md",
+        DOCS_ROOT / "configuration" / "index.md",
+        DOCS_ROOT / "configuration" / "compatibility-and-migration.md",
+        DOCS_ROOT / "configuration" / "workflows.md",
+        DOCS_ROOT / "configuration" / "reference.md",
+        DOCS_ROOT / "tutorials" / "afhq-v2.md",
+        DOCS_ROOT / "tutorials" / "super-resolution.md",
+        AFHQ_README,
     )
-    repository_url = "https://github.com/jychoi118/P2-weighting"
 
-    for path in (AFHQ_README, AFHQ_TUTORIAL):
-        content = " ".join(path.read_text(encoding="utf-8").split())
-        assert all(token in content for token in ("900", "validation", "排序"))
-        assert "internal_project_acceptance" in content
-        assert all(token in content for token in ("standard-v", "ADM", "DiT"))
-        assert "不是论文复现" in content
-        assert all(
-            token in content for token in ("官方 test split", "128\N{MULTIPLICATION SIGN}128")
-        )
-        assert "11.55" in content
-        assert paper_url in content
-        assert repository_url in content
+    for path in public_paths:
+        content = path.read_text(encoding="utf-8")
+        assert (
+            re.search(r"(?<![A-Za-z0-9])P2(?![A-Za-z0-9])", content, re.IGNORECASE)
+            is None
+        ), path

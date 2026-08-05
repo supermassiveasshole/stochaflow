@@ -66,12 +66,32 @@ fields:
   trainer.accumulate_grad_batches: {description: 每个 optimizer update 累积的 micro-batch 数；epoch 尾部不足一个窗口时按实际长度归一化并 flush。, constraints: 正整数。}
   trainer.max_grad_norm: {description: 梯度范数裁剪阈值；null 禁用裁剪。, constraints: 非 null 时为正数。}
   trainer.show_progress: {description: 是否显示 Rich 进度条。, cli: "train --progress / --no-progress"}
+  trainer.test_after_fit: {description: 训练结束后是否运行一次 test split；关闭时不会读取或迭代 test loader，适合只用 validation Evaluation 选 checkpoint 的训练。}
   trainer.early_stopping: {description: 基于 epoch 指标的提前停止策略。}
   trainer.early_stopping.enabled: {description: 是否启用基于 validation monitor 的提前停止。, interactions: 启用时必须存在 validation loader；无 validation 时 best tracking 默认关闭。}
   trainer.early_stopping.monitor: {description: "用于 best checkpoint 与 early stopping 的 validation epoch 指标，例如 valid/loss 或 valid/metrics/prediction_mae。", constraints: "只接受 valid/loss 或 valid/metrics/<id>[/<subkey>]；train、test、system、step、diagnostic、周围空白和旧别名均被拒绝。"}
   trainer.early_stopping.mode: {description: min 表示越小越好，max 表示越大越好。, constraints: min 或 max。}
   trainer.early_stopping.patience: {description: validation monitor 连续无足够改善时容忍的 epoch 数。, constraints: 正整数；启用 early stopping 时必须存在 validation loader。}
   trainer.early_stopping.min_delta: {description: 被视为改善所需的最小绝对差值。, constraints: 非负数。}
+  trainer.validation_evaluation: {description: 在训练期间按 epoch cadence 执行的完整 validation Evaluation；Evaluation 负责采样、完整性和驱动声明的 Metrics，返回指标可直接参与已有 best-checkpoint 与 early-stopping 逻辑。}
+  trainer.validation_evaluation.enabled: {description: 是否启用训练期 validation Evaluation。}
+  trainer.validation_evaluation.start_epoch: {description: 首次执行完整 validation Evaluation 的绝对 epoch。, constraints: 正整数且不超过 trainer.num_epochs。}
+  trainer.validation_evaluation.every_epochs: {description: 首次执行后每隔多少个 epoch 再执行一次完整 validation Evaluation。, constraints: 正整数。}
+  trainer.validation_evaluation.include_final: {description: 最终 epoch 未命中固定 cadence 时是否额外执行一次 validation Evaluation。}
+  trainer.validation_evaluation.weights: {description: validation Evaluation 采样所用的 primary-model 权重。, constraints: raw 或 ema；ema 要求已启用 EMA。}
+  trainer.validation_evaluation.evaluation: {description: 构建完整 validation EvaluationPlan 的 EvaluationBuilder Registry 声明。}
+  trainer.validation_evaluation.evaluation.name: {description: evaluation_builders Registry 名称。}
+  trainer.validation_evaluation.evaluation.params: {description: EvaluationBuilder 拥有的协议与采样组合参数；模型、validation data、Metrics 和运行时由框架注入。}
+  trainer.validation_evaluation.metrics: {description: 该 validation Evaluation 依赖的 Metric 声明；Metrics 接收 Evaluation 产生的 sample payload，并自行负责特征提取、状态累积和 FID/KID 等指标计算。}
+  "trainer.validation_evaluation.metrics[].id": {description: validation Evaluation 内唯一、稳定且可用于 canonical metric tag 的 Metric 标识。}
+  "trainer.validation_evaluation.metrics[].name": {description: metrics Registry 中的 Metric 构造名称。}
+  "trainer.validation_evaluation.metrics[].channel": {description: Evaluation evaluator 产生 MetricUpdate 时使用的 task-owned channel。}
+  "trainer.validation_evaluation.metrics[].params": {description: 原样传给 Metric constructor 的参数；采样或 Evaluation 协议参数不属于此处。}
+  trainer.validation_evaluation.metric_keys: {description: 该 Evaluation 必须完整返回的 canonical valid/metrics 指标键集合，用于结果完整性、strict resume 身份和 monitor 绑定检查。}
+  trainer.validation_evaluation.protocol: {description: 训练期 validation Evaluation 的样本完整性 authority。}
+  trainer.validation_evaluation.protocol.id: {description: 稳定且非空的 validation Evaluation protocol 标识。}
+  trainer.validation_evaluation.protocol.expected_examples: {description: Evaluation 必须唯一覆盖的 validation example 数。, constraints: 正整数。}
+  trainer.validation_evaluation.protocol.strict_complete: {description: 是否要求样本数和 ID 严格完整；用于 checkpoint selection 时必须为 true。}
   logging: {description: 指标记录频率、后端与 torch 内部日志配置。}
   logging.log_every: {description: 每隔多少个训练 step 写一次 step 指标。, constraints: 正整数。}
   logging.backends: {description: 按声明顺序组合的 logger Registry 组件。, constraints: 至少一个。}
@@ -381,15 +401,6 @@ registries:
           prediction_type: {description: "训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`。"}
           condition_dropout: {description: "训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。"}
           variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C 和内置 MSE Objective；该具体 Strategy 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。"}
-      class_conditional_p2_gaussian_denoising:
-        description: "读取 class-labeled batch，以固定 epsilon prediction 执行类条件 P2 Gaussian training；这是具体 TrainingBuilder/Strategy，不是标准 Builder 的 weighting option，并要求内置 MSE Objective。"
-        runtime_parameters: [context]
-        inspect: context_parameters
-        parameters:
-          condition_dropout: {description: "训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。"}
-          k: {description: "P2 `(k + SNR)^(-gamma)` 的 offset；默认 `1.0`，必须 finite 且大于 `0`。"}
-          gamma: {description: "P2 exponent；默认 `1.0`，必须 finite 且非负；`0` 使 simple-loss weight 严格退化为 `1`。"}
-          variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。"}
       gaussian_denoising:
         description: 使用离散 Gaussian marginal 和指定 prediction target 训练标准、未加权的无条件去噪模型；batch 必须为 Tensor 或 (Tensor, {})，并可组合 fixed/learned_range variance。
         runtime_parameters: [context]
@@ -397,14 +408,6 @@ registries:
         parameters:
           prediction_type: {description: "训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`；要求注入离散 Gaussian Process 和 Objective。"}
           variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C 和内置 MSE Objective；该具体 Strategy 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。"}
-      p2_gaussian_denoising:
-        description: 使用离散 Gaussian marginal，以固定 epsilon prediction 执行无条件 P2 training；这是具体 TrainingBuilder/Strategy，不是标准 Builder 的 weighting option，并要求内置 MSE Objective。
-        runtime_parameters: [context]
-        inspect: context_parameters
-        parameters:
-          k: {description: "P2 `(k + SNR)^(-gamma)` 的 offset；默认 `1.0`，必须 finite 且大于 `0`。"}
-          gamma: {description: "P2 exponent；默认 `1.0`，必须 finite 且非负；`0` 使 simple-loss weight 严格退化为 `1`。"}
-          variance: {description: "Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。"}
       supervised:
         description: 对标准 inputs/targets batch 执行模型 forward 与注入的 Objective。
         runtime_parameters: [context]
@@ -455,6 +458,7 @@ registries:
           gamma: {description: 可选的正多项式核缩放系数；null 使用 provider 默认值。}
           coef: {description: 正多项式核常数项。}
           seed: {description: KID 随机子集抽样的固定非负种子；compute 会隔离并恢复调用方 RNG 状态。}
+          antialias: {description: 调整输入到 Inception 尺寸时是否使用抗锯齿；必须为布尔值，默认 true。}
 
   optimizers:
     description: 构建第三方 PyTorch Optimizer 扩展；标准 torch.optim 类通过受限原生 provider 解析，不复制为 Registry entry。

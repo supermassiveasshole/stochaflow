@@ -26,13 +26,9 @@ from .gaussian import (
     ClassConditionalGaussianDenoisingTrainingBuilder,
     ClassConditionalGaussianDenoisingTrainingStrategy,
     ClassConditionalGaussianDiagnosticSemantics,
-    ClassConditionalP2GaussianDenoisingTrainingBuilder,
-    ClassConditionalP2GaussianDenoisingTrainingStrategy,
     GaussianDenoisingTrainingBuilder,
     GaussianDenoisingTrainingStrategy,
     GaussianDiagnosticSemantics,
-    P2GaussianDenoisingTrainingBuilder,
-    P2GaussianDenoisingTrainingStrategy,
     gaussian_training_target,
 )
 from .objectives import (
@@ -63,6 +59,12 @@ from .strategy import (
     validate_train_step_output,
 )
 from .trainer import Trainer
+from .validation import (
+    EpochValidationCadence,
+    EpochValidationEvaluator,
+    EpochValidationIdentity,
+    EpochValidationResult,
+)
 
 __all__ = [
     "PRECISION_KINDS",
@@ -72,11 +74,13 @@ __all__ = [
     "ClassConditionalGaussianDenoisingTrainingBuilder",
     "ClassConditionalGaussianDenoisingTrainingStrategy",
     "ClassConditionalGaussianDiagnosticSemantics",
-    "ClassConditionalP2GaussianDenoisingTrainingBuilder",
-    "ClassConditionalP2GaussianDenoisingTrainingStrategy",
     "ContextAwareDiagnostic",
     "DeviceTransferableBatch",
     "DiagnosticBuildContext",
+    "EpochValidationCadence",
+    "EpochValidationEvaluator",
+    "EpochValidationIdentity",
+    "EpochValidationResult",
     "ExponentialMovingAverage",
     "FinalSummary",
     "FitStartEvent",
@@ -88,8 +92,6 @@ __all__ = [
     "ManagedTrainingModule",
     "MetricChannelProvider",
     "MetricUpdate",
-    "P2GaussianDenoisingTrainingBuilder",
-    "P2GaussianDenoisingTrainingStrategy",
     "PerSampleObjective",
     "PrecisionKind",
     "PrecisionRuntime",

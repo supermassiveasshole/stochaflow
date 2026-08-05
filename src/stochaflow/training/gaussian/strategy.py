@@ -87,6 +87,12 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
                 raise TypeError(
                     "learned_range Gaussian training requires MSEObjective"
                 )
+            if objective_value.reduction != "mean":
+                raise ValueError(
+                    "learned_range Gaussian training requires MSEObjective "
+                    "reduction='mean' so simple loss and bits-per-dimension VB "
+                    "share the supported scaling contract"
+                )
         validate_gaussian_model_output_layout(
             model_value,
             variance_mode=variance_value.mode,
@@ -192,8 +198,18 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
             **task_diagnostics,
         }
         diagnostics.update(gaussian_loss_diagnostics(computation))
+        strategy_metrics: dict[str, torch.Tensor] = {}
+        if computation.per_sample_simple_loss is not None:
+            strategy_metrics["simple_loss"] = (
+                computation.per_sample_simple_loss.detach().mean()
+            )
+        if computation.per_sample_variational_bound is not None:
+            strategy_metrics["variational_bound"] = (
+                computation.per_sample_variational_bound.detach().mean()
+            )
         return TrainStepOutput(
             loss=computation.loss,
+            metrics=strategy_metrics,
             diagnostics=diagnostics,
             metric_updates={
                 "gaussian.prediction_target": MetricUpdate(
@@ -269,6 +285,8 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
             prediction=prediction,
             target=target,
             per_sample_loss=per_sample_loss,
+            per_sample_simple_loss=per_sample_simple,
+            per_sample_variational_bound=variational_bound,
         )
 
     def _prediction_and_target(

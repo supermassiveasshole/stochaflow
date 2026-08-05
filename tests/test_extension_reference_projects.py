@@ -647,22 +647,12 @@ assert {
         "prediction_type"
     ]
     for profile in profiles
-} == {"epsilon", "v"}
+} == {"v"}
 assert {
     profile.name: (profile.purpose, profile.data.split, profile.protocol.expected_examples)
     for profile in profiles
 } == {
     "afhq-v2-adm-ddim50-cfg2-official-test-v1": ("final_test", "test", 1467),
-    "afhq-v2-adm-epsilon-ddim50-cfg2-official-test-v1": (
-        "final_test",
-        "test",
-        1467,
-    ),
-    "afhq-v2-adm-epsilon-ddim50-cfg2-validation-v1": (
-        "selection_candidate",
-        "validation",
-        900,
-    ),
 }
 for profile in profiles:
     assert profile.extensions.plugins == ("stochaflow-afhq-v2",)
@@ -672,9 +662,9 @@ for profile in profiles:
     assert profile.protocol.strict_complete is True
 
 training_config = load_config(arguments["training_config"])
-assert training_config.experiment.name == "afhq_v2_adm_128_p2"
-assert training_config.training.name == "class_conditional_p2_gaussian_denoising"
-assert training_config.trainer.device == "cuda"
+assert training_config.experiment.name == "afhq_v2_adm_128"
+assert training_config.training.name == "class_conditional_gaussian_denoising"
+assert training_config.trainer.device == "auto"
 plan = prepare_extension_plugins(training_config)
 assert [
     (item.name, item.distribution, item.target)
@@ -708,22 +698,12 @@ assert issubclass(metric_type, Metric)
             *(str(path / "src") for path in installed.projects.values()),
         ],
         "training_config": str(
-            afhq_copy / "experiments/production/train-adm-128-p2.yaml"
+            afhq_copy / "experiments/production/train-adm-128.yaml"
         ),
         "profiles": [
             str(
                 afhq_copy
                 / "experiments/evaluation/formal-ddim50-cfg2-official-test.yaml"
-            ),
-            str(
-                afhq_copy
-                / "experiments/evaluation/"
-                "formal-ddim50-cfg2-official-test-epsilon.yaml"
-            ),
-            str(
-                afhq_copy
-                / "experiments/evaluation/"
-                "selection-ddim50-cfg2-validation-epsilon.yaml"
             ),
         ],
     }

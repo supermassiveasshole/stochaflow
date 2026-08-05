@@ -1212,6 +1212,25 @@ def _same_file_state(
     )
 
 
+def _same_directory_state(
+    first: os.stat_result,
+    second: os.stat_result,
+) -> bool:
+    """Compare stable directory identity without Windows allocation size."""
+
+    first_identity = (first.st_dev, first.st_ino)
+    second_identity = (second.st_dev, second.st_ino)
+    if first_identity != (0, 0) and second_identity != (0, 0):
+        same_identity = first_identity == second_identity
+    else:
+        same_identity = first.st_mode == second.st_mode
+    return (
+        same_identity
+        and first.st_mode == second.st_mode
+        and first.st_mtime_ns == second.st_mtime_ns
+    )
+
+
 def _digest_descriptor(descriptor: int) -> str:
     digest = hashlib.sha256()
     os.lseek(descriptor, 0, os.SEEK_SET)
@@ -1841,7 +1860,7 @@ def _scan_windows_directory(
                 f"{label} contains an unsupported filesystem entry: {path}"
             )
     after = directory.lstat()
-    if not _same_file_state(before, after):
+    if _is_link_or_reparse(after) or not _same_directory_state(before, after):
         raise ValueError(f"{label} directory changed during enumeration: {directory}")
     return snapshots
 

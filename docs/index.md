@@ -17,7 +17,7 @@
 </div>
 
 当前内置实现聚焦 pixel-space 离散 Gaussian diffusion，包括无条件与类别条件训练、
-fixed/learned-range variance、epsilon-only P2 training、full/respaced ancestral
+fixed/learned-range variance、full/respaced ancestral
 DDPM、DDIM、EMA、CFG、结果 writers 与独立 checkpoint evaluation runtime。项目可以
 通过普通 Python distribution 接入自己的数据、训练策略、生成算法与 artifact；
 latent diffusion、pretrained
@@ -28,7 +28,7 @@ source-checkout
 full-official-test public profile 已闭合普通 pixel-space 图像生成。通用 runtime 不自动使
 SR、consistency、latent/codec 或 distillation 成为受支持任务；未来任务必须同步交付自己的
 monitoring、checkpoint inference 与 formal Evaluation。reference cache、comparison/gate 是
-可选增强，不是当前 P2 缺口。
+可选增强。
 
 ```{toctree}
 :maxdepth: 2
@@ -135,10 +135,9 @@ manifest 共同固定一次运行的来源。
 ## 结果一览
 
 MNIST 卡片来自仓库记录的固定协议，不把短 smoke run 当作质量 benchmark。AFHQ-v2
-卡片描述 canonical ADM 拓扑切换后的当前可运行 surface；corrected ADM 尚无已发布的
-长训练质量结果。P2 tiny/full-topology bounded runs 只证明 readiness；独立 schema-v3
-RTX 4090 sweep 提供 operational capacity evidence。单 epoch、单 seed 的 exact-sample
-formal A/B 已完成且未显示 P2 收益，但不是统计显著或 production promotion evidence。
+卡片描述 canonical ADM 拓扑、learned-range-v production recipe、完整 validation
+Evaluation 和 formal test surface；schema-v3 RTX 4090 sweep 提供 operational capacity
+evidence。训练期 FID/KID 只用于 validation 选模，不冒充最终 benchmark。
 
 ::::{container} sf-results
 :::{container} sf-result-card
@@ -159,9 +158,10 @@ checkpoint 的 validation v-prediction loss 为 **0.07189**。
 
 `adm_unet` 使用 canonical input/output block graph、逐 block skip ledger 和 QKV
 residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与样本不作为 corrected
-模型或 P2 的证据。
+模型的证据。learned-range-v recipe 在配置 cadence 上运行 300/class validation
+Evaluation，并按 aggregate FID 维护 `best.pt`。
 
-<p class="sf-result-meta">public formal · measured RTX 4090 capacity · one-epoch P2 A/B no benefit · long-run pending</p>
+<p class="sf-result-meta">live validation FID/KID · public formal test · measured RTX 4090 capacity</p>
 
 [查看 AFHQ-v2 数据、配置与按类评估流程](tutorials/afhq-v2.md)
 :::

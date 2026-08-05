@@ -37,6 +37,7 @@ def test_public_metrics_surface_excludes_training_and_provenance_contracts() -> 
         "MetricRuntimeError",
         "MetricSpec",
         "MetricUpdate",
+        "ShareableImageFeatureMetric",
         "SingleOutputMeanAbsoluteError",
         "SingleOutputMeanSquaredError",
         "build_metric",

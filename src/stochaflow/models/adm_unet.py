@@ -431,6 +431,11 @@ class ADMUNet(nn.Module):
 
         if skips:
             raise RuntimeError("ADM skip features were not consumed")
+        # Keep the canonical ADM output head at the input precision. Under
+        # mixed precision the U-Net torso may produce BF16/FP16 activations,
+        # while guided-diffusion restores the original input dtype before the
+        # final normalization and projection head.
+        hidden = hidden.to(dtype=state.dtype)
         output = self.output_projection(
             self.output_activation(self.output_norm(hidden))
         )

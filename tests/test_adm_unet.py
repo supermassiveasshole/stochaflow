@@ -178,12 +178,9 @@ def test_adm_reference_pins_and_characterization_are_frozen() -> None:
     assert reference["guided_diffusion"]["commit"] == (
         "22e0df8183507e13a7813f8d38d51b072ca1e67c"
     )
-    assert reference["p2_weighting"]["commit"] == (
-        "3da0947ac350072e457c211401218175bc94e137"
-    )
     assert reference["legacy_stochaflow"]["parameter_count"] == 91_300_867
     assert reference["canonical_adm_128"]["parameter_count"] == 105_197_187
-    assert reference["p2_afhq_256"]["parameter_count"] == 93_563_910
+    assert reference["adm_256_reference"]["parameter_count"] == 93_563_910
 
 
 def test_adm_tiny_forward_and_input_gradient_match_pinned_upstream_fixture() -> None:
@@ -577,7 +574,7 @@ def test_adm_production_topology_has_exact_count_depth_and_attention() -> None:
     assert attention_count == 16
 
 
-def test_p2_afhq_topology_matches_pinned_parameter_golden() -> None:
+def test_adm_256_reference_topology_matches_pinned_parameter_golden() -> None:
     with torch.device("meta"):
         model = ADMUNet(
             input_size=256,
@@ -757,15 +754,31 @@ def test_adm_unet_state_dict_round_trip_preserves_predictions() -> None:
 def test_adm_unet_supports_cpu_bfloat16_autocast() -> None:
     model = _tiny_adm_unet()
     state = torch.randn(2, 3, 16, 16)
+    output_norm_input_dtypes: list[torch.dtype] = []
+
+    def record_output_norm_input(
+        module: nn.Module,
+        inputs: tuple[torch.Tensor, ...],
+    ) -> None:
+        del module
+        output_norm_input_dtypes.append(inputs[0].dtype)
+
+    handle = model.output_norm.register_forward_pre_hook(
+        record_output_norm_input
+    )
     with torch.autocast("cpu", dtype=torch.bfloat16):
-        prediction = model(
-            state,
-            torch.tensor([1, 2]),
-            torch.tensor([0, cast(int, model.null_class_id)]),
-        )
+        try:
+            prediction = model(
+                state,
+                torch.tensor([1, 2]),
+                torch.tensor([0, cast(int, model.null_class_id)]),
+            )
+        finally:
+            handle.remove()
 
     assert prediction.shape == state.shape
     assert prediction.dtype == torch.bfloat16
+    assert output_norm_input_dtypes == [state.dtype]
 
 
 @pytest.mark.parametrize(

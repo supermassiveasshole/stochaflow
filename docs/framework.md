@@ -47,7 +47,7 @@ flowchart LR
 | --- | --- |
 | 数据 | verified managed/referenced artifacts；普通图像、有标签图像、超分辨率配对和多源多分辨率 image recipes |
 | 模型 | 无条件 UNet、canonical unconditional/class-conditional ADM U-Net、class-conditional pixel DiT |
-| 训练 | supervised 与无条件/类条件 Gaussian denoising；epsilon/x0/v/score targets；fixed/learned-range variance；concrete epsilon-only P2；混合精度、梯度累积、EMA 和单 optimizer 自动循环 |
+| 训练 | supervised 与无条件/类条件 Gaussian denoising；epsilon/x0/v/score targets；fixed/learned-range variance；混合精度、梯度累积、EMA、cadence-controlled validation Evaluation 和单 optimizer 自动循环 |
 | 采样 | full/respaced ancestral DDPM、DDIM、class-conditional CFG、trajectory observations、Tensor/PNG/grid/GIF writers |
 | Metrics | task-neutral `MetricSpec`/`MetricUpdate`/`MetricEngine`，内置 mean/MSE/MAE 与 FID/KID providers |
 | Diagnostics | 训练期 denoiser/sampler observation、reference metrics、artifacts 与显式 failure policy |
@@ -121,16 +121,24 @@ streaming contract。每个 `SamplingBatch` 显式声明 modality-neutral count�
 
 ## Metrics、Diagnostics 与 formal Evaluation
 
-训练 metrics、Diagnostics 和 formal Evaluation 是三条不同路径：
+训练 metrics、Diagnostics 和 Evaluation 是职责不同的路径：
 
 - epoch metrics 由 Strategy 产生 task-owned channel payload，再由 phase-local
   `MetricEngine` 聚合；
 - `TrainingDiagnostic` 用于低频或昂贵的训练期观察，并直接写 logger/artifact；
+- epoch-end validation Evaluation 在配置的 cadence 上对当前 raw/EMA snapshot 执行完整
+  sampling/data/metric protocol，并返回 `valid/metrics/*`；
 - `stochaflow evaluate` 在冻结 subject 上执行独立 protocol，并发布可审计 result。
 
-best checkpoint 与 early stopping 当前只接受 validation loss 或 validation metric。
-Train/test/system scalars 与 Diagnostic observations 不参与模型选择；Diagnostic 读取
-validation batch 也不会自动成为 formal evaluation evidence。
+best checkpoint 与 early stopping 只接受 validation loss 或 validation metric。到期的
+validation Evaluation 可以直接提供 FID/KID 等 metric；非到期 epoch 不复用旧值，也不推进
+patience。Train/test/system scalars 与 Diagnostic observations 不参与模型选择；Diagnostic
+读取 validation batch 也不会自动成为 formal evaluation evidence。
+
+Metric 只计算收到的 task-interpreted updates。例如 FID/KID 不拥有采样或 dataset lifecycle；
+Evaluation 负责生成 fake、配对 real、sample IDs 和 completeness，再把 image-pair updates
+交给 Metric。训练内的 live Evaluation 不写 immutable formal bundle，因此只能作为选模
+validation evidence；最终 benchmark 仍使用独立 `stochaflow evaluate`。
 
 formal Evaluation 当前支持两种 subject：
 
@@ -159,16 +167,13 @@ gate 属于可选增强。完整协议与 offline artifact 行为见
 
 - epsilon、x0、v 与 score prediction targets；
 - fixed variance 和 learned-range variance；
-- 标准及 concrete epsilon-only P2 TrainingBuilder；
 - unconditional 与 class-conditional training；
 - full/respaced ancestral DDPM、DDIM 与 classifier-free guidance。
 
-P2 通过 `p2_gaussian_denoising` 或
-`class_conditional_p2_gaussian_denoising` 选择，不是标准 Builder 上的
-`loss_weighting` option。Learned-range 模型输出 prediction/variance 两个 channel halves；
-P2 只加权 simple loss，variance VB term 保持未加权。DDPM 消费 learned variance，DDIM
-只消费 prediction half。完整公式、字段与示例见
-{ref}`Gaussian variance、P2 与 respaced DDPM <gaussian-variance-p2-respaced-ddpm>`。
+Learned-range 模型输出 prediction/variance 两个 channel halves；hybrid objective 对
+prediction 使用 simple MSE，并加入 detached-mean variational-bound term。DDPM 消费
+learned variance，DDIM 只消费 prediction half。完整公式、字段与示例见
+{ref}`Gaussian variance 与 respaced DDPM <gaussian-variance-respaced-ddpm>`。
 
 类条件能力使用窄的 `ClassConditionalDenoiser` capability，而不是全局 condition schema。
 当前 ADM 使用 canonical encoder/decoder block graph、逐 block skip ledger 和 QKV residual

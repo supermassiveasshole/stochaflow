@@ -6,13 +6,6 @@
     "unet_sha256": "a70068e4d5ecf6f50372c19d66bb3441823b19ce6e02ff9b289a86a1a0d20217",
     "script_util_sha256": "05c750c50c4fe98f09c5087b13127e5a5b64e8148bb746d7770ea5f5ac7f8438"
   },
-  "p2_weighting": {
-    "repository": "https://github.com/jychoi118/P2-weighting.git",
-    "commit": "3da0947ac350072e457c211401218175bc94e137",
-    "unet_sha256": "a70068e4d5ecf6f50372c19d66bb3441823b19ce6e02ff9b289a86a1a0d20217",
-    "gaussian_diffusion_sha256": "ab0d8db1834a06b5a9cdc24f78890b9efd980d2e036e834313549b515f247e24",
-    "readme_sha256": "b3a60752f7763d18b1679d06435214d295d3cb65d14cbdd548afa53d691a77e4"
-  },
   "legacy_stochaflow": {
     "parameter_count": 91300867,
     "skip_count": 4,
@@ -26,7 +19,7 @@
     "attention_blocks": 16,
     "lowest_resolution": 8
   },
-  "p2_afhq_256": {
+  "adm_256_reference": {
     "parameter_count": 93563910
   },
   "tiny_forward_gradient": {

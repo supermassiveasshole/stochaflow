@@ -161,6 +161,7 @@ def test_load_mnist_train_config() -> None:
     assert config.ema.update_after_step == 100
     assert config.ema.update_every == 1
     assert config.trainer.num_epochs == 200
+    assert config.trainer.test_after_fit is True
     assert not config.trainer.early_stopping.enabled
     assert config.trainer.early_stopping.monitor == "valid/loss"
     assert config.trainer.early_stopping.patience == 7
@@ -334,6 +335,151 @@ def test_config_rejects_removed_early_stopping_missing_policy() -> None:
         ConfigError,
         match=r"unknown config field.*early_stopping\.missing",
     ):
+        load_config_dict(raw)
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", [], {}])
+def test_config_requires_exact_test_after_fit_bool(value: object) -> None:
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    raw["trainer"]["test_after_fit"] = value
+
+    with pytest.raises(ConfigError, match=r"trainer\.test_after_fit.*bool"):
+        load_config_dict(raw)
+
+
+def test_config_allows_disabling_test_after_fit() -> None:
+    raw = load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    raw["trainer"]["test_after_fit"] = False
+
+    config = load_config_dict(raw)
+
+    assert config.trainer.test_after_fit is False
+
+
+def _enabled_validation_evaluation(raw: dict[str, Any]) -> dict[str, Any]:
+    raw["trainer"]["num_epochs"] = 200
+    raw["trainer"]["early_stopping"]["monitor"] = (
+        "valid/metrics/distribution/aggregate.fid"
+    )
+    raw["trainer"]["validation_evaluation"] = {
+        "enabled": True,
+        "start_epoch": 20,
+        "every_epochs": 20,
+        "include_final": True,
+        "weights": "ema",
+        "evaluation": {
+            "name": "example.generation",
+            "params": {"sampling": {"seed": 17}},
+        },
+        "metrics": [
+            {
+                "id": "distribution",
+                "name": "example.distribution",
+                "channel": "example.image-pairs",
+                "params": {},
+            }
+        ],
+        "metric_keys": [
+            "valid/metrics/distribution/aggregate.fid",
+            "valid/metrics/distribution/aggregate.kid_mean",
+        ],
+        "protocol": {
+            "id": "example-validation-v1",
+            "expected_examples": 12,
+            "strict_complete": True,
+        },
+    }
+    return raw
+
+
+def test_config_loads_epoch_validation_evaluation_profile() -> None:
+    raw = _enabled_validation_evaluation(
+        load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    )
+
+    config = load_config_dict(raw)
+
+    validation = config.trainer.validation_evaluation
+    assert validation.enabled
+    assert validation.start_epoch == validation.every_epochs == 20
+    assert validation.include_final
+    assert validation.weights == "ema"
+    assert validation.evaluation is not None
+    assert validation.evaluation.name == "example.generation"
+    assert [metric.id for metric in validation.metrics] == ["distribution"]
+    assert validation.protocol is not None
+    assert validation.protocol.expected_examples == 12
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda profile: profile.update({"every_epochs": 0}),
+            r"validation_evaluation\.every_epochs",
+        ),
+        (
+            lambda profile: profile.update({"start_epoch": 201}),
+            r"start_epoch must not exceed trainer\.num_epochs",
+        ),
+        (
+            lambda profile: profile.update({"weights": "auto"}),
+            r"validation_evaluation\.weights",
+        ),
+        (
+            lambda profile: profile.update({"metrics": []}),
+            r"validation_evaluation requires metrics",
+        ),
+        (
+            lambda profile: profile.update({"metric_keys": []}),
+            r"validation_evaluation requires metric_keys",
+        ),
+        (
+            lambda profile: profile.update(
+                {"metric_keys": ["train/metrics/distribution/fid"]}
+            ),
+            r"must be 'valid/loss' or a canonical validation metric key",
+        ),
+        (
+            lambda profile: profile["metrics"].append(
+                dict(profile["metrics"][0])
+            ),
+            "duplicate metric id",
+        ),
+        (
+            lambda profile: profile["protocol"].update(
+                {"expected_examples": 0}
+            ),
+            r"protocol\.expected_examples",
+        ),
+        (
+            lambda profile: profile["protocol"].update(
+                {"strict_complete": False}
+            ),
+            r"strict_complete must be true",
+        ),
+    ],
+)
+def test_config_rejects_invalid_epoch_validation_evaluation_profile(
+    mutate,
+    message: str,
+) -> None:
+    raw = _enabled_validation_evaluation(
+        load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    )
+    mutate(raw["trainer"]["validation_evaluation"])
+
+    with pytest.raises(ConfigError, match=message):
+        load_config_dict(raw)
+
+
+def test_config_rejects_ema_epoch_validation_without_ema() -> None:
+    raw = _enabled_validation_evaluation(
+        load_config(BUILTIN_TRAIN_CONFIG).to_dict()
+    )
+    raw["ema"]["enabled"] = False
+
+    with pytest.raises(ConfigError, match=r"requires ema\.enabled"):
         load_config_dict(raw)
 
 

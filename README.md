@@ -13,7 +13,7 @@ Gaussian diffusion**:
   plus class-conditional pixel-space DiT;
 - epsilon, x0, v, and score prediction targets;
 - fixed or learned-range Gaussian variance, including the learned-range hybrid
-  variational bound and concrete epsilon-only P2 training strategies;
+  variational bound;
 - full and uniformly respaced ancestral DDPM, DDIM, EMA weights, trajectories,
   and classifier-free guidance.
 
@@ -113,10 +113,10 @@ not require retraining.
 | --- | --- |
 | Data | Verified managed and referenced data artifacts; image, class-labeled image, super-resolution data, and multi-resolution image recipes |
 | Models | Unconditional UNet, canonical unconditional/class-conditional ADM U-Net, and class-conditional pixel-space DiT |
-| Training | Unconditional and class-conditional Gaussian denoising; fixed or learned-range variance; standard or concrete epsilon-only P2 strategies; supervised training, mixed precision, gradient accumulation, EMA, and a single-optimizer automatic loop |
+| Training | Unconditional and class-conditional Gaussian denoising; fixed or learned-range variance; supervised training, mixed precision, gradient accumulation, EMA, cadence-controlled validation Evaluation, and a single-optimizer automatic loop |
 | Probability process | Discrete variance-preserving Gaussian process with linear-beta and cosine-alpha-bar schedules, selected-pair marginal coefficients, and learned-range variance bounds |
 | Sampling | Full or uniformly respaced ancestral DDPM, DDIM, class allocation, classifier-free guidance, trajectory observation, and Tensor/PNG/GIF writers |
-| Evaluation | Standalone strict checkpoint or prediction-artifact subjects, raw/EMA selection, exact sample completeness, optional streamed canonical-JSONL predictions, offline metric replay, and immutable result bundles |
+| Evaluation | Live epoch-end validation over raw/EMA snapshots plus standalone strict checkpoint or prediction-artifact subjects, exact sample completeness, optional streamed canonical-JSONL predictions, offline metric replay, and immutable result bundles |
 | Runtime | Registry-based composition, explicit extension activation, checkpoint v12 strict resume, checkpoint-backed inference, local/TensorBoard/W&B logging, and training diagnostics |
 | CLI | `stochaflow init`, `stochaflow train`, `stochaflow sample`, and `stochaflow evaluate` |
 
@@ -136,7 +136,7 @@ The actively maintained example surface is deliberately small:
 | Example | Role | Current status |
 | --- | --- | --- |
 | [MNIST](examples/built-in/image-generation/README.md) | Minimal built-in image-generation workflow | One train config, DDPM/DDIM sample profiles, and a resume observability overlay |
-| [AFHQ-v2](examples/showcases/afhq-v2/README.md) | Installable class-conditional generation showcase | Corrected ADM and pixel DiT production configs; measured RTX 4090 capacity; completed one-epoch controlled P2 A/B with no observed benefit; public full-official-test KID/FID evaluation with replayable predictions; long-training quality evidence remains pending |
+| [AFHQ-v2](examples/showcases/afhq-v2/README.md) | Installable class-conditional generation showcase | Corrected ADM and pixel DiT configs; learned-range-v production recipe; measured RTX 4090 capacity; validation FID/KID checkpoint selection; public full-official-test evaluation with replayable predictions |
 
 Separate CIFAR-10, Flowers102, and multi-source training YAMLs are not maintained.
 Their removal does not remove the underlying reusable data sources or recipes.
@@ -202,42 +202,21 @@ The repository includes:
 
 - the corrected
   [ADM-UNet training config](examples/showcases/afhq-v2/experiments/production/train-adm-128.yaml);
+- a fresh
+  [learned-range-v ADM training config](examples/showcases/afhq-v2/experiments/production/train-adm-128-learned-range-v.yaml)
+  that runs a complete class-aware validation Evaluation on its configured
+  epoch cadence and selects `best.pt` by aggregate validation FID;
 - a runnable
   [pixel DiT-B/8 training config](examples/showcases/afhq-v2/experiments/production/train-dit-128.yaml),
   for which this README does not claim a completed quality result;
-- a real-AFHQ
-  [tiny P2 wiring smoke](examples/showcases/afhq-v2/experiments/smoke/train-adm-128-p2.yaml)
-  and a
-  [105M BF16 full-topology sanity profile](examples/showcases/afhq-v2/experiments/profiling/train-adm-128-p2.yaml),
-  whose ordinary bounded train invocations are readiness checks rather than
-  capacity or quality benchmarks;
-- a fail-closed CUDA
-  [200-epoch P2 production candidate](examples/showcases/afhq-v2/experiments/production/train-adm-128-p2.yaml)
-  and a machine-readable
-  [closeout policy](examples/showcases/afhq-v2/experiments/evaluation/p2-production-closeout-policy.yaml)
-  that freezes validation checkpoint selection and one-shot official-test
-  acceptance before the long run starts;
 - checkpoint-backed DDIM/CFG sampling and the
   [formal full-test evaluation profile](examples/showcases/afhq-v2/experiments/evaluation/formal-ddim50-cfg2-official-test.yaml),
   which pins one raw/EMA variant, reuses the checkpoint-bound SamplingBuilder
   execution seam, and reports aggregate and per-class KID/FID for cat, dog,
-  and wild;
-- a fail-closed
-  [epsilon/fixed official profile](examples/showcases/afhq-v2/experiments/evaluation/formal-ddim50-cfg2-official-test-epsilon.yaml)
-  whose checked-in subject is a production selected-epoch placeholder. The
-  completed historical A/B substituted each equal-budget arm's `latest.pt` EMA,
-  changed only P2 `gamma` from 0 to 1, and did not select incomparable
-  validation-loss `best.pt` checkpoints.
+  and wild.
 
-On the current CUDA workstation, the P2 smoke completed four micro-batches and
-two optimizer updates with EMA, diagnostics, validation/test, and checkpoint
-publication. The full corrected 105,197,187-parameter topology completed eight
-BF16 updates plus validation/test and checkpoint publication at 4.34 compute
-optimizer steps/s. Those two bounded runs remain readiness evidence rather than
-capacity or quality benchmarks.
-
-A separate valid schema-v3 capacity sweep used the corrected topology with P2
-training on an RTX 4090 with 24,564 MiB, PyTorch 2.11, CUDA 12.8, and BF16. Every micro-batch
+A separate valid schema-v3 capacity sweep used the corrected topology on an RTX
+4090 with 24,564 MiB, PyTorch 2.11, CUDA 12.8, and BF16. Every micro-batch
 candidate completed 5 warmup plus 25 measured optimizer updates with zero
 non-finite loss or gradient observations. The selected micro batch 8 /
 accumulation 4 trial sustained 60.068 images/s with 8.260 GiB peak allocated and
@@ -247,24 +226,12 @@ capacity sweep is operational and sustained-run evidence, not a long-training
 quality claim; the full sweep table is in the
 [AFHQ-v2 guide](docs/tutorials/afhq-v2.md).
 
-The controlled one-epoch A/B is now complete under protocol
-`afhq-v2-adm-epsilon-ddim50-cfg2-official-test-v1`. Both arms used the corrected
-105,197,187-parameter ADM, real AFHQ, seed 20260726, BF16, batch 8 /
-accumulation 4, 420 optimizer updates, and their terminal `latest.pt` EMA. On
-the exact 1,467-example official-test plan, aggregate FID changed from
-369.621427 for the `gamma: 0` strict-standard control to 371.250343 for
-`gamma: 1` P2 (delta +1.628916); KID mean changed from 0.476357937 to
-0.479742199 (delta +0.003384262). Every class moved slightly in the same worse
-direction. This closes engineering and protocol readiness, but one seed and one
-epoch do not establish statistical significance or 200-epoch promotion
-evidence; the production long-run gate remains open.
-
 The dataset source is approximately 6.96 GB and is licensed CC BY-NC 4.0.
 Review the [AFHQ-v2 guide](docs/tutorials/afhq-v2.md) before downloading or
 training. The maintained example evaluates the complete class-conditional
 surface; it does not add a separate single-class reproduction workflow.
 
-### Gaussian variance, P2, and respaced DDPM
+### Gaussian variance and respaced DDPM
 
 Standard Gaussian training defaults to `variance: {mode: fixed}`.
 Learned-range mode requires `MSEObjective` and expects `2C` model
@@ -273,19 +240,6 @@ interpolate between selected-pair posterior and forward log-variance bounds.
 Its hybrid loss adds `0.001 ×` the full, unweighted variational bound; the
 uniform single-timestep estimator implements that as `T / 1000 ×` its sampled
 VB term, with the mean-prediction branch detached.
-
-P2 is selected through the concrete `p2_gaussian_denoising` or
-`class_conditional_p2_gaussian_denoising` TrainingBuilder, not through a
-weighting-policy registry. These builders construct epsilon-only P2 strategies
-that require `MSEObjective`; they accept `k`, `gamma`, and the Gaussian
-`variance` declaration as private training parameters. The strategies apply
-`(k + alpha_bar_t / (1 - alpha_bar_t)) ** (-gamma)` to each sample's simple
-loss without batch renormalization; P2 never weights the variance term.
-The coefficient remains private to the concrete Strategy: P2 does not publish a
-`timestep_loss_weight` diagnostic. `loss_aggregation_weight` only controls how
-reported batch losses are combined and never becomes the P2 coefficient.
-Other weighting methods are separate TrainingStrategy/TrainingBuilder
-compositions registered through the existing training extension boundary.
 
 `ddpm.num_inference_steps: 250` selects a uniform-section, selected-pair
 ancestral path. It is not DDIM-250 and does not combine a non-adjacent mean with
@@ -347,6 +301,14 @@ model/process/sampler compatibility matrix.
 
 ### Standalone evaluation and offline replay
 
+Training may also configure `trainer.validation_evaluation`. At each due epoch
+it evaluates the current raw or EMA snapshot with one complete task protocol:
+the Evaluation owns sampling, real/fake pairing, sample identity, and strict
+completeness, while FID/KID remain ordinary Metrics that only consume the image
+pairs. The returned `valid/metrics/*` values enter the existing monitor and
+`best.pt` logic. This in-run result is validation evidence, not a published
+benchmark bundle or a Diagnostic.
+
 `stochaflow evaluate --config path/to/evaluation.yaml` runs a task-specific
 `EvaluationBuilder` against one frozen authority. A live config pairs
 `subject.kind: checkpoint` with `data.source: checkpoint` and explicitly selects
@@ -378,7 +340,7 @@ the maintained formal Evaluation surface for ordinary pixel-space image
 generation. This runtime does not make SR, consistency, latent/codec, or
 distillation tasks supported; a future task must deliver its own monitoring,
 checkpoint inference, and formal Evaluation together. Reference caches,
-comparison, and generic result gates are optional enhancements, not P2 gaps. See
+comparison, and generic result gates are optional enhancements. See
 [Standalone checkpoint evaluation](docs/configuration/workflows.md#独立-checkpoint-evaluation)
 for the complete schema and extension contract.
 

@@ -197,6 +197,7 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 | `SingleOutputMeanAbsoluteError` | 内置单输出 `mae` 注册项的具体实现 |
 | `FrechetInceptionDistanceMetric` | 内置 `fid` image-distribution adapter；需要 optional `quality` dependencies |
 | `KernelInceptionDistanceMetric` | 内置 `kid` image-distribution adapter；返回稳定 `mean`/`std` mapping，需要 optional `quality` dependencies |
+| `ShareableImageFeatureMetric` | composite Metric 可选实现的窄能力；仅在 extractor identity 完全相同时复用一次图像特征提取 |
 
 Strategy 使用 `stochaflow.extensions.MetricChannelProvider` 声明 channel，并可从
 `stochaflow.extensions` 导入 `MetricUpdate`。构造校验、payload detach 和训练 phase
@@ -219,6 +220,13 @@ binding 是框架内部协作，不是 extension facade 的公共 helper API。
 | `mae` | scalar mean absolute error；固定 `num_outputs=1` |
 | `fid` | TorchMetrics-backed FID；输入必须是 finite floating RGB NCHW `[0, 1]` images |
 | `kid` | TorchMetrics-backed KID；输入必须是 finite floating RGB NCHW `[0, 1]` images |
+
+`ShareableImageFeatureMetric` 不改变 Evaluation 或 `MetricUpdate` 的 payload contract。
+Evaluation 仍提交 image samples；一个 composite Metric 可以按 hashable
+`image_feature_extractor_identity()` 分组，在组内调用一次 `extract_image_features()`，再把
+结果分别交给各成员的 `update_image_features()`。identity 必须包含所有影响特征的事实；内置
+FID/KID identity 包含 extractor class、feature width 和 `antialias`。不同 identity 绝不能
+共享特征，也不存在由 core `MetricEngine` 自动建立的跨 Metric cache。
 
 `mse` 和 `mae` 不提供 vector-valued `num_outputs>1` 模式。需要分类、按类别、结构化
 mapping 或其他任务 metric 时，extension 应注册一个明确的 `Metric` 实现，并通过
@@ -509,7 +517,7 @@ checkpoint 保存。
 ## Discrete Gaussian family
 
 Gaussian 实现按 layer-first convention 组织：process path/schedule 位于 Process layer，
-training target/loss 与 P2 位于 Training layer，Dynamics/clipping/solver 位于 Sampling
+training target/loss 位于 Training layer，Dynamics/clipping/solver 位于 Sampling
 layer。跨层 kernel 只包含 prediction type、`GaussianPrediction` 与纯 Tensor prediction
 normalization。这个物理目录约定不是 extension import surface；下表符号仍统一从
 `stochaflow.extensions` 导入。
@@ -539,25 +547,21 @@ sigma-space solver 的 universal 接口。
 
 ### Gaussian training recipe extension
 
-P2 由具体 TrainingBuilder/TrainingStrategy 表达，不是一个可注册的 loss-weighting
-coefficient。内置无条件 recipe 使用：
+内置标准 recipe 由具体 TrainingBuilder/TrainingStrategy 表达。无条件 learned-range
+recipe 例如：
 
 ```yaml
 training:
-  name: p2_gaussian_denoising
+  name: gaussian_denoising
   params:
-    k: 1.0
-    gamma: 1.0
+    prediction_type: v
     variance:
-      mode: fixed
+      mode: learned_range
 ```
 
-类条件版本选择 `class_conditional_p2_gaussian_denoising`，并可另外声明
-`condition_dropout`。两个 P2 Builder 都固定 epsilon prediction、要求
-`MSEObjective`，验证 model 的 fixed `C` 或 learned-range `2C` output contract，并把与
-采样有关的 prediction/variance 事实写入 checkpoint inference recipe。不存在
-`loss_weighting` 配置、Gaussian weighting registry、通用 loss composer 或公共 reducer
-protocol。
+类条件版本选择 `class_conditional_gaussian_denoising`，并可另外声明
+`condition_dropout`。Builder 验证 model 的 fixed `C` 或 learned-range `2C` output
+contract，并把 prediction/variance 事实写入 checkpoint inference recipe。
 
 第三方若要实现另一种 SNR weighting、prediction restriction、model signature 或 batch
 语义，应提供自己的 Strategy，并以带 namespace 的 TrainingBuilder 注册完整 recipe：

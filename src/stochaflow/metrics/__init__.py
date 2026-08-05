@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from stochaflow.metrics.reference import (
         FrechetInceptionDistanceMetric,
         KernelInceptionDistanceMetric,
+        ShareableImageFeatureMetric,
     )
     from stochaflow.metrics.runtime import MetricEngine, MetricRuntimeError
 
@@ -31,6 +32,10 @@ _LAZY_METRIC_EXPORTS = {
     "KernelInceptionDistanceMetric": (
         "stochaflow.metrics.reference",
         "KernelInceptionDistanceMetric",
+    ),
+    "ShareableImageFeatureMetric": (
+        "stochaflow.metrics.reference",
+        "ShareableImageFeatureMetric",
     ),
     "SingleOutputMeanAbsoluteError": (
         "stochaflow.metrics.builtin",
@@ -75,6 +80,7 @@ __all__ = [
     "MetricRuntimeError",
     "MetricSpec",
     "MetricUpdate",
+    "ShareableImageFeatureMetric",
     "SingleOutputMeanAbsoluteError",
     "SingleOutputMeanSquaredError",
     "build_metric",

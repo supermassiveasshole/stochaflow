@@ -45,7 +45,7 @@ zero-init 以及 `4 * base_channels` time embedding 都是 `adm_unet` 定义的�
 旧 ADM 的 raw、EMA 与 optimizer state 具有不同 key/shape/topology。框架不会 partial
 load、映射 key、转换 state、保留 legacy model name 或自动改写 resolved config；strict
 state validation 会 fail closed。升级时必须 fresh train，并从新 checkpoint 执行 resume
-或 sampling。拓扑修复前发布的 AFHQ 指标与样本不能归因给 corrected ADM 或 P2。
+或 sampling。拓扑修复前发布的 AFHQ 指标与样本不能归因给 corrected ADM。
 
 ## Checkpoint v12
 
@@ -120,11 +120,19 @@ manifest 等 artifact；这些 observation 不进入 epoch history 或 checkpoin
 best checkpoint 与 early stopping 的 monitor 只允许：
 
 - `valid/loss`；
-- `valid/metrics/<id>[/<subkey>]`，其中 `<id>` 必须在 validation phase 配置。
+- `valid/metrics/<id>[/<subkey>]`，由 validation phase Metric 或声明该 exact key 的
+  epoch-end validation Evaluation 产生。
 
-train、test、system 与 `diagnostics/...` 指标都不能控制模型选择。启用 best tracking 或
-early stopping 时必须提供 validation DataLoader，并且 monitor 缺失或非有限时立即失败；
-框架不复用旧值，也没有 cadence skip 或缺失值跳过策略。
+train、test、system 与 `diagnostics/...` 指标都不能控制模型选择。普通 phase monitor 每个
+epoch 都必须存在且 finite。若 monitor 来自 `trainer.validation_evaluation.metric_keys`，
+则只在该 evaluator 的 absolute epoch cadence 到期时要求并消费新值；非到期 epoch 不复用
+旧值、不保存新的 `best.pt`，也不推进 patience。到期运行缺失、非 finite、sample ID 重复或
+strict completeness 不满足时立即失败。
+
+live evaluator 的 profile digest、exact metric keys、cadence、last evaluated epoch 和最后一
+组 metrics 属于 checkpoint strict-resume state。resume 必须提供相同 identity，且不能跳过
+已经到期但未完成的 observation。`include_final: true` 可以要求目标训练的最后一个 epoch
+额外执行一次，即使它不落在 interval 上。
 
 没有 validation DataLoader 时，Trainer 默认关闭 best tracking，不创建或伪造 best
 metric/epoch/checkpoint；显式请求 best tracking 或 early stopping 会在训练循环开始前失败。
@@ -271,9 +279,9 @@ training restore，也不构造 TrainingPlan，源 checkpoint 不会被修改。
 sample config 必须显式声明全部 mutable invocation 字段。Builder identity 和 fixed contract
 不可修改，也不存在从 checkpoint defaults 继承或浅合并 options 的路径。
 Gaussian checkpoint 的 fixed contract 包含 `prediction_type` 和 `variance.mode`：
-sample config 不能把 fixed checkpoint 改成 learned-range，反之亦然。P2 的
-TrainingBuilder identity、`k/gamma` 与 `variance.mode` 是
-training/resume facts，保存在完整 resolved config 中；它们不是 sampling option。
+sample config 不能把 fixed checkpoint 改成 learned-range，反之亦然。TrainingBuilder
+identity 与参数是 training/resume facts，保存在完整 resolved config 中；它们不是
+sampling option。
 `ddpm.num_inference_steps` 或显式 schedule 只是 invocation-time solver protocol，不能改变
 checkpoint 的 prediction/variance contract。
 resume observability config 也只能改变没有恢复状态的监控表面，不能改变 extension
@@ -282,47 +290,19 @@ provenance 会写入新兄弟 run 及其 checkpoint，旧 logger/event 文件不
 resume 不接受任意模型、训练资产或 optimizer 替换；需要改变它们时应启动新的训练
 workflow。
 
-### P2 TrainingBuilder 的恢复与开发期配置切换
+### TrainingBuilder 与 validation Evaluation 的恢复边界
 
-P2 是具体 TrainingBuilder/TrainingStrategy 组合，不是可注入标准 Gaussian Builder 的
-weighting policy。无条件 recipe 使用 `p2_gaussian_denoising`，类条件 recipe 使用
-`class_conditional_p2_gaussian_denoising`；两者固定 epsilon prediction，并从
-`training.params` 读取 `k`、`gamma` 和 `variance`。核心不会为这些普通 recipe 参数保存
-独立 `state_dict`；完整 resolved config 才是恢复权威，`selected_components` 不展开
-`training.params`，不能代替该配置。
+strict resume 以 checkpoint 保存的 `training.name` 和完整参数重建同一个
+TrainingBuilder。第三方 recipe 必须注册自己的 namespaced
+TrainingBuilder/TrainingStrategy；其代码身份继续由所选 entry point 的 name、
+distribution、version 和 target 约束。sample config 和 observability overlay 都不能替换
+训练算法、prediction/variance contract 或 validation Evaluation identity。
 
-strict resume 以 checkpoint 保存的 `training.name` 和完整参数重建同一个 P2 Builder。
-第三方 weighting 变体必须注册自己的 namespaced TrainingBuilder/TrainingStrategy；其代码
-身份继续由所选 entry point 的 name、distribution、version 和 target 约束。sample
-config 和 observability overlay 都不能把标准 Builder 改成 P2、替换 `k/gamma`，或选择
-另一种第三方训练算法。
-
-所有开发期 `loss_weighting` declaration 均不受支持，包括曾使用的 flat 或 component
-形式：
-
-```yaml
-training:
-  name: gaussian_denoising
-  params:
-    loss_weighting:
-      name: p2
-      params: {k: 1.0, gamma: 1.0}
-```
-
-新配置必须选择具体 Builder：
-
-```yaml
-training:
-  name: p2_gaussian_denoising
-  params:
-    k: 1.0
-    gamma: 1.0
-    variance: {mode: fixed}
-```
-
-标准 `gaussian_denoising` 和 `class_conditional_gaussian_denoising` 会把
-`loss_weighting` 作为未知参数拒绝。框架不提供 weighting policy registry、alias、弃用期、
-config/checkpoint 转换器或参数猜测。当前 writer 是 v12。
+`trainer.validation_evaluation` 是训练选择策略的一部分，不是可随意替换的 diagnostic。
+更改 Builder、MetricSpec、protocol、raw/EMA variant、expected count、metric keys 或
+cadence 会改变 profile identity，必须启动 fresh run。只对一组已有 checkpoints 做离线
+选择时，不修改其训练 state：逐个运行同一 standalone validation Evaluation，再比较其
+结果即可。
 
 终端进度显示不属于训练状态。strict resume 可用互斥的 `--progress` 与
 `--no-progress` 覆盖 checkpoint 保存的 `trainer.show_progress`；两者都不指定时继承

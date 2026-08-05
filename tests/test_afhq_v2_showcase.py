@@ -14,6 +14,10 @@ import torch
 import yaml
 
 from stochaflow.data import IMAGE_DATA_SOURCES
+from stochaflow.evaluation import (
+    CheckpointSubjectConfig,
+    load_evaluation_config,
+)
 from stochaflow.utils.config import (
     StochaflowConfig,
     load_config,
@@ -33,17 +37,20 @@ _RELEASE_WHEEL_URL = (
     f"stochaflow-{_PROJECT_VERSION}-py3-none-any.whl"
 )
 _ADM_CONFIG = _SHOWCASE / "experiments" / "production" / "train-adm-128.yaml"
-_P2_PRODUCTION_CONFIG = (
-    _SHOWCASE / "experiments" / "production" / "train-adm-128-p2.yaml"
+_LEARNED_RANGE_ADM_CONFIG = (
+    _SHOWCASE
+    / "experiments"
+    / "production"
+    / "train-adm-128-learned-range-v.yaml"
+)
+_LEARNED_RANGE_OFFICIAL_TEST_CONFIG = (
+    _SHOWCASE
+    / "experiments"
+    / "evaluation"
+    / "formal-ddpm100-cfg2-official-test-learned-range-v.yaml"
 )
 _DIT_CONFIG = _SHOWCASE / "experiments" / "production" / "train-dit-128.yaml"
 _SMOKE_CONFIG = _SHOWCASE / "experiments" / "smoke" / "train-adm-128.yaml"
-_P2_SMOKE_CONFIG = (
-    _SHOWCASE / "experiments" / "smoke" / "train-adm-128-p2.yaml"
-)
-_P2_PROFILE_CONFIG = (
-    _SHOWCASE / "experiments" / "profiling" / "train-adm-128-p2.yaml"
-)
 _SAMPLING_CONFIG = (
     _SHOWCASE / "experiments" / "sampling" / "ddim50-cfg2.yaml"
 )
@@ -302,6 +309,112 @@ def test_afhq_production_configs_parse_and_follow_pipeline_contract() -> None:
     assert dit_shared == adm_shared
 
 
+def test_afhq_learned_range_recipe_uses_live_validation_evaluation() -> None:
+    raw = _raw(_LEARNED_RANGE_ADM_CONFIG)
+    config = load_config(_LEARNED_RANGE_ADM_CONFIG)
+
+    assert raw["model"]["params"]["out_channels"] == 6
+    assert raw["training"]["params"] == {
+        "prediction_type": "v",
+        "variance": {"mode": "learned_range"},
+        "condition_dropout": 0.1,
+    }
+    assert raw["trainer"]["test_after_fit"] is False
+    validation = raw["trainer"]["validation_evaluation"]
+    assert validation["enabled"] is True
+    assert validation["start_epoch"] == 20
+    assert validation["every_epochs"] == 20
+    assert validation["include_final"] is True
+    assert validation["weights"] == "ema"
+    assert validation["protocol"] == {
+        "id": "afhq-v2-adm-learned-range-v-ddpm100-validation-v1",
+        "expected_examples": 900,
+        "strict_complete": True,
+    }
+    profile = validation["evaluation"]["params"]
+    assert profile["expected_per_class"] == {
+        "cat": 300,
+        "dog": 300,
+        "wild": 300,
+    }
+    assert profile["sampling"]["recipe"] == {
+        "name": "class_conditional_denoising",
+        "contract": {
+            "prediction_type": "v",
+            "variance": {"mode": "learned_range"},
+        },
+    }
+    assert profile["sampling"]["sampler"] == {
+        "name": "ddpm",
+        "params": {"num_inference_steps": 100},
+    }
+    assert profile["sampling"]["num_samples"] == 900
+    assert raw["trainer"]["validation_evaluation"]["metrics"][0]["params"][
+        "providers"
+    ][0]["params"]["subset_size"] == 200
+    assert profile["sampling"]["batch_size"] == 30
+    providers = validation["metrics"][0]["params"]["providers"]
+    assert [provider["name"] for provider in providers] == ["kid", "fid"]
+    assert all(provider["params"]["antialias"] is True for provider in providers)
+    assert len(validation["metric_keys"]) == 12
+    monitor = raw["trainer"]["early_stopping"]["monitor"]
+    assert monitor == "valid/metrics/distribution/aggregate.fid"
+    assert monitor in validation["metric_keys"]
+    assert raw["artifacts"]["checkpoint_every"] == 20
+    diagnostic = raw["diagnostics"][0]["params"]
+    assert diagnostic["cadence"] == {
+        "step_every": 1000,
+        "artifact_every_epochs": 20,
+    }
+    assert [sampler["id"] for sampler in diagnostic["samplers"]] == [
+        "ddpm_250",
+        "ddim_50",
+    ]
+    assert all(
+        sampler["trajectory"]["enabled"] is False
+        for sampler in diagnostic["samplers"]
+    )
+    assert [
+        provider["name"]
+        for provider in diagnostic["providers"]["sampler_artifacts"]
+    ] == ["sample_grid"]
+    assert config.trainer.validation_evaluation.enabled
+
+
+def test_afhq_learned_range_official_test_matches_frozen_protocol() -> None:
+    raw = _raw(_LEARNED_RANGE_OFFICIAL_TEST_CONFIG)
+    config = load_evaluation_config(_LEARNED_RANGE_OFFICIAL_TEST_CONFIG)
+
+    assert config.purpose == "final_test"
+    assert config.data.split == "test"
+    assert isinstance(config.subject, CheckpointSubjectConfig)
+    assert config.subject.weights == "ema"
+    profile = raw["evaluation"]["params"]
+    assert profile["expected_per_class"] == {
+        "cat": 493,
+        "dog": 491,
+        "wild": 483,
+    }
+    assert profile["sampling"]["recipe"]["contract"] == {
+        "prediction_type": "v",
+        "variance": {"mode": "learned_range"},
+    }
+    assert profile["sampling"]["sampler"] == {
+        "name": "ddpm",
+        "params": {"num_inference_steps": 100},
+    }
+    assert profile["sampling"]["options"]["weights"] == "ema"
+    assert profile["sampling"]["options"]["guidance_scale"] == 2.0
+    assert profile["sampling"]["num_samples"] == 1467
+    assert raw["metrics"][0]["params"]["providers"][0]["params"][
+        "subset_size"
+    ] == 200
+    assert raw["protocol"]["expected_examples"] == 1467
+    providers = raw["metrics"][0]["params"]["providers"]
+    assert [provider["name"] for provider in providers] == ["kid", "fid"]
+    assert all(provider["params"]["antialias"] is True for provider in providers)
+
+
 @pytest.mark.parametrize(
     (
         "config_path",
@@ -312,7 +425,7 @@ def test_afhq_production_configs_parse_and_follow_pipeline_contract() -> None:
     ),
     [
         (_ADM_CONFIG, 1_679, 420, 84_000, 1_680),
-        (_P2_PRODUCTION_CONFIG, 1_679, 420, 84_000, 1_680),
+        (_LEARNED_RANGE_ADM_CONFIG, 1_679, 420, 84_000, 1_680),
         (_DIT_CONFIG, 419, 419, 83_800, 1_676),
     ],
 )
@@ -394,98 +507,6 @@ def test_afhq_smoke_config_is_bounded_and_uses_the_real_data_contract() -> None:
     )
     assert "sampling" not in raw
     assert "use_for_sampling" not in raw["ema"]
-
-
-@pytest.mark.parametrize(
-    ("config_path", "expected_parameters", "expected_updates"),
-    [
-        (_P2_SMOKE_CONFIG, 828_003, 2),
-        (_P2_PROFILE_CONFIG, 105_197_187, 8),
-    ],
-)
-def test_afhq_p2_profiles_freeze_a_b_compatible_epsilon_recipe(
-    config_path: Path,
-    expected_parameters: int,
-    expected_updates: int,
-) -> None:
-    raw = _raw(config_path)
-    config = load_config(config_path)
-    model = REGISTRIES.models.create(config.model.name, **config.model.params)
-
-    assert raw["training"] == {
-        "name": "class_conditional_p2_gaussian_denoising",
-        "params": {
-            "condition_dropout": 0.1,
-            "k": 1.0,
-            "gamma": 1.0,
-            "variance": {"mode": "fixed"},
-        },
-    }
-    assert sum(parameter.numel() for parameter in model.parameters()) == (
-        expected_parameters
-    )
-    microbatches = raw["data"]["params"]["loader"]["steps_per_epoch"]
-    accumulation = raw["trainer"]["accumulate_grad_batches"]
-    updates = math.ceil(microbatches / accumulation)
-    assert updates == expected_updates
-    assert raw["lr_scheduler"]["params"]["total_steps"] == updates
-    assert raw["data"]["params"]["source"]["materialization"] == {
-        "cache_root": "./data",
-        "policy": "require",
-        "verification": "full",
-    }
-
-
-def test_afhq_p2_production_config_is_a_complete_long_run_recipe() -> None:
-    raw = _raw(_P2_PRODUCTION_CONFIG)
-    config = load_config(_P2_PRODUCTION_CONFIG)
-    model = REGISTRIES.models.create(config.model.name, **config.model.params)
-
-    assert raw["experiment"] == {
-        "name": "afhq_v2_adm_128_p2",
-        "seed": 20260726,
-        "output_dir": "outputs/afhq-v2/adm-128-p2",
-    }
-    assert raw["training"] == {
-        "name": "class_conditional_p2_gaussian_denoising",
-        "params": {
-            "condition_dropout": 0.1,
-            "k": 1.0,
-            "gamma": 1.0,
-            "variance": {"mode": "fixed"},
-        },
-    }
-    assert sum(parameter.numel() for parameter in model.parameters()) == 105_197_187
-    assert raw["data"]["params"]["loader"]["batch_size"] == 8
-    assert raw["trainer"]["device"] == "cuda"
-    assert raw["trainer"]["accumulate_grad_batches"] == 4
-    assert raw["trainer"]["num_epochs"] == 200
-    assert raw["lr_scheduler"]["params"] == {
-        "warmup_steps": 1_680,
-        "total_steps": 84_000,
-        "min_lr_ratio": 0.05,
-    }
-    assert raw["ema"] == {
-        "enabled": True,
-        "decay": 0.9999,
-        "update_after_step": 500,
-        "update_every": 1,
-    }
-    assert raw["artifacts"] == {"checkpoint_every": 5}
-    assert raw["diagnostics"][0]["params"]["cadence"] == {
-        "step_every": 200,
-        "artifact_every_epochs": 5,
-    }
-
-    standard = _raw(_ADM_CONFIG)
-    p2_shared = deepcopy(raw)
-    standard_shared = deepcopy(standard)
-    for candidate in (p2_shared, standard_shared):
-        candidate["experiment"].pop("name")
-        candidate["experiment"].pop("output_dir")
-        candidate.pop("training")
-        candidate["trainer"].pop("device")
-    assert p2_shared == standard_shared
 
 
 def test_afhq_sampling_profile_is_complete_and_checkpoint_driven() -> None:

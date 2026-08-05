@@ -22,13 +22,17 @@ from stochaflow.inference.checkpoint import (
     load_checkpoint_recipe,
 )
 from stochaflow.inference.model import PinnedInferenceModelProvider
+from stochaflow.processes.base import Process
+from stochaflow.sampling.assets import InferenceAssetProvider
 from stochaflow.sampling.builder import SamplingBuilderContext, SamplingOutput
 from stochaflow.sampling.execution import execute_sampling_builder
 from stochaflow.utils.checkpoint import CheckpointState
 from stochaflow.utils.config import StochaflowConfig
 from stochaflow.utils.sampling_recipe import (
+    SamplingRecipe,
     resolve_sampling_recipe_params,
     sampling_recipe_to_dict,
+    validate_sampling_recipe,
 )
 
 
@@ -209,8 +213,107 @@ class CheckpointEvaluationSamplingCapability:
         return execute_sampling_builder(recipe.name, context)
 
 
+@dataclass(frozen=True, slots=True)
+class LiveEvaluationSamplingCapability:
+    """Run a live training model through its frozen inference recipe."""
+
+    recipe: SamplingRecipe
+    process: Process | None
+    model: nn.Module = field(repr=False, compare=False)
+    resolved_weights: CheckpointWeightVariant
+    device: torch.device
+    inference_assets: InferenceAssetProvider = field(
+        default_factory=InferenceAssetProvider.empty,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "recipe",
+            validate_sampling_recipe(
+                self.recipe,
+                path="live evaluation sampling recipe",
+            ),
+        )
+        process_value = cast(object, self.process)
+        if process_value is not None and not isinstance(process_value, Process):
+            raise TypeError("live evaluation sampling process must be Process or None")
+        model_value = cast(object, self.model)
+        if not isinstance(model_value, nn.Module):
+            raise TypeError("live evaluation sampling model must be nn.Module")
+        if model_value.training:
+            raise ValueError("live evaluation sampling model must be in eval mode")
+        if self.resolved_weights not in {"raw", "ema"}:
+            raise ValueError("live evaluation sampling weights must be raw or ema")
+        if not isinstance(
+            cast(object, self.inference_assets),
+            InferenceAssetProvider,
+        ):
+            raise TypeError(
+                "live evaluation sampling inference_assets must be an "
+                "InferenceAssetProvider"
+            )
+        object.__setattr__(self, "device", torch.device(self.device))
+
+    def execute(self, request: EvaluationSamplingRequest) -> SamplingOutput:
+        """Execute one writer-free request against the live pinned model."""
+
+        if not isinstance(cast(object, request), EvaluationSamplingRequest):
+            raise TypeError("evaluation sampling request is invalid")
+        if request.expected_recipe_name is not None:
+            recipe_document = sampling_recipe_to_dict(self.recipe)
+            expected_contract = _thaw_evaluation_value(
+                request.expected_recipe_contract
+            )
+            if self.recipe.name != request.expected_recipe_name:
+                raise ValueError(
+                    "live sampling recipe name does not match the evaluation "
+                    "profile"
+                )
+            if recipe_document["contract"] != expected_contract:
+                raise ValueError(
+                    "live sampling recipe contract does not match the evaluation "
+                    "profile"
+                )
+        options_value = _thaw_evaluation_value(request.options)
+        if type(options_value) is not dict:
+            raise TypeError("evaluation sampling options must thaw to a mapping")
+        sampler_value = (
+            None
+            if request.sampler is None
+            else _thaw_evaluation_value(request.sampler)
+        )
+        if sampler_value is not None and type(sampler_value) is not dict:
+            raise TypeError("evaluation sampling sampler must thaw to a mapping")
+        params = resolve_sampling_recipe_params(
+            self.recipe,
+            options=cast(dict[str, Any], options_value),
+            sampler=cast(dict[str, Any] | None, sampler_value),
+        )
+        provider = PinnedInferenceModelProvider(
+            model=self.model,
+            weights=self.resolved_weights,
+            device=self.device,
+        )
+        context = SamplingBuilderContext(
+            params=deepcopy(params),
+            process=self.process,
+            model_provider=provider,
+            device=self.device,
+            seed=request.seed,
+            shape=request.shape,
+            num_samples=request.num_samples,
+            batch_size=request.batch_size,
+            inference_assets=self.inference_assets,
+        )
+        return execute_sampling_builder(self.recipe.name, context)
+
+
 __all__ = [
     "CheckpointEvaluationSamplingCapability",
     "EvaluationSamplingCapability",
     "EvaluationSamplingRequest",
+    "LiveEvaluationSamplingCapability",
 ]

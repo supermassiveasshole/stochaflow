@@ -49,6 +49,12 @@ from stochaflow.training.strategy import (
     loss_aggregation_weight_to_float,
     validate_train_step_output,
 )
+from stochaflow.training.validation import (
+    EpochValidationEvaluator,
+    EpochValidationIdentity,
+    EpochValidationResult,
+    EpochValidationState,
+)
 from stochaflow.utils.checkpoint import (
     CheckpointManager,
     inference_asset_descriptors_equal,
@@ -312,11 +318,12 @@ def _validate_best_tracking_monitor(
     monitor: str,
     *,
     metric_runtime: TrainingMetricRuntime | None,
-    validation_available: bool,
+    validation_dataloader_available: bool,
+    epoch_validation_metric_keys: frozenset[str],
 ) -> None:
     """Preflight one validation-only best-selection monitor."""
 
-    if not validation_available:
+    if monitor == "valid/loss" and not validation_dataloader_available:
         raise ValueError(
             f"best tracking monitor '{monitor}' requires a validation "
             "dataloader"
@@ -329,17 +336,115 @@ def _validate_best_tracking_monitor(
         )
     if kind != "metrics":
         return
+    if monitor in epoch_validation_metric_keys:
+        return
 
     metric_id = segments[0]
-    if metric_runtime is None or not metric_runtime.has_metric(
-        "validation",
-        metric_id,
+    if (
+        not validation_dataloader_available
+        or metric_runtime is None
+        or not metric_runtime.has_metric(
+            "validation",
+            metric_id,
+        )
     ):
         raise ValueError(
             f"best tracking monitor '{monitor}' references metric id "
             f"'{metric_id}' that is not configured for the "
             "validation phase"
         )
+
+
+def _epoch_validation_identity(
+    evaluator: EpochValidationEvaluator | None,
+) -> EpochValidationIdentity | None:
+    """Validate and return one injected evaluator identity."""
+
+    evaluator_value = cast(object, evaluator)
+    if evaluator_value is None:
+        return None
+    if not isinstance(evaluator_value, EpochValidationEvaluator):
+        raise TypeError(
+            "epoch_validation_evaluator must be an "
+            "EpochValidationEvaluator or None"
+        )
+    identity = cast(object, evaluator_value.identity)
+    if not isinstance(identity, EpochValidationIdentity):
+        raise TypeError(
+            "epoch_validation_evaluator.identity must be an "
+            "EpochValidationIdentity"
+        )
+    return identity
+
+
+def _validate_epoch_validation_resume(
+    state: EpochValidationState | None,
+    identity: EpochValidationIdentity | None,
+    *,
+    completed_epoch: int,
+) -> None:
+    """Require strict evaluator identity and completed cadence observations."""
+
+    if state is None or identity is None:
+        if state is not None or identity is not None:
+            raise ValueError(
+                "restored epoch validation evaluator identity must exactly "
+                "match this fit"
+            )
+        return
+    if state.identity != identity:
+        raise ValueError(
+            "restored epoch validation evaluator identity must exactly match "
+            "this fit"
+        )
+    last_epoch = state.last_evaluated_epoch
+    if last_epoch is not None and last_epoch > completed_epoch:
+        raise ValueError(
+            "restored epoch validation state is ahead of the completed epoch"
+        )
+    latest_scheduled = identity.cadence.latest_scheduled_epoch(completed_epoch)
+    if identity.cadence.include_final:
+        if latest_scheduled is not None and (
+            last_epoch is None or last_epoch < latest_scheduled
+        ):
+            raise ValueError(
+                "restored epoch validation state is missing a scheduled "
+                "observation"
+            )
+    elif last_epoch != latest_scheduled:
+        raise ValueError(
+            "restored epoch validation state does not match the declared "
+            "cadence"
+        )
+
+
+def _validate_epoch_validation_result(
+    result: object,
+    *,
+    identity: EpochValidationIdentity,
+    epoch: int,
+    global_step: int,
+) -> EpochValidationResult:
+    """Validate one due result against its call and declared metric surface."""
+
+    if not isinstance(result, EpochValidationResult):
+        raise TypeError(
+            "epoch validation evaluator must return EpochValidationResult"
+        )
+    if result.epoch != epoch:
+        raise ValueError(
+            "epoch validation result epoch must match the evaluated epoch"
+        )
+    if result.global_step != global_step:
+        raise ValueError(
+            "epoch validation result global_step must match the trainer"
+        )
+    if set(result.metrics) != set(identity.metric_keys):
+        raise ValueError(
+            "epoch validation result metrics must exactly match the declared "
+            "metric keys"
+        )
+    return result
 
 
 def _validate_optimizer_parameters(
@@ -514,6 +619,7 @@ class TrainingFitState:
     tracking_enabled: bool
     monitor_policy: MonitorPolicy | None
     early_stopping_patience: int | None
+    epoch_validation: EpochValidationState | None = None
 
     @property
     def monitor(self) -> str | None:
@@ -551,9 +657,12 @@ class TrainingFitState:
             "monitor_policy",
             "early_stopping_patience",
         }
-        if set(state) != required:
+        optional = {"epoch_validation"}
+        if not required.issubset(state) or not set(state).issubset(
+            required | optional
+        ):
             missing = sorted(required - set(state))
-            unknown = sorted(set(state) - required, key=str)
+            unknown = sorted(set(state) - required - optional, key=str)
             raise ValueError(
                 "checkpoint metadata.training_loop has invalid fields: "
                 f"missing={missing or '<none>'}, unknown={unknown or '<none>'}"
@@ -626,6 +735,12 @@ class TrainingFitState:
                 "training_loop.early_stopping_patience must be a positive "
                 "int or null"
             )
+        epoch_validation_value = state.get("epoch_validation")
+        epoch_validation = (
+            None
+            if epoch_validation_value is None
+            else EpochValidationState.from_mapping(epoch_validation_value)
+        )
         if not tracking_enabled:
             if (
                 policy is not None
@@ -665,12 +780,13 @@ class TrainingFitState:
             tracking_enabled=tracking_enabled,
             monitor_policy=policy,
             early_stopping_patience=patience,
+            epoch_validation=epoch_validation,
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the validated state using the checkpoint schema."""
 
-        return {
+        state = {
             "best_epoch": self.best_epoch,
             "best_metric_value": self.best_metric_value,
             "observations_without_improvement": (
@@ -686,6 +802,9 @@ class TrainingFitState:
             ),
             "early_stopping_patience": self.early_stopping_patience,
         }
+        if self.epoch_validation is not None:
+            state["epoch_validation"] = self.epoch_validation.to_dict()
+        return state
 
 
 @dataclass(frozen=True, slots=True)
@@ -842,6 +961,7 @@ class Trainer:
         self._tracking_enabled = False
         self._monitor_policy: MonitorPolicy | None = None
         self._early_stopping_patience: int | None = None
+        self._epoch_validation_state: EpochValidationState | None = None
         if self.checkpoint_every is not None and self.checkpoint_every <= 0:
             raise ValueError("checkpoint_every must be positive when provided")
         _validate_checkpoint_training_config(
@@ -901,6 +1021,7 @@ class Trainer:
         self._tracking_enabled = parsed.tracking_enabled
         self._monitor_policy = parsed.monitor_policy
         self._early_stopping_patience = parsed.early_stopping_patience
+        self._epoch_validation_state = parsed.epoch_validation
         self.best_checkpoint_path = (
             Path(best_checkpoint_path)
             if best_checkpoint_path is not None
@@ -919,6 +1040,7 @@ class Trainer:
             tracking_enabled=self._tracking_enabled,
             monitor_policy=self._monitor_policy,
             early_stopping_patience=self._early_stopping_patience,
+            epoch_validation=self._epoch_validation_state,
         ).to_dict()
 
     def _set_module_modes(self, *, training: bool) -> None:
@@ -1605,6 +1727,7 @@ class Trainer:
         max_batches_per_epoch: int | None = None,
         validation_dataloader: Iterable[Batch] | None = None,
         max_validation_batches: int | None = None,
+        epoch_validation_evaluator: EpochValidationEvaluator | None = None,
         start_epoch: int = 1,
         close_logger: bool = True,
         early_stopping_patience: int | None = None,
@@ -1640,10 +1763,21 @@ class Trainer:
             mode=early_stopping_mode,
             min_delta=early_stopping_min_delta,
         )
+        epoch_validation_identity = _epoch_validation_identity(
+            epoch_validation_evaluator
+        )
+        epoch_validation_metric_keys = frozenset(
+            epoch_validation_identity.metric_keys
+            if epoch_validation_identity is not None
+            else ()
+        )
         if early_stopping_patience is not None and track_best is False:
             raise ValueError("early stopping requires best tracking")
         should_track_best = (
-            validation_dataloader is not None if track_best is None else track_best
+            validation_dataloader is not None
+            or epoch_validation_identity is not None
+            if track_best is None
+            else track_best
         )
         if early_stopping_patience is not None:
             should_track_best = True
@@ -1651,7 +1785,10 @@ class Trainer:
             _validate_best_tracking_monitor(
                 early_stopping_monitor,
                 metric_runtime=self.metric_runtime,
-                validation_available=validation_dataloader is not None,
+                validation_dataloader_available=(
+                    validation_dataloader is not None
+                ),
+                epoch_validation_metric_keys=epoch_validation_metric_keys,
             )
         monitor_policy = (
             requested_monitor_policy if should_track_best else None
@@ -1668,6 +1805,15 @@ class Trainer:
             self._tracking_enabled = should_track_best
             self._monitor_policy = monitor_policy
             self._early_stopping_patience = early_stopping_patience
+            self._epoch_validation_state = (
+                EpochValidationState(
+                    identity=epoch_validation_identity,
+                    last_evaluated_epoch=None,
+                    last_metrics={},
+                )
+                if epoch_validation_identity is not None
+                else None
+            )
         else:
             if self.stopped_early:
                 raise ValueError(
@@ -1684,6 +1830,11 @@ class Trainer:
                     "restored best-tracking policy and patience must exactly "
                     "match this fit"
                 )
+            _validate_epoch_validation_resume(
+                self._epoch_validation_state,
+                epoch_validation_identity,
+                completed_epoch=start_epoch - 1,
+            )
         best_value = self.best_metric_value
         try:
             self._emit_fit_start_diagnostics(
@@ -1712,17 +1863,70 @@ class Trainer:
                         log_metrics=False,
                         reporter=reporter,
                     )
+                epoch_metrics = _epoch_metrics(
+                    train_metrics,
+                    validation_metrics,
+                    epoch=epoch,
+                )
+                epoch_validation_due = (
+                    epoch_validation_identity is not None
+                    and epoch_validation_identity.cadence.is_due(
+                        epoch,
+                        final_epoch=num_epochs,
+                    )
+                )
+                if epoch_validation_due:
+                    assert epoch_validation_evaluator is not None
+                    assert epoch_validation_identity is not None
+                    if (
+                        _epoch_validation_identity(
+                            epoch_validation_evaluator
+                        )
+                        != epoch_validation_identity
+                    ):
+                        raise ValueError(
+                            "epoch validation evaluator identity changed "
+                            "during fit"
+                        )
+                    with preserve_global_rng_state(self.device):
+                        raw_epoch_validation_result = (
+                            epoch_validation_evaluator.evaluate(
+                                epoch=epoch,
+                                global_step=self.global_step,
+                            )
+                        )
+                    epoch_validation_result = (
+                        _validate_epoch_validation_result(
+                            raw_epoch_validation_result,
+                            identity=epoch_validation_identity,
+                            epoch=epoch,
+                            global_step=self.global_step,
+                        )
+                    )
+                    collisions = sorted(
+                        set(epoch_metrics) & set(epoch_validation_result.metrics)
+                    )
+                    if collisions:
+                        raise ValueError(
+                            "epoch validation metrics collide with ordinary "
+                            f"epoch metrics: {collisions}"
+                        )
+                    epoch_metrics.update(epoch_validation_result.metrics)
+                    if self._epoch_validation_state is None:
+                        raise RuntimeError(
+                            "epoch validation state was not initialized"
+                        )
+                    self._epoch_validation_state = (
+                        self._epoch_validation_state.with_result(
+                            epoch_validation_result
+                        )
+                    )
                 successful_updates = train_metrics.get(
                     "optimizer_steps",
                     train_metrics["num_batches"],
                 )
                 if successful_updates > 0:
                     self._step_lr_scheduler("epoch")
-                epoch_metrics = _epoch_metrics(
-                    train_metrics,
-                    validation_metrics,
-                    epoch=epoch,
-                )
                 self._emit_epoch_diagnostics(
                     epoch_index=epoch,
                     metrics=epoch_metrics,
@@ -1739,85 +1943,93 @@ class Trainer:
                     assert monitor_policy is not None
                     current_value = epoch_metrics.get(monitor_policy.metric)
                     if current_value is None:
-                        raise ValueError(
-                            "best tracking monitor "
-                            f"'{monitor_policy.metric}' was not found in "
-                            "epoch metrics"
-                        )
-                    if not math.isfinite(float(current_value)):
-                        raise ValueError(
-                            "best tracking monitor "
-                            f"'{monitor_policy.metric}' is non-finite at "
-                            f"epoch {epoch}"
-                        )
-                    self.monitor_observations += 1
-                    improved = self._is_metric_improved(
-                        current=float(current_value),
-                        best=best_value,
-                        mode=monitor_policy.mode,
-                        min_delta=monitor_policy.min_delta,
-                    )
-                    if improved:
-                        best_value = float(current_value)
-                        self.observations_without_improvement = 0
-                        status = "BEST"
-                        self.best_epoch = epoch
-                        self.best_metric_value = best_value
-                        self.best_checkpoint_path = (
-                            self._save_named_checkpoint(
-                                best_checkpoint_filename,
-                                epoch=epoch,
-                                metrics=epoch_metrics,
-                                metadata={
-                                    **self.checkpoint_metadata,
-                                    "checkpoint_kind": "best",
-                                    "monitor": monitor_policy.metric,
-                                    "mode": monitor_policy.mode,
-                                    "min_delta": monitor_policy.min_delta,
-                                },
-                            )
-                        )
-                        with preserve_global_rng_state(self.device):
-                            self.logger.log_metrics(
-                                {
-                                    "best/epoch": float(epoch),
-                                    f"best/{monitor_policy.metric}": (
-                                        best_value
-                                    ),
-                                },
-                                step=self.global_step,
+                        if (
+                            monitor_policy.metric
+                            in epoch_validation_metric_keys
+                            and not epoch_validation_due
+                        ):
+                            status = "VALIDATE WAIT"
+                        else:
+                            raise ValueError(
+                                "best tracking monitor "
+                                f"'{monitor_policy.metric}' was not found in "
+                                "epoch metrics"
                             )
                     else:
-                        self.observations_without_improvement += 1
-                        if early_stopping_patience is not None:
-                            status = (
-                                "WAIT "
-                                f"{self.observations_without_improvement}/"
-                                f"{early_stopping_patience}"
+                        if not math.isfinite(float(current_value)):
+                            raise ValueError(
+                                "best tracking monitor "
+                                f"'{monitor_policy.metric}' is non-finite at "
+                                f"epoch {epoch}"
                             )
-                        if (
-                            early_stopping_patience is not None
-                            and self.observations_without_improvement
-                            >= early_stopping_patience
-                        ):
-                            self.stopped_early = True
-                            status = "EARLY STOP"
-                            early_stopping_text = (
-                                f"stopped at epoch {epoch}; best_epoch="
-                                f"{self.best_epoch}; monitor="
-                                f"{monitor_policy.metric}; best="
-                                f"{self.best_metric_value}; observations="
-                                f"{self.monitor_observations}"
-                            )
-                            self.logger.log_text(
-                                "early_stopping",
-                                early_stopping_text,
-                                step=self.global_step,
-                            )
-                            if reporter is not None:
-                                reporter.on_early_stopping(
-                                    early_stopping_text
+                        self.monitor_observations += 1
+                        improved = self._is_metric_improved(
+                            current=float(current_value),
+                            best=best_value,
+                            mode=monitor_policy.mode,
+                            min_delta=monitor_policy.min_delta,
+                        )
+                        if improved:
+                            best_value = float(current_value)
+                            self.observations_without_improvement = 0
+                            status = "BEST"
+                            self.best_epoch = epoch
+                            self.best_metric_value = best_value
+                            self.best_checkpoint_path = (
+                                self._save_named_checkpoint(
+                                    best_checkpoint_filename,
+                                    epoch=epoch,
+                                    metrics=epoch_metrics,
+                                    metadata={
+                                        **self.checkpoint_metadata,
+                                        "checkpoint_kind": "best",
+                                        "monitor": monitor_policy.metric,
+                                        "mode": monitor_policy.mode,
+                                        "min_delta": monitor_policy.min_delta,
+                                    },
                                 )
+                            )
+                            with preserve_global_rng_state(self.device):
+                                self.logger.log_metrics(
+                                    {
+                                        "best/epoch": float(epoch),
+                                        f"best/{monitor_policy.metric}": (
+                                            best_value
+                                        ),
+                                    },
+                                    step=self.global_step,
+                                )
+                        else:
+                            self.observations_without_improvement += 1
+                            if early_stopping_patience is not None:
+                                status = (
+                                    "WAIT "
+                                    f"{self.observations_without_improvement}/"
+                                    f"{early_stopping_patience}"
+                                )
+                            if (
+                                early_stopping_patience is not None
+                                and self.observations_without_improvement
+                                >= early_stopping_patience
+                            ):
+                                self.stopped_early = True
+                                status = "EARLY STOP"
+                                early_stopping_text = (
+                                    f"stopped at epoch {epoch}; best_epoch="
+                                    f"{self.best_epoch}; monitor="
+                                    f"{monitor_policy.metric}; best="
+                                    f"{self.best_metric_value}; observations="
+                                    f"{self.monitor_observations}"
+                                )
+                                self.logger.log_text(
+                                    "early_stopping",
+                                    early_stopping_text,
+                                    step=self.global_step,
+                                )
+                                if reporter is not None:
+                                    reporter.on_early_stopping(
+                                        early_stopping_text
+                                    )
                 self._maybe_save_checkpoint(epoch, epoch_metrics)
                 self._save_latest_checkpoint(epoch, epoch_metrics)
                 if reporter is not None:

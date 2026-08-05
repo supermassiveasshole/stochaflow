@@ -4,16 +4,15 @@
   或正式文档导航
 - 状态：Active
 - 制定日期：2026-07-29
-- 最近排期复核：2026-08-02
-- 当前工程优先项：只闭合 pixel/P2/Evaluation 分支；Evaluation E0/E1/E2 与 AFHQ-v2
-  class-aware E3 vertical slice、A0/B1/A1、A2 class-aware example contract、RTX 4090
-  capacity 和单 epoch controlled A/B readiness evidence 已关闭
-- 合并后当前实验优先项：P2 production-quality closeout；按预先冻结的 long-run protocol
-  完成单臂 `gamma: 1` 200-epoch production candidate、validation-only 选模与一次
-  official-test 绝对质量验收
-- 当前执行主线：corrected pixel ADM + learned-range Gaussian + concrete P2 training +
-  formal AFHQ Evaluation；单 epoch 结果未显示 P2 收益，production long-run gate 仍开放
-- P2 evidence 发布后的下一项尚未选择；codec/latent、consistency、SR、distillation 与
+- 最近排期复核：2026-08-06
+- 当前工程优先项：闭合 live epoch validation Evaluation、FID/KID best-checkpoint integration、
+  learned-range 数值边界与 P2 removal
+- 当前实验优先项：fresh canonical ADM + cosine + v + learned-range variance；按配置 cadence
+  运行 300/class validation Evaluation，以 aggregate FID 维护 `best.pt`，最后只对选中
+  checkpoint 运行一次 official test
+- 当前执行主线：ordinary pixel-space ADM training + validation selection + formal AFHQ
+  Evaluation；P2 已从 supported surface 移除，只保留历史实验记录
+- pixel-space evidence 发布后的下一项尚未选择；codec/latent、consistency、SR、distillation 与
   Stable Diffusion 都不是 `Next` 或 `Planned`
 - 兼容性：当前 breaking 阶段不为旧 config、checkpoint、cache 或 retired example
   保留迁移路径
@@ -23,9 +22,11 @@
 当前不应平均推进所有 proposal。单一维护者的主执行序列是：
 
 ```text
-已关闭 pixel Gaussian/P2/Evaluation foundation
-  -> 合并当前 pixel/P2/Evaluation closeout 分支
-  -> 运行并发布 P2 production 200-epoch candidate evidence
+已关闭 pixel Gaussian 与 standalone Evaluation foundation
+  -> 合并 live validation Evaluation 与 learned-range hardening
+  -> fresh-train learned-range-v AFHQ candidate
+  -> validation FID/KID 选中 best.pt
+  -> one-shot official-test evidence
   -> 重新评审产品 roadmap
 ```
 
@@ -33,7 +34,7 @@
 
 - [正式架构说明](../../ARCHITECTURE.md)保留两个明确
   attribution boundary：A0 只修 topology；A1 实现 learned variance、hybrid
-  objective、P2 和 respaced ancestral DDPM。
+  objective 和 respaced ancestral DDPM。A1 的 P2 子项已作为历史实验退休。
 - A0 是当前 `adm_unet` 名称与实现不一致的 correctness 修复，纳入 P0，在 B1 前
   完成；它不启动新的 production 长训练。
 - `Train/Sample authority cutover` 只执行
@@ -74,14 +75,12 @@ JSONL sink、exact sample-plan completeness、offline replay、producer lineage 
 gallery IDs。E3 AFHQ-v2 slice 随后关闭 core FID/KID adapters、public full-official-test
 Builder/Metric/profile、pinned raw/EMA SamplingBuilder seam 与 live/offline parity。
 library-first `TrainingRunRequest`/`run_training()` 与通用 comparison/gate 是独立可选增强，
-不属于当前普通图像生成闭合项；P2 production long-run quality evidence 仍未完成。
-P2-specific tiny smoke、full-topology
-sanity、正式目标设备 capacity 与一轮 epsilon/fixed controlled A/B 已落地；该 A/B 未显示
-P2 收益，也不关闭 200-epoch promotion gate。
+不属于当前普通图像生成闭合项。历史 P2 smoke、full-topology sanity、capacity 与 controlled
+A/B 已归档；它们未显示可靠收益，因此不再构成 promotion gate。
 
-当前分支的责任到 pixel/P2/Evaluation contract、测试、公开文档与 readiness evidence
-闭合为止。200-epoch P2 candidate 训练及正式评估必须在该分支合并后运行；codec provider、
-latent training、latent evaluation 和 Hydra 扩展均不得搭车进入本分支。
+当前分支的责任到 ordinary pixel Gaussian/Evaluation contract、测试、公开文档与 fresh
+learned-range-v recipe readiness 闭合为止。codec provider、latent training、latent
+evaluation 和 Hydra 扩展均不得搭车进入本分支。
 
 根级 [`ROADMAP.md`](../../ROADMAP.md) 拥有高层产品方向、优先级和 milestone 状态；
 本文件在其约束下拥有**跨计划工程执行顺序与排期细节**。各能力计划继续拥有自己的
@@ -110,14 +109,15 @@ contract、API、测试和风险。若能力计划中的旧 phase 顺序与本�
 flowchart LR
     B0["B0 基线关闭"] --> ADM0["A0 ADM topology correctness"]
     ADM0 --> C1["C0/C1 Train/Sample authority"]
-    C1 --> P2C["A1 learned variance + P2 capability"]
+    C1 --> G1["A1 learned-range Gaussian capability"]
 
-    P2C --> E0["Evaluation E0 outcome foundation (Done)"]
+    G1 --> E0["Evaluation E0 outcome foundation (Done)"]
     E0 --> E1["Evaluation E1 standalone operation (Done)"]
     E1 --> E2["Evaluation E2 artifacts/offline replay (Done)"]
     E2 --> E3A["Evaluation E3 AFHQ full-test slice (Done)"]
-    E3A --> M["合并 pixel/P2/Evaluation branch"]
-    M --> A3["A3 P2 production long-run experiment"]
+    E3A --> V["Epoch validation Evaluation + best checkpoint"]
+    V --> M["合并 pixel Gaussian/Evaluation branch"]
+    M --> A3["A3 learned-range-v AFHQ experiment"]
     A3 --> R["Roadmap re-decision"]
 
     E3A -. future .-> E3["Evaluation E3 remaining profiles"]
@@ -168,7 +168,7 @@ wall-clock 时间。每个 milestone 应独立提交并保持主分支可运行�
 
 ### A0 — ADM Topology Correctness Cutover（Done）
 
-执行已关闭的 P2/ADM A0：
+执行已关闭的 ADM A0：
 
 - 以 pinned OpenAI guided-diffusion U-Net 作为唯一 topology reference；
 - 修复 per-input-block skip ledger、每级 `num_res_blocks + 1` decoder blocks、
@@ -181,7 +181,7 @@ wall-clock 时间。每个 milestone 应独立提交并保持主分支可运行�
   accumulation 4，保持 effective batch 32、每 epoch 420 updates 与 84,000 total steps；
   该 measured selection 是 operational evidence，不复用旧 topology 的容量声明。
 
-A0 只验证 fixed-variance baseline，不实现 P2 或用新 topology 启动长训练。当前
+A0 只验证 fixed-variance baseline，不用新 topology 启动长训练。当前
 README 的 epoch-170 结果属于旧 91.3M topology，A0 完成时不得继续归因给新的
 production config。
 
@@ -210,51 +210,22 @@ sample/decode 先接入现有 checkpoint schema，随后又被 C1 重写。
 文件没有 Builder，train 文件没有最终 sampler/writer 或自动运行开关。checkpoint state/
 fixed recipe 与完整 sample config 保持平行权威，不再 merge mutable defaults。
 
-### A1 — Learned-range Gaussian and P2 Capability（Done，2026-07-30）
+### A1 — Learned-range Gaussian Capability（Done；hardening active）
 
-执行已关闭的 P2/ADM A1；稳定 contract 见[正式架构说明](../../ARCHITECTURE.md)：
+稳定 contract 见[正式架构说明](../../ARCHITECTURE.md)：
 
 - model/process/dynamics 使用窄 family capability 表达 `2C` learned-range variance；
-- epsilon simple MSE 与 detached-mean variational-bound term 构成 hybrid loss；
-- P2 由具体的无条件/类条件 `TrainingStrategy` 与对应 `TrainingBuilder` 实现；
-  配置通过 P2 builder 的私有 `k`、`gamma` 参数表达，不建立 weighting policy
-  registry；
-- exact `w_t = (k + SNR(t))^-gamma`，P2 只加权 simple term；
+- simple MSE 与 detached-mean variational-bound term 构成 hybrid loss；
 - CFG 只作用于 prediction half，variance 取 conditional branch；
-- DDPM 支持 250-step improved-diffusion-style respaced ancestral transition；
-- DDPM/DDIM 只复用 selected-pair Gaussian marginal coefficient snapshot；DDPM 构造
-  posterior，DDIM 保留自己的 `eta` transition；
-- inference recipe 固定 prediction/variance semantics；
-- gamma-zero、learned-range、VB gradient 与 upstream numeric parity tests。
+- DDPM 支持 selected-pair respaced ancestral transition并消费 learned variance，DDIM
+  保留自己的 `eta` transition并忽略 variance half；
+- inference recipe 固定 prediction/variance semantics。
 
-本 milestone 不把 P2 注册为通用 Objective，不建立 weighting policy registry，也不
-把 P2 推广到 v/x0/score；它关闭时没有修改当时的 v-prediction production AFHQ recipe。
-A3 后续增加一份显式 `gamma: 1` production candidate，不改变 A1 的 algorithmic exit。
-
-退出条件已闭合：P2 official 256 unconditional topology 精确为 93,563,910
-参数；loss、variance、respacing 与 pinned reference parity 已测试；旧
-fixed-variance paths 无回归。
-
-AFHQ product surface 另有两个 maintained readiness profiles：
-
-- `smoke/train-adm-128-p2.yaml` 使用真实 AFHQ、tiny ADM、4 micro-batches / 2 optimizer
-  updates，证明 P2 Builder、EMA、diagnostics、validation/test 与 checkpoint wiring；
-- `profiling/train-adm-128-p2.yaml` 使用 corrected 105,197,187-parameter topology、BF16、
-  micro batch 1 和 8 optimizer updates，只作 full-topology sanity。
-
-当前 CUDA 工作站已实跑两者：tiny lane 完成上述完整 lifecycle；full-topology lane 完成
-8 updates、validation/test 与 checkpoint publication，并观测到 compute-only 4.34
-optimizer steps/s。这两个 bounded profiles 不改变 A1 的 algorithmic exit，本身也不构成
-effective-batch-32 production throughput、capacity、peak VRAM、长训练稳定性、质量或 A/B
-证据。
-
-独立 schema-v3 capacity sweep 已在 RTX 4090 24,564 MiB、PyTorch 2.11 / cu128 上完成
-corrected topology + P2 BF16 training 的 micro batch 1/4/6/8 trials；每档均为
-5 warmup + 25 measured updates，且 non-finite observation 为 0。8 / 4 档为已测最高吞吐
-60.068 images/s，peak
-allocated/reserved 为 8.260/8.506 GiB，因此 production ADM 采用 8 / 4，同时保持 420
-updates/epoch 与 84,000 total steps。这是 operational capacity/sustained evidence，不是
-长训稳定性、质量或 A/B 证据。
+曾在此 milestone 中实现的 P2 recipe 已退休。其 bounded runs、capacity 与 controlled
+comparison 仅保留在 [`p2-experiment-closeout.md`](p2-experiment-closeout.md)，不再属于
+稳定 contract、配置参考或 maintained example。RTX 4090 的 8 / 4 capacity 结论仍可作为
+相同 topology 的 operational 起点，但 fresh learned-range-v run 必须重新通过 bounded
+smoke/capacity verification。
 
 ### A2 — Class-aware AFHQ Evaluation（scope revised，repository contract complete）
 
@@ -275,52 +246,34 @@ profile 固定 full official test 493/491/483、pinned EMA、DDIM-50/CFG 2.0、a
 FID/KID，并发布可 offline replay 的 predictions。
 
 该 profile 当前固定现有 AFHQ production 的 v-prediction recipe；它关闭的是 public
-evaluation 架构/配置 readiness。epsilon/fixed controlled A/B 也已用
-`formal-ddim50-cfg2-official-test-epsilon.yaml` 完成：protocol
-`afhq-v2-adm-epsilon-ddim50-cfg2-official-test-v1` 只把 P2 Builder 的 `gamma` 从 0 control
-改为 1 treatment；两 arm 同 seed、corrected topology、真实 AFHQ、BF16、batch 8 /
-accumulation 4、1 epoch / 420 updates，并评估各自 `latest.pt` EMA。exact 1,467-sample
-official test 上，aggregate FID 为 369.621427 -> 371.250343，KID mean 为
-0.476357937 -> 0.479742199；各类也都略差。KID delta 与 std 同量级，单 seed/epoch 只关闭
-受控 pipeline readiness，不是统计显著或 200-epoch promotion evidence。production long-run
-gate 仍开放。
+evaluation 架构/配置 readiness。已退休 weighting recipe 的 controlled A/B 数值、协议与
+解释集中保留在 [`p2-experiment-closeout.md`](p2-experiment-closeout.md)，不再对应 active
+gate、supported recipe 或仓库内 maintained profile。
 
-### A3 — P2 Production-Quality Closeout（合并后 Active，实验时间）
+### A3 — Learned-range-v Production-Quality Closeout（Active）
 
-当前分支只负责把 pixel/P2/Evaluation implementation、focused/full verification、公开文档
-与 readiness evidence 合并到主线；不得在未合并代码上启动昂贵正式训练。合并后按以下顺序
-执行：
+当前实验只改变 canonical current-ADM recipe 的 variance head：保持真实 AFHQ、cosine
+Process、v prediction、optimizer/LR、BF16、batch 8 / accumulation 4、EMA、seed 与
+84,000-update budget，使用 `2C` learned-range output 和 hybrid simple/VB objective。必须
+fresh initialize，不能恢复 fixed-variance 或历史实验 checkpoint。
 
-- 按 checked-in
-  [`p2-production-closeout-policy.yaml`](../../examples/showcases/afhq-v2/experiments/evaluation/p2-production-closeout-policy.yaml)
-  执行：eligible epochs 固定为 20、40、...、200，validation aggregate FID lower 为
-  primary，aggregate KID mean lower、再 earliest epoch 为 tie-break，seed 固定为
-  `20260726`；
-- 使用 maintained `experiments/production/train-adm-128-p2.yaml` 完成单臂 P2 `gamma: 1`
-  200 epochs / 84,000 optimizer updates；该 profile 固定 corrected topology、真实 AFHQ、
-  epsilon/fixed、BF16、batch 8 / accumulation 4 与 EMA decay 0.9999；
-- 只用 `selection-ddim50-cfg2-validation-epsilon.yaml` 对候选 `epoch_*.pt` EMA 运行
-  300/class validation Evaluation，并据预声明规则冻结唯一 subject；训练期 `valid/loss`、
-  diagnostic、phase test 与 official test 都不得参与选择；900-example validation 结果只
-  排序候选，不具有 acceptance 权限；
-- subject 冻结后，只对它运行一次 exact 1,467-sample official-test epsilon profile，原子发布
-  checkpoint、resolved config、prediction/result manifest、protocol/dataset/sample IDs 与
-  provider digests；required acceptance 同时要求 aggregate FID ≤ 35、aggregate KID mean
-  ≤ 0.01 与每类 FID ≤ 65，aggregate FID ≤ 30 为 aspirational target；
-- 无论 absolute-quality acceptance 通过或失败都发布结果，不能事后调整阈值、seed、
-  checkpoint candidates 或 test protocol。本单臂 closeout 不支持“P2 优于 standard”的
-  因果声明；该声明若将来需要，必须另跑只把同一 production profile 改为 `gamma: 0` 的
-  matched control。
+执行顺序：
 
-A3 的退出条件是完整长跑证据与 gate 结论可审计发布；它不是 P2 必然获益的承诺。A3 关闭后
-必须先更新根 roadmap 作产品重决策，不自动授权 codec/latent 实施。
+- 合并 live epoch validation Evaluation 与 strict-resume identity；
+- 用 bounded smoke/capacity 验证 learned-range BF16、DDPM variance consumption 和完整
+  AFHQ Evaluation wiring；
+- 每 20 epochs 对 EMA 运行 exact 300/class validation Evaluation；sampling、real/fake
+  pairing、sample IDs 与 completeness 由 Evaluation 拥有，FID/KID 只是 Metrics；
+- 以 `valid/metrics/distribution/aggregate.fid` lower 维护 `best.pt`，同时保留 KID 与
+  per-class evidence。非到期 epoch 不复用旧结果，Diagnostic 与 test 不参与选择；
+- 对选中的唯一 checkpoint 运行一次 exact 1,467-sample official test，发布完整 immutable
+  result 与 prediction bundle；
+- 与 current fixed-variance ADM 和 legacy ADM 记录比较时，逐项说明 topology、recipe、
+  sampler 和 subject protocol 差异，不据不可比数字声称 superiority。
 
-上述 acceptance 是只适用于 epsilon/fixed P2 production subject 的内部项目门槛；
-standard-v ADM 与 DiT 不继承。该评估使用 AFHQ-v2 官方 test split 和本项目自定义的
-class-conditional 128×128 DDIM-50/CFG 2.0 protocol，不是
-[P2 CVPR 论文](https://openaccess.thecvf.com/content/CVPR2022/html/Choi_Perception_Prioritized_Training_of_Diffusion_Models_CVPR_2022_paper.html)
-及[作者仓库](https://github.com/jychoi118/P2-weighting)中的 unconditional AFHQ-Dog-256
-benchmark；论文报告的 P2 FID 11.55 不能与本项目数值横比。
+A3 退出条件是 repository gates 全绿、fresh run 可恢复、validation-selected best subject
+和 one-shot official-test 证据可审计发布。关闭后必须先更新根 roadmap，不自动授权
+codec/latent 实施。
 
 ### L0 — Pretrained Codec Ready（Post-A3 re-decision candidate，未排期）
 
@@ -393,7 +346,7 @@ Phase A embedded codec 只允许用于 L0/L1 correctness，不用于正式长训
   linter 和文档；
 - C2 retained-example cleanup：只维护 MNIST 与 AFHQ-v2，并以小型 fixture 替代
   Physics/KD 的 framework contract coverage；
-- E0 outcome foundation 与 E1 standalone operation 已在 pixel P2 lane 提前建立；
+- E0 outcome foundation 与 E1 standalone operation 已在 pixel Gaussian lane 提前建立；
   E2 artifact/offline scoring 也已建立，本 milestone 后续补充 E3 latent reconstruction
   与 decoded-generation profile 的 codec-dependent 子集；
 - Evaluation 复用 L0 的 inference projection，不再实现第二套 checkpoint subject
@@ -458,10 +411,10 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 | [Data Layer Composition Boundary](data-layer-composition-boundary-review.md) | Done | Base | 已实施 | image-backed 与 prepared-backed 使用两个 recipe-level Builder |
 | [Sampling Request Config Refactor](sampling-request-config-refactor.md) | Superseded by C1 | Done | Hydra C1 | 仅保留为历史记录，不维持 v10/v11 dual authority |
 | [Legacy Intel macOS Lifecycle](legacy-intel-macos-pytorch-test-lifecycle.md) | Done | Maintenance | 无 | Deprecated / best effort，不约束新 codec/DiT |
-| [Gaussian loss/P2 与 ADM topology](../../ARCHITECTURE.md) | Core implemented；A3 experiment after merge | P2 Active | pixel/P2/Evaluation branch merge -> A3 | 稳定 contract 已移入正式文档；下一项是单臂 200-epoch P2 candidate 的 validation-only selection 与 one-shot official-test acceptance，不是 latent implementation |
+| [Gaussian loss 与 ADM topology](../../ARCHITECTURE.md) | Core implemented；A3 experiment active | Priority P2 | live validation merge -> fresh learned-range-v run -> official test | Retired weighting recipe 已移除；当前只闭合 learned-range-v 与 FID-selected best checkpoint，不是 latent implementation |
 | [Latent Diffusion](latent-diffusion-support-plan.md) | Post-A3 re-decision candidate | Unscheduled | A3 evidence published -> root roadmap decision | 不属于当前分支；不得把 branch merge 解释为自动启动 L0–L3 |
 | [Hydra Configuration Migration](hydra-configuration-composition-migration-plan.md) | Split；C0/C1 Done；remainder unscheduled | Later | A3 后与 codec/latent 一并重排 | plain-authority cutover 已关闭；H0-H3/H4 均不进入当前分支 |
-| [Post-training Evaluation](post-training-evaluation-support-plan.md) | E0/E1/E2 + E3 AFHQ slice Done；full E3/E4 future | P2 current-scope closeout + Later | 当前 merge 只验收 AFHQ slice；完整 E3/E4 使用独立未来门禁 | public AFHQ full-test KID/FID 与 replay 已关闭；SR、其他 generation/latent profile、reference cache、performance/curve、comparison/gate 不阻塞当前分支 |
+| [Post-training Evaluation](post-training-evaluation-support-plan.md) | E0/E1/E2 + E3 AFHQ slice Done；live epoch validation Active；full E3/E4 future | Priority P2 + Later | 当前 merge 验收 live AFHQ validation 与 existing formal slice | public AFHQ FID/KID、replay 与 Trainer best integration 闭合；SR、其他 generation/latent profile、reference cache、performance/curve、comparison/gate 不阻塞当前分支 |
 | [Stable Diffusion Component-Native](stable-diffusion-component-native-support-plan.md) | Post-A3 downstream candidate | Unscheduled | codec/latent 路线重新确认且 L2/L3 稳定 | 不属于当前分支；SD1–SD8 在 roadmap re-decision 后重新排期 |
 | [Default Workflow and Pipeline](default-workflow-pipeline-support-plan.md) | Umbrella / promotion | P3/P4 | 真实 recipe 稳定 | 不阻塞 capability；R0 复用 Hydra H1 invocation seam |
 | [Extension Import Boundary](extension-import-boundary-and-activation-latency-plan.md) | Rebase required | P4 | C2 后重新测量 | pre-v12、Physics/KD DoD 失效；只做 codec 窄 import gate |
@@ -511,17 +464,15 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 
 - A0 后不再把旧 91.3M ADM checkpoint、FID/KID 或 sample panel描述为新
   `adm_unet` production config 的可复现结果。
-- P2 capability 的数值正确性由 epsilon、learned range、linear T=1000、uniform
-  timestep 与 standard/P2 parity tests 固定；仓库不维护单类别 paper reproduction。
-- Metrics 的 `loss_aggregation_weight` 只控制 epoch loss 报告；P2 timestep weighting
-  是具体 Strategy 的内部目标语义，不进入通用 Metrics 或 `TrainStepOutput` 字段。
+- learned-range capability 的数值正确性由 prediction conversion、variance bounds、
+  hybrid simple/VB fixture 与 BF16 terminal-schedule tests 固定。
+- Metrics 的 `loss_aggregation_weight` 只控制 epoch loss 报告；FID/KID 不拥有 sampling
+  lifecycle，而由 Evaluation 提供 task-owned image-pair updates。
 - public AFHQ evaluation 对 full official test 同时报告 aggregate 和 cat/dog/wild
   per-class 结果，并冻结 493/491/483 reference/generated completeness。
-- P2 production candidate 只能用预声明的 300/class validation Evaluation 在 eligible
-  epoch EMA 中冻结唯一 subject；`valid/loss`、diagnostic、phase test 与 official test
-  均不参与选择，full official test 只对冻结 subject 运行一次。
-- 单臂 P2 closeout 只支持 absolute-quality acceptance；若要声明相对 standard 的
-  superiority，必须另跑除 `gamma: 0` 外完全匹配的 production control。
+- learned-range production candidate 只用预声明的 300/class validation Evaluation 在
+  cadence epochs 中更新 `best.pt`；`valid/loss`、Diagnostic、phase test 与 official test
+  均不参与这项选择，full official test 只对冻结 subject 运行一次。
 - 正式 Metrics API 已冻结 Strategy channel、phase-local state 与 validation-only monitor；
   它不提供 codec-dependent image-space quality，后者属于 Evaluation。
 - L1 可声明 experimental functional support，不声明规模或质量。
@@ -546,27 +497,13 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 
 为降低长分支风险，主线至少拆为：
 
-1. `Close artifact/config baseline`
-2. `Correct ADM topology`
-3. `Separate train and sample authority`
-4. `Add learned-range Gaussian training`
-5. `Add concrete P2 training and respaced DDPM`
-6. `Add post-training evaluation foundation`
-7. `Add P2 readiness, RTX 4090 capacity evidence, and formal evaluation profiles`
-8. `Publish controlled one-epoch AFHQ P2 readiness evidence`（Done）
-9. `Add the maintained P2 production candidate and validation-selection profile`
-10. `Merge the pixel/P2/Evaluation closeout branch`
-11. `Publish single-arm P2 production absolute-quality evidence`（合并后实验）
-12. `Re-decide the codec and latent roadmap`
-13. `Add pretrained AutoencoderKL codec`（仅在重新确认后）
-14. `Add AFHQ latent diffusion vertical slice`（仅在重新确认后）
-15. `Add prepared posterior artifacts`（仅在重新确认后）
-16. `Add optimizer-step production lifecycle`（仅在重新确认后）
-17. `Deduplicate codec assets in run bundles`（仅在重新确认后）
-18. `Adopt Hydra for retained fresh-train configs`（重新排期）
-19. `Add The Met DiT baseline`（仅在重新确认后）
-20. `Add Stable Diffusion native sampling`（仅在重新确认后）
-21. `Add Stable Diffusion full fine-tuning`（仅在重新确认后）
+1. `Remove the retired weighting recipe and profiles`
+2. `Harden learned-range Gaussian loss and mixed precision`
+3. `Add live validation Evaluation to Trainer best selection`
+4. `Publish the fresh AFHQ learned-range-v recipe`
+5. `Run bounded smoke and capacity verification`
+6. `Publish validation-selected official-test evidence`
+7. `Re-decide the product roadmap`
 
 每个切片都必须更新相应 development plan；只有稳定、已实现的用户行为进入公开文档。
 
@@ -574,7 +511,7 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 
 只有以下证据允许改变主线顺序：
 
-- A3 的 single-arm P2 absolute-quality evidence 已完整发布；该证据触发 codec/latent
+- A3 的 learned-range-v absolute-quality evidence 已完整发布；该证据触发 codec/latent
   roadmap 重决策，但无论 gate 通过或失败都不自动授权 L0–L3；
 - A0 corrected topology在目标设备上即使 microbatch 1 仍无法执行；
 - A1 reference parity证明现有 Gaussian family boundary 无法在不污染 universal root

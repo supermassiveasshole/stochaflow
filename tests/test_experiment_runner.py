@@ -24,6 +24,7 @@ from stochaflow.data import (
     DataArtifactIdentity,
     DataLoaders,
 )
+from stochaflow.metrics import MetricSpec
 from stochaflow.scripts import experiment_runner
 from stochaflow.scripts.cli import build_argument_parser
 from stochaflow.training import (
@@ -39,7 +40,13 @@ from stochaflow.utils.checkpoint import (
     CheckpointState,
     capture_rng_state,
 )
-from stochaflow.utils.config import ComponentConfig, ConfigError, load_config
+from stochaflow.utils.config import (
+    ComponentConfig,
+    ConfigError,
+    ValidationEvaluationConfig,
+    ValidationEvaluationProtocolConfig,
+    load_config,
+)
 from stochaflow.utils.logging import ExperimentLogger, LocalLogger
 from stochaflow.utils.plugins import ResolvedExtensions
 from stochaflow.utils.sampling_recipe import (
@@ -101,6 +108,17 @@ class StreamingTensorDataset(IterableDataset[torch.Tensor]):
     def __iter__(self):
         for value in range(3):
             yield torch.tensor([float(value)])
+
+
+class UnconsumableTestIterable(IterableDataset[torch.Tensor]):
+    """Test split that fails on either metadata access or iteration."""
+
+    @property
+    def dataset(self) -> object:
+        raise AssertionError("disabled test split metadata was consumed")
+
+    def __iter__(self):
+        raise AssertionError("disabled test split was consumed")
 
 
 def _loader() -> DataLoader:
@@ -506,6 +524,66 @@ def test_runner_uses_canonical_validation_loss_when_validation_is_available(
     assert logger.closed
 
 
+def test_runner_injects_configured_validation_evaluation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = load_config(MNIST_TRAIN_CONFIG)
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "live-validation"
+    config.trainer.early_stopping.monitor = "valid/metrics/quality"
+    config.trainer.validation_evaluation = ValidationEvaluationConfig(
+        enabled=True,
+        start_epoch=1,
+        every_epochs=1,
+        weights="raw",
+        evaluation=ComponentConfig(name="tests.live-evaluation"),
+        metrics=[MetricSpec("quality", "mean", "tests.values")],
+        metric_keys=["valid/metrics/quality"],
+        protocol=ValidationEvaluationProtocolConfig(
+            id="tests-live-validation-v1",
+            expected_examples=2,
+            strict_complete=True,
+        ),
+    )
+    trainer = RecordingTrainer()
+    logger = RecordingLogger()
+    observed: dict[str, Any] = {}
+    marker = object()
+
+    def build_validator(**kwargs: Any) -> object:
+        observed.update(kwargs)
+        return marker
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "EvaluationBackedEpochValidator",
+        build_validator,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+    loaders = _loaders(validation=True)
+
+    _run_single(config, loaders, _options(config))
+
+    assert trainer.fit_kwargs["epoch_validation_evaluator"] is marker
+    assert observed["trainer"] is trainer
+    assert observed["config"] is config.trainer.validation_evaluation
+    assert observed["validation_data"] is loaders.validation
+    assert observed["data_identity"] == {
+        "source": "training",
+        "split": "validation",
+        "builder": {
+            "name": config.data.name,
+            "params": config.data.params,
+        },
+        "artifacts": None,
+    }
+
+
 def test_runner_disables_best_and_skips_test_without_validation(
     monkeypatch,
     tmp_path,
@@ -566,6 +644,35 @@ def test_phase_test_metrics_preserve_custom_and_system_facts() -> None:
         "system/test/duration_seconds": 0.125,
     }
     assert observed["metric_prefix"] == "test"
+
+
+def test_runner_does_not_consume_test_split_when_disabled(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = _load_mnist_config()
+    config.experiment.output_dir = str(tmp_path)
+    config.experiment.exp_id = "no-test-after-fit"
+    config.trainer.test_after_fit = False
+    trainer = RecordingTrainer()
+    logger = RecordingLogger()
+    monkeypatch.setattr(
+        experiment_runner,
+        "build_training_components",
+        lambda config, **kwargs: _training_components(trainer, logger),
+    )
+    loaders = DataLoaders(
+        train=_loader(),
+        test=UnconsumableTestIterable(),
+    )
+
+    outcome = _run_single(config, loaders, _options(config))
+
+    assert trainer.evaluate_calls == 0
+    assert dict(outcome.phase_test_metrics) == {}
+    manifest = yaml.safe_load(outcome.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["outcome"]["phase_test_metrics"] == {}
+    assert logger.closed
 
 
 def test_local_log_paths_are_absent_without_local_backend(tmp_path) -> None:

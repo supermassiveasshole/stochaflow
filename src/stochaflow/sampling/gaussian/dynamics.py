@@ -314,7 +314,7 @@ class GaussianModelDynamics(GaussianDenoisingDynamics):
             variance_values,
             lower=bounds.lower,
             upper=bounds.upper,
-        ).to(dtype=state.dtype)
+        )
         return LearnedVarianceGaussianPrediction(
             clean=prediction.clean,
             epsilon=prediction.epsilon,
@@ -415,10 +415,6 @@ def _validate_gaussian_prediction(
         if log_variance.device != state.device:
             raise ValueError(
                 "Gaussian prediction log_variance must share the state device"
-            )
-        if log_variance.dtype != state.dtype:
-            raise ValueError(
-                "Gaussian prediction log_variance must share the state dtype"
             )
         try:
             broadcast_shape = torch.broadcast_shapes(

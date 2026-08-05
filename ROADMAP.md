@@ -38,8 +38,8 @@ research workflows. The product sequence is:
 ```text
 pixel-space Gaussian foundation
     -> formal evaluation foundation
-    -> pixel-space P2 production-quality closeout
-    -> publish production P2 quality evidence
+    -> epoch-end validation Evaluation and metric-selected checkpoints
+    -> pixel-space AFHQ learned-range-v quality closeout
     -> roadmap re-decision
 ```
 
@@ -54,35 +54,32 @@ not competing redesign:
 - corrected canonical ADM topology and explicit checkpoint incompatibility;
 - independent train and sample configuration authority with strict checkpoint
   semantics;
-- discrete Gaussian fixed and learned-range variance, hybrid VB, concrete P2
-  recipes, respaced ancestral DDPM, DDIM, and learned-variance CFG handling;
+- discrete Gaussian fixed and learned-range variance, hybrid VB, respaced
+  ancestral DDPM, DDIM, and learned-variance CFG handling;
 - task-neutral Metrics with Strategy channels and validation-only selection;
 - structured training outcomes and completed-run manifests;
 - standalone checkpoint Evaluation with explicit raw/EMA selection;
 - versioned prediction artifacts, exact sample completeness, streaming records,
   and offline metric replay;
 - core FID/KID providers and a public class-aware AFHQ-v2 full-test profile;
-- maintained real-AFHQ P2 tiny-wiring, corrected-full-topology sanity, and
-  epsilon/fixed equal-budget A/B protocol surfaces;
+- a maintained real-AFHQ class-conditional training, sampling, and formal
+  Evaluation surface;
 - schema-v3 RTX 4090 capacity evidence for the corrected 105,197,187-parameter
-  topology under P2 training and a measured ADM production batch of 8 with
-  accumulation 4;
-- a completed one-epoch, single-seed controlled P2 A/B whose exact official-test
-  result showed no P2 benefit and does not close the production long-run gate;
+  topology and a measured ADM production batch of 8 with accumulation 4;
 - a maintained MNIST workflow and a class-aware AFHQ-v2 showcase contract.
 
-Completion of these contracts does not imply that corrected ADM or P2 has
-published long-run quality evidence.
+The former P2 experiment surface was retired after its controlled runs showed
+no verified benefit. It remains only as a development record and is not a
+supported training recipe or active product gate.
 
 ## Active Priority
 
-### P2 — Pixel/P2 Production-Quality Closeout
+### Pixel-space AFHQ learned-range quality closeout
 
-The current branch closes only the pixel-space P2 and AFHQ Evaluation contract,
-tests, documentation, and readiness evidence. After that branch merges, the
-current experiment priority is a production P2 candidate long run. No other
-task or method implementation belongs to this branch or the post-merge
-experiment window.
+The active branch closes ordinary pixel-space image generation with a coherent
+training and validation workflow. The current recipe keeps the canonical ADM,
+cosine Process, v-prediction, and data/optimizer budget, while changing the
+variance head to learned range. P2 is intentionally absent.
 
 Repository merge evidence:
 
@@ -90,79 +87,41 @@ Repository merge evidence:
 - aggregate and class-aware AFHQ profiles with immutable result bundles;
 - deterministic live/offline parity and completeness failure tests;
 - target-device capacity evidence for the corrected ADM configuration;
-- a controlled one-epoch P2 comparison after checkpoint, data, sampler, and
-  metric protocols are frozen.
+- epoch-end live Evaluation with immutable profile identity, exact completeness,
+  canonical validation metric keys, strict-resume state, and existing
+  `best.pt` monitor integration.
 
-Post-merge experiment exit evidence:
+Experiment exit evidence:
 
-- execute the checked-in
-  [`p2-production-closeout-policy.yaml`](examples/showcases/afhq-v2/experiments/evaluation/p2-production-closeout-policy.yaml),
-  which freezes eligible epochs 20, 40, ..., 200, validation aggregate FID
-  (lower) as primary, aggregate KID mean (lower) then earliest epoch as
-  tie-breakers, and seed `20260726` before training or selection;
-- run the maintained `train-adm-128-p2.yaml` P2 `gamma: 1` candidate for
-  200 epochs / 84,000 optimizer updates with the measured batch 8 /
-  accumulation 4 profile, fail-closed CUDA, and deterministic runtime;
-- evaluate eligible epoch EMA checkpoints only with the versioned 300-per-class
-  `selection-ddim50-cfg2-validation-epsilon.yaml` profile, record one uniquely
-  selected subject, and never use `valid/loss` or official-test results for that
-  choice; the 900-example validation result ranks candidates only and has no
-  acceptance authority;
-- run the full 1,467-example official-test profile exactly once for the frozen
-  subject and publish the complete immutable result bundle; acceptance requires
-  aggregate FID <= 35, aggregate KID mean <= 0.01, and every class FID <= 65,
-  while aggregate FID <= 30 is aspirational. These are internal-project
-  thresholds only for the epsilon/fixed P2 production subject; standard-v ADM
-  and DiT profiles do not inherit them;
-- do not claim that P2 is superior to standard from this single-arm closeout. A
-  later superiority claim requires a matched production `gamma: 0` control that
-  changes no other training or evaluation field.
+- fresh-train the maintained learned-range-v AFHQ recipe from random
+  initialization; no earlier fixed-variance or retired experiment checkpoint is
+  resume-compatible;
+- at the configured epoch cadence, execute the complete 900-example validation
+  Evaluation using EMA, sampling, aggregate/per-class FID and KID, and strict
+  completeness;
+- use validation aggregate FID as the `best.pt` monitor. KID and per-class
+  metrics remain logged validation evidence; diagnostics and test metrics have
+  no selection authority;
+- preserve the evaluation profile digest, metric surface, cadence, and last
+  completed observation across strict resume;
+- after training, run the frozen full 1,467-example official-test Evaluation
+  exactly once for the validation-selected checkpoint and publish its immutable
+  result bundle;
+- compare the learned-range result with the fixed-variance current-ADM and
+  legacy-ADM records under explicitly documented protocol differences. Do not
+  claim quality or architecture superiority without comparable evidence.
 
-The AFHQ public profile, epsilon/fixed A/B protocol, and bounded P2 readiness
-runs are now available. The tiny CUDA lane completed two optimizer updates with
-EMA/diagnostic/validation/test/checkpoint lifecycles; the corrected 105,197,187-
-parameter topology completed eight BF16 updates plus validation/test/checkpoint
-publication at 4.34 compute optimizer steps/s. Those runs remain wiring and
-full-topology readiness evidence.
+The existing RTX 4090 capacity evidence selected micro batch 8 / accumulation
+4, retaining 420 optimizer updates per epoch and 84,000 total updates. The new
+variance head changes only a small output projection and must still pass a
+bounded capacity/smoke run before the full launch.
 
-This closeout evaluates the official AFHQ-v2 test split under the project's
-class-conditional 128x128 DDIM-50/CFG 2.0 diffusion protocol. It is not the
-unconditional AFHQ-Dog 256x256 protocol in the
-[P2 CVPR paper](https://openaccess.thecvf.com/content/CVPR2022/html/Choi_Perception_Prioritized_Training_of_Diffusion_Models_CVPR_2022_paper.html)
-and [authors' repository](https://github.com/jychoi118/P2-weighting); in
-particular, the paper's AFHQ-Dog P2 FID 11.55 is not numerically comparable to
-this project's FID.
+## After the pixel-space closeout
 
-The target-device capacity requirement now has a valid schema-v3 RTX 4090
-report for the corrected topology under P2 BF16 training. Micro batches 1, 4,
-6, and 8 each
-completed 5 warmup plus 25 measured optimizer updates with zero non-finite
-observations; the selected 8 / 4 trial sustained 60.068 images/s at 8.260 GiB
-peak allocated and 8.506 GiB peak reserved memory. The production ADM recipe
-therefore uses micro batch 8 / accumulation 4 while retaining 420 updates per
-epoch and 84,000 total updates. This closes operational capacity selection.
-
-The controlled protocol run is also complete. It changed only P2 `gamma` from
-0 for the strict-standard epsilon control to 1 for treatment, used one full
-epoch (420 optimizer updates) and each arm's `latest.pt` EMA, then evaluated the
-same 1,467 official-test sample IDs with deterministic DDIM-50, eta 0, and CFG
-2.0. Aggregate FID moved 369.621427 -> 371.250343 and KID mean moved
-0.476357937 -> 0.479742199; all class scopes were also slightly worse for P2.
-The KID change is of the same order as its reported standard deviation, and one
-seed/epoch is not statistical significance or 200-epoch promotion evidence.
-Engineering readiness is closed; the production long-run quality gate remains
-open and is the next experiment after merge.
-
-No corrected-ADM production long-run absolute-quality baseline may be claimed
-before that evidence gate closes. P2 superiority remains unavailable without
-the separately matched `gamma: 0` production control described above.
-
-## After P2
-
-No implementation milestone is currently selected after the production P2
-evidence. Codec/latent diffusion, consistency methods, super-resolution,
+No implementation milestone is currently selected after the learned-range
+pixel-space evidence. Codec/latent diffusion, consistency methods, super-resolution,
 distillation, Stable Diffusion integration, and new algorithm families are
-neither `Next` nor `Planned`; they require a fresh roadmap decision after the P2
+neither `Next` nor `Planned`; they require a fresh roadmap decision after the
 result is published.
 
 If one of those tasks is later accepted, its first vertical slice must deliver

@@ -1,7 +1,7 @@
 experiment:
-  name: afhq_v2_adm_128_p2
+  name: afhq_v2_adm_128_learned_range_v
   seed: 20260726
-  output_dir: outputs/afhq-v2/adm-128-p2
+  output_dir: outputs/afhq-v2/adm-128-learned-range-v
 
 extensions:
   plugins: [stochaflow-afhq-v2]
@@ -40,7 +40,7 @@ model:
   params:
     input_size: 128
     in_channels: 3
-    out_channels: 3
+    out_channels: 6
     base_channels: 128
     channel_multipliers: [1, 1, 2, 3, 4]
     num_res_blocks: 2
@@ -60,12 +60,12 @@ process:
         max_beta: 0.999
 
 training:
-  name: class_conditional_p2_gaussian_denoising
+  name: class_conditional_gaussian_denoising
   params:
+    prediction_type: v
+    variance:
+      mode: learned_range
     condition_dropout: 0.1
-    k: 1.0
-    gamma: 1.0
-    variance: {mode: fixed}
 
 objective:
   name: mse
@@ -76,12 +76,12 @@ metrics:
   - id: prediction_mae
     name: mae
     channel: gaussian.prediction_target
-    phases: [validation, test]
+    phases: [validation]
     params: {}
   - id: clean_reconstruction_mse
     name: mse
     channel: gaussian.clean_reconstruction
-    phases: [validation, test]
+    phases: [validation]
     params: {}
 
 optimizer:
@@ -116,8 +116,8 @@ diagnostics:
       guidance_scale: 2.0
       modules: []
       cadence:
-        step_every: 200
-        artifact_every_epochs: 5
+        step_every: 1000
+        artifact_every_epochs: 20
       sampling:
         shape: [3, 128, 128]
         sample_num: 12
@@ -126,13 +126,21 @@ diagnostics:
       use_ema: true
       failure_policy: warn
       samplers:
+        - id: ddpm_250
+          name: ddpm
+          params:
+            num_inference_steps: 250
+          trajectory:
+            enabled: false
+            every_steps: 25
+            gif_fps: 8
         - id: ddim_50
           name: ddim
           params:
             num_inference_steps: 50
             eta: 0.0
           trajectory:
-            enabled: true
+            enabled: false
             every_steps: 5
             gif_fps: 8
       providers:
@@ -156,25 +164,100 @@ diagnostics:
               max_samples: 4
         sampler_artifacts:
           - name: sample_grid
-            params: {nrow: 12}
-          - name: trajectory
-            params: {nrow: 12}
+            params: {nrow: 4}
       reference:
         enabled: false
 
 trainer:
   num_epochs: 200
-  device: cuda
+  device: auto
   precision: bf16-mixed
   accumulate_grad_batches: 4
   max_grad_norm: 1.0
   show_progress: true
+  test_after_fit: false
   early_stopping:
     enabled: false
-    monitor: valid/loss
+    monitor: valid/metrics/distribution/aggregate.fid
     mode: min
     patience: 20
     min_delta: 0.0
+  validation_evaluation:
+    enabled: true
+    start_epoch: 20
+    every_epochs: 20
+    include_final: true
+    weights: ema
+    evaluation:
+      name: afhq-v2.class-conditional-generation
+      params:
+        class_mapping: {cat: 0, dog: 1, wild: 2}
+        expected_per_class: {cat: 300, dog: 300, wild: 300}
+        sampling:
+          recipe:
+            name: class_conditional_denoising
+            contract:
+              prediction_type: v
+              variance: {mode: learned_range}
+          sampler:
+            name: ddpm
+            params:
+              num_inference_steps: 100
+          options:
+            weights: ema
+            clip_denoised: true
+            guidance_scale: 2.0
+            conditions:
+              - {class_label: 0, count: 300}
+              - {class_label: 1, count: 300}
+              - {class_label: 2, count: 300}
+            trajectory:
+              enabled: false
+              every_steps: 10
+          shape: [3, 128, 128]
+          num_samples: 900
+          batch_size: 30
+          seed: 20260726
+        gallery_count: 12
+    metrics:
+      - id: distribution
+        name: afhq-v2.class-aware-distribution
+        channel: afhq-v2.image-pairs
+        params:
+          class_mapping: {cat: 0, dog: 1, wild: 2}
+          expected_real: {cat: 300, dog: 300, wild: 300}
+          expected_fake: {cat: 300, dog: 300, wild: 300}
+          providers:
+            - name: kid
+              params:
+                feature: 2048
+                antialias: true
+                subsets: 100
+                subset_size: 200
+                degree: 3
+                coef: 1.0
+                seed: 20260726
+            - name: fid
+              params:
+                feature: 2048
+                antialias: true
+    metric_keys:
+      - valid/metrics/distribution/aggregate.fid
+      - valid/metrics/distribution/aggregate.kid_mean
+      - valid/metrics/distribution/aggregate.kid_std
+      - valid/metrics/distribution/cat.fid
+      - valid/metrics/distribution/cat.kid_mean
+      - valid/metrics/distribution/cat.kid_std
+      - valid/metrics/distribution/dog.fid
+      - valid/metrics/distribution/dog.kid_mean
+      - valid/metrics/distribution/dog.kid_std
+      - valid/metrics/distribution/wild.fid
+      - valid/metrics/distribution/wild.kid_mean
+      - valid/metrics/distribution/wild.kid_std
+    protocol:
+      id: afhq-v2-adm-learned-range-v-ddpm100-validation-v1
+      expected_examples: 900
+      strict_complete: true
 
 logging:
   log_every: 100
@@ -188,4 +271,4 @@ logging:
   torch_logs: {}
 
 artifacts:
-  checkpoint_every: 5
+  checkpoint_every: 20

@@ -1,4 +1,4 @@
-"""Exact P2 and learned-range loss tests for concrete Strategies."""
+"""Exact learned-range Gaussian loss tests for concrete Strategies."""
 
 from __future__ import annotations
 
@@ -11,16 +11,17 @@ import torch
 from torch import nn
 
 from stochaflow.processes import DiscreteGaussianProcess
-from stochaflow.training import (
-    GaussianDenoisingTrainingStrategy,
-    MSEObjective,
-    P2GaussianDenoisingTrainingStrategy,
-)
+from stochaflow.training import GaussianDenoisingTrainingStrategy, MSEObjective
 from stochaflow.training.gaussian import GaussianVarianceConfig
 from stochaflow.training.gaussian.loss import GaussianLossComputation
 from stochaflow.training.gaussian.variance import learned_range_log_variance
 
-REFERENCE = Path(__file__).parent / "fixtures" / "gaussian" / "p2_reference.json"
+REFERENCE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "gaussian"
+    / "learned_range_reference.json"
+)
 
 
 class PlaceholderDenoiser(nn.Module):
@@ -42,15 +43,8 @@ class InspectableGaussianStrategy(GaussianDenoisingTrainingStrategy):
         return self._compute_loss(**kwargs)
 
 
-class InspectableP2Strategy(P2GaussianDenoisingTrainingStrategy):
-    """Expose the concrete P2 loss template for deterministic fixtures."""
-
-    def compute_for_test(self, **kwargs: Any) -> GaussianLossComputation:
-        return self._compute_loss(**kwargs)
-
-
 class CountingMSEObjective(MSEObjective):
-    """Record the per-sample call made by a P2 Strategy."""
+    """Record the per-sample call made by learned-range training."""
 
     def __init__(self, reduction: str = "mean") -> None:
         super().__init__(reduction)
@@ -63,6 +57,7 @@ class CountingMSEObjective(MSEObjective):
     ) -> torch.Tensor:
         self.per_sample_calls += 1
         return super().per_sample_loss(prediction, target)
+
 
 class IntegerPerSampleMSEObjective(MSEObjective):
     """Deliberately violate the concrete MSE per-sample contract."""
@@ -94,14 +89,6 @@ def gaussian_process(
     )
 
 
-def signal_to_noise_ratio(
-    process: DiscreteGaussianProcess,
-    state_times: torch.Tensor,
-) -> torch.Tensor:
-    scales = process.marginal_scales(state_times, state_times.size())
-    return scales.signal.square() / scales.noise.square()
-
-
 def standard_strategy(
     process: DiscreteGaussianProcess,
     *,
@@ -118,27 +105,8 @@ def standard_strategy(
     )
 
 
-def p2_strategy(
-    process: DiscreteGaussianProcess,
-    *,
-    reduction: str = "mean",
-    variance: GaussianVarianceConfig | None = None,
-    objective: MSEObjective | None = None,
-    k: float = 1.0,
-    gamma: float = 1.0,
-) -> InspectableP2Strategy:
-    return InspectableP2Strategy(
-        PlaceholderDenoiser(),
-        process,
-        MSEObjective(reduction) if objective is None else objective,
-        variance=variance,
-        k=k,
-        gamma=gamma,
-    )
-
-
 def compute_loss(
-    strategy: InspectableGaussianStrategy | InspectableP2Strategy,
+    strategy: InspectableGaussianStrategy,
     *,
     clean: torch.Tensor,
     noise: torch.Tensor,
@@ -159,104 +127,15 @@ def compute_loss(
     )
 
 
-def test_p2_matches_t1000_linear_schedule_fixture() -> None:
-    process = gaussian_process(1000, dtype=torch.float64)
-    state_times = torch.tensor([1, 500, 1000])
-    snr = signal_to_noise_ratio(process, state_times)
-    result = compute_loss(
-        p2_strategy(process),
-        clean=torch.zeros(3, 1, dtype=torch.float64),
-        noise=torch.zeros(3, 1, dtype=torch.float64),
-        state_times=state_times,
-        raw_model_output=torch.ones(3, 1, dtype=torch.float64),
-    )
-
-    torch.testing.assert_close(
-        snr,
-        torch.tensor(
-            [9999.0, 0.08528994446263685, 4.03599265116842e-5],
-            dtype=torch.float64,
-        ),
-        rtol=2e-12,
-        atol=2e-12,
-    )
-    torch.testing.assert_close(
-        result.per_sample_loss,
-        torch.tensor(
-            [1.0e-4, 0.9214127571182217, 0.9999596417023462],
-            dtype=torch.float64,
-        ),
-        rtol=2e-12,
-        atol=2e-12,
-    )
-
-
-@pytest.mark.parametrize("reduction", ["mean", "sum"])
-def test_gamma_zero_is_exact_standard_loss_identity(reduction: str) -> None:
-    process = gaussian_process(dtype=torch.float64)
-    clean = torch.tensor([[[[0.25]]], [[[0.75]]]], dtype=torch.float64)
-    noise = torch.tensor([[[[0.1]]], [[[0.2]]]], dtype=torch.float64)
-    output = torch.tensor([[[[0.4]]], [[[0.8]]]], dtype=torch.float64)
-    state_times = torch.tensor([2, 7])
-
-    standard = compute_loss(
-        standard_strategy(process, reduction=reduction),
-        clean=clean,
-        noise=noise,
-        state_times=state_times,
-        raw_model_output=output,
-    )
-    p2 = compute_loss(
-        p2_strategy(process, reduction=reduction, k=7.0, gamma=0.0),
-        clean=clean,
-        noise=noise,
-        state_times=state_times,
-        raw_model_output=output,
-    )
-
-    assert p2.per_sample_loss is not None
-    assert standard.per_sample_loss is not None
-    assert torch.equal(p2.per_sample_loss, standard.per_sample_loss)
-    assert torch.equal(p2.loss, standard.loss)
-
-
-@pytest.mark.parametrize("reduction", ["mean", "sum"])
-def test_weighted_reduction_matches_manual_mse_semantics(reduction: str) -> None:
-    process = gaussian_process(dtype=torch.float64)
-    clean = torch.zeros(2, 1, 1, 1, dtype=torch.float64)
-    noise = torch.tensor([[[[0.1]]], [[[0.2]]]], dtype=torch.float64)
-    output = torch.tensor([[[[0.4]]], [[[0.8]]]], dtype=torch.float64)
-    state_times = torch.tensor([1, 8])
-    strategy = p2_strategy(process, reduction=reduction, k=1.0, gamma=1.0)
-
-    result = compute_loss(
-        strategy,
-        clean=clean,
-        noise=noise,
-        state_times=state_times,
-        raw_model_output=output,
-    )
-
-    simple = (output - noise).square().flatten(1)
-    simple = simple.mean(dim=1) if reduction == "mean" else simple.sum(dim=1)
-    snr = signal_to_noise_ratio(process, state_times)
-    expected_per_sample = (1.0 + snr).reciprocal() * simple
-    expected = (
-        expected_per_sample.mean()
-        if reduction == "mean"
-        else expected_per_sample.sum()
-    )
-    torch.testing.assert_close(result.per_sample_loss, expected_per_sample)
-    torch.testing.assert_close(result.loss, expected)
-
-
-def test_hybrid_loss_matches_pinned_upstream_fixture_and_leaves_vb_unweighted() -> None:
+def test_hybrid_loss_matches_pinned_iddpm_fixture() -> None:
     fixture = json.loads(REFERENCE.read_text(encoding="utf-8"))
     values = fixture["hybrid_loss"]
     process = gaussian_process(values["num_timesteps"], dtype=torch.float64)
     clean = torch.tensor(values["clean"], dtype=torch.float64).reshape(2, 1, 2, 2)
     noise = torch.tensor(values["noise"], dtype=torch.float64).reshape_as(clean)
-    mean_head = torch.tensor(values["mean_head"], dtype=torch.float64).reshape_as(clean)
+    mean_head = torch.tensor(values["mean_head"], dtype=torch.float64).reshape_as(
+        clean
+    )
     variance_head = torch.tensor(
         values["variance_head"], dtype=torch.float64
     ).reshape_as(clean)
@@ -264,42 +143,50 @@ def test_hybrid_loss_matches_pinned_upstream_fixture_and_leaves_vb_unweighted() 
     raw_output = torch.cat((mean_head, variance_head), dim=1)
     variance = GaussianVarianceConfig(mode="learned_range")
 
-    constant = compute_loss(
+    result = compute_loss(
         standard_strategy(process, variance=variance),
         clean=clean,
         noise=noise,
         state_times=state_times,
         raw_model_output=raw_output,
     )
-    p2 = compute_loss(
-        p2_strategy(process, variance=variance),
-        clean=clean,
-        noise=noise,
-        state_times=state_times,
-        raw_model_output=raw_output,
-    )
 
-    expected_constant = values["constant"]
-    expected_p2 = values["p2_k1_gamma1"]
-    torch.testing.assert_close(
-        constant.per_sample_loss,
-        torch.tensor(expected_constant["loss"], dtype=torch.float64),
-        rtol=2e-6,
-        atol=2e-8,
+    expected = values["constant"]
+    expected_simple = torch.tensor(expected["simple"], dtype=torch.float64)
+    expected_variational_bound = torch.tensor(
+        expected["variational_bound"], dtype=torch.float64
     )
-    torch.testing.assert_close(
-        p2.per_sample_loss,
-        torch.tensor(expected_p2["loss"], dtype=torch.float64),
-        rtol=2e-6,
-        atol=2e-8,
-    )
+    expected_loss = torch.tensor(expected["loss"], dtype=torch.float64)
     simple = (mean_head - noise).square().flatten(1).mean(dim=1)
-    weights = (1.0 + signal_to_noise_ratio(process, state_times)).reciprocal()
-    assert constant.per_sample_loss is not None
-    assert p2.per_sample_loss is not None
-    constant_vb = constant.per_sample_loss - simple
-    p2_vb = p2.per_sample_loss - weights * simple
-    torch.testing.assert_close(p2_vb, constant_vb)
+
+    assert result.per_sample_loss is not None
+    assert result.per_sample_simple_loss is not None
+    assert result.per_sample_variational_bound is not None
+    torch.testing.assert_close(simple, expected_simple, rtol=2e-6, atol=2e-8)
+    torch.testing.assert_close(
+        result.per_sample_loss - simple,
+        expected_variational_bound,
+        rtol=2e-6,
+        atol=2e-8,
+    )
+    torch.testing.assert_close(
+        result.per_sample_simple_loss,
+        expected_simple,
+        rtol=2e-6,
+        atol=2e-8,
+    )
+    torch.testing.assert_close(
+        result.per_sample_variational_bound,
+        expected_variational_bound,
+        rtol=2e-6,
+        atol=2e-8,
+    )
+    torch.testing.assert_close(
+        result.per_sample_loss,
+        expected_loss,
+        rtol=2e-6,
+        atol=2e-8,
+    )
 
 
 def test_learned_range_vb_detaches_mean_prediction_but_trains_variance() -> None:
@@ -312,7 +199,7 @@ def test_learned_range_vb_detaches_mean_prediction_but_trains_variance() -> None
     variance_head = torch.zeros_like(clean, requires_grad=True)
 
     result = compute_loss(
-        p2_strategy(process, variance=variance),
+        standard_strategy(process, variance=variance),
         clean=clean,
         noise=noise,
         state_times=state_times,
@@ -325,47 +212,48 @@ def test_learned_range_vb_detaches_mean_prediction_but_trains_variance() -> None
     assert torch.any(variance_head.grad != 0)
 
 
-def test_p2_calls_mse_per_sample_once() -> None:
+def test_learned_range_calls_mse_per_sample_once() -> None:
     process = gaussian_process()
     objective = CountingMSEObjective()
     clean = torch.zeros(2, 1, 1, 1)
     noise = torch.ones_like(clean)
-    output = torch.zeros_like(clean)
+    variance = GaussianVarianceConfig(mode="learned_range")
 
     compute_loss(
-        p2_strategy(process, objective=objective),
+        standard_strategy(process, variance=variance, objective=objective),
         clean=clean,
         noise=noise,
         state_times=torch.tensor([1, 8]),
-        raw_model_output=output,
+        raw_model_output=torch.zeros(2, 2, 1, 1),
     )
 
     assert objective.per_sample_calls == 1
 
 
-@pytest.mark.parametrize(
-    ("objective", "error_type", "message"),
-    [
-        (
-            IntegerPerSampleMSEObjective(),
-            TypeError,
-            "per-sample objective capability must return a floating-point Tensor",
-        ),
-    ],
-)
-def test_p2_rejects_invalid_concrete_mse_outputs(
-    objective: MSEObjective,
-    error_type: type[Exception],
-    message: str,
-) -> None:
+def test_learned_range_rejects_sum_reduction() -> None:
+    with pytest.raises(ValueError, match="requires MSEObjective reduction='mean'"):
+        standard_strategy(
+            gaussian_process(),
+            reduction="sum",
+            variance=GaussianVarianceConfig(mode="learned_range"),
+        )
+
+
+def test_learned_range_rejects_invalid_concrete_mse_output() -> None:
     process = gaussian_process()
-    with pytest.raises(error_type, match=message):
+    variance = GaussianVarianceConfig(mode="learned_range")
+    objective = IntegerPerSampleMSEObjective()
+
+    with pytest.raises(
+        TypeError,
+        match="per-sample objective capability must return a floating-point Tensor",
+    ):
         compute_loss(
-            p2_strategy(process, objective=objective),
+            standard_strategy(process, variance=variance, objective=objective),
             clean=torch.zeros(2, 1, 1, 1),
             noise=torch.ones(2, 1, 1, 1),
             state_times=torch.tensor([1, 8]),
-            raw_model_output=torch.zeros(2, 1, 1, 1),
+            raw_model_output=torch.zeros(2, 2, 1, 1),
         )
 
 

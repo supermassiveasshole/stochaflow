@@ -12,11 +12,14 @@ is unavailable.
 
 ### Added
 
-- Added exact unconditional and class-conditional P2 Gaussian training recipes.
 - Added learned-range Gaussian variance, hybrid variational-bound training,
   respaced ancestral DDPM, and learned-variance classifier-free guidance.
 - Added configurable task-neutral training metrics, Strategy metric channels,
   phase-local metric state, and validation-only checkpoint monitoring.
+- Added cadence-controlled epoch-end validation Evaluation over the current raw
+  or EMA snapshot. Declared `valid/metrics/*` observations now feed the existing
+  best-checkpoint and early-stopping lifecycle, with profile identity, cadence,
+  and the last completed result persisted for strict resume.
 - Added structured training outcomes and completed-run manifest publication.
 - Added standalone checkpoint evaluation with explicit raw/EMA selection,
   registered Evaluation Builders, exact completeness, and immutable results.
@@ -24,50 +27,34 @@ is unavailable.
   deterministic gallery identity, and offline metric replay.
 - Added core FID/KID providers and a public AFHQ-v2 full-official-test Evaluation
   profile with aggregate/per-class scoring and replayable predictions.
-- Added real-AFHQ P2 tiny-wiring and corrected-full-topology sanity profiles,
-  plus a common epsilon/fixed equal-budget `latest.pt` EMA protocol for formal
-  standard/P2 comparison.
-- Added a maintained 200-epoch / 84,000-update AFHQ P2 production candidate and
-  a versioned 300-per-class validation Evaluation profile for selecting one
-  epoch EMA subject before a one-shot official-test run.
-- Added a machine-readable AFHQ P2 closeout policy that freezes eligible epochs,
-  validation FID/KID selection order, earliest-epoch final tie-break, exact
-  official-test completeness, required quality thresholds, and the aspirational
-  aggregate-FID target before the production run.
+- Added the narrow public `ShareableImageFeatureMetric` capability so composite
+  Metrics can reuse image features only across identical extractor identities;
+  Evaluation continues to submit samples. KID now also accepts
+  `antialias: bool = true` as part of that identity.
 - Added exact modality-neutral `SamplingBatch` counts, stable checkpoint
   SHA-256/progress identity, and atomic no-replace sampling-bundle publication
   with portable relative artifact paths.
-- Recorded a completed one-epoch controlled AFHQ P2 A/B under protocol
-  `afhq-v2-adm-epsilon-ddim50-cfg2-official-test-v1`: `gamma: 0` control versus
-  `gamma: 1` P2 on exact full-official-test samples. P2 was slightly worse for
-  aggregate FID (369.621427 -> 371.250343), aggregate KID mean
-  (0.476357937 -> 0.479742199), and every class; the single-seed result is
-  readiness evidence, not a statistically significant or 200-epoch promotion
-  claim.
-- Recorded a schema-v3 corrected-topology P2 capacity sweep from an RTX 4090
-  with PyTorch 2.11/CUDA 12.8: four BF16 micro-batch trials, each with 5 warmup and 25
-  measured updates, completed with zero non-finite observations.
+- Added a fresh AFHQ learned-range-v production recipe whose complete
+  validation Evaluation samples 300 examples per class and reports aggregate
+  and per-class FID/KID for selecting `best.pt`.
+- Recorded a schema-v3 corrected-topology capacity sweep from an RTX 4090 with
+  PyTorch 2.11/CUDA 12.8: four BF16 micro-batch trials, each with 5 warmup and
+  25 measured updates, completed with zero non-finite observations.
 - Added root-level [`SPEC.md`](SPEC.md),
   [`ARCHITECTURE.md`](ARCHITECTURE.md),
   [`ROADMAP.md`](ROADMAP.md), and `CHANGELOG.md` governance documents.
 
 ### Changed
 
-- Made single-arm pixel/P2 absolute-quality closeout the post-merge experiment
-  priority; validation Evaluation is used to select one frozen subject and
-  official test is reserved for its one-shot final acceptance. A standard/P2 superiority
-  claim remains gated on a separately matched `gamma: 0` production control.
-- Made the P2 production lane fail closed on CUDA, documented deterministic
-  launch/resume commands, replaced reusable checkpoint aliases with explicit
-  run/selected-epoch placeholders, and fixed KID seeds in formal AFHQ profiles.
-- Clarified that the 900-example P2 validation protocol ranks checkpoints only,
-  while absolute acceptance belongs exclusively to the one-shot 1,467-example
-  epsilon/fixed P2 official-test subject. Marked its frozen FID/KID thresholds
-  as internal project criteria that standard-v ADM and DiT do not inherit, and
-  distinguished them from the paper's non-comparable AFHQ-Dog-256 benchmark.
-- All other tasks and methods are outside the current P2 gate. Any future task
-  requires an explicit roadmap decision and must deliver observability,
-  checkpoint inference, and formal Evaluation with its first implementation.
+- Made ordinary pixel-space AFHQ learned-range-v training the active quality
+  closeout. Future tasks still require an explicit roadmap decision and must
+  deliver observability, checkpoint inference, and formal Evaluation with their
+  first implementation.
+- Kept Metrics task-neutral: FID/KID providers consume Evaluation-owned image
+  pair updates, while Evaluation owns sampling, sample identity, and strict
+  completeness. Re-evaluating multiple checkpoints now means repeating that
+  same Evaluation and comparing its metrics, not using a separate selector
+  runtime.
 - Established `ARCHITECTURE.md` as the sole normative architecture authority and
   recast `docs/framework.md` as a descriptive overview of current capabilities
   and workflows.
@@ -95,6 +82,9 @@ is unavailable.
 
 ### Removed
 
+- Removed the experimental P2 TrainingBuilder/Strategy recipes and their AFHQ
+  smoke, profiling, production, selection, and official-test profiles. Their
+  completed runs remain documented only as historical development evidence.
 - Removed automatic post-training final sampling and its skip flag.
 - Removed the retired single-class AFHQ reproduction lane from the maintained
   example surface.
@@ -105,8 +95,14 @@ is unavailable.
 
 ### Fixed
 
+- Restored the canonical ADM mixed-precision boundary before the output head,
+  so the final normalization consumes the input dtype instead of a BF16/FP16
+  decoder activation.
+- Prevented Windows artifact scans from treating a lazily reported directory
+  allocation size as a content mutation while retaining identity, timestamp,
+  link, file-state, and manifest validation.
 - Fixed discrete Gaussian coefficient state on MPS devices.
-- Fixed metric monitoring and resume behavior after integrating P2 training.
+- Fixed validation metric monitoring and strict-resume behavior.
 - Fixed evaluation config/checkpoint time-of-check/time-of-use gaps, strict data
   artifact binding, AFHQ offline generation-profile binding, validation-split
   identity, and deterministic KID subset sampling without mutating global RNG.

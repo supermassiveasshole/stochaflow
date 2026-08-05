@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import subprocess
 import sys
@@ -10,7 +11,10 @@ from typing import Any, ClassVar
 
 import pytest
 import torch
+from torch import nn
 from torchmetrics import Metric
+from torchmetrics.image.fid import FrechetInceptionDistance
+from torchmetrics.image.kid import KernelInceptionDistance
 
 from stochaflow.metrics import (
     MetricEngine,
@@ -101,15 +105,91 @@ class FakeKernelInceptionDistance(FakeReferenceMetric):
         return total / 10.0, total / 100.0
 
 
+class FakeNoTrainInceptionV3(nn.Module):
+    """Extract deterministic features without loading quality weights."""
+
+    instances: ClassVar[list[FakeNoTrainInceptionV3]] = []
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        features_list: list[str],
+        antialias: bool,
+    ) -> None:
+        super().__init__()
+        self.name = name
+        self.feature = int(features_list[0])
+        self.antialias = antialias
+        self.forward_calls = 0
+        type(self).instances.append(self)
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        self.forward_calls += 1
+        assert images.dtype == torch.uint8
+        values = images.float().mean(dim=(1, 2, 3), keepdim=False)
+        return values[:, None].expand(-1, self.feature).contiguous()
+
+
+def _deterministic_byte_features(
+    images: torch.Tensor,
+    *,
+    feature_size: int,
+) -> torch.Tensor:
+    flattened = images.float().flatten(1) / 255.0
+    repeats = math.ceil(feature_size / flattened.shape[1])
+    return flattened.repeat(1, repeats)[:, :feature_size].contiguous()
+
+
+class DeterministicByteInception(nn.Module):
+    """Stand in for the built-in byte-input Inception extractor."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        features_list: list[str],
+        antialias: bool,
+    ) -> None:
+        super().__init__()
+        self.name = name
+        self.feature_size = int(features_list[0])
+        self.antialias = antialias
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        assert images.dtype == torch.uint8
+        return _deterministic_byte_features(
+            images,
+            feature_size=self.feature_size,
+        )
+
+
+class DeterministicNormalizedInception(nn.Module):
+    """Match TorchMetrics' legacy normalized-image feature path."""
+
+    def __init__(self, num_features: int) -> None:
+        super().__init__()
+        self.num_features = num_features
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        return _deterministic_byte_features(
+            (images * 255).byte(),
+            feature_size=self.num_features,
+        )
+
+
 def _install_fake_quality_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeFrechetInceptionDistance.instances.clear()
     FakeKernelInceptionDistance.instances.clear()
     FakeKernelInceptionDistance.random_values.clear()
+    FakeNoTrainInceptionV3.instances.clear()
     fid_module = ModuleType("torchmetrics.image.fid")
     kid_module = ModuleType("torchmetrics.image.kid")
+    fidelity_module = ModuleType("torch_fidelity")
     fid_module_value: Any = fid_module
     kid_module_value: Any = kid_module
     fid_module_value.FrechetInceptionDistance = FakeFrechetInceptionDistance
+    fid_module_value.NoTrainInceptionV3 = FakeNoTrainInceptionV3
     kid_module_value.KernelInceptionDistance = FakeKernelInceptionDistance
 
     def import_quality_module(name: str) -> ModuleType:
@@ -117,6 +197,8 @@ def _install_fake_quality_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
             return fid_module
         if name == "torchmetrics.image.kid":
             return kid_module
+        if name == "torch_fidelity":
+            return fidelity_module
         raise AssertionError(f"unexpected quality module import {name!r}")
 
     monkeypatch.setattr(reference_metrics, "import_module", import_quality_module)
@@ -178,16 +260,22 @@ def test_fid_and_kid_run_through_metric_engine_and_reset(
     ]
     fid = FakeFrechetInceptionDistance.instances[-1]
     kid = FakeKernelInceptionDistance.instances[-1]
-    assert fid.params == {
-        "feature": 64,
-        "normalize": True,
+    fid_params = dict(fid.params)
+    fid_feature = fid_params.pop("feature")
+    assert isinstance(fid_feature, reference_metrics.PassthroughFeatureExtractor)
+    assert fid_feature.num_features == 64
+    assert fid_params == {
+        "normalize": False,
         "reset_real_features": True,
         "antialias": False,
         "sync_on_compute": False,
     }
-    assert kid.params == {
-        "feature": 192,
-        "normalize": True,
+    kid_params = dict(kid.params)
+    kid_feature = kid_params.pop("feature")
+    assert isinstance(kid_feature, reference_metrics.PassthroughFeatureExtractor)
+    assert kid_feature.num_features == 192
+    assert kid_params == {
+        "normalize": False,
         "reset_real_features": True,
         "subsets": 2,
         "subset_size": 2,
@@ -203,6 +291,121 @@ def test_fid_and_kid_run_through_metric_engine_and_reset(
     assert fid.reset_calls == kid.reset_calls == 1
     with pytest.raises(MetricRuntimeError, match="before a successful update"):
         engine.compute()
+
+
+def test_fid_and_kid_expose_one_compatible_precomputed_feature_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_quality_metrics(monkeypatch)
+    fid = FrechetInceptionDistanceMetric(feature=64, antialias=True)
+    kid = KernelInceptionDistanceMetric(
+        feature=64,
+        subsets=2,
+        subset_size=2,
+        antialias=True,
+    )
+    different_feature = FrechetInceptionDistanceMetric(
+        feature=192,
+        antialias=True,
+    )
+    different_antialias = KernelInceptionDistanceMetric(
+        feature=64,
+        subsets=2,
+        subset_size=2,
+        antialias=False,
+    )
+    images = torch.rand(3, 3, 4, 4)
+
+    assert (
+        fid.image_feature_extractor_identity()
+        == kid.image_feature_extractor_identity()
+    )
+    assert (
+        fid.image_feature_extractor_identity()
+        != different_feature.image_feature_extractor_identity()
+    )
+    assert (
+        fid.image_feature_extractor_identity()
+        != different_antialias.image_feature_extractor_identity()
+    )
+    features = fid.extract_image_features(images)
+    fid.update_image_features(features, real=True)
+    kid.update_image_features(features, real=True)
+
+    assert len(FakeNoTrainInceptionV3.instances) == 1
+    assert FakeNoTrainInceptionV3.instances[0].forward_calls == 1
+    assert FakeFrechetInceptionDistance.instances[0].real_count == 3
+    assert FakeKernelInceptionDistance.instances[0].real_count == 3
+
+
+def test_precomputed_features_match_torchmetrics_normalized_image_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        reference_metrics,
+        "_load_inception_feature_extractor_class",
+        lambda: DeterministicByteInception,
+    )
+    real = torch.linspace(0.0, 0.9, steps=8 * 3 * 4 * 4).reshape(8, 3, 4, 4)
+    fake = torch.linspace(0.1, 1.0, steps=8 * 3 * 4 * 4).reshape(8, 3, 4, 4)
+
+    fid = FrechetInceptionDistanceMetric(feature=64)
+    baseline_fid = FrechetInceptionDistance(
+        feature=DeterministicNormalizedInception(64),
+        normalize=False,
+        reset_real_features=True,
+        sync_on_compute=False,
+    ).set_dtype(torch.float64)
+    for images, is_real in ((real, True), (fake, False)):
+        fid.update(images, real=is_real)
+        baseline_fid.update(images, real=is_real)
+
+    torch.testing.assert_close(fid.compute(), baseline_fid.compute())
+
+    with pytest.warns(UserWarning, match="will save all extracted features"):
+        kid = KernelInceptionDistanceMetric(
+            feature=64,
+            subsets=5,
+            subset_size=4,
+            seed=41,
+        )
+    with pytest.warns(UserWarning, match="will save all extracted features"):
+        baseline_kid = KernelInceptionDistance(
+            feature=DeterministicNormalizedInception(64),
+            normalize=False,
+            reset_real_features=True,
+            subsets=5,
+            subset_size=4,
+            sync_on_compute=False,
+        )
+    for images, is_real in ((real, True), (fake, False)):
+        kid.update(images, real=is_real)
+        baseline_kid.update(images, real=is_real)
+    with torch.random.fork_rng():
+        torch.manual_seed(41)
+        baseline_mean, baseline_std = baseline_kid.compute()
+    result = kid.compute()
+
+    torch.testing.assert_close(result["mean"], baseline_mean)
+    torch.testing.assert_close(result["std"], baseline_std)
+
+
+def test_reference_metric_reset_retains_extractor_and_clears_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_quality_metrics(monkeypatch)
+    metric = FrechetInceptionDistanceMetric(feature=64)
+    metric.update(torch.rand(2, 3, 4, 4), real=True)
+    extractor = metric.image_feature_extractor
+
+    metric.reset()
+
+    assert extractor is not None
+    assert metric.image_feature_extractor is extractor
+    assert FakeFrechetInceptionDistance.instances[-1].real_count == 0
+    metric.update(torch.rand(2, 3, 4, 4), real=False)
+    assert metric.image_feature_extractor is extractor
+    assert len(FakeNoTrainInceptionV3.instances) == 1
 
 
 @pytest.mark.parametrize(("name", "label"), [("fid", "FID"), ("kid", "KID")])
@@ -239,6 +442,11 @@ def test_quality_dependency_failure_is_actionable(
         (KernelInceptionDistanceMetric, {"seed": True}, "seed must be"),
         (KernelInceptionDistanceMetric, {"seed": -1}, "seed must be"),
         (KernelInceptionDistanceMetric, {"seed": 2**63}, "seed must be"),
+        (
+            KernelInceptionDistanceMetric,
+            {"antialias": 1},
+            "antialias must be a bool",
+        ),
     ],
 )
 def test_quality_metric_parameters_are_strict(

@@ -59,7 +59,7 @@ stochaflow-afhq-v2-evaluate  # historical comparison only
 prepare 命令和训练配置使用同一个已注册 `AFHQV2ImageDataSource`、公开
 `DataArtifactStore`、packaged source lock 与 schema-v2 artifact identity contract。
 正式 KID/FID profile 需要 showcase 声明的 optional
-`quality` extra。正式 P2 Evaluation 当前必须从本仓库 checkout 同步，并使用以下完整
+`quality` extra。正式 Evaluation 当前必须从本仓库 checkout 同步，并使用以下完整
 命令：
 
 ```bash
@@ -68,7 +68,7 @@ uv sync --project examples/showcases/afhq-v2 --locked --extra quality
 
 这条 source-checkout 路径通过 showcase 的 `[tool.uv.sources]` 把 Stochaflow 绑定到
 同一 checkout，不会要求 AFHQ wheel 从已发布 core 解析当前尚未发布的 Evaluation API。
-不要把独立安装 AFHQ wheel 当作当前正式 P2 Evaluation 的入口。
+不要把独立安装 AFHQ wheel 当作当前正式 Evaluation 的入口。
 
 仓库的 installed-wheel gate 会从当前 checkout 同时构建 core 与 AFHQ wheels，再以
 `--no-deps --offline` 安装。它只验证 wheel 内容、隔离后的 extension entry point 与当前
@@ -77,7 +77,7 @@ core wheel 的 Evaluation 激活；不验证 AFHQ wheel 的 released-core resolv
 
 协调 core/AFHQ 0.2 release，以及发布后在全新环境中只安装 AFHQ wheel、实际解析已发布
 core 的 resolver smoke，是 post-release、non-blocking 的 follow-up。
-它们不是当前 source-checkout P2 readiness 的 merge blocker；真实 core release 存在前
+它们不是当前 source-checkout Evaluation 的 merge blocker；真实 core release 存在前
 不得写入未来 release wheel URL。
 
 ## 准备 artifact
@@ -206,7 +206,7 @@ evaluation 已使用 public operation/result lifecycle，AFHQ Builder/Metric/pro
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-capacity \
-  --config examples/showcases/afhq-v2/experiments/profiling/train-adm-128-p2.yaml \
+  --config examples/showcases/afhq-v2/experiments/production/train-adm-128-learned-range-v.yaml \
   --micro-batches 1 4 6 8 \
   --precisions bf16-mixed \
   --warmup-updates 5 \
@@ -216,7 +216,7 @@ uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-capacity \
 
 该命令按正常注册和构建路径使用 DataBuilder、TrainingBuilder、Trainer、optimizer、
 scheduler、EMA 和 precision runtime。DataBuilder 通过 core factory 解析注册的
-DataSource，按所选 P2 profiling config 执行 manifest verification，再进行运行时分层
+DataSource，按所选 training config 执行 manifest verification，再进行运行时分层
 划分并组装 loaders；前置的 prepare 命令已独立完成 full verification。capacity 工具
 不维护第二套 source、partition 或训练循环。本次 micro batch 1/4/6/8 的 accumulation
 分别为 32/8/5/4，对应 effective batch 32/32/30/32。每个 BF16 trial warmup 5 次，并
@@ -237,7 +237,7 @@ trial output preflight；若全部 precision 都不受支持，命令只返回 u
 records，不访问数据。
 
 当前有效 schema-v3 report 来自 RTX 4090 24,564 MiB、PyTorch 2.11 / cu128，使用 corrected
-105,197,187-parameter topology、P2 training 与 BF16 mixed precision。结果如下：
+105,197,187-parameter topology 与 BF16 mixed precision。结果如下：
 
 | Micro batch | Accumulation | Effective batch | Images/s | Peak allocated (GiB) | Peak reserved (GiB) | Non-finite |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -250,7 +250,7 @@ records，不访问数据。
 gradient observation。这个 schema-v3 report 提供 operational capacity 和 sustained
 evidence；micro batch 8 只是已测候选中吞吐最高的一档，不是显存上限。两份 maintained ADM
 production YAML 均据此使用 micro batch 8 / accumulation 4。该报告不证明长训练稳定性、
-收敛、质量或 standard/P2 A/B 收益；DGX Spark 复跑会是单独的跨设备证据。
+收敛或质量；DGX Spark 复跑会是单独的跨设备证据。
 
 ## 运行真实 smoke
 
@@ -279,45 +279,6 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
 smoke 只证明 end-to-end wiring、state 和 artifact contract，不证明收敛质量或
 production 吞吐。
 
-### P2 tiny wiring smoke
-
-P2 使用单独的真实 AFHQ maintained profile：
-
-```bash
-uv run --project examples/showcases/afhq-v2 stochaflow train \
-  --config examples/showcases/afhq-v2/experiments/smoke/train-adm-128-p2.yaml \
-  --device cuda \
-  --limit-validation-batches 2 \
-  --limit-test-batches 2
-```
-
-该配置选择 `class_conditional_p2_gaussian_denoising`，固定 epsilon prediction、fixed
-variance、`k: 1`、`gamma: 1`，并用 tiny ADM、4 个 training micro-batches、accumulation
-2 产生 2 次 optimizer update。当前工作站的 CUDA 实跑已覆盖真实 class labels、optimizer、
-EMA、diagnostics、limited validation/test 和 checkpoint publication。它是 task wiring lane，
-不使用 production topology，也不证明 capacity、收敛、质量或 A/B 收益。
-
-### P2 full-topology profiling sanity
-
-```bash
-uv run --project examples/showcases/afhq-v2 stochaflow train \
-  --config examples/showcases/afhq-v2/experiments/profiling/train-adm-128-p2.yaml \
-  --device cuda \
-  --limit-validation-batches 2 \
-  --limit-test-batches 2
-```
-
-这份 profile 保留 corrected 105,197,187-parameter ADM topology、128×128 real data、
-cosine 1,000-step Process 与 BF16 mixed precision，只运行 micro batch 1 / accumulation 1
-的 8 个 optimizer updates 和短 scheduler，并关闭 diagnostics。当前工作站实跑完成 8 次
-update、validation/test lifecycle 与 checkpoint publication，compute phase 为 4.34
-optimizer steps/s。
-
-它不是 production effective-batch-32 recipe，也不是 capacity tool。这个运行本身不证明
-peak VRAM、micro batch 上限、end-to-end throughput、长训练稳定性、质量或 standard/P2
-A/B。production batch 与 peak-memory 数值必须引用上面的独立 schema-v3 sweep，不能从
-4.34 compute steps/s 推算。
-
 ## Production 配置与更新公式
 
 ADM-UNet v-prediction baseline 配置：
@@ -327,22 +288,21 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
   --config examples/showcases/afhq-v2/experiments/production/train-adm-128.yaml
 ```
 
-当前分支合并后的 P2 production candidate 使用独立 maintained profile：
+当前 production-quality candidate 是 fresh learned-range-v ADM：
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow train \
-  --config examples/showcases/afhq-v2/experiments/production/train-adm-128-p2.yaml \
-  --device cuda \
-  --deterministic
+  --config examples/showcases/afhq-v2/experiments/production/train-adm-128-learned-range-v.yaml \
+  --device cuda
 ```
 
-它保留相同 corrected ADM、真实 AFHQ、BF16、micro batch 8 / accumulation 4 与
-84,000-update budget，但固定 epsilon/fixed P2 Builder、`k: 1`、`gamma: 1` 和 EMA decay
-0.9999。它是本轮单臂 absolute-quality candidate，不是 matched standard control，也不能与
-v-prediction baseline 直接比较后声称“P2 优于 standard”。该因果声明若未来需要，必须从
-同一 production profile 只把 `gamma` 改为 0 后另跑 control。
+它保留 corrected ADM、真实 AFHQ、cosine Process、v prediction、BF16、micro batch 8 /
+accumulation 4、optimizer、step scheduler、seed、EMA 与 200 epochs / 84,000 updates，只把
+fixed variance 改为 learned range。模型输出为 `2C`，hybrid objective 同时记录 simple
+loss 与 variational bound。该实验必须随机初始化；fixed-variance 或旧 topology checkpoint
+都不能 resume。
 
-DiT-B/8 候选配置（不属于当前 P2 closeout）：
+DiT-B/8 候选配置：
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow train \
@@ -385,7 +345,7 @@ ceil(1,679 / 4) = 420 optimizer updates
 round(0.02 × 84,000) = 1,680 warmup updates
 ```
 
-micro batch 8 / accumulation 4 来自上面的 RTX 4090 schema-v3 P2 capacity report，在
+micro batch 8 / accumulation 4 来自上面的 RTX 4090 schema-v3 capacity report，在
 保持 effective batch 与 optimizer-update schedule 不变时采用本次已测候选中的最高吞吐档。
 它不声称 micro batch 8 是绝对容量上限，也不提供长训练质量结论。迁移到其他硬件时应重跑
 同一 capacity protocol，并记录完整 hardware adaptation。
@@ -404,37 +364,22 @@ window 按实际 micro-batch 数归一化并 flush。只有 optimizer step 成�
 step、step scheduler、EMA、diagnostic 和 update-level logging；FP16 overflow 会跳过整个
 window 的这些生命周期。
 
-P2 production profile 固定 `device: cuda`，启动命令也显式传入 `--device cuda`，因此缺少
+learned-range production profile 固定 `device: cuda`，启动命令也显式传入 `--device cuda`，因此缺少
 CUDA 时会在创建 run 前失败，不会静默落入巨型 CPU 作业。`bf16-mixed` 还要求
 `torch.cuda.is_bf16_supported()`，不支持时不会自动退回 FP32。需要 FP16 的 CUDA 主机必须先
 形成一份新的、经过容量验证的 hardware adaptation，而不能在当前正式运行中改写 precision。
 
-训练流程每 epoch 执行 phase validation，并聚合 `valid/loss`、
-`valid/metrics/prediction_mae` 与 `valid/metrics/clean_reconstruction_mse`。训练器维护的
-`best.pt` 和 fit 后 phase test 属于训练 lifecycle/监控；这些指标衡量 Gaussian 预测目标或
-局部重建误差，不是 FID/KID 生成分布质量，不能用于 P2 production subject selection。
+训练流程每 epoch 执行 ordinary phase validation，并按配置 cadence 额外运行完整生成
+Evaluation。到期运行固定 EMA、300/class validation real/fake、task sampling protocol、
+exact IDs 和 aggregate/per-class FID/KID。Trainer 直接以
+`valid/metrics/distribution/aggregate.fid`（lower）维护 `best.pt`；KID 与 per-class 结果
+一同记录。FID/KID Metric 只消费 image-pair updates，采样与 completeness 由 Evaluation
+拥有。
 
-P2 长训的选择与验收规则已经冻结在机器可读的
-[`p2-production-closeout-policy.yaml`](../../examples/showcases/afhq-v2/experiments/evaluation/p2-production-closeout-policy.yaml)。
-eligible epochs 固定为 20、40、60、80、100、120、140、160、180、200；primary 是
-validation `eval/metrics/distribution/aggregate.fid`（lower），tie-break 依次是
-`eval/metrics/distribution/aggregate.kid_mean`（lower）和最早 epoch。长训完成后，对每个候选 EMA
-分别运行 validation-only profile；把 `REPLACE_WITH_RUN_ID` 与 zero-padded
-`epoch_XXXX.pt` 改成真实值，并为每次运行使用新的 output directory：
-
-```bash
-uv run --project examples/showcases/afhq-v2 stochaflow evaluate \
-  --config examples/showcases/afhq-v2/experiments/evaluation/selection-ddim50-cfg2-validation-epsilon.yaml \
-  --device cuda \
-  --output-dir outputs/afhq-v2/evaluations/p2-selection/<epoch-id>
-```
-
-该 profile 以 `purpose: selection_candidate` 固定 validation split、cat/dog/wild 各 300 个
-real/fake、EMA、epsilon/fixed、DDIM-50、eta 0、CFG 2.0 和 seed `20260726`。只按预声明规则
-从这些 validation Evaluation results 冻结一个唯一 subject，并保存选择记录。不得使用
-`valid/loss`、diagnostic、phase-test 或 official-test 结果挑 checkpoint；official test 在
-subject 冻结后只运行一次。这里的 900 张 validation real/fake 只有排序权，没有 pass/fail
-或 acceptance 权限。
+非到期 epoch 不复用旧 FID/KID，也不推进 patience。`valid/loss`、Diagnostic、phase test
+与 official test 都不能覆盖这一 selection authority。对已有 checkpoints 做补充选择时，
+逐个运行同一 standalone validation Evaluation 并比较相同 metric 即可，不需要额外的
+selection runtime。
 
 ## 日志、diagnostic 与 checkpoint
 
@@ -448,26 +393,27 @@ production diagnostic `class_conditional_diffusion_quality`：
 
 - reconstruction 使用当前真实 batch 的原始 labels；
 - sampler 以 cat/dog/wild 各 4 张的固定顺序运行；
-- 使用固定 seed、EMA、CFG 2.0 和 DDIM-50；
-- 每 5 epochs 写 sample grid、reconstruction panel、trajectory 和 manifest；
+- 使用固定 seed 和 EMA，以 ancestral DDPM 观察 learned variance，并用 DDIM-50 观察
+  prediction continuity；
+- 每 20 epochs 写 sample grid、reconstruction panel 和 manifest；
 - 记录 timestep bucket loss、noise alignment、sample statistics 与 sampling timing。
 
-这些结果是训练监控，不是正式 post-training dataset metric。`reference.enabled: false`
-明确禁用不具备 class-aware protocol 的 reference metric。
+这些结果是训练监控，不是 dataset metric。Diagnostic 无论读取哪个 split 都不参与
+checkpoint selection；完整 validation Evaluation 才产生上面的 FID/KID observations。
 
 checkpoint v12 保存完整 managed training state、precision/scaler topology、resolved
 config、data binding、epoch-boundary RNG，以及 TrainingBuilder 固化的
-`class_conditional_denoising` inference recipe。它把 `v` prediction 固定在 contract
-中，并显式冻结 `variance: {mode: fixed}`；独立 sample config 不能覆盖。v11 及更早
+`class_conditional_denoising` inference recipe。每个 checkpoint 固定自己的 prediction
+contract：当前 recipe 为 `v` + `learned_range`，独立 sample config 不能覆盖。v11 及更早
 checkpoint 不会自动补写或迁移；旧 ADM checkpoint 还另有 state/topology
-不兼容。production 每 5 epochs 写
+不兼容。production 每 20 epochs 写
 `epoch_*.pt`，每 epoch 更新 `latest.pt`，并维护 `best.pt`。
 
 strict resume：
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow train \
-  --resume outputs/afhq-v2/adm-128-p2/<run-id> \
+  --resume outputs/afhq-v2/adm-128-learned-range-v/<run-id> \
   --epochs 200 \
   --artifact-verification-workers 8 \
   --device cuda \
@@ -508,8 +454,7 @@ scale 0 只运行 null branch，scale 1 只运行 conditional branch；其他非
 conditional/null batch 拼接后单次 forward。DDIM 只消费组装好的 Gaussian dynamics，
 不认识 class label 或 guidance。
 
-production 目前是 fixed variance，模型输出 `C` channels。若另一个 class-conditional
-recipe 使用 learned-range `2C` output，则 CFG 只外推 prediction half：
+learned-range production 模型输出 `2C` channels，CFG 只外推 prediction half：
 
 ```text
 guided_prediction = unconditional_prediction
@@ -524,15 +469,13 @@ conditional variance half。DDPM 消费 learned variance，DDIM 明确忽略 var
 
 canonical topology 切换前的 900-real/900-generated DDIM-50 AFHQ 数值与样本来自旧的、
 checkpoint-incompatible ADM graph。它们已经从 current result surface 移除，不能用于
-证明 corrected ADM、learned variance 或 P2。在 corrected production 200-epoch long run
-完成并冻结新的 checkpoint、resolved config 与 evaluation artifacts 前，本页不发布
-corrected ADM 的 production long-run quality baseline。下文已经发布的单 epoch 受控 A/B
-数值只属于 pipeline/protocol readiness evidence，不能替代该 baseline。
+证明 corrected ADM 或 learned variance。在 learned-range-v run 完成、validation 选中
+checkpoint 并冻结新的 resolved config 与 official-test artifacts 前，本页不发布该 recipe
+的 production-quality baseline。
 
 AFHQ maintained pixel-image Evaluation 已迁移到 public `EvaluationBuilder`/Metric/profile
-路径。该完成状态
-表示正式执行与 artifact contract 已具备，不表示 corrected ADM/P2 的长训练质量数值已经
-产生。
+路径。该完成状态表示正式执行与 artifact contract 已具备，不表示 learned-range-v 的
+长训练质量数值已经产生。
 
 ## Public full-official-test KID/FID Evaluation
 
@@ -549,41 +492,21 @@ uv run --project examples/showcases/afhq-v2 stochaflow evaluate \
   --output-dir outputs/afhq-v2/evaluations/adm-ddim50-cfg2-official-test
 ```
 
-当前 P2 production candidate 先完成上文 300/class validation selection，再把
-`REPLACE_WITH_RUN_ID` 与 `REPLACE_WITH_SELECTED_EPOCH_CHECKPOINT.pt` 替换为选中的唯一
-zero-padded epoch EMA（例如 `epoch_0120.pt`），然后只执行一次：
-
-```bash
-uv run --project examples/showcases/afhq-v2 stochaflow evaluate \
-  --config examples/showcases/afhq-v2/experiments/evaluation/formal-ddim50-cfg2-official-test-epsilon.yaml \
-  --device cuda \
-  --output-dir outputs/afhq-v2/evaluations/p2-production-official-test
-```
-
-该 one-shot official-test result 用于 P2 candidate 的 absolute-quality acceptance，并要求
-exact/complete 1,467 examples、aggregate FID ≤ 35、aggregate KID mean ≤ 0.01，且
-cat/dog/wild 各自 FID ≤ 65；aggregate FID ≤ 30 是 aspirational target，不是 pass 所必需。
-所有 required thresholds 必须同时通过。结果不能反向改变候选列表、selection metric 或
-tie-break，也不能单独支持 P2 相对 standard 的 superiority 声明。这组阈值是
-`internal_project_acceptance`，只适用于 `train-adm-128-p2.yaml` 产生的 epsilon/fixed P2
-subject；standard-v ADM 与 DiT 配置不继承它们。
-
-formal profile 固定：
+learned-range-v 的 final-test profile 必须匹配 checkpoint 的 `v` + `learned_range`
+contract，并只引用训练中 aggregate validation FID 选出的 `best.pt`。它固定：
 
 - authenticated official test split 的全部 1,467 张 reference：cat/dog/wild 分别为
   493/491/483；
-- EMA、同样的 493/491/483 generated allocation、seed `20260726`、deterministic
-  DDIM-50、CFG 2.0；
+- EMA、同样的 493/491/483 generated allocation、seed `20260726`，以及 validation
+  Evaluation 已冻结的 sampler 与 CFG；
 - aggregate 与 per-class KID/FID；aggregate 是主要分布指标，per-class 结果仅作细分
   诊断；
 - KID 100 subsets、subset size 300、seed `20260726`，FID feature 2048。
 
-因此这里评估的是“AFHQ-v2 官方 test split + 本项目自定义 class-conditional 128×128 /
-DDIM-50 / CFG 2.0 diffusion protocol”，不是论文复现。P2
-[作者仓库](https://github.com/jychoi118/P2-weighting)给出的训练/预训练设置与
-[CVPR 2022 论文](https://openaccess.thecvf.com/content/CVPR2022/html/Choi_Perception_Prioritized_Training_of_Diffusion_Models_CVPR_2022_paper.html)
-中的 AFHQ-Dog-256 benchmark 均为 unconditional 256×256；论文的 P2 FID 11.55 不能与
-这里的数值横比，因为数据子集、分辨率、条件方式、real/fake sample plan 和采样协议不同。
+这次 full official-test Evaluation 只运行一次，且不能反向改变 selection。它发布 aggregate
+与 per-class FID/KID、exact sample completeness、prediction artifact 和 immutable result
+bundle。standard-v/fixed-variance subject 继续使用自己冻结的 DDIM-50 / CFG 2.0 profile；
+两种 recipe contract 不可互换。
 
 core 先把 checkpoint 中明确选择的 EMA（或另一个 profile 的 raw）解析为一个 pinned
 primary model；AFHQ Builder 没有第二次权重选择权。它消费 checkpoint-bound
@@ -612,50 +535,7 @@ data:
 model 或原 DataBuilder、不再次采样，也不修改 live producer。旧
 `stochaflow-afhq-v2-evaluate` 与旧
 `experiments/evaluation/ddim50-cfg2-kid-fid.yaml` 只作为历史结果对照；它们不属于当前
-maintained P2 evidence surface，也不提供 compatibility guarantee。
-
-### Epsilon/fixed control–P2 A/B
-
-历史 P2 对比不使用上面的 v-prediction profile，而使用与当前 production official profile
-相同的 epsilon/fixed 协议字段。该 profile 现在以 production run/selected-epoch 占位符
-fail closed；历史 control/P2 运行分别把 subject path 替换为各自预算终点的 `latest.pt`。
-协议为两个 arm 固定 epsilon/fixed recipe、full official test 493/491/483、EMA、seed
-`20260726`、deterministic DDIM-50、eta 0、CFG 2.0、evaluation batch 30 与相同 KID/FID
-provider 参数。每个 arm 只替换 `subject.path` 与新的 output directory：
-
-```bash
-uv run --project examples/showcases/afhq-v2 stochaflow evaluate \
-  --config examples/showcases/afhq-v2/experiments/evaluation/formal-ddim50-cfg2-official-test-epsilon.yaml \
-  --device cuda \
-  --output-dir outputs/afhq-v2/evaluations/<control-or-p2>-epsilon-latest
-```
-
-已完成的受控训练在两个 arm 都使用 corrected 105,197,187-parameter ADM、真实 AFHQ、同一
-seed、deterministic runtime、BF16、micro batch 8 / accumulation 4、完整 1 epoch
-（1,679 micro-batches / 420 optimizer updates）和从 step 0 开始、decay 0.999 的 EMA。
-control 使用 P2 Builder `gamma: 0` 作为 strict-standard epsilon control；treatment 唯一
-算法变化是 `gamma: 1`。训练耗时分别为 4m28s 与 4m23s。
-
-两个 arm 在同一预算终点冻结各自 `latest.pt` 的 EMA，不使用 `best.pt`：control loss 与
-P2-weighted validation loss 不是共同 selection objective，分别选 best 会把
-checkpoint-selection policy 与训练目标一起改变。
-
-正式 protocol ID 为 `afhq-v2-adm-epsilon-ddim50-cfg2-official-test-v1`。两臂均完整发布
-1,467 个 unique IDs，使用相同 exact sample plan（`sample_ids_sha256` 为
-`b66fc...d6c1`）；control/P2 checkpoint SHA 分别为 `6dd0...2196` 与 `b02b...fa4a`。
-lower-is-better 结果如下：
-
-| Scope | Control FID | P2 FID | FID delta | Control KID mean | P2 KID mean | KID delta |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Aggregate | 369.621427 | 371.250343 | +1.628916 | 0.476357937 | 0.479742199 | +0.003384262 |
-| Cat | 381.980901 | 383.273453 | +1.292552 | 0.551076353 | 0.553966224 | +0.002889871 |
-| Dog | 382.850132 | 385.106413 | +2.256281 | 0.484312266 | 0.488923877 | +0.004611611 |
-| Wild | 370.417725 | 371.661225 | +1.243500 | 0.502315342 | 0.504731715 | +0.002416373 |
-
-P2 在 aggregate 和每类上都略差，所以单 epoch 对比没有显示收益。KID delta 与 reported
-standard deviation 同量级；单 seed、单 epoch 不能称为统计显著，也不能作为 200-epoch
-promotion evidence 或一般质量结论。受控 pipeline 与 protocol readiness 已关闭，production
-long-run gate 仍然开放。
+maintained evidence surface，也不提供 compatibility guarantee。
 
 ## 结果与追溯
 

@@ -13,8 +13,6 @@ from stochaflow.training.gaussian import (
     ClassConditionalGaussianDenoisingTrainingBuilder,
     ClassConditionalGaussianDenoisingTrainingStrategy,
     ClassConditionalGaussianDiagnosticSemantics,
-    ClassConditionalP2GaussianDenoisingTrainingBuilder,
-    ClassConditionalP2GaussianDenoisingTrainingStrategy,
     GaussianVarianceConfig,
 )
 from stochaflow.training.objectives import MSEObjective
@@ -238,19 +236,18 @@ def test_training_applies_dropout_but_evaluation_never_drops_conditions() -> Non
     assert not torch.any(evaluation.diagnostics["condition_dropout_mask"])
 
 
-def test_learned_range_p2_metrics_use_prediction_head_and_batch_weight() -> None:
+def test_learned_range_metrics_use_prediction_head_and_batch_weight() -> None:
     process = _process()
     model = LearnedVarianceToyClassConditionalDenoiser(process, "epsilon")
-    strategy = ClassConditionalP2GaussianDenoisingTrainingStrategy(
+    strategy = ClassConditionalGaussianDenoisingTrainingStrategy(
         model,
         process,
         MSEObjective(),
+        prediction_type="epsilon",
         variance=GaussianVarianceConfig(
             mode="learned_range",
         ),
         condition_dropout=1.0,
-        k=1.0,
-        gamma=1.0,
     )
 
     training = strategy.training_step(_batch())
@@ -443,23 +440,22 @@ def test_builder_preserves_injected_assets_and_private_configuration() -> None:
     assert plan.strategy.condition_dropout == pytest.approx(0.25)
 
 
-def test_builder_composes_p2_learned_range_and_freezes_variance_recipe() -> None:
+def test_builder_composes_learned_range_and_freezes_variance_recipe() -> None:
     process = _process()
     model = LearnedVarianceToyClassConditionalDenoiser(process, "epsilon")
     objective = MSEObjective()
     context = _builder_context(model, process, objective)
     context.params.update(
         {
+            "prediction_type": "epsilon",
             "condition_dropout": 0.1,
             "variance": {
                 "mode": "learned_range",
             },
-            "k": 1.0,
-            "gamma": 1.0,
         }
     )
 
-    plan = ClassConditionalP2GaussianDenoisingTrainingBuilder(context).build()
+    plan = ClassConditionalGaussianDenoisingTrainingBuilder(context).build()
     output = plan.strategy.training_step(_batch())
 
     assert plan.inference_recipe is not None
@@ -469,26 +465,10 @@ def test_builder_composes_p2_learned_range_and_freezes_variance_recipe() -> None
     }
     assert torch.isfinite(output.loss)
     assert output.diagnostics["per_sample_loss"].shape == (2,)
-    assert "per_sample_variational_bound" not in output.diagnostics
+    assert output.diagnostics["per_sample_simple_loss"].shape == (2,)
+    assert output.diagnostics["per_sample_variational_bound"].shape == (2,)
+    assert set(output.metrics) == {"simple_loss", "variational_bound"}
     assert "timestep_loss_weight" not in output.diagnostics
-
-
-def test_p2_builder_rejects_prediction_override_before_model_call() -> None:
-    process = _process()
-    model = ToyClassConditionalDenoiser(process, "x0")
-    context = _builder_context(model, process, MSEObjective())
-    context.params.update(
-        {
-            "prediction_type": "x0",
-            "k": 1.0,
-            "gamma": 1.0,
-        }
-    )
-
-    with pytest.raises(ValueError, match=r"unknown .* prediction_type"):
-        ClassConditionalP2GaussianDenoisingTrainingBuilder(context).build()
-
-    assert model.seen_labels == []
 
 
 @pytest.mark.parametrize(

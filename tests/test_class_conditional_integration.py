@@ -10,7 +10,6 @@ import torch
 
 from stochaflow.training.gaussian import (
     ClassConditionalGaussianDenoisingTrainingStrategy,
-    ClassConditionalP2GaussianDenoisingTrainingStrategy,
 )
 from stochaflow.utils.checkpoint import (
     CheckpointManager,
@@ -144,16 +143,6 @@ def _microbatches() -> list[tuple[torch.Tensor, dict[str, torch.Tensor]]]:
             "class_conditional_gaussian_denoising",
             {"prediction_type": "v", "condition_dropout": 0.5},
             ClassConditionalGaussianDenoisingTrainingStrategy,
-        ),
-        (
-            "class_conditional_p2_gaussian_denoising",
-            {
-                "condition_dropout": 0.5,
-                "k": 1.0,
-                "gamma": 1.0,
-                "variance": {"mode": "fixed"},
-            },
-            ClassConditionalP2GaussianDenoisingTrainingStrategy,
         ),
     ],
 )

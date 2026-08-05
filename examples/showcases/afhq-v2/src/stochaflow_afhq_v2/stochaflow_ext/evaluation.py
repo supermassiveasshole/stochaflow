@@ -6,7 +6,7 @@ import base64
 import binascii
 import hashlib
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, cast
@@ -24,10 +24,14 @@ from stochaflow.evaluation import (
     JsonlPredictionArtifactSink,
     PredictionRecord,
     PredictionSampleIdentity,
-    ResolvedCheckpointSubject,
     ResolvedPredictionArtifactSubject,
 )
-from stochaflow.metrics import MetricSpec, MetricUpdate, build_metric
+from stochaflow.metrics import (
+    MetricSpec,
+    MetricUpdate,
+    ShareableImageFeatureMetric,
+    build_metric,
+)
 from stochaflow.sampling import SamplingOutput
 from stochaflow.utils.registry import REGISTRIES
 
@@ -162,6 +166,30 @@ class AFHQV2ClassAwareDistributionMetric(Metric):
             default=torch.zeros(class_count, dtype=torch.long),
             dist_reduce_fx="sum",
         )
+        shareable_groups: dict[Hashable, list[tuple[str, str]]] = {}
+        direct_metrics: list[tuple[str, str]] = []
+        update_scopes = (*self.class_mapping, "aggregate")
+        for scope in update_scopes:
+            for provider_name, _ in self.provider_specs:
+                metric = self._metric(scope, provider_name)
+                if not isinstance(metric, ShareableImageFeatureMetric):
+                    direct_metrics.append((scope, provider_name))
+                    continue
+                identity = metric.image_feature_extractor_identity()
+                try:
+                    hash(identity)
+                except TypeError as error:
+                    raise TypeError(
+                        "shareable image feature identity must be hashable"
+                    ) from error
+                shareable_groups.setdefault(identity, []).append(
+                    (scope, provider_name)
+                )
+        self._shareable_groups = {
+            identity: tuple(metric_keys)
+            for identity, metric_keys in shareable_groups.items()
+        }
+        self._direct_metric_keys = tuple(direct_metrics)
 
     def _metric(self, scope: str, provider: str) -> Metric:
         value = cast(object, getattr(self, self._metric_names[(scope, provider)]))
@@ -201,19 +229,43 @@ class AFHQV2ClassAwareDistributionMetric(Metric):
         images = images.to(self.real_counts.device)
         labels = labels.to(self.real_counts.device)
         counter = self.real_counts if real else self.fake_counts
+        class_masks: dict[str, torch.Tensor] = {}
         for name, label in self.class_mapping.items():
             mask = labels == label
+            class_masks[name] = mask
             count = int(mask.sum())
             if count:
                 counter[label] += count
-                selected = images[mask]
-                for provider_name, _ in self.provider_specs:
-                    self._metric(name, provider_name).update(
-                        selected,
-                        real=real,
+        for scope, provider_name in self._direct_metric_keys:
+            selected = (
+                images
+                if scope == "aggregate"
+                else images[class_masks[scope]]
+            )
+            if selected.shape[0]:
+                self._metric(scope, provider_name).update(selected, real=real)
+        for metric_keys in self._shareable_groups.values():
+            leader = self._metric(*metric_keys[0])
+            if not isinstance(leader, ShareableImageFeatureMetric):
+                raise TypeError("AFHQ-v2 shareable metric capability changed")
+            features = leader.extract_image_features(images)
+            if features.shape[0] != images.shape[0]:
+                raise ValueError(
+                    "AFHQ-v2 shared feature count must match the image batch"
+                )
+            for scope, provider_name in metric_keys:
+                metric = self._metric(scope, provider_name)
+                if not isinstance(metric, ShareableImageFeatureMetric):
+                    raise TypeError(
+                        "AFHQ-v2 shareable metric capability changed"
                     )
-        for provider_name, _ in self.provider_specs:
-            self._metric("aggregate", provider_name).update(images, real=real)
+                selected = (
+                    features
+                    if scope == "aggregate"
+                    else features[class_masks[scope]]
+                )
+                if selected.shape[0]:
+                    metric.update_image_features(selected, real=real)
 
     def compute(self) -> Mapping[str, torch.Tensor | float]:
         self._validate_counts(self.real_counts, self.expected_real, kind="real")
@@ -727,39 +779,7 @@ class AFHQV2GenerationEvaluationBuilder(EvaluationBuilder):
         sink = None
         modules: Mapping[str, nn.Module]
         sampling: EvaluationSamplingCapability | None
-        if isinstance(self.context.subject, ResolvedCheckpointSubject):
-            if not isinstance(cast(object, self.context.inference), nn.Module):
-                raise TypeError("AFHQ-v2 live evaluation requires a primary model")
-            if self.context.sampling is None:
-                raise TypeError(
-                    "AFHQ-v2 live evaluation requires checkpoint sampling capability"
-                )
-            if self.context.artifact_root is None:
-                raise ValueError("AFHQ-v2 live evaluation requires artifact staging")
-            sampling = self.context.sampling
-            modules = {"primary": cast(nn.Module, self.context.inference)}
-            manifest_split = (
-                "official-test" if split == "test" else "validation"
-            )
-            sink = JsonlPredictionArtifactSink(
-                self.context.artifact_root,
-                expected_samples=sample_plan,
-                preprocess={
-                    "reference": (
-                        "authenticated AFHQ-v2 "
-                        f"{manifest_split} manifest order"
-                    ),
-                    "source_range": [-1.0, 1.0],
-                    "metric_range": [0.0, 1.0],
-                    "pairing": f"same-class {manifest_split} allocation",
-                },
-                postprocess={
-                    "codec": AFHQ_V2_IMAGE_CODEC,
-                    "quantization": "clamp[-1,1]-round-rgb-u8",
-                },
-                gallery_count=profile.gallery_count,
-            )
-        elif isinstance(
+        if isinstance(
             self.context.subject,
             ResolvedPredictionArtifactSubject,
         ):
@@ -775,7 +795,38 @@ class AFHQV2GenerationEvaluationBuilder(EvaluationBuilder):
             sampling = None
             modules = {}
         else:
-            raise TypeError("AFHQ-v2 evaluation subject is unsupported")
+            inference = cast(object, self.context.inference)
+            if not isinstance(inference, nn.Module):
+                raise TypeError("AFHQ-v2 live evaluation requires a primary model")
+            sampling_value = cast(object, self.context.sampling)
+            if not isinstance(sampling_value, EvaluationSamplingCapability):
+                raise TypeError(
+                    "AFHQ-v2 live evaluation requires a sampling capability"
+                )
+            sampling = cast(EvaluationSamplingCapability, sampling_value)
+            modules = {"primary": inference}
+            if self.context.artifact_root is not None:
+                manifest_split = (
+                    "official-test" if split == "test" else "validation"
+                )
+                sink = JsonlPredictionArtifactSink(
+                    self.context.artifact_root,
+                    expected_samples=sample_plan,
+                    preprocess={
+                        "reference": (
+                            "authenticated AFHQ-v2 "
+                            f"{manifest_split} manifest order"
+                        ),
+                        "source_range": [-1.0, 1.0],
+                        "metric_range": [0.0, 1.0],
+                        "pairing": f"same-class {manifest_split} allocation",
+                    },
+                    postprocess={
+                        "codec": AFHQ_V2_IMAGE_CODEC,
+                        "quantization": "clamp[-1,1]-round-rgb-u8",
+                    },
+                    gallery_count=profile.gallery_count,
+                )
         evaluator = AFHQV2GenerationEvaluator(
             profile=profile,
             sample_plan=sample_plan,

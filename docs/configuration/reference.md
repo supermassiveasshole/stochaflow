@@ -423,7 +423,7 @@ diagnostic 构造参数；logger 与 output_dir 由运行时注入；需要采�
 
 - 类型：`mapping`
 - 必填：否
-- 默认值：`{accumulate_grad_batches: 1, device: cpu, early_stopping: {enabled: false, min_delta: 0.0, mode: min, monitor: valid/loss, patience: 10}, max_grad_norm: null, num_epochs: 1, precision: fp32, show_progress: true}`
+- 默认值：`{accumulate_grad_batches: 1, device: cpu, early_stopping: {enabled: false, min_delta: 0.0, mode: min, monitor: valid/loss, patience: 10}, max_grad_norm: null, num_epochs: 1, precision: fp32, show_progress: true, test_after_fit: true, validation_evaluation: {enabled: false, evaluation: null, every_epochs: 1, include_final: true, metric_keys: [], metrics: [], protocol: null, start_epoch: 1, weights: ema}}`
 
 (config-field-path-trainer-num-epochs)=
 ### `trainer.num_epochs`
@@ -486,6 +486,15 @@ Torch 设备字符串；auto 依次选择 CUDA、MPS、CPU。
 - 默认值：`true`
 - CLI 覆盖：`train --progress / --no-progress`
 
+(config-field-path-trainer-test-after-fit)=
+### `trainer.test_after_fit`
+
+训练结束后是否运行一次 test split；关闭时不会读取或迭代 test loader，适合只用 validation Evaluation 选 checkpoint 的训练。
+
+- 类型：`bool`
+- 必填：否
+- 默认值：`true`
+
 (config-field-path-trainer-early-stopping)=
 ### `trainer.early_stopping`
 
@@ -544,6 +553,177 @@ validation monitor 连续无足够改善时容忍的 epoch 数。
 - 必填：否
 - 默认值：`0.0`
 - 约束：非负数。
+
+(config-field-path-trainer-validation-evaluation)=
+### `trainer.validation_evaluation`
+
+在训练期间按 epoch cadence 执行的完整 validation Evaluation；Evaluation 负责采样、完整性和驱动声明的 Metrics，返回指标可直接参与已有 best-checkpoint 与 early-stopping 逻辑。
+
+- 类型：`mapping`
+- 必填：否
+- 默认值：`{enabled: false, evaluation: null, every_epochs: 1, include_final: true, metric_keys: [], metrics: [], protocol: null, start_epoch: 1, weights: ema}`
+
+(config-field-path-trainer-validation-evaluation-enabled)=
+### `trainer.validation_evaluation.enabled`
+
+是否启用训练期 validation Evaluation。
+
+- 类型：`bool`
+- 必填：否
+- 默认值：`false`
+
+(config-field-path-trainer-validation-evaluation-start-epoch)=
+### `trainer.validation_evaluation.start_epoch`
+
+首次执行完整 validation Evaluation 的绝对 epoch。
+
+- 类型：`int`
+- 必填：否
+- 默认值：`1`
+- 约束：正整数且不超过 trainer.num_epochs。
+
+(config-field-path-trainer-validation-evaluation-every-epochs)=
+### `trainer.validation_evaluation.every_epochs`
+
+首次执行后每隔多少个 epoch 再执行一次完整 validation Evaluation。
+
+- 类型：`int`
+- 必填：否
+- 默认值：`1`
+- 约束：正整数。
+
+(config-field-path-trainer-validation-evaluation-include-final)=
+### `trainer.validation_evaluation.include_final`
+
+最终 epoch 未命中固定 cadence 时是否额外执行一次 validation Evaluation。
+
+- 类型：`bool`
+- 必填：否
+- 默认值：`true`
+
+(config-field-path-trainer-validation-evaluation-weights)=
+### `trainer.validation_evaluation.weights`
+
+validation Evaluation 采样所用的 primary-model 权重。
+
+- 类型：`str`
+- 必填：否
+- 默认值：`ema`
+- 约束：raw 或 ema；ema 要求已启用 EMA。
+
+(config-field-path-trainer-validation-evaluation-evaluation)=
+### `trainer.validation_evaluation.evaluation`
+
+构建完整 validation EvaluationPlan 的 EvaluationBuilder Registry 声明。
+
+- 类型：`mapping | null`
+- 必填：否
+- 默认值：`null`
+
+(config-field-path-trainer-validation-evaluation-evaluation-name)=
+### `trainer.validation_evaluation.evaluation.name`
+
+evaluation_builders Registry 名称。
+
+- 类型：`str`
+- 必填：是
+
+(config-field-path-trainer-validation-evaluation-evaluation-params)=
+### `trainer.validation_evaluation.evaluation.params`
+
+EvaluationBuilder 拥有的协议与采样组合参数；模型、validation data、Metrics 和运行时由框架注入。
+
+- 类型：`mapping[str, any]`
+- 必填：否
+- 默认值：`{}`
+
+(config-field-path-trainer-validation-evaluation-metrics)=
+### `trainer.validation_evaluation.metrics`
+
+该 validation Evaluation 依赖的 Metric 声明；Metrics 接收 Evaluation 产生的 sample payload，并自行负责特征提取、状态累积和 FID/KID 等指标计算。
+
+- 类型：`list[mapping]`
+- 必填：否
+- 默认值：`[]`
+
+(config-field-path-trainer-validation-evaluation-metrics-item-id)=
+### `trainer.validation_evaluation.metrics[].id`
+
+validation Evaluation 内唯一、稳定且可用于 canonical metric tag 的 Metric 标识。
+
+- 类型：`str`
+- 必填：是
+
+(config-field-path-trainer-validation-evaluation-metrics-item-name)=
+### `trainer.validation_evaluation.metrics[].name`
+
+metrics Registry 中的 Metric 构造名称。
+
+- 类型：`str`
+- 必填：是
+
+(config-field-path-trainer-validation-evaluation-metrics-item-channel)=
+### `trainer.validation_evaluation.metrics[].channel`
+
+Evaluation evaluator 产生 MetricUpdate 时使用的 task-owned channel。
+
+- 类型：`str`
+- 必填：是
+
+(config-field-path-trainer-validation-evaluation-metrics-item-params)=
+### `trainer.validation_evaluation.metrics[].params`
+
+原样传给 Metric constructor 的参数；采样或 Evaluation 协议参数不属于此处。
+
+- 类型：`mapping[str, any]`
+- 必填：否
+- 默认值：`{}`
+
+(config-field-path-trainer-validation-evaluation-metric-keys)=
+### `trainer.validation_evaluation.metric_keys`
+
+该 Evaluation 必须完整返回的 canonical valid/metrics 指标键集合，用于结果完整性、strict resume 身份和 monitor 绑定检查。
+
+- 类型：`list[str]`
+- 必填：否
+- 默认值：`[]`
+
+(config-field-path-trainer-validation-evaluation-protocol)=
+### `trainer.validation_evaluation.protocol`
+
+训练期 validation Evaluation 的样本完整性 authority。
+
+- 类型：`mapping | null`
+- 必填：否
+- 默认值：`null`
+
+(config-field-path-trainer-validation-evaluation-protocol-id)=
+### `trainer.validation_evaluation.protocol.id`
+
+稳定且非空的 validation Evaluation protocol 标识。
+
+- 类型：`str`
+- 必填：否
+- 默认值：`''`
+
+(config-field-path-trainer-validation-evaluation-protocol-expected-examples)=
+### `trainer.validation_evaluation.protocol.expected_examples`
+
+Evaluation 必须唯一覆盖的 validation example 数。
+
+- 类型：`int`
+- 必填：否
+- 默认值：`0`
+- 约束：正整数。
+
+(config-field-path-trainer-validation-evaluation-protocol-strict-complete)=
+### `trainer.validation_evaluation.protocol.strict_complete`
+
+是否要求样本数和 ID 严格完整；用于 checkpoint selection 时必须为 true。
+
+- 类型：`bool`
+- 必填：否
+- 默认值：`true`
 
 ## `logging`
 
@@ -1147,20 +1327,6 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | `condition_dropout` | 训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。 |
 | `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C 和内置 MSE Objective；该具体 Strategy 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
 
-(config-component-training_builders-class-conditional-p2-gaussian-denoising)=
-#### `class_conditional_p2_gaussian_denoising`
-
-读取 class-labeled batch，以固定 epsilon prediction 执行类条件 P2 Gaussian training；这是具体 TrainingBuilder/Strategy，不是标准 Builder 的 weighting option，并要求内置 MSE Objective。
-
-运行时注入（不得在 YAML 中覆盖）：`context`。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `condition_dropout` | 训练时把 class label 替换为 null class 的概率；默认 `0.0`，范围 `[0, 1]`。 |
-| `k` | P2 `(k + SNR)^(-gamma)` 的 offset；默认 `1.0`，必须 finite 且大于 `0`。 |
-| `gamma` | P2 exponent；默认 `1.0`，必须 finite 且非负；`0` 使 simple-loss weight 严格退化为 `1`。 |
-| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。 |
-
 (config-component-training_builders-gaussian-denoising)=
 #### `gaussian_denoising`
 
@@ -1172,19 +1338,6 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | --- | --- |
 | `prediction_type` | 训练 target 与模型输出参数化；默认 `epsilon`，支持 `epsilon`、`x0`、`v`、`score`；要求注入离散 Gaussian Process 和 Objective。 |
 | `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C 和内置 MSE Objective；该具体 Strategy 使用 detached-mean VB，定义为 0.001 × 完整 VLB，在 uniform single-timestep estimator 中实现为 T/1000 × sampled VB term。 |
-
-(config-component-training_builders-p2-gaussian-denoising)=
-#### `p2_gaussian_denoising`
-
-使用离散 Gaussian marginal，以固定 epsilon prediction 执行无条件 P2 training；这是具体 TrainingBuilder/Strategy，不是标准 Builder 的 weighting option，并要求内置 MSE Objective。
-
-运行时注入（不得在 YAML 中覆盖）：`context`。
-
-| 参数 | 含义与约束 |
-| --- | --- |
-| `k` | P2 `(k + SNR)^(-gamma)` 的 offset；默认 `1.0`，必须 finite 且大于 `0`。 |
-| `gamma` | P2 exponent；默认 `1.0`，必须 finite 且非负；`0` 使 simple-loss weight 严格退化为 `1`。 |
-| `variance` | Gaussian-local mapping；默认 `{mode: fixed}`。`{mode: learned_range}` 要求模型输出 2C；P2 只加权 simple MSE，不加权 detached-mean VB。 |
 
 (config-component-training_builders-supervised)=
 #### `supervised`
@@ -1270,6 +1423,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | `gamma` | 可选的正多项式核缩放系数；null 使用 provider 默认值。 |
 | `coef` | 正多项式核常数项。 |
 | `seed` | KID 随机子集抽样的固定非负种子；compute 会隔离并恢复调用方 RNG 状态。 |
+| `antialias` | 调整输入到 Inception 尺寸时是否使用抗锯齿；必须为布尔值，默认 true。 |
 
 (config-registry-name-optimizers)=
 ### `optimizers`

@@ -653,4 +653,4 @@ recipe 的 `low_res_path`/代码契约验证。DDPM/DDIM 不读取这些任务�
 
 本教程没有宣称该玩具网络达到任何 PSNR、SSIM、感知质量或科学重建精度。真实 SR 支持
 必须在任务实现时同步交付 validation monitoring、checkpoint inference 与 task-specific
-formal `EvaluationBuilder`/protocol；它不属于当前 P2 merge 或实验 gate。
+formal `EvaluationBuilder`/protocol；它不属于当前 pixel-space AFHQ closeout。

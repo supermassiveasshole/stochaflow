@@ -102,6 +102,11 @@ The canonical configuration reference is
   family; they MUST NOT be inferred from optional Strategy flags.
 - Checkpoint selection MUST use validation observations. Diagnostics and test
   observations MUST NOT silently influence model selection.
+- A configured epoch-end validation Evaluation MAY evaluate the current raw or
+  EMA training snapshot and publish canonical `valid/metrics/*` observations.
+  Its profile, metric surface, cadence, and last completed observation MUST be
+  strict-resume state. Epochs outside the cadence MUST NOT reuse an older
+  observation or advance early-stopping patience.
 - A completed training run SHOULD expose a structured outcome containing final
   metrics, selected checkpoints, and published artifact references.
 
@@ -144,8 +149,9 @@ The canonical configuration reference is
 
 ## 8. Evaluation Contract
 
-- Evaluation MUST be a standalone operation over an explicit subject, selected
-  data, protocol, metric set, and output destination.
+- An Evaluation MUST receive an explicit subject, selected data, protocol, and
+  metric set. A formal Evaluation additionally MUST be a standalone operation
+  with an explicit output destination.
 - Supported subjects MUST expose enough identity to bind results to exact
   checkpoint assets or versioned prediction artifacts.
 - Checkpoint evaluation MUST make raw/EMA selection explicit and MUST reuse the
@@ -157,8 +163,12 @@ The canonical configuration reference is
 - A successful evaluation MUST publish an immutable result bundle with subject,
   data, protocol, metric, provider, and artifact identity sufficient for later
   verification.
-- Training metrics and diagnostics MAY provide development feedback, but they
-  MUST NOT be represented as formal benchmark evidence.
+- An epoch-end training Evaluation MAY reuse the same EvaluationPlan/runtime on
+  a live raw or EMA snapshot without publishing a formal result bundle. Its
+  metrics are validation observations for checkpoint selection, not benchmark
+  evidence.
+- Ordinary training metrics and diagnostics MAY provide development feedback,
+  but they MUST NOT be represented as formal benchmark evidence.
 
 ## 9. State, Artifact, and Compatibility Contract
 

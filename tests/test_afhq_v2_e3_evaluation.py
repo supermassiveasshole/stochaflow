@@ -40,8 +40,24 @@ from stochaflow.sampling import (
     SamplingBuilder,
     SamplingOutput,
 )
-from stochaflow.utils.checkpoint import CHECKPOINT_FORMAT_VERSION
-from stochaflow.utils.config import ComponentConfig, StochaflowConfig, load_config_dict
+from stochaflow.scripts.epoch_validation import EvaluationBackedEpochValidator
+from stochaflow.training import (
+    ExponentialMovingAverage,
+    SupervisedTrainingStrategy,
+    Trainer,
+    TrainingPlan,
+)
+from stochaflow.utils.checkpoint import (
+    CHECKPOINT_FORMAT_VERSION,
+    CheckpointManager,
+)
+from stochaflow.utils.config import (
+    ComponentConfig,
+    StochaflowConfig,
+    ValidationEvaluationConfig,
+    ValidationEvaluationProtocolConfig,
+    load_config_dict,
+)
 from stochaflow.utils.registry import REGISTRIES
 from stochaflow.utils.sampling_recipe import (
     SamplingRecipe,
@@ -59,33 +75,6 @@ _FORMAL_PROFILE = (
     / "evaluation"
     / "formal-ddim50-cfg2-official-test.yaml"
 )
-_EPSILON_FORMAL_PROFILE = (
-    _ROOT
-    / "examples"
-    / "showcases"
-    / "afhq-v2"
-    / "experiments"
-    / "evaluation"
-    / "formal-ddim50-cfg2-official-test-epsilon.yaml"
-)
-_EPSILON_SELECTION_PROFILE = (
-    _ROOT
-    / "examples"
-    / "showcases"
-    / "afhq-v2"
-    / "experiments"
-    / "evaluation"
-    / "selection-ddim50-cfg2-validation-epsilon.yaml"
-)
-_P2_CLOSEOUT_POLICY = (
-    _ROOT
-    / "examples"
-    / "showcases"
-    / "afhq-v2"
-    / "experiments"
-    / "evaluation"
-    / "p2-production-closeout-policy.yaml"
-)
 if str(_EXAMPLE_SRC) not in sys.path:
     sys.path.insert(0, str(_EXAMPLE_SRC))
 
@@ -94,6 +83,8 @@ afhq_evaluation = importlib.import_module(
 )
 
 TEST_PROVIDER = "test_afhq_v2_e3_image_gap"
+SHARED_PROVIDER_A = "test_afhq_v2_e3_shared_features_a"
+SHARED_PROVIDER_B = "test_afhq_v2_e3_shared_features_b"
 RUNTIME_MODEL = "test_afhq_v2_e3_runtime_model"
 RUNTIME_DATA = "test_afhq_v2_e3_runtime_data"
 RUNTIME_SAMPLING = "test_afhq_v2_e3_runtime_sampling"
@@ -129,8 +120,73 @@ class TinyImageGapMetric(Metric):
         )
 
 
+class TinySharedFeatureMetric(Metric):
+    """Test one shareable extraction feeding independent metric state."""
+
+    extraction_calls: ClassVar[int] = 0
+    direct_update_calls: ClassVar[int] = 0
+    real_total: torch.Tensor
+    real_count: torch.Tensor
+    fake_total: torch.Tensor
+    fake_count: torch.Tensor
+
+    def __init__(self, *, scale: float) -> None:
+        super().__init__()
+        self.scale = scale
+        self.add_state("real_total", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("real_count", default=torch.tensor(0), dist_reduce_fx="sum")
+        self.add_state("fake_total", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("fake_count", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    def image_feature_extractor_identity(self) -> tuple[str, int]:
+        return ("tiny-shared-image-features", 2)
+
+    def extract_image_features(self, images: torch.Tensor) -> torch.Tensor:
+        type(self).extraction_calls += 1
+        values = images.mean(dim=(1, 2, 3))
+        return torch.stack((values, values.square()), dim=1)
+
+    def update_image_features(
+        self,
+        features: torch.Tensor,
+        *,
+        real: bool,
+    ) -> None:
+        self.update(features, real=real, features_precomputed=True)
+
+    def update(
+        self,
+        images: torch.Tensor,
+        *,
+        real: bool,
+        features_precomputed: bool = False,
+    ) -> None:
+        if not features_precomputed:
+            type(self).direct_update_calls += 1
+            raise AssertionError(
+                "shareable metric must receive precomputed features"
+            )
+        features = images
+        values = features[:, 0] * self.scale
+        if real:
+            self.real_total += values.sum()
+            self.real_count += values.numel()
+        else:
+            self.fake_total += values.sum()
+            self.fake_count += values.numel()
+
+    def compute(self) -> torch.Tensor:
+        return torch.abs(
+            self.real_total / self.real_count - self.fake_total / self.fake_count
+        )
+
+
 if TEST_PROVIDER not in REGISTRIES.metrics.names():
     REGISTRIES.metrics.add(TEST_PROVIDER, TinyImageGapMetric)
+if SHARED_PROVIDER_A not in REGISTRIES.metrics.names():
+    REGISTRIES.metrics.add(SHARED_PROVIDER_A, TinySharedFeatureMetric)
+if SHARED_PROVIDER_B not in REGISTRIES.metrics.names():
+    REGISTRIES.metrics.add(SHARED_PROVIDER_B, TinySharedFeatureMetric)
 
 
 class TinyAFHQModel(nn.Module):
@@ -176,6 +232,11 @@ class RuntimeAFHQModel(nn.Module):
         type(self).last_instance = self
         self.anchor = nn.Parameter(torch.zeros(()))
 
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Expose one differentiable scalar path for the training integration."""
+
+        return inputs * self.anchor
+
 
 class RuntimeAFHQDataBuilder(DataBuilder):
     """Expose a deterministic official-test-shaped tiny class batch."""
@@ -210,12 +271,13 @@ class RuntimeAFHQSamplingBuilder(SamplingBuilder):
 
     run_calls: ClassVar[int] = 0
     resolved_model: ClassVar[nn.Module | None] = None
+    resolved_weights: ClassVar[str | None] = None
 
     def run(self) -> SamplingOutput:
         type(self).run_calls += 1
-        model, weights = self.context.model_provider.resolve("raw")
+        model, weights = self.context.model_provider.resolve("auto")
         type(self).resolved_model = model
-        assert weights == "raw"
+        type(self).resolved_weights = weights
         samples = torch.stack(
             (
                 torch.full((3, 128, 128), -0.6),
@@ -287,6 +349,7 @@ def profile_params(
     *,
     recipe_name: str = "class_conditional_denoising",
     recipe_contract: Mapping[str, Any] | None = None,
+    weights: str = "raw",
 ) -> dict[str, Any]:
     """Return a tiny full-class profile preserving the production topology."""
 
@@ -311,7 +374,7 @@ def profile_params(
                 "params": {"num_inference_steps": 2, "eta": 0.0},
             },
             "options": {
-                "weights": "raw",
+                "weights": weights,
                 "clip_denoised": True,
                 "guidance_scale": 2.0,
                 "conditions": [
@@ -344,6 +407,42 @@ def metric_spec() -> MetricSpec:
             "providers": [{"name": TEST_PROVIDER, "params": {}}],
         },
     )
+
+
+def test_afhq_class_aware_metric_extracts_shared_features_once_per_payload(
+) -> None:
+    TinySharedFeatureMetric.extraction_calls = 0
+    TinySharedFeatureMetric.direct_update_calls = 0
+    metric = afhq_evaluation.AFHQV2ClassAwareDistributionMetric(
+        class_mapping={"cat": 0, "dog": 1, "wild": 2},
+        expected_real={"cat": 1, "dog": 1, "wild": 1},
+        expected_fake={"cat": 1, "dog": 1, "wild": 1},
+        providers=[
+            {"name": SHARED_PROVIDER_A, "params": {"scale": 1.0}},
+            {"name": SHARED_PROVIDER_B, "params": {"scale": 2.0}},
+        ],
+    )
+    labels = torch.tensor([0, 1, 2], dtype=torch.long)
+    real = torch.stack(
+        tuple(torch.full((3, 128, 128), value) for value in (0.1, 0.3, 0.5))
+    )
+    fake = torch.stack(
+        tuple(torch.full((3, 128, 128), value) for value in (0.2, 0.1, 0.4))
+    )
+
+    metric.update(real, labels, real=True)
+    metric.update(fake, labels, real=False)
+    result = metric.compute()
+
+    assert TinySharedFeatureMetric.extraction_calls == 2
+    assert TinySharedFeatureMetric.direct_update_calls == 0
+    assert set(result) == {
+        f"{scope}.{provider}"
+        for scope in ("aggregate", "cat", "dog", "wild")
+        for provider in (SHARED_PROVIDER_A, SHARED_PROVIDER_B)
+    }
+    assert result[f"cat.{SHARED_PROVIDER_A}"] == pytest.approx(0.1)
+    assert result[f"cat.{SHARED_PROVIDER_B}"] == pytest.approx(0.2)
 
 
 def runtime_training_config() -> StochaflowConfig:
@@ -672,6 +771,150 @@ def test_afhq_validation_prediction_plan_uses_validation_identity(
     ]
 
 
+def test_afhq_live_training_validation_accepts_opaque_subject_without_artifacts(
+) -> None:
+    subject = object()
+    model = TinyAFHQModel()
+    sampling = FakeAFHQSamplingCapability()
+    plan = build_evaluation_plan(
+        ComponentConfig(
+            name=afhq_evaluation.AFHQ_V2_EVALUATION_BUILDER,
+            params=profile_params(),
+        ),
+        subject=subject,
+        data=[
+            (
+                torch.zeros(3, 3, 128, 128),
+                {"class_label": torch.tensor([0, 1, 2])},
+            )
+        ],
+        data_identity={"source": "training", "split": "validation"},
+        inference=model,
+        metric_specs=(metric_spec(),),
+        protocol=protocol(),
+        sampling=sampling,
+    )
+
+    metrics, sample_ids, draft = run_plan(plan)
+
+    assert plan.subject is subject
+    assert plan.modules == {"primary": model}
+    assert plan.artifact_sink is None
+    assert len(sampling.requests) == 1
+    assert metrics
+    assert sample_ids == (
+        "afhq-v2-e3-test-v1:generated:000000",
+        "afhq-v2-e3-test-v1:generated:000001",
+        "afhq-v2-e3-test-v1:generated:000002",
+    )
+    assert draft is None
+
+
+def test_afhq_training_evaluation_samples_metrics_and_saves_best(
+    tmp_path: Path,
+) -> None:
+    model = RuntimeAFHQModel()
+    objective = nn.MSELoss()
+    strategy = SupervisedTrainingStrategy(model, objective)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
+    ema = ExponentialMovingAverage(model)
+    plan = TrainingPlan(
+        strategy=strategy,
+        primary_model=model,
+        objective=objective,
+        inference_recipe=SamplingRecipe(
+            name=RUNTIME_SAMPLING,
+            contract={},
+        ),
+    )
+    trainer = Trainer(
+        plan,
+        optimizer,
+        device="cpu",
+        ema=ema,
+        checkpoint_manager=CheckpointManager(
+            model=model,
+            objective=objective,
+            optimizer=optimizer,
+            ema=ema,
+            inference_recipe=plan.inference_recipe,
+        ),
+        checkpoint_dir=tmp_path / "checkpoints",
+        checkpoint_every=1,
+    )
+    profile = profile_params(
+        recipe_name=RUNTIME_SAMPLING,
+        recipe_contract={},
+        weights="ema",
+    )
+    provider_key = TEST_PROVIDER
+    metric_keys = [
+        f"valid/metrics/distribution/{scope}.{provider_key}"
+        for scope in ("aggregate", "cat", "dog", "wild")
+    ]
+    validator = EvaluationBackedEpochValidator(
+        trainer=trainer,
+        config=ValidationEvaluationConfig(
+            enabled=True,
+            start_epoch=1,
+            every_epochs=1,
+            include_final=True,
+            weights="ema",
+            evaluation=ComponentConfig(
+                name=afhq_evaluation.AFHQ_V2_EVALUATION_BUILDER,
+                params=profile,
+            ),
+            metrics=[metric_spec()],
+            metric_keys=metric_keys,
+            protocol=ValidationEvaluationProtocolConfig(
+                id="afhq-v2-e3-live-training-validation-v1",
+                expected_examples=3,
+                strict_complete=True,
+            ),
+        ),
+        validation_data=[
+            (
+                torch.stack(
+                    (
+                        torch.full((3, 128, 128), 0.8),
+                        torch.full((3, 128, 128), -0.8),
+                        torch.full((3, 128, 128), 0.2),
+                    )
+                ),
+                {"class_label": torch.tensor([2, 0, 1], dtype=torch.long)},
+            )
+        ],
+        data_identity={"source": "training", "split": "validation"},
+    )
+    RuntimeAFHQSamplingBuilder.run_calls = 0
+    RuntimeAFHQSamplingBuilder.resolved_model = None
+    RuntimeAFHQSamplingBuilder.resolved_weights = None
+
+    history = trainer.fit(
+        [(torch.ones((1, 1)), torch.zeros((1, 1)))],
+        num_epochs=1,
+        show_progress=False,
+        epoch_validation_evaluator=validator,
+        early_stopping_monitor=metric_keys[0],
+        early_stopping_mode="min",
+    )
+
+    assert RuntimeAFHQSamplingBuilder.run_calls == 1
+    assert RuntimeAFHQSamplingBuilder.resolved_model is model
+    assert RuntimeAFHQSamplingBuilder.resolved_weights == "ema"
+    assert set(history[0]).issuperset(metric_keys)
+    assert trainer.best_epoch == 1
+    best = CheckpointManager.load_payload(
+        tmp_path / "checkpoints" / "best.pt"
+    )
+    assert best.get("epoch") == 1
+    best_metrics = best.get("metrics")
+    assert isinstance(best_metrics, dict)
+    assert best_metrics[metric_keys[0]] == pytest.approx(
+        history[0][metric_keys[0]]
+    )
+
+
 def test_afhq_e3_core_runtime_uses_pinned_sampling_and_offline_replay(
     tmp_path: Path,
 ) -> None:
@@ -817,194 +1060,4 @@ def test_checked_in_afhq_e3_profile_freezes_full_official_test_authority() -> No
             "name": "fid",
             "params": {"feature": 2048, "antialias": True},
         },
-    )
-
-
-def test_checked_in_p2_official_profile_is_epsilon_compatible_and_fails_closed() -> None:
-    config = load_evaluation_config(_EPSILON_FORMAL_PROFILE)
-    baseline = load_evaluation_config(_FORMAL_PROFILE)
-
-    assert isinstance(config.subject, CheckpointSubjectConfig)
-    assert config.subject.weights == "ema"
-    assert config.subject.path.name == "REPLACE_WITH_SELECTED_EPOCH_CHECKPOINT.pt"
-    assert "REPLACE_WITH_RUN_ID" in config.subject.path.parts
-    assert "p2-ab" not in config.subject.path.parts
-    assert "latest.pt" not in config.subject.path.parts
-    assert config.evaluation.params["sampling"]["recipe"] == {
-        "name": "class_conditional_denoising",
-        "contract": {
-            "prediction_type": "epsilon",
-            "variance": {"mode": "fixed"},
-        },
-    }
-    assert config.evaluation.params["expected_per_class"] == (
-        baseline.evaluation.params["expected_per_class"]
-    )
-    assert config.evaluation.params["sampling"]["sampler"] == (
-        baseline.evaluation.params["sampling"]["sampler"]
-    )
-    assert config.evaluation.params["sampling"]["options"] == (
-        baseline.evaluation.params["sampling"]["options"]
-    )
-    assert config.metrics == baseline.metrics
-    assert config.protocol.expected_examples == 1467
-    assert config.protocol.strict_complete is True
-
-
-def test_checked_in_p2_selection_profile_uses_only_validation() -> None:
-    config = load_evaluation_config(_EPSILON_SELECTION_PROFILE)
-    final_test = load_evaluation_config(_EPSILON_FORMAL_PROFILE)
-
-    assert config.purpose == "selection_candidate"
-    assert isinstance(config.subject, CheckpointSubjectConfig)
-    assert config.subject.weights == "ema"
-    assert config.subject.path.name == "epoch_0200.pt"
-    assert "REPLACE_WITH_RUN_ID" in config.subject.path.parts
-    assert config.data.split == "validation"
-    assert config.evaluation.params["expected_per_class"] == {
-        "cat": 300,
-        "dog": 300,
-        "wild": 300,
-    }
-    sampling = config.evaluation.params["sampling"]
-    assert sampling["recipe"] == final_test.evaluation.params["sampling"]["recipe"]
-    assert sampling["sampler"] == final_test.evaluation.params["sampling"]["sampler"]
-    assert sampling["num_samples"] == 900
-    assert sampling["batch_size"] == 30
-    assert sampling["seed"] == 20260726
-    assert sampling["options"]["conditions"] == (
-        {"class_label": 0, "count": 300},
-        {"class_label": 1, "count": 300},
-        {"class_label": 2, "count": 300},
-    )
-    assert config.metrics[0].params["providers"][0] == {
-        "name": "kid",
-        "params": {
-            "feature": 2048,
-            "subsets": 100,
-            "subset_size": 200,
-            "degree": 3,
-            "coef": 1.0,
-            "seed": 20260726,
-        },
-    }
-    assert config.protocol.id == (
-        "afhq-v2-adm-epsilon-ddim50-cfg2-validation-v1"
-    )
-    assert config.protocol.expected_examples == 900
-    assert config.protocol.strict_complete is True
-
-
-def test_checked_in_p2_closeout_policy_freezes_selection_and_acceptance() -> None:
-    raw = yaml.safe_load(_P2_CLOSEOUT_POLICY.read_text(encoding="utf-8"))
-
-    assert raw["version"] == 1
-    assert raw["name"] == "afhq-v2-p2-production-closeout-v1"
-    assert raw["training"] == {
-        "profile": "../production/train-adm-128-p2.yaml",
-        "seed": 20260726,
-        "device": "cuda",
-        "deterministic": True,
-        "epochs": 200,
-        "expected_optimizer_updates": 84_000,
-    }
-    assert raw["selection"] == {
-        "profile": "selection-ddim50-cfg2-validation-epsilon.yaml",
-        "split": "validation",
-        "semantics": "ranking_only",
-        "acceptance_authority": False,
-        "subject_weights": "ema",
-        "eligible_epochs": list(range(20, 201, 20)),
-        "checkpoint_filename_format": "epoch_{epoch:04d}.pt",
-        "expected_examples": 900,
-        "primary_metric": {
-            "key": "eval/metrics/distribution/aggregate.fid",
-            "direction": "minimize",
-        },
-        "tie_breakers": [
-            {
-                "key": "eval/metrics/distribution/aggregate.kid_mean",
-                "direction": "minimize",
-            },
-            {"key": "checkpoint_epoch", "direction": "minimize"},
-        ],
-    }
-    official_test = raw["official_test"]
-    assert official_test["profile"] == (
-        "formal-ddim50-cfg2-official-test-epsilon.yaml"
-    )
-    assert official_test["split"] == "test"
-    assert official_test["run_count"] == 1
-    assert official_test["expected_examples"] == 1_467
-    assert official_test["strict_complete"] is True
-    assert official_test["subject_scope"] == {
-        "training_profile": "../production/train-adm-128-p2.yaml",
-        "training_name": "class_conditional_p2_gaussian_denoising",
-        "model_name": "adm_unet",
-        "prediction_type": "epsilon",
-        "variance_mode": "fixed",
-        "other_profiles_inherit": False,
-        "excluded_profiles": [
-            "../production/train-adm-128.yaml",
-            "../production/train-dit-128.yaml",
-        ],
-    }
-    acceptance = official_test["acceptance"]
-    assert acceptance["kind"] == "internal_project_acceptance"
-    assert acceptance["paper_reproduction"] is False
-    assert acceptance["criterion_record"] == {
-        "status": "undocumented_internal_criterion",
-        "derivation": "not_recorded",
-        "adopted_by": "current_p2_closeout_policy",
-        "first_codified_on": "2026-08-02",
-        "first_codified_in_commit": (
-            "57223cbdb6f057bf6b9e17b113b598080d17f21a"
-        ),
-    }
-    assert acceptance["comparison_reference"] == {
-        "comparable": False,
-        "task": "unconditional_afhq_dog",
-        "image_size": [256, 256],
-        "reported_result": {"sampling_steps": 1000, "fid": 11.55},
-        "paper": (
-            "https://openaccess.thecvf.com/content/CVPR2022/html/"
-            "Choi_Perception_Prioritized_Training_of_Diffusion_Models_"
-            "CVPR_2022_paper.html"
-        ),
-        "author_repository": "https://github.com/jychoi118/P2-weighting",
-    }
-    rationale = acceptance["rationale"]
-    assert isinstance(rationale, str)
-    assert rationale.strip()
-    assert all(
-        token in rationale
-        for token in ("class-conditional", "128x128", "AFHQ-Dog", "256x256")
-    )
-    assert acceptance["require_all"] is True
-    assert acceptance["thresholds"] == [
-        {
-            "key": "eval/metrics/distribution/aggregate.fid",
-            "maximum": 35.0,
-        },
-        {
-            "key": "eval/metrics/distribution/aggregate.kid_mean",
-            "maximum": 0.01,
-        },
-        {"key": "eval/metrics/distribution/cat.fid", "maximum": 65.0},
-        {"key": "eval/metrics/distribution/dog.fid", "maximum": 65.0},
-        {"key": "eval/metrics/distribution/wild.fid", "maximum": 65.0},
-    ]
-    assert official_test["aspirational"] == {
-        "key": "eval/metrics/distribution/aggregate.fid",
-        "maximum": 30.0,
-    }
-    policy_root = _P2_CLOSEOUT_POLICY.parent
-    assert (policy_root / raw["training"]["profile"]).resolve().is_file()
-    assert (policy_root / raw["selection"]["profile"]).resolve().is_file()
-    assert (policy_root / raw["official_test"]["profile"]).resolve().is_file()
-    subject_scope = official_test["subject_scope"]
-    assert (policy_root / subject_scope["training_profile"]).resolve().is_file()
-    assert all(
-        (policy_root / profile).resolve().is_file()
-        for profile in subject_scope["excluded_profiles"]
     )
