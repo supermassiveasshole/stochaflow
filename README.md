@@ -181,8 +181,9 @@ graph: the initial projection, every encoder residual block, and every
 downsample enter the skip ledger; each decoder level contains `R + 1` residual
 blocks and consumes one skip per block. `attention_resolutions` names actual
 spatial sizes, and attention is GroupNorm/QKV/residual attention rather than a
-stage-end Spatial Transformer. The maintained AFHQ-128 configuration contains
-105,197,187 parameters.
+stage-end Spatial Transformer. The default maintained AFHQ-128 configuration
+uses five levels `[1,1,2,3,4]`, reaches 8x8, and contains 105,197,187
+parameters.
 
 This is a breaking model cutover. Configurations using the removed transformer
 depth and topology switches are rejected, and checkpoints made by the previous
@@ -204,8 +205,11 @@ The repository includes:
   [ADM-UNet training config](examples/showcases/afhq-v2/experiments/production/train-adm-128.yaml);
 - a fresh
   [learned-range-v ADM training config](examples/showcases/afhq-v2/experiments/production/train-adm-128-learned-range-v.yaml)
-  that runs a complete class-aware validation Evaluation on its configured
-  epoch cadence and selects `best.pt` by aggregate validation FID;
+  that keeps the same canonical graph but uses `[1,2,3,4]`, reaches 16x16,
+  emits `2C` channels, and contains 100,351,366 parameters. It runs a complete
+  class-aware validation Evaluation every 10 epochs from epoch 100 through 200,
+  using sampling batches of 15, and selects `best.pt` by aggregate validation
+  FID;
 - a runnable
   [pixel DiT-B/8 training config](examples/showcases/afhq-v2/experiments/production/train-dit-128.yaml),
   for which this README does not claim a completed quality result;
@@ -215,16 +219,23 @@ The repository includes:
   execution seam, and reports aggregate and per-class KID/FID for cat, dog,
   and wild.
 
-A separate valid schema-v3 capacity sweep used the corrected topology on an RTX
-4090 with 24,564 MiB, PyTorch 2.11, CUDA 12.8, and BF16. Every micro-batch
-candidate completed 5 warmup plus 25 measured optimizer updates with zero
-non-finite loss or gradient observations. The selected micro batch 8 /
-accumulation 4 trial sustained 60.068 images/s with 8.260 GiB peak allocated and
-8.506 GiB peak reserved memory. Both maintained ADM production YAMLs use 8 / 4
-while preserving 420 optimizer updates per epoch and 84,000 total updates. This
-capacity sweep is operational and sustained-run evidence, not a long-training
-quality claim; the full sweep table is in the
+Separate valid schema-v3 capacity measurements used an RTX 4090 with 24,564
+MiB, PyTorch 2.11, CUDA 12.8, and BF16. The default five-level ADM's selected
+micro batch 8 / accumulation 4 trial sustained 60.068 images/s with 8.260 GiB
+peak allocated and 8.506 GiB peak reserved memory. The exact four-level
+learned-range candidate sustained 45.17 images/s with 10.455 GiB peak reserved
+memory at the same 8 / 4 setting and completed 25 measured optimizer updates
+with zero non-finite loss or gradient observations. Both preserve 420 optimizer
+updates per epoch and 84,000 total updates, but neither model's capacity result
+is inferred from the other. These are operational sustained-run measurements,
+not long-training quality claims; the full evidence is in the
 [AFHQ-v2 guide](docs/tutorials/afhq-v2.md).
+
+Because that candidate changes both the scale layout and the variance head, its
+quality result cannot isolate learned-range variance and should not be described
+as an exact epsilon-prediction IDDPM reproduction. Its training diagnostics run
+every 10 epochs with DDPM-100 and DDIM-50, and periodic checkpoints are retained
+every 50 epochs; only the complete validation Evaluation selects `best.pt`.
 
 The dataset source is approximately 6.96 GB and is licensed CC BY-NC 4.0.
 Review the [AFHQ-v2 guide](docs/tutorials/afhq-v2.md) before downloading or

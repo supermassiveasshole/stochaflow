@@ -20,7 +20,8 @@
 
 范围关闭规则：SR、consistency、latent、codec、distillation 等任务必须在对应任务真正实现时
 同步提交 monitoring 与 Evaluation protocol；它们不是本计划的剩余阶段。reference cache、
-performance curve、comparison/gate 也只是可选增强，不阻塞 P2 merge 或 production run。
+performance curve、comparison/gate 也只是可选增强，不阻塞当前 pixel-space
+learned-range-v closeout 或分支合并。
 
 ## 1. 目标与核心结论
 
@@ -1361,9 +1362,9 @@ cat/dog/wild 493/491/483 reference 与相同 generated allocation、EMA、DDIM-5
 seed `20260726`、KID/FID provider 参数和 strict 1,467-example completeness。live run 通过
 shared SamplingBuilder seam 发布 replayable predictions；同一个 Builder/Metric 可从 E2
 artifact offline replay，而不重建 checkpoint model/DataBuilder 或再次生成。该完成状态只
-证明 evaluation contract/readiness，不代表 corrected ADM/P2 已产生长训练质量数值。
+证明 evaluation contract/readiness，不代表当时任一 corrected ADM 实验臂已产生长训练质量数值。
 
-control/P2 A/B 使用
+以下 control/P2 A/B 是已关闭的历史实验记录，不是当前受支持 recipe。它当时使用
 `formal-ddim50-cfg2-official-test-epsilon.yaml`，共同固定 epsilon/fixed recipe、完整
 official-test allocation、EMA、DDIM-50 eta 0 / CFG 2.0、seed 与 KID/FID parameters。已完成的
 受控 run 令 control 也使用 P2 Builder，但以 `gamma: 0` 得到 strict-standard epsilon
@@ -1389,9 +1390,9 @@ IDs 和同一个 exact sample plan（cat/dog/wild 493/491/483，`sample_ids_sha2
 全部指标 lower-is-better，P2 在 aggregate 和各类均略差。这关闭了 controlled pipeline、
 lineage、exact-completeness 与 protocol readiness；它没有显示单 epoch P2 收益。KID delta
 与 reported standard deviation 同量级，单 seed/epoch 不能称为统计显著，也不是 200-epoch
-promotion evidence。production long-run gate 仍开放。完整 result/prediction bundles 保留在
-本机 `G:` volume；该 machine-local 位置只用于开发审计，不进入公共用户命令或 portable
-workflow authority。
+promotion evidence。对应 Builder、recipe 和 production long-run gate 已随 P2 实验退休，
+不再是当前未闭合项。完整 result/prediction bundles 保留在本机 `G:` volume；该
+machine-local 位置只用于开发审计，不进入公共用户命令或 portable workflow authority。
 
 ### 13.4 Class-conditional latent image generation profile
 
@@ -1806,8 +1807,8 @@ gallery 默认以 protocol/sample hash 稳定选择，也支持显式 IDs；当�
 AFHQ slice 已使 public formal run 在架构与配置上 ready，epsilon A/B authority 也已冻结。
 随后完成的一轮 corrected、equal-budget、full-official-test controlled A/B 已验证两臂
 `latest.pt` EMA、exact sample identity 和完整 result publication；该单 seed/epoch 结果未显示
-P2 收益。正式 200-epoch long run、重复 seed 与 promotion-quality evidence 仍属于运行验收，
-不属于该 slice 的已完成声明。
+P2 收益。该 weighting recipe 随后退休，因此 200-epoch long run、重复 seed 与
+promotion-quality evidence 不再是本计划的运行验收或剩余交付；上述数值仅作为历史记录。
 
 #### E3 剩余交付
 
@@ -1949,8 +1950,8 @@ uv run pytest tests/test_experiment_runner.py
 完整 E3/E4 未来分支合并前（不阻塞当前 AFHQ slice）：
 
 以下清单是其余 E3 profiles、reference cache、performance/curve 与 E4
-comparison/selection/gate 全部实现后的完整能力门禁。当前 pixel/P2 分支只关闭已经实现的
-AFHQ-v2 class-aware E3 vertical slice 及其 live/offline evidence；deterministic SR、
+comparison/selection/gate 全部实现后的完整能力门禁。已完成的 pixel-space AFHQ slice 只关闭
+class-aware E3 vertical slice 及其 live/offline evidence；deterministic SR、
 reference-cache 和 gate-fail 项尚属未来范围，不能反向作为当前 AFHQ slice 的合并门槛。
 
 - 全量 `uv run pytest`；

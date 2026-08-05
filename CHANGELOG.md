@@ -34,12 +34,18 @@ is unavailable.
 - Added exact modality-neutral `SamplingBatch` counts, stable checkpoint
   SHA-256/progress identity, and atomic no-replace sampling-bundle publication
   with portable relative artifact paths.
-- Added a fresh AFHQ learned-range-v production recipe whose complete
-  validation Evaluation samples 300 examples per class and reports aggregate
-  and per-class FID/KID for selecting `best.pt`.
+- Added a fresh AFHQ production quality candidate that keeps the canonical ADM
+  graph while jointly using a `[1,2,3,4]` / 16x16 scale layout and a `2C`
+  learned-range-v head. Its complete validation Evaluation samples 300 examples
+  per class every 10 epochs from epoch 100 through 200, in batches of 15, and
+  reports aggregate and per-class FID/KID for selecting `best.pt`.
 - Recorded a schema-v3 corrected-topology capacity sweep from an RTX 4090 with
   PyTorch 2.11/CUDA 12.8: four BF16 micro-batch trials, each with 5 warmup and
   25 measured updates, completed with zero non-finite observations.
+- Recorded exact RTX 4090 evidence for the 100,351,366-parameter
+  topology-and-variance candidate: micro batch 8 / accumulation 4 sustained
+  45.17 images/s with 10.455 GiB peak reserved memory and zero non-finite
+  observations across 25 measured updates.
 - Added root-level [`SPEC.md`](SPEC.md),
   [`ARCHITECTURE.md`](ARCHITECTURE.md),
   [`ROADMAP.md`](ROADMAP.md), and `CHANGELOG.md` governance documents.
@@ -47,9 +53,11 @@ is unavailable.
 ### Changed
 
 - Made ordinary pixel-space AFHQ learned-range-v training the active quality
-  closeout. Future tasks still require an explicit roadmap decision and must
-  deliver observability, checkpoint inference, and formal Evaluation with their
-  first implementation.
+  closeout. This candidate jointly changes the scale layout and variance head;
+  it is not an isolated learned-variance result or an exact epsilon-prediction
+  IDDPM reproduction. Future tasks still require an explicit roadmap decision
+  and must deliver observability, checkpoint inference, and formal Evaluation
+  with their first implementation.
 - Kept Metrics task-neutral: FID/KID providers consume Evaluation-owned image
   pair updates, while Evaluation owns sampling, sample identity, and strict
   completeness. Re-evaluating multiple checkpoints now means repeating that
@@ -62,7 +70,9 @@ is unavailable.
   rejected checkpoints created by the incompatible earlier graph.
 - Promoted AFHQ-v2 ADM production batching from provisional micro batch 1 /
   accumulation 32 to measured micro batch 8 / accumulation 4, preserving
-  420 optimizer updates per epoch and 84,000 total updates.
+  420 optimizer updates per epoch and 84,000 total updates. The default
+  five-level ADM and the four-level learned-range quality candidate retain
+  separate, exact capacity evidence.
 - Separated training and sampling configuration authority; sampling is now an
   independent complete checkpoint-backed invocation.
 - Reorganized Gaussian code by framework layer so family tensor semantics,

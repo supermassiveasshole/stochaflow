@@ -95,6 +95,10 @@ def trial_config(
         micro_batch
     )
     trainer["show_progress"] = False
+    validation_evaluation = cast(
+        dict[str, Any], trainer["validation_evaluation"]
+    )
+    validation_evaluation["enabled"] = False
     if device_name is not None:
         trainer["device"] = device_name
     experiment = cast(dict[str, Any], raw["experiment"])

@@ -18,6 +18,7 @@ from stochaflow.evaluation import (
     CheckpointSubjectConfig,
     load_evaluation_config,
 )
+from stochaflow.models import ADMUNet
 from stochaflow.utils.config import (
     StochaflowConfig,
     load_config,
@@ -314,6 +315,8 @@ def test_afhq_learned_range_recipe_uses_live_validation_evaluation() -> None:
     config = load_config(_LEARNED_RANGE_ADM_CONFIG)
 
     assert raw["model"]["params"]["out_channels"] == 6
+    assert raw["model"]["params"]["channel_multipliers"] == [1, 2, 3, 4]
+    assert raw["model"]["params"]["attention_resolutions"] == [32, 16]
     assert raw["training"]["params"] == {
         "prediction_type": "v",
         "variance": {"mode": "learned_range"},
@@ -322,8 +325,8 @@ def test_afhq_learned_range_recipe_uses_live_validation_evaluation() -> None:
     assert raw["trainer"]["test_after_fit"] is False
     validation = raw["trainer"]["validation_evaluation"]
     assert validation["enabled"] is True
-    assert validation["start_epoch"] == 20
-    assert validation["every_epochs"] == 20
+    assert validation["start_epoch"] == 100
+    assert validation["every_epochs"] == 10
     assert validation["include_final"] is True
     assert validation["weights"] == "ema"
     assert validation["protocol"] == {
@@ -352,7 +355,7 @@ def test_afhq_learned_range_recipe_uses_live_validation_evaluation() -> None:
     assert raw["trainer"]["validation_evaluation"]["metrics"][0]["params"][
         "providers"
     ][0]["params"]["subset_size"] == 200
-    assert profile["sampling"]["batch_size"] == 30
+    assert profile["sampling"]["batch_size"] == 15
     providers = validation["metrics"][0]["params"]["providers"]
     assert [provider["name"] for provider in providers] == ["kid", "fid"]
     assert all(provider["params"]["antialias"] is True for provider in providers)
@@ -360,14 +363,15 @@ def test_afhq_learned_range_recipe_uses_live_validation_evaluation() -> None:
     monitor = raw["trainer"]["early_stopping"]["monitor"]
     assert monitor == "valid/metrics/distribution/aggregate.fid"
     assert monitor in validation["metric_keys"]
-    assert raw["artifacts"]["checkpoint_every"] == 20
+    assert raw["artifacts"]["checkpoint_every"] == 50
+    assert raw["trainer"]["device"] == "cuda"
     diagnostic = raw["diagnostics"][0]["params"]
     assert diagnostic["cadence"] == {
         "step_every": 1000,
-        "artifact_every_epochs": 20,
+        "artifact_every_epochs": 10,
     }
     assert [sampler["id"] for sampler in diagnostic["samplers"]] == [
-        "ddpm_250",
+        "ddpm_100",
         "ddim_50",
     ]
     assert all(
@@ -379,6 +383,10 @@ def test_afhq_learned_range_recipe_uses_live_validation_evaluation() -> None:
         for provider in diagnostic["providers"]["sampler_artifacts"]
     ] == ["sample_grid"]
     assert config.trainer.validation_evaluation.enabled
+    model = ADMUNet(**raw["model"]["params"])
+    assert sum(parameter.numel() for parameter in model.parameters()) == (
+        100_351_366
+    )
 
 
 def test_afhq_learned_range_official_test_matches_frozen_protocol() -> None:
@@ -406,6 +414,7 @@ def test_afhq_learned_range_official_test_matches_frozen_protocol() -> None:
     assert profile["sampling"]["options"]["weights"] == "ema"
     assert profile["sampling"]["options"]["guidance_scale"] == 2.0
     assert profile["sampling"]["num_samples"] == 1467
+    assert profile["sampling"]["batch_size"] == 15
     assert raw["metrics"][0]["params"]["providers"][0]["params"][
         "subset_size"
     ] == 200
@@ -938,6 +947,23 @@ def test_afhq_capacity_measurement_closes_training_runtime(
         report["resolved_config"]
     )
     assert report["output_dir"] == str((tmp_path / "trial").resolve())
+
+
+def test_afhq_capacity_trial_disables_live_validation_evaluation(
+    tmp_path: Path,
+) -> None:
+    capacity_config = _showcase_tool_module("capacity_config")
+
+    config = capacity_config.trial_config(
+        load_config(_LEARNED_RANGE_ADM_CONFIG),
+        micro_batch=4,
+        precision="bf16-mixed",
+        device_name="cuda",
+        output_dir=tmp_path / "trial",
+    )
+
+    assert config.trainer.num_epochs == 1
+    assert config.trainer.validation_evaluation.enabled is False
 
 
 @pytest.mark.parametrize(

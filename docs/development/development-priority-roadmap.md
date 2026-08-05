@@ -7,9 +7,10 @@
 - 最近排期复核：2026-08-06
 - 当前工程优先项：闭合 live epoch validation Evaluation、FID/KID best-checkpoint integration、
   learned-range 数值边界与 P2 removal
-- 当前实验优先项：fresh canonical ADM + cosine + v + learned-range variance；按配置 cadence
-  运行 300/class validation Evaluation，以 aggregate FID 维护 `best.pt`，最后只对选中
-  checkpoint 运行一次 official test
+- 当前实验优先项：fresh canonical ADM graph + `[1,2,3,4]` / 16x16 scale layout + cosine
+  + v + learned-range variance 的联合 quality candidate；按配置 cadence 运行 300/class
+  validation Evaluation，以 aggregate FID 维护 `best.pt`，最后只对选中 checkpoint 运行
+  一次 official test
 - 当前执行主线：ordinary pixel-space ADM training + validation selection + formal AFHQ
   Evaluation；P2 已从 supported surface 移除，只保留历史实验记录
 - pixel-space evidence 发布后的下一项尚未选择；codec/latent、consistency、SR、distillation 与
@@ -223,9 +224,10 @@ fixed recipe 与完整 sample config 保持平行权威，不再 merge mutable d
 
 曾在此 milestone 中实现的 P2 recipe 已退休。其 bounded runs、capacity 与 controlled
 comparison 仅保留在 [`p2-experiment-closeout.md`](p2-experiment-closeout.md)，不再属于
-稳定 contract、配置参考或 maintained example。RTX 4090 的 8 / 4 capacity 结论仍可作为
-相同 topology 的 operational 起点，但 fresh learned-range-v run 必须重新通过 bounded
-smoke/capacity verification。
+稳定 contract、配置参考或 maintained example。fresh learned-range-v candidate 已独立完成
+bounded RTX 4090 capacity verification：100,351,366 parameters、micro batch 8 /
+accumulation 4、45.17 images/s、10.455 GiB peak reserved memory，25 次 measured updates
+无 non-finite observation。默认五层 ADM 的容量结果不外推给该 candidate。
 
 ### A2 — Class-aware AFHQ Evaluation（scope revised，repository contract complete）
 
@@ -252,18 +254,24 @@ gate、supported recipe 或仓库内 maintained profile。
 
 ### A3 — Learned-range-v Production-Quality Closeout（Active）
 
-当前实验只改变 canonical current-ADM recipe 的 variance head：保持真实 AFHQ、cosine
-Process、v prediction、optimizer/LR、BF16、batch 8 / accumulation 4、EMA、seed 与
-84,000-update budget，使用 `2C` learned-range output 和 hybrid simple/VB objective。必须
-fresh initialize，不能恢复 fixed-variance 或历史实验 checkpoint。
+当前实验保留 canonical current-ADM input/output-block graph、真实 AFHQ、cosine Process、
+v prediction、optimizer/LR、BF16、batch 8 / accumulation 4、EMA、seed 与 84,000-update
+budget，但联合把默认 `[1,1,2,3,4]` / 8x8 layout 改为 `[1,2,3,4]` / 16x16，并使用
+`2C` learned-range output 和 hybrid simple/VB objective。它是 topology + variance quality
+candidate，不是 isolated learned-variance/topology ablation，也不是 exact epsilon-prediction
+IDDPM reproduction。必须 fresh initialize，不能恢复 fixed-variance 或历史实验 checkpoint。
 
 执行顺序：
 
 - 合并 live epoch validation Evaluation 与 strict-resume identity；
 - 用 bounded smoke/capacity 验证 learned-range BF16、DDPM variance consumption 和完整
-  AFHQ Evaluation wiring；
-- 每 20 epochs 对 EMA 运行 exact 300/class validation Evaluation；sampling、real/fake
-  pairing、sample IDs 与 completeness 由 Evaluation 拥有，FID/KID 只是 Metrics；
+  AFHQ Evaluation wiring；候选容量证据为 100,351,366 parameters、45.17 images/s、
+  10.455 GiB peak reserved memory、25 次 measured updates 无 non-finite observation；
+- training diagnostic 每 10 epochs 同时运行 DDPM-100 与 DDIM-50；periodic checkpoint 每
+  50 epochs 保存；二者均无选模权限；
+- 从 epoch 100 到 200 每 10 epochs 以 batch 15 对 EMA 运行 exact 300/class validation
+  Evaluation；sampling、real/fake pairing、sample IDs 与 completeness 由 Evaluation 拥有，
+  FID/KID 只是 Metrics；
 - 以 `valid/metrics/distribution/aggregate.fid` lower 维护 `best.pt`，同时保留 KID 与
   per-class evidence。非到期 epoch 不复用旧结果，Diagnostic 与 test 不参与选择；
 - 对选中的唯一 checkpoint 运行一次 exact 1,467-sample official test，发布完整 immutable
@@ -471,8 +479,9 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 - public AFHQ evaluation 对 full official test 同时报告 aggregate 和 cat/dog/wild
   per-class 结果，并冻结 493/491/483 reference/generated completeness。
 - learned-range production candidate 只用预声明的 300/class validation Evaluation 在
-  cadence epochs 中更新 `best.pt`；`valid/loss`、Diagnostic、phase test 与 official test
-  均不参与这项选择，full official test 只对冻结 subject 运行一次。
+  epoch 100 至 200 的每 10 epochs 中更新 `best.pt`，sampling batch 为 15；`valid/loss`、
+  Diagnostic、phase test 与 official test 均不参与这项选择，full official test 只对冻结
+  subject 运行一次。
 - 正式 Metrics API 已冻结 Strategy channel、phase-local state 与 validation-only monitor；
   它不提供 codec-dependent image-space quality，后者属于 Evaluation。
 - L1 可声明 experimental functional support，不声明规模或质量。

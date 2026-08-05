@@ -182,7 +182,7 @@ materialize，并从新 run 开始。
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-capacity \
   --config examples/showcases/afhq-v2/experiments/production/train-adm-128-learned-range-v.yaml \
-  --micro-batches 1 4 6 8 \
+  --micro-batches 8 \
   --precisions bf16-mixed \
   --warmup-updates 5 \
   --measured-updates 25 \
@@ -192,8 +192,9 @@ uv run --project examples/showcases/afhq-v2 stochaflow-afhq-v2-capacity \
 每个 trial 都通过已注册 DataBuilder、TrainingBuilder、Trainer 和 precision runtime 执行。
 DataBuilder 通过 `ImageSourceFactory` 解析注册的 DataSource、验证同一 official
 train/test artifact，再执行运行时分层划分并组装 loader；capacity 工具不会使用独立
-source 或训练循环。本次 micro batch 1/4/6/8 分别使用 accumulation 32/8/5/4，effective
-batch 分别为 32/32/30/32。每个 trial warmup 5 次，并测量 25 次成功 optimizer updates；
+source 或训练循环。工具按目标 effective batch 为每个 micro batch 解析 accumulation；上面的
+production candidate 使用 micro batch 8 / accumulation 4。每个 trial warmup 5 次，并测量
+25 次成功 optimizer updates；
 报告 images/s、updates/s、allocated/reserved peak VRAM、data-wait/compute、细分
 forward/backward/optimizer 时间和非有限 loss/gradient。若同一 batch 同时请求 FP32 与
 BF16，报告还会提供 BF16 相对 FP32 的吞吐和显存差值。报告记录 Python、PyTorch、CUDA、
@@ -210,9 +211,10 @@ precision support 在 meta model、DataBuilder 及 trial output 创建之前完�
 测试或调试时显式传入 `--device cpu`；CPU 报告的 VRAM 字段为 `null`，不应用于
 production batch 选择。
 
-当前有效 schema-v3 report 来自 RTX 4090 24,564 MiB、PyTorch 2.11 / cu128，使用 corrected
-105,197,187-parameter topology 与 BF16 mixed precision。四档都完成 5 次
-warmup 和 25 次 measured optimizer updates：
+默认 fixed-variance ADM 的有效 schema-v3 sweep 来自 RTX 4090 24,564 MiB、PyTorch 2.11 /
+cu128。它使用 canonical graph、五层 `[1,1,2,3,4]` / 8x8 scale layout、
+105,197,187 parameters 与 BF16 mixed precision。四档都完成 5 次 warmup 和 25 次
+measured optimizer updates：
 
 | Micro batch | Accumulation | Effective batch | Images/s | Peak allocated (GiB) | Peak reserved (GiB) | Non-finite |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -221,11 +223,19 @@ warmup 和 25 次 measured optimizer updates：
 | 6 | 5 | 30 | 54.543 | 6.761 | 6.980 | 0 |
 | 8 | 4 | 32 | 60.068 | 8.260 | 8.506 | 0 |
 
-这是 corrected topology 的 operational capacity 与 25-update sustained evidence。micro
-batch 8 是本次已测候选中吞吐最高的一档，并不等于硬件可支持的绝对上限。两份 maintained
-ADM production YAML 因此都使用 micro batch 8 / accumulation 4，保持 effective batch 32、每
-epoch 420 optimizer updates 和总计 84,000 updates。该报告不证明长训练稳定性、收敛、
-生成质量；未来 DGX Spark 运行属于独立的跨设备证据。
+这是默认五层 ADM 的 operational capacity 与 25-update sustained evidence。micro batch 8
+是该 sweep 已测候选中吞吐最高的一档，并不等于硬件可支持的绝对上限。
+
+fresh learned-range-v production candidate 有自己的精确容量证据。它保留 canonical graph，
+但联合使用四层 `[1,2,3,4]` / 16x16 scale layout 与 `2C` learned-range output；exact
+parameter count 是 100,351,366。在同一 RTX 4090 / PyTorch 2.11 / CUDA 12.8 / BF16 环境下，
+micro batch 8 / accumulation 4 完成 25 次 measured optimizer updates，吞吐为 45.17
+images/s，peak reserved memory 为 10.455 GiB，non-finite loss/gradient observation 为 0。
+
+两份 production YAML 都使用 8 / 4 并保持 effective batch 32、每 epoch 420 optimizer
+updates 和总计 84,000 updates，但每份配置由自己的测量支持；不能把默认五层模型的吞吐或
+显存数字外推给 candidate。两组报告都不证明长训练稳定性、收敛或生成质量；未来 DGX Spark
+运行属于独立的跨设备证据。
 
 ## 3. 真实数据 smoke
 
@@ -262,12 +272,17 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
   --device cuda
 ```
 
-它固定 corrected ADM、真实 AFHQ、cosine Process、v prediction、learned-range variance、
-BF16、micro batch 8 / accumulation 4、200 epochs / 84,000 updates 和 EMA decay 0.9999。
-模型输出从 `C` 变为 `2C`：前半预测 v，后半插值 reverse-process log variance。hybrid
-objective 记录 simple loss 与 variational bound，但 checkpoint selection 由下述完整
-validation FID Evaluation 决定。该 run 必须从随机初始化开始，不能恢复 fixed-variance 或
-旧拓扑 checkpoint。
+它固定 canonical ADM input/output-block graph、真实 AFHQ、cosine Process、v prediction、
+BF16、micro batch 8 / accumulation 4、200 epochs / 84,000 updates 和 EMA decay 0.9999；
+同时把默认五层 `[1,1,2,3,4]` / 8x8 scale layout 改为四层 `[1,2,3,4]` / 16x16，并把
+fixed variance 改为 learned range。模型输出从 `C` 变为 `2C`：前半预测 v，后半插值
+reverse-process log variance。hybrid objective 记录 simple loss 与 variational bound，
+但 checkpoint selection 由下述完整 validation FID Evaluation 决定。该 run 必须从随机
+初始化开始，不能恢复 fixed-variance 或旧 topology checkpoint。
+
+因此它是 topology + variance 的联合 quality candidate，不是 isolated learned-variance
+ablation，也不是 exact epsilon-prediction IDDPM reproduction。最终质量变化不能只归因于
+learned variance。
 
 DiT-B/8 候选配置使用与 fixed-variance v-prediction ADM 相同的 data、Process、
 Objective、effective batch、scheduler、diagnostic 和 sampling protocol：
@@ -281,10 +296,12 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
 ResBlock 和每个 residual downsample 都保存 skip；decoder 每个 resolution 使用
 `num_res_blocks + 1` 个 ResBlock，并逐 block 消费 skip。production 的
 `num_res_blocks: 2` 因而表示 encoder 每级 2 blocks、decoder 每级 3 blocks。
-`attention_resolutions: [32, 16, 8]` 是实际空间尺寸，使用
-GroupNorm/QKV/output-projection residual attention；middle 固定为
-`ResBlock → Attention → ResBlock`。checked-in production config 的 exact parameter
-count 是 105,197,187。
+默认 fixed-variance config 使用 `[1,1,2,3,4]`、到达 8x8、在
+`attention_resolutions: [32, 16, 8]` 放置 attention，exact parameter count 是
+105,197,187。learned-range quality candidate 使用同一 canonical graph，但采用
+`[1,2,3,4]`、到达 16x16、在 `[32, 16]` 放置 attention，并输出 6 channels；它的 exact
+parameter count 是 100,351,366。两者都使用 GroupNorm/QKV/output-projection residual
+attention，middle 固定为 `ResBlock → Attention → ResBlock`。
 
 这是 breaking cutover。旧 topology fields 与旧 ADM raw/EMA/optimizer checkpoint 都会
 fail closed；没有 legacy mode、partial load、state adapter 或自动 config conversion，
@@ -297,8 +314,10 @@ production 配置固定 effective batch 32，其中：
 - 两者均训练 200 epochs；
 - `bf16-mixed`、AdamW、EMA 和 step-level warmup cosine；
 - class-condition dropout 0.1 和 `v` prediction；
-- 每 20 epochs 保存周期 checkpoint，并执行完整 900-example EMA validation
-  Evaluation；
+- learned-range candidate 每 10 epochs 写 DDPM-100 + DDIM-50 training diagnostics；
+- 从 epoch 100 开始每 10 epochs（包括 epoch 200）以 sampling batch 15 执行完整
+  900-example EMA validation Evaluation；
+- 每 50 epochs 保存周期 checkpoint，每 epoch 更新 `latest.pt`；
 - validation Evaluation 以 aggregate FID 作为 `best.pt` monitor，同时记录 aggregate 和
   per-class KID/FID；普通 phase metrics 与 diagnostics 不获得选模 authority；
 - official test 不在 fit 后自动读取，只对 validation 选出的唯一 checkpoint 单独运行。
@@ -312,10 +331,10 @@ total updates = 200 × 420 = 84,000
 warmup updates = round(0.02 × 84,000) = 1,680
 ```
 
-这组 8 / 4 设置来自上面的 RTX 4090 schema-v3 capacity report，在保持 effective batch
-32 与 84,000-update schedule 的同时取本次已测候选中的最高吞吐档。它不是长期训练质量
-结论，也不声称 micro batch 8 是硬件上限；迁移到其他设备时应重跑同一 capacity protocol，
-并记录 hardware adaptation。
+这组 8 / 4 设置由上面各自的 RTX 4090 schema-v3 capacity evidence 支持，并保持
+effective batch 32 与 84,000-update schedule。它不是长期训练质量结论，也不声称 micro
+batch 8 是硬件上限；迁移到其他设备时应重跑同一 capacity protocol，并记录 hardware
+adaptation。
 
 DiT 的更新计划为：
 
@@ -392,18 +411,19 @@ checkpoint 只提供训练时冻结的 inference recipe 与模型、Process 等�
 非平凡 CFG scale 将 conditional 和 null labels 拼成双 batch，只进行一次模型
 forward；DDIM 本身不解释 class 或 guidance。
 
-production 当前使用 fixed variance。其他 class-conditional learned-range recipe 的
-`2C` CFG 只 guide prediction half；scale 0/1 返回完整 unconditional/conditional
-branch，其他 scale 保留 conditional variance half。DDPM 消费 learned variance，DDIM
-明确忽略 variance half。
+默认五层 ADM production baseline 使用 fixed variance；当前四层 quality candidate 使用
+learned range。class-conditional learned-range recipe 的 `2C` CFG 只 guide prediction
+half；scale 0/1 返回完整 unconditional/conditional branch，其他 scale 保留 conditional
+variance half。DDPM 消费 learned variance，DDIM 明确忽略 variance half。
 
 ### Corrected ADM 结果状态
 
 canonical topology 切换前的 900-real/900-generated DDIM-50 AFHQ 指标、checkpoint 与
 sample panel 来自旧的、不兼容 ADM graph，已从 current result surface 移除。它们不能
-证明 corrected ADM 或 learned variance。learned-range-v quality run 完成、validation
-选中 checkpoint 且 official-test bundle 发布前，本 README 不发布该 recipe 的
-production-quality baseline。
+证明 corrected ADM 或当前 topology + variance candidate。learned-range-v quality run
+完成、validation 选中 checkpoint 且 official-test bundle 发布前，本 README 不发布该
+recipe 的 production-quality baseline；即使完成，联合改动也不能形成 isolated learned
+variance 结论。
 
 新的三类 production run 使用 public class-aware formal profile，统一报告 aggregate 与
 cat/dog/wild per-class KID/FID。
@@ -426,6 +446,7 @@ outputs/afhq-v2/adm-128-learned-range-v/<run-id>/
 └── diagnostics/class_conditional_diffusion_quality/epoch_*/
 │   ├── manifest.yaml
 │   ├── denoiser/
+│   ├── ddpm_100/
 │   └── ddim_50/
 ```
 
@@ -437,9 +458,10 @@ manifest 记录 checkpoint lineage、seed、conditions、guidance、weights 和 
 
 ## 7. 正式 KID/FID 评估
 
-`train-adm-128-learned-range-v.yaml` 在配置的 cadence 上运行完整 validation
-Evaluation。每次到期都对当前 EMA snapshot 生成 cat/dog/wild 各 300 张 fake，与 900 张
-validation real 按 exact IDs 配对，并计算 aggregate/per-class FID、KID mean 和 KID std。
+`train-adm-128-learned-range-v.yaml` 从 epoch 100 到 epoch 200 每 10 epochs 运行完整
+validation Evaluation。每次到期都以 batch 15 对当前 EMA snapshot 生成 cat/dog/wild 各
+300 张 fake，与 900 张 validation real 按 exact IDs 配对，并计算 aggregate/per-class
+FID、KID mean 和 KID std。
 aggregate FID 是 `best.pt` 的 lower-is-better monitor；KID 与 per-class 数值仍写入
 `valid/metrics/*` 作为判断依据，但不形成另一套 selector。
 

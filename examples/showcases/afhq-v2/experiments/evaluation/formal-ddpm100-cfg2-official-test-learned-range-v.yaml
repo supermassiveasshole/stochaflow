@@ -44,7 +44,7 @@ evaluation:
           every_steps: 10
       shape: [3, 128, 128]
       num_samples: 1467
-      batch_size: 30
+      batch_size: 15
       seed: 20260726
     gallery_count: 12
 

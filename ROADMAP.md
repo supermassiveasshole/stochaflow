@@ -64,8 +64,9 @@ not competing redesign:
 - core FID/KID providers and a public class-aware AFHQ-v2 full-test profile;
 - a maintained real-AFHQ class-conditional training, sampling, and formal
   Evaluation surface;
-- schema-v3 RTX 4090 capacity evidence for the corrected 105,197,187-parameter
-  topology and a measured ADM production batch of 8 with accumulation 4;
+- schema-v3 RTX 4090 capacity evidence for the default five-level,
+  105,197,187-parameter ADM and its measured production batch of 8 with
+  accumulation 4;
 - a maintained MNIST workflow and a class-aware AFHQ-v2 showcase contract.
 
 The former P2 experiment surface was retired after its controlled runs showed
@@ -77,9 +78,13 @@ supported training recipe or active product gate.
 ### Pixel-space AFHQ learned-range quality closeout
 
 The active branch closes ordinary pixel-space image generation with a coherent
-training and validation workflow. The current recipe keeps the canonical ADM,
-cosine Process, v-prediction, and data/optimizer budget, while changing the
-variance head to learned range. P2 is intentionally absent.
+training and validation workflow. The production quality candidate keeps the
+canonical ADM input/output-block graph, cosine Process, v-prediction, and
+data/optimizer budget, but jointly changes the default five-level
+`[1,1,2,3,4]` / 8x8 model to `[1,2,3,4]` / 16x16 and changes the variance head
+to learned range. It is therefore a topology-and-variance candidate, not an
+isolated learned-variance ablation or an exact epsilon-prediction IDDPM
+reproduction. P2 is intentionally absent.
 
 Repository merge evidence:
 
@@ -96,9 +101,9 @@ Experiment exit evidence:
 - fresh-train the maintained learned-range-v AFHQ recipe from random
   initialization; no earlier fixed-variance or retired experiment checkpoint is
   resume-compatible;
-- at the configured epoch cadence, execute the complete 900-example validation
-  Evaluation using EMA, sampling, aggregate/per-class FID and KID, and strict
-  completeness;
+- from epoch 100 through 200, every 10 epochs execute the complete 900-example
+  validation Evaluation using EMA, sampling batches of 15,
+  aggregate/per-class FID and KID, and strict completeness;
 - use validation aggregate FID as the `best.pt` monitor. KID and per-class
   metrics remain logged validation evidence; diagnostics and test metrics have
   no selection authority;
@@ -111,10 +116,13 @@ Experiment exit evidence:
   legacy-ADM records under explicitly documented protocol differences. Do not
   claim quality or architecture superiority without comparable evidence.
 
-The existing RTX 4090 capacity evidence selected micro batch 8 / accumulation
-4, retaining 420 optimizer updates per epoch and 84,000 total updates. The new
-variance head changes only a small output projection and must still pass a
-bounded capacity/smoke run before the full launch.
+The candidate has its own bounded RTX 4090 evidence: 100,351,366 parameters,
+micro batch 8 / accumulation 4, 45.17 images/s, 10.455 GiB peak reserved memory,
+and zero non-finite observations across 25 measured optimizer updates. It
+retains 420 optimizer updates per epoch and 84,000 total updates. Training
+diagnostics run every 10 epochs with DDPM-100 and DDIM-50, while periodic
+checkpoints are retained every 50 epochs; those diagnostics remain observations
+and have no selection authority.
 
 ## After the pixel-space closeout
 

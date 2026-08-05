@@ -1,7 +1,7 @@
 # Latent Diffusion 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：Post-A3 roadmap re-decision candidate；不属于当前 pixel/P2/Evaluation 分支。
+- 状态：Post-A3 roadmap re-decision candidate；不属于当前 pixel-space/Evaluation closeout。
   Phase 1 inference asset projection 已完成，Phase 2–4 与 latent-specific E3 formal
   quality profile 尚未实现且未排期
 - 统一排期：
@@ -9,9 +9,10 @@
   capability contract，统一排期拥有跨计划执行顺序
 - 初始制定日期：2026-07-26
 - 本次修订日期：2026-08-02
-- 排期前置：当前分支合并后先完成 A3 single-arm P2 production-quality evidence，再由
-  根 [`ROADMAP.md`](../../ROADMAP.md) 明确决定是否恢复本计划。A0、B1/C1、正式 Metrics、
-  A1 与 Phase 1 已完成是技术前置事实，不构成自动启动 Phase 2 的排期授权
+- 排期前置：当前 pixel-space learned-range-v 质量 closeout 完成后，再由根
+  [`ROADMAP.md`](../../ROADMAP.md) 明确决定是否恢复本计划。A0、B1/C1、正式 Metrics、
+  A1 与 Phase 1 已完成是技术前置事实，不构成自动启动 Phase 2 的排期授权；已退休的
+  weighting 实验不再是 latent 排期前置
 - 候选产品路线：冻结的预训练图像 codec + conditional latent Gaussian diffusion
 - 首个 reference denoiser：DiT-S/2 → DiT-B/2；它是验收实现，不是该计划的
   abstraction boundary
@@ -1031,8 +1032,8 @@ batch contract 决定；core runner 不增加分支。
 - Gaussian Process；
 - epsilon prediction 作为 parity baseline；
 - fixed variance；
-- standard unweighted simple MSE；concrete P2 strategy 即使已经在 pixel Gaussian
-  recipe 中实现，也不自动成为 latent correctness default；
+- standard unweighted simple MSE；已退休的 pixel Gaussian weighting experiment
+  不提供 latent correctness default 或可复用 Builder；
 - `clip_denoised=false`；
 - concrete condition dropout 由 Strategy 管理；
 - model-internal dropout 关闭；
@@ -1041,14 +1042,14 @@ batch contract 决定；core runner 不增加分支。
 `v` prediction 可以作为受控扩展，但不能因为 pixel AFHQ recipe 可用就自动成为
 latent default。
 
-P2 是 parameterization-dependent 的具体 Gaussian TrainingStrategy/TrainingBuilder
-组合。只有在 latent epsilon baseline、codec reconstruction 和 decoded evaluation
-protocol 稳定后，才能以相同 topology/data/budget 做 standard/P2 builder A/B；pixel
-AFHQ 现在已冻结 equal-budget `latest.pt` EMA 的 epsilon/fixed A/B evaluation authority，
-并已完成单 seed、单 epoch 的 full-official-test controlled result。该轮 P2 在 aggregate
-与各类 FID/KID 上都略差，且 KID delta 与 std 同量级，因此只证明 protocol readiness，
-不提供统计显著或 production long-run 收益；结果不能直接推广到 latent DiT，更不能把 P2
-参数放进 codec 或 Process 配置。
+历史 P2 weighting 是 parameterization-dependent 的具体 Gaussian recipe，曾由专用
+TrainingStrategy/TrainingBuilder 表达，现已从 supported surface 删除。归档的 pixel AFHQ
+equal-budget `latest.pt` EMA、单 seed、单 epoch full-official-test A/B 中，P2 arm 的
+aggregate 与各类 FID/KID 均略差，且 KID delta 与 std 同量级；这只记录当时的 protocol
+readiness，不提供统计显著或 production long-run 收益。该结果不能直接推广到 latent DiT，
+归档记录也不提供可复用 Builder 或配置入口。若未来 latent 方法需要新的 SNR weighting，
+必须在该任务实现时经独立 roadmap 决策、recipe 和 evaluation gate 同步引入，不能复用已删除
+的 P2 参数、codec/Process 配置或历史 checkpoint。
 
 learned variance 后续需要：
 

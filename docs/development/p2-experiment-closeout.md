@@ -33,7 +33,9 @@ checkpoints may be removed under the output-retention audit.
 - do not resume these runs or use their diagnostics as formal Evaluation;
 - keep Metrics task-neutral and use complete validation Evaluation for
   checkpoint selection;
-- continue with fresh canonical ADM + cosine + v + learned-range variance.
+- continue with the fresh canonical ADM graph using the `[1,2,3,4]` / 16x16
+  scale layout, cosine, v-prediction, and learned-range variance. This is a
+  joint topology-and-variance quality candidate, not an isolated ablation.
 
 This record is historical only. Reintroducing any SNR weighting method requires
 a new roadmap decision, a namespaced concrete recipe, and matched validation

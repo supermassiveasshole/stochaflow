@@ -42,9 +42,9 @@ model:
     in_channels: 3
     out_channels: 6
     base_channels: 128
-    channel_multipliers: [1, 1, 2, 3, 4]
+    channel_multipliers: [1, 2, 3, 4]
     num_res_blocks: 2
-    attention_resolutions: [32, 16, 8]
+    attention_resolutions: [32, 16]
     attention_head_channels: 64
     num_classes: 3
     dropout: 0.1
@@ -117,7 +117,7 @@ diagnostics:
       modules: []
       cadence:
         step_every: 1000
-        artifact_every_epochs: 20
+        artifact_every_epochs: 10
       sampling:
         shape: [3, 128, 128]
         sample_num: 12
@@ -126,13 +126,13 @@ diagnostics:
       use_ema: true
       failure_policy: warn
       samplers:
-        - id: ddpm_250
+        - id: ddpm_100
           name: ddpm
           params:
-            num_inference_steps: 250
+            num_inference_steps: 100
           trajectory:
             enabled: false
-            every_steps: 25
+            every_steps: 10
             gif_fps: 8
         - id: ddim_50
           name: ddim
@@ -170,7 +170,7 @@ diagnostics:
 
 trainer:
   num_epochs: 200
-  device: auto
+  device: cuda
   precision: bf16-mixed
   accumulate_grad_batches: 4
   max_grad_norm: 1.0
@@ -184,8 +184,8 @@ trainer:
     min_delta: 0.0
   validation_evaluation:
     enabled: true
-    start_epoch: 20
-    every_epochs: 20
+    start_epoch: 100
+    every_epochs: 10
     include_final: true
     weights: ema
     evaluation:
@@ -216,7 +216,7 @@ trainer:
               every_steps: 10
           shape: [3, 128, 128]
           num_samples: 900
-          batch_size: 30
+          batch_size: 15
           seed: 20260726
         gallery_count: 12
     metrics:
@@ -271,4 +271,4 @@ logging:
   torch_logs: {}
 
 artifacts:
-  checkpoint_every: 20
+  checkpoint_every: 50

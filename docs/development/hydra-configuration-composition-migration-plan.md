@@ -1,8 +1,8 @@
 # Hydra 配置组合与 Train/Sample 边界迁移计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：分段实施；C0/C1 已于 2026-08-01 关闭，C2 尚未完成；H0–H3 为 latent
-  vertical slice 后的 P2，H4 为 Later
+- 状态：分段实施；C0/C1 已于 2026-08-01 关闭，C2 尚未完成；H0–H3 只在 latent
+  vertical slice 后重新排期，H4 为 Later
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)；本文拥有配置
   contract，统一排期拥有跨计划执行顺序
@@ -103,14 +103,13 @@ checkpoint + sample config
 13. **保留简洁的 role-scoped `name`，但不掩盖其 grammar。** 首轮不改成
     `provider: torch`、`class_name` 或 `target`；配置参考、错误信息和 `--check` 必须按
     role 明确显示该字段接受 Registry identity 还是两个受限 native identifier。
-14. **P2 research variation 只增加有明确产品 gate 的 production recipe。** corrected ADM
-    topology 由 v-prediction baseline 与显式 maintained `train-adm-128-p2.yaml` 共用；后者
-    只服务 A3 单臂 absolute-quality closeout，不建立任意 weighting authoring tree。若未来
-    需要 standard/P2 superiority claim，应从同一 P2 production profile 只把 `gamma` 改为
-    0 并冻结 matched resolved config，而不是复用 v-prediction baseline 或把训练变化伪装成
-    sample profile。`smoke/train-adm-128-p2.yaml` 与
-    `profiling/train-adm-128-p2.yaml` 仅是 bounded wiring/full-topology readiness lanes，
-    不属于 production authoring tree，也不携带 production budget/capacity/quality 声明。
+14. **已退休的 weighting 实验不进入 Hydra production authoring。** 历史 P2
+    production/smoke/profiling recipes 只服务过受控实验，现已与对应
+    TrainingBuilder/Strategy 一并删除；唯一保留的 authority 是
+    [`p2-experiment-closeout.md`](p2-experiment-closeout.md) 中的归档记录。Hydra groups、
+    Defaults List 和生成参考不得保留这些已删除名称。未来若重新研究 SNR weighting，必须先有
+    新的 roadmap 决策、独立命名的 concrete recipe 和 matched validation evidence，不能把
+    旧 P2 profile 或 `gamma` override 当成仍受支持的配置入口。
 
 推荐的最终边界是：
 
@@ -1482,7 +1481,8 @@ Hydra composed mapping
 - AFHQ batch、accumulation、scheduler、verification 不漂移；
 - AFHQ ADM parity 使用 A0 后的 canonical skip/attention topology，并拒绝 pre-A0
   config/checkpoint；
-- P2 benchmark TrainingBuilder selection 与 production Hydra Defaults List 隔离；
+- 已退休 weighting experiment 的 Builder/config 名称不出现在 production Hydra
+  Defaults List 或生成参考中；
 - AFHQ sample config不进入 train Defaults List；
 - AFHQ evaluation/capacity authority 不变；
 - AFHQ installed-wheel extension activation 正常。

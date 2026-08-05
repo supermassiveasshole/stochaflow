@@ -177,6 +177,7 @@ def test_maintained_examples_publish_grounded_results() -> None:
 
     mnist = MNIST_README.read_text(encoding="utf-8")
     afhq = AFHQ_README.read_text(encoding="utf-8")
+    afhq_tutorial = AFHQ_TUTORIAL.read_text(encoding="utf-8")
     normalized_afhq = " ".join(afhq.split())
 
     assert "Best validation loss | **0.07189**" in mnist
@@ -186,6 +187,9 @@ def test_maintained_examples_publish_grounded_results() -> None:
     assert "mnist_ddim50_epoch_0183_trajectory.gif" in mnist
     assert "exact parameter count" in normalized_afhq
     assert "105,197,187" in normalized_afhq
+    assert "100,351,366" in normalized_afhq
+    assert "45.17 images/s" in normalized_afhq
+    assert "10.455 GiB" in normalized_afhq
     assert "current result surface" in normalized_afhq
     assert "train-adm-128-learned-range-v.yaml" in normalized_afhq
     assert (
@@ -199,6 +203,8 @@ def test_maintained_examples_publish_grounded_results() -> None:
     assert "Aggregate FID | **30.240**" not in afhq
     assert "Aggregate KID | **0.005310 ± 0.000701**" not in afhq
     assert "afhq_v2_adm_ddim50_epoch_0170_samples.png" not in afhq
+    assert "subset size 200" in afhq_tutorial
+    assert "subset size 300" not in afhq_tutorial
 
     for source in (MNIST_README, AFHQ_README):
         content = source.read_text(encoding="utf-8")
