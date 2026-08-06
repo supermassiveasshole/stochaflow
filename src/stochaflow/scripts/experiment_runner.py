@@ -442,7 +442,7 @@ def _checkpoint_candidate_directory(root: Path) -> Path:
     )
     if direct.is_dir():
         return direct.resolve()
-    directories: dict[Path, float] = {}
+    directories: set[Path] = set()
     for path in root.rglob("*.pt"):
         if (
             not path.is_file()
@@ -453,20 +453,19 @@ def _checkpoint_candidate_directory(root: Path) -> Path:
             _EPOCH_CHECKPOINT_PATTERN.fullmatch(path.name) is None
         ):
             continue
-        directory = path.parent.resolve()
-        directories[directory] = max(
-            directories.get(directory, float("-inf")),
-            path.stat().st_mtime,
-        )
+        directories.add(path.parent.resolve())
     if not directories:
         raise FileNotFoundError(
             "could not find a resumable checkpoint directory under: "
             f"{root}"
         )
-    return max(
-        directories,
-        key=lambda directory: (directories[directory], str(directory)),
-    )
+    if len(directories) > 1:
+        rendered = ", ".join(str(path) for path in sorted(directories))
+        raise ValueError(
+            "resume directory contains multiple nested checkpoint "
+            f"directories; pass one exact run directory or checkpoint: {rendered}"
+        )
+    return next(iter(directories))
 
 
 def _candidate_checkpoint_paths(checkpoint_dir: Path) -> tuple[Path, ...]:

@@ -109,7 +109,7 @@ config 字段覆盖进入 resolved config；`limit-batches`、deterministic、�
 
 | 调用 | 目录中选择的 checkpoint | 默认输出 |
 | --- | --- | --- |
-| `train --resume <run-or-root>` | 先定位最近活动的 `checkpoints/`，再从 `latest.pt`、`best.pt` 与最大编号的 `epoch_*.pt` 中选择最高完整 snapshot | 在原 run 的 output root 下创建新的兄弟 run |
+| `train --resume <run-or-root>` | 定位直接或唯一嵌套的 `checkpoints/`，再从 `latest.pt`、`best.pt` 与最大编号的 `epoch_*.pt` 中选择最高完整 snapshot | 在原 run 的 output root 下创建新的兄弟 run |
 | `sample --checkpoint <run-or-root>` | 递归查找最近修改的 `checkpoints/best.pt` | `<checkpoint-run>/samples/<timestamp>/` |
 | `evaluate --config <file>` | config 中的 checkpoint path；相对路径以 config 目录为基准 | `<checkpoint-run>/evaluations/<timestamp>/`，或显式的新 output directory |
 
@@ -119,10 +119,13 @@ config 字段覆盖进入 resolved config；`limit-batches`、deterministic、�
 精确 lineage 时也应传 checkpoint 文件。`train --output-dir` 是新建 timestamped run 的
 父目录，而 `sample --output-dir` 是本次 artifact 的最终目录。
 
-训练的目录 resume 不按文件名或 mtime 猜测同一 run 内的进度。候选必须是可完整解析的
-v12 epoch-boundary snapshot，具有相同 resolved config、config source、lineage、extension
-provenance、overlay history 和 data artifact identity；同 epoch 的 global step、metrics 与
-training-loop state 也必须一致。框架按 payload 中的 `(epoch, global_step)` 选择最高进度，
+训练的目录 resume 不按文件名或 mtime 猜测 run identity 或同一 run 内的进度。若输入目录
+递归包含多个 `checkpoints/`，框架会因 lineage 范围不明确而 fail closed；此时必须传入
+一个精确 run directory、其 `checkpoints/` 或 checkpoint 文件。唯一目录内的候选必须是
+可完整解析的 v12 epoch-boundary snapshot，具有相同 resolved config、config source、
+lineage、extension provenance、overlay history 和 data artifact identity；同 epoch 的
+global step、metrics 与 training-loop state 也必须一致。框架按 payload 中的
+`(epoch, global_step)` 选择最高进度，
 同进度依次偏好 `latest.pt`、编号 checkpoint、`best.pt`。任一候选损坏、进度倒退或身份冲突
 都会 fail closed。显式 checkpoint 文件保持 exact semantics，不会自动升级到目录中的另一
 文件。

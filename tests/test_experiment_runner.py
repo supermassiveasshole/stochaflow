@@ -3147,6 +3147,52 @@ def test_resolve_resume_checkpoint_accepts_run_directory(tmp_path):
     assert resolved_payload.get("epoch") == 1
 
 
+def test_resume_root_accepts_one_nested_checkpoint_directory(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "runs" / "run-a" / "checkpoints" / "latest.pt"
+    checkpoint_path.parent.mkdir(parents=True)
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=1,
+            kind="latest",
+            best_epoch=1,
+            best_metric_value=0.5,
+        ),
+        checkpoint_path,
+    )
+
+    resolved_path, resolved_payload = experiment_runner._resolve_resume_checkpoint(
+        tmp_path / "runs"
+    )
+
+    assert resolved_path == checkpoint_path
+    assert resolved_payload is not None
+    assert resolved_payload.get("epoch") == 1
+
+
+def test_resume_root_rejects_multiple_nested_checkpoint_directories(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "runs"
+    for run_name in ("run-a", "run-b"):
+        checkpoint_path = root / run_name / "checkpoints" / "latest.pt"
+        checkpoint_path.parent.mkdir(parents=True)
+        CheckpointManager.save_payload(
+            _resume_candidate_payload(
+                epoch=1,
+                kind="latest",
+                best_epoch=1,
+                best_metric_value=0.5,
+            ),
+            checkpoint_path,
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="multiple nested checkpoint directories",
+    ):
+        experiment_runner._resolve_resume_checkpoint(root)
+
+
 def test_resume_accepts_case_variant_checkpoint_directory(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "run" / "CHECKPOINTS"
     checkpoint_dir.mkdir(parents=True)

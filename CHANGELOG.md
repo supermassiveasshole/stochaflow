@@ -109,7 +109,8 @@ is unavailable.
 - Made run-directory strict resume select the highest lineage-consistent atomic
   snapshot across `latest.pt`, `best.pt`, and the highest numbered checkpoint,
   while explicit-file resume remains exact. Contradictory, corrupt, regressing,
-  mixed-lineage, and inherited-best-only candidate sets now fail closed.
+  mixed-lineage, inherited-best-only, and multiple-nested-directory candidate
+  sets now fail closed.
 - Reordered epoch publication so an improved `best.pt` is followed by
   `latest.pt`, then an optional numbered checkpoint, before epoch logging and
   reporting. Directory recovery now retains the furthest successfully published
