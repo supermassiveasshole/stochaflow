@@ -522,6 +522,16 @@ contract，并只引用训练中 aggregate validation FID 选出的 `best.pt`。
   诊断；
 - KID 100 subsets、subset size 200、seed `20260726`，FID feature 2048。
 
+E200 完成并冻结 validation-selected checkpoint 后，只把 checked-in profile 的
+`subject.path` 替换为该 `best.pt` 的精确绝对文件路径，然后执行：
+
+```bash
+uv run --project examples/showcases/afhq-v2 stochaflow evaluate \
+  --config examples/showcases/afhq-v2/experiments/evaluation/formal-ddpm100-cfg2-official-test-learned-range-v.yaml \
+  --device cuda \
+  --output-dir outputs/afhq-v2/evaluations/adm-learned-range-v-ddpm100-cfg2-official-test
+```
+
 这次 full official-test Evaluation 只运行一次，且不能反向改变 selection。它发布 aggregate
 与 per-class FID/KID、exact sample completeness、prediction artifact 和 immutable result
 bundle。standard-v/fixed-variance subject 继续使用自己冻结的 DDIM-50 / CFG 2.0 profile；
@@ -544,7 +554,7 @@ digests 与 deterministic gallery IDs。
 ```yaml
 subject:
   kind: prediction_artifact
-  path: ../../../../../outputs/afhq-v2/evaluations/adm-ddim50-cfg2-official-test/predictions/prediction_manifest.json
+  path: ../../../../../outputs/afhq-v2/evaluations/adm-learned-range-v-ddpm100-cfg2-official-test/predictions/prediction_manifest.json
 data:
   source: prediction_artifact
   split: test

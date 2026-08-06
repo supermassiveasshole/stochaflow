@@ -511,7 +511,7 @@ reference/generated exact completeness。
 成功目录为：
 
 ```text
-outputs/afhq-v2/evaluations/adm-official-test/
+outputs/afhq-v2/evaluations/adm-learned-range-v-ddpm100-cfg2-official-test/
 ├── predictions/
 │   ├── prediction_manifest.json
 │   └── predictions.jsonl
@@ -527,7 +527,7 @@ pre/postprocess、extension lineage、shard digests 和 deterministic gallery ID
 ```yaml
 subject:
   kind: prediction_artifact
-  path: ../../../../../outputs/afhq-v2/evaluations/adm-official-test/predictions/prediction_manifest.json
+  path: ../../../../../outputs/afhq-v2/evaluations/adm-learned-range-v-ddpm100-cfg2-official-test/predictions/prediction_manifest.json
 data:
   source: prediction_artifact
   split: test
