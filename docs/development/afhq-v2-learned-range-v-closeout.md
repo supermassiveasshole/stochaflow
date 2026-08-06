@@ -1,6 +1,6 @@
 # AFHQ-v2 Learned-Range-v Closeout
 
-- Status: running; formal checkpoint-selection evidence has not started
+- Status: running; production checkpoint-selection Evaluation begins at epoch 100
 - Scope: AFHQ-v2 128x128, ordinary pixel-space class-conditional generation
 - Recorded: 2026-08-06
 
@@ -54,6 +54,36 @@ Training observation runs every 10 epochs with EMA, CFG 2.0, seed 20260726,
 DDPM 100 and deterministic DDIM 50 sample grids, plus reconstruction panels.
 Diagnostic manifests must report `errors: []`. These artifacts may reveal gross
 quality failure but have no checkpoint-selection or benchmark authority.
+
+## Bounded runtime preflight
+
+The schema-v3 capacity report
+`G:\stochaflow\outputs\benchmarks\afhq-v2\learned-range-v-midres-four-level-4090.json`
+matches the production candidate's capacity-critical path: `[1,2,3,4]`, minimum
+resolution 16, attention at 32/16, six outputs, BF16, batch 8, and accumulation
+4. It records 100,351,366 parameters and 25 successful measured optimizer
+updates at 1.411495 updates/s (45.16785 images/s), with 10,759,796,224 bytes
+peak allocated, 11,226,054,656 bytes (10.455 GiB) peak reserved, and zero
+non-finite losses or gradients. The underlying trial metrics are at
+`G:\stochaflow\outputs\afhq-v2\capacity-audit\midres-four-level\batch-8\bf16-mixed\metrics.jsonl`.
+The capacity trial alters non-capacity cadence and Evaluation settings, so it is
+not a byte-identical production recipe or quality result.
+
+The one-step fresh smoke run
+`G:\stochaflow\outputs\afhq-v2\adm-128-learned-range-v-midres-capacity-smoke\20260806_032129`
+also exercised the complete 900-sample live validation Evaluation. It completed
+with all 12 required aggregate/per-class FID/KID observations and emitted
+`best/epoch: 1`; its checkpoint directory was subsequently removed by the
+approved checkpoint cleanup. This proves the Evaluation-to-best-checkpoint
+lifecycle can complete, not that a one-step random-initialized model has useful
+quality or selection authority.
+
+That smoke run took about 28 minutes end to end. Independently, the production
+epoch-70 DDPM-100 diagnostic measured 0.53989 samples/s, which projects 900
+samples to about 27.8 minutes before conservative publication overhead. Allow
+roughly 28--35 minutes for each due production Evaluation; paused epoch metrics
+or stdout while the runtime and GPU remain active during that window is not by
+itself evidence of a hang.
 
 ## Validation checkpoint selection
 
