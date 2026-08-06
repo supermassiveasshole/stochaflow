@@ -316,6 +316,37 @@ def test_live_evaluation_uses_ema_and_restores_training_state() -> None:
     assert subject.profile_digest == validator.identity.profile_digest
 
 
+def test_live_evaluation_is_reusable_across_epochs() -> None:
+    trainer = _trainer()
+    validator = EvaluationBackedEpochValidator(
+        trainer=trainer,
+        config=_config(),
+        validation_data=_data(),
+        data_identity={"source": "training", "split": "validation"},
+        registries=_registries(),
+    )
+    model = cast(ScalarEvaluationModel, trainer.model)
+
+    first = validator.evaluate(epoch=2, global_step=7)
+    torch.testing.assert_close(model.weight, torch.tensor(2.0))
+    assert model.training
+
+    with torch.no_grad():
+        model.weight.fill_(3.0)
+        assert trainer.ema is not None
+        for shadow in trainer.ema.shadow_params.values():
+            shadow.fill_(7.0)
+
+    second = validator.evaluate(epoch=4, global_step=14)
+
+    assert (first.epoch, first.global_step) == (2, 7)
+    assert first.metrics == {"valid/metrics/value": 15.0}
+    assert (second.epoch, second.global_step) == (4, 14)
+    assert second.metrics == {"valid/metrics/value": 21.0}
+    torch.testing.assert_close(model.weight, torch.tensor(3.0))
+    assert model.training
+
+
 def test_live_evaluation_raw_profile_uses_current_model() -> None:
     validator = EvaluationBackedEpochValidator(
         trainer=_trainer(),
