@@ -20,6 +20,7 @@ from stochaflow.metrics.contracts import (
     prepare_metric_updates,
 )
 from stochaflow.metrics.factory import build_metric
+from stochaflow.utils.registry import REGISTRIES, Registry
 
 
 class MetricRuntimeError(ValueError):
@@ -76,13 +77,20 @@ def _normalize_metric_result(
 class MetricEngine:
     """Own metric instances and update bindings for one isolated scope."""
 
-    def __init__(self, specs: Sequence[MetricSpec]) -> None:
+    def __init__(
+        self,
+        specs: Sequence[MetricSpec],
+        *,
+        registry: Registry[type[Metric]] = REGISTRIES.metrics,
+    ) -> None:
         specs_value = cast(object, specs)
         if isinstance(specs_value, (str, bytes)) or not isinstance(
             specs_value,
             Sequence,
         ):
             raise TypeError("metric engine specs must be a sequence")
+        if not isinstance(cast(object, registry), Registry):
+            raise TypeError("metric engine registry must be a Registry")
         metrics: dict[str, Metric] = {}
         channels: dict[str, list[str]] = {}
         for index, spec in enumerate(specs):
@@ -91,7 +99,7 @@ class MetricEngine:
                 raise ValueError(
                     f"metric engine specs contain duplicate id {spec.id!r}"
                 )
-            metrics[spec.id] = build_metric(spec)
+            metrics[spec.id] = build_metric(spec, registry=registry)
             channels.setdefault(spec.channel, []).append(spec.id)
         self._metrics = metrics
         self._channels = {

@@ -15,19 +15,25 @@ from stochaflow.sampling.builder import (
 )
 from stochaflow.sampling.sampler import SamplingObservation
 from stochaflow.sampling.writers import SamplingBatch
-from stochaflow.utils.registry import REGISTRIES
+from stochaflow.utils.registry import REGISTRIES, Registry
 
 
 def execute_sampling_builder(
     builder_name: str,
     context: SamplingBuilderContext,
+    *,
+    registry: Registry[type[SamplingBuilder]] = REGISTRIES.sampling_builders,
 ) -> SamplingOutput:
     """Construct and execute one builder without writing runtime artifacts."""
 
-    builder = cast(
-        SamplingBuilder,
-        REGISTRIES.sampling_builders.create(builder_name, context),
-    )
+    if not isinstance(cast(object, registry), Registry):
+        raise TypeError("sampling builder registry must be a Registry")
+    builder_value = cast(object, registry.create(builder_name, context))
+    if not isinstance(builder_value, SamplingBuilder):
+        raise TypeError(
+            "registered sampling builder must inherit SamplingBuilder"
+        )
+    builder = builder_value
     with torch.no_grad():
         output_value = cast(object, builder.run())
     return validate_sampling_output(

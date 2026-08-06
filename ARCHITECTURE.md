@@ -183,7 +183,11 @@ observations. The Trainer feeds those observations into the same monitor,
 `best.pt`, and early-stopping lifecycle used by ordinary validation metrics.
 The evaluator profile digest, cadence, metric keys, and last completed result
 are strict-resume state; non-due epochs do not reuse a stale value or consume
-patience.
+patience. A registry catalog injected at this composition boundary remains the
+authority for the complete collaboration: EvaluationBuilder construction,
+MetricEngine construction, and writer-free SamplingBuilder execution all use
+the corresponding registries from that same catalog rather than falling back
+to process-global registries.
 
 ### 5.3 Sampling
 

@@ -248,6 +248,7 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
                 resolved_weights=self._weights,
                 device=self._trainer.device,
                 inference_assets=self._inference_assets(),
+                sampling_builder_registry=self._registries.sampling_builders,
             )
             subject = LiveEpochEvaluationSubject(
                 profile_digest=self.identity.profile_digest,
@@ -269,6 +270,7 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
             facts = execute_evaluation_plan(
                 evaluation_plan,
                 device=self._trainer.device,
+                metric_registry=self._registries.metrics,
             )
             if facts.status != "complete":
                 raise ValueError(

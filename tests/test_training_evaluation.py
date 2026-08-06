@@ -8,6 +8,7 @@ import pytest
 import torch
 from torch import nn
 from torchmetrics.aggregation import MeanMetric
+from torchmetrics.regression import MeanSquaredError
 
 from stochaflow.evaluation import (
     EvaluationBuilder,
@@ -42,6 +43,7 @@ from stochaflow.utils.registry import REGISTRIES, RegistryCatalog
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
 LIVE_MEAN_METRIC = "tests.live-epoch-mean"
+LIVE_MSE_METRIC = "tests.live-epoch-mse"
 LIVE_SAMPLING_BUILDER = "tests.live-epoch-sampling"
 
 
@@ -49,7 +51,8 @@ class LiveEpochMeanMetric(MeanMetric):
     """Mean metric registered only for the live Evaluation tests."""
 
 
-REGISTRIES.metrics.add(LIVE_MEAN_METRIC, LiveEpochMeanMetric)
+class LiveEpochMSEMetric(MeanSquaredError):
+    """Pair metric registered only in an isolated test catalog."""
 
 
 class ScalarEvaluationModel(nn.Module):
@@ -87,12 +90,6 @@ class LiveModelSamplingBuilder(SamplingBuilder):
             ),
             metadata={"weights": weights},
         )
-
-
-REGISTRIES.sampling_builders.add(
-    LIVE_SAMPLING_BUILDER,
-    LiveModelSamplingBuilder,
-)
 
 
 class LiveModelValueEvaluator:
@@ -224,6 +221,12 @@ class SamplingEvaluationBuilder(EvaluationBuilder):
 
 def _registries() -> RegistryCatalog:
     catalog = RegistryCatalog()
+    catalog.metrics.add(LIVE_MEAN_METRIC, LiveEpochMeanMetric)
+    catalog.metrics.add(LIVE_MSE_METRIC, LiveEpochMSEMetric)
+    catalog.sampling_builders.add(
+        LIVE_SAMPLING_BUILDER,
+        LiveModelSamplingBuilder,
+    )
     catalog.evaluation_builders.add("tests.live-model", LiveModelEvaluationBuilder)
     catalog.evaluation_builders.add(
         "tests.live-sampling",
@@ -393,7 +396,7 @@ def test_training_evaluation_samples_scores_and_saves_best_checkpoint(
         metrics=[
             MetricSpec(
                 id="quality",
-                name="mse",
+                name=LIVE_MSE_METRIC,
                 channel="tests.live-sample-pairs",
             )
         ],
@@ -404,12 +407,15 @@ def test_training_evaluation_samples_scores_and_saves_best_checkpoint(
             strict_complete=True,
         ),
     )
+    registries = _registries()
+    assert LIVE_MSE_METRIC not in REGISTRIES.metrics.names()
+    assert LIVE_SAMPLING_BUILDER not in REGISTRIES.sampling_builders.names()
     validator = EvaluationBackedEpochValidator(
         trainer=trainer,
         config=config,
         validation_data=[torch.zeros((2, 1))],
         data_identity={"source": "training", "split": "validation"},
-        registries=_registries(),
+        registries=registries,
     )
 
     history = trainer.fit(

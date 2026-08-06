@@ -105,6 +105,9 @@ is unavailable.
 
 ### Fixed
 
+- Propagated an injected RegistryCatalog through epoch validation Evaluation
+  builders, MetricEngine construction, and writer-free SamplingBuilder
+  execution instead of partially falling back to process-global registries.
 - Restored the canonical ADM mixed-precision boundary before the output head,
   so the final normalization consumes the input dtype instead of a BF16/FP16
   decoder activation.

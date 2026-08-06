@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
+from torchmetrics import Metric
 
 from stochaflow.data import DataArtifactBindings, DataLoaders, build_data_loaders
 from stochaflow.evaluation.artifacts import (
@@ -63,6 +64,7 @@ from stochaflow.utils.plugins import (
     prepare_extension_plugins,
     require_resolved_extensions_for_plan,
 )
+from stochaflow.utils.registry import REGISTRIES, Registry
 from stochaflow.utils.run_manifest import extension_runtime_metadata
 from stochaflow.utils.seed import set_seed
 
@@ -456,6 +458,7 @@ def execute_evaluation_plan(
     plan: EvaluationPlan,
     *,
     device: torch.device,
+    metric_registry: Registry[type[Metric]] = REGISTRIES.metrics,
 ) -> EvaluationFacts:
     """Execute one already-composed EvaluationPlan without publishing a bundle."""
 
@@ -468,7 +471,7 @@ def execute_evaluation_plan(
         )
         for spec in plan.metric_specs
     )
-    engine = MetricEngine(runtime_specs).to(device)
+    engine = MetricEngine(runtime_specs, registry=metric_registry).to(device)
     engine.reset()
     previous_modes = {
         name: module.training for name, module in plan.modules.items()

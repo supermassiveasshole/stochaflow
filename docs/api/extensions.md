@@ -207,7 +207,8 @@ binding 是框架内部协作，不是 extension facade 的公共 helper API。
 `{id, name, channel, params, phases}` 形状；配置层把其中 task-neutral 字段组合为
 `MetricSpec`，而不是公开一个继承 `MetricSpec` 的 training-specific 类型。
 `MetricEngine` 的公共 surface 只有构造、`required_channels`、`update()`、`compute()`、
-`reset()` 与 `to()`；接受 prepared payload 的路径属于训练 runtime 内部协议。
+`reset()` 与 `to()`；构造时可显式注入 metric `Registry`，缺省才使用
+`REGISTRIES.metrics`。接受 prepared payload 的路径属于训练 runtime 内部协议。
 
 `REGISTRIES.metrics` 只接受 `torchmetrics.Metric` 子类。Stochaflow 不解析任意
 `torchmetrics.*` class path，也不镜像上游 namespace；第三方 extension 应注册自己的
@@ -295,6 +296,12 @@ Builder 通过 `REGISTRIES.evaluation_builders.register(name)` 注册。它必�
 `EvaluationSamplingCapability`：它从 checkpoint 恢复 Process 与 inference assets，使用
 `PinnedInferenceModelProvider` 并调用 shared SamplingBuilder execution seam，返回 validated
 in-memory batches 而不运行 writers。Builder 不接收可再次选择权重的 provider。
+
+训练期 live Evaluation 可以在组合边界注入独立 `RegistryCatalog`。同一个 catalog 的
+`evaluation_builders`、`metrics` 与 `sampling_builders` 会分别贯穿 EvaluationPlan 构造、
+MetricEngine 和 writer-free SamplingBuilder execution；该路径不会在中途回退到全局
+registry。默认应用 runtime 仍注入全局 `REGISTRIES`，因此内置和 extension component
+继续走同一生命周期。
 
 `prediction_artifact` 路径不构造 model 或 DataBuilder；context 的 `inference` 与
 `sampling` 都为 `None`，data 是按 manifest sample plan 排序的 `PredictionRecord`，Builder

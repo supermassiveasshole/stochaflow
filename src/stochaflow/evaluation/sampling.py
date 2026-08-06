@@ -24,10 +24,15 @@ from stochaflow.inference.checkpoint import (
 from stochaflow.inference.model import PinnedInferenceModelProvider
 from stochaflow.processes.base import Process
 from stochaflow.sampling.assets import InferenceAssetProvider
-from stochaflow.sampling.builder import SamplingBuilderContext, SamplingOutput
+from stochaflow.sampling.builder import (
+    SamplingBuilder,
+    SamplingBuilderContext,
+    SamplingOutput,
+)
 from stochaflow.sampling.execution import execute_sampling_builder
 from stochaflow.utils.checkpoint import CheckpointState
 from stochaflow.utils.config import StochaflowConfig
+from stochaflow.utils.registry import REGISTRIES, Registry
 from stochaflow.utils.sampling_recipe import (
     SamplingRecipe,
     resolve_sampling_recipe_params,
@@ -227,6 +232,14 @@ class LiveEvaluationSamplingCapability:
         repr=False,
         compare=False,
     )
+    sampling_builder_registry: Registry[type[SamplingBuilder]] = field(
+        default_factory=lambda: cast(
+            Registry[type[SamplingBuilder]],
+            REGISTRIES.sampling_builders,
+        ),
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -254,6 +267,10 @@ class LiveEvaluationSamplingCapability:
             raise TypeError(
                 "live evaluation sampling inference_assets must be an "
                 "InferenceAssetProvider"
+            )
+        if not isinstance(cast(object, self.sampling_builder_registry), Registry):
+            raise TypeError(
+                "live evaluation sampling builder registry must be a Registry"
             )
         object.__setattr__(self, "device", torch.device(self.device))
 
@@ -308,7 +325,11 @@ class LiveEvaluationSamplingCapability:
             batch_size=request.batch_size,
             inference_assets=self.inference_assets,
         )
-        return execute_sampling_builder(self.recipe.name, context)
+        return execute_sampling_builder(
+            self.recipe.name,
+            context,
+            registry=self.sampling_builder_registry,
+        )
 
 
 __all__ = [
