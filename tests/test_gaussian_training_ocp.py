@@ -22,6 +22,7 @@ from fixtures.gaussian_training_extension import (
 )
 from torch.utils.data import DataLoader, Dataset
 
+import stochaflow.training as training_facade
 import stochaflow.training.gaussian as gaussian_training
 from stochaflow.data import DataLoaders
 from stochaflow.processes import DiscreteGaussianProcess
@@ -33,12 +34,23 @@ from stochaflow.training.strategy import validate_train_step_output
 from stochaflow.utils import plugins
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import ComponentConfig, load_config_dict
+from stochaflow.utils.registry import RegistryError
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_NAME = "gaussian-strategy-lifecycle"
 PLUGIN_DISTRIBUTION = "gaussian-strategy-lifecycle-tests"
 PLUGIN_VERSION = "1.2.3"
 PLUGIN_TARGET = "fixtures.gaussian_training_extension"
+RETIRED_P2_TRAINING_BUILDERS = (
+    "p2_gaussian_denoising",
+    "class_conditional_p2_gaussian_denoising",
+)
+RETIRED_P2_TRAINING_SYMBOLS = (
+    "P2GaussianDenoisingTrainingBuilder",
+    "P2GaussianDenoisingTrainingStrategy",
+    "ClassConditionalP2GaussianDenoisingTrainingBuilder",
+    "ClassConditionalP2GaussianDenoisingTrainingStrategy",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +181,81 @@ def test_gaussian_training_facade_keeps_strategy_internals_private() -> None:
         "parse_gaussian_variance",
         "validate_gaussian_model_output_layout",
     }.isdisjoint(gaussian_training.__all__)
+
+
+def test_retired_p2_module_and_facade_symbols_are_absent() -> None:
+    training_root = (
+        REPOSITORY_ROOT / "src" / "stochaflow" / "training" / "gaussian"
+    )
+
+    assert not (training_root / "p2.py").exists()
+    for facade in (gaussian_training, training_facade):
+        assert set(RETIRED_P2_TRAINING_SYMBOLS).isdisjoint(facade.__all__)
+        assert all(
+            not hasattr(facade, symbol)
+            for symbol in RETIRED_P2_TRAINING_SYMBOLS
+        )
+
+
+@pytest.mark.parametrize("builder_name", RETIRED_P2_TRAINING_BUILDERS)
+def test_retired_p2_training_builders_are_unresolvable(
+    builder_name: str,
+) -> None:
+    with pytest.raises(
+        RegistryError,
+        match=rf"unknown training builder '{builder_name}'",
+    ):
+        build_training_plan(
+            ComponentConfig(name=builder_name, params={}),
+            primary_model=PluginGaussianDenoiser(),
+            process=gaussian_process(),
+            objective=MSEObjective(),
+            model_factory=lambda config: (_ for _ in ()).throw(
+                AssertionError(f"unexpected model construction: {config}")
+            ),
+            objective_factory=lambda config: (_ for _ in ()).throw(
+                AssertionError(f"unexpected objective construction: {config}")
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("retired_params", "parameter_name"),
+    [
+        pytest.param({"k": 1.0}, "k", id="k"),
+        pytest.param({"gamma": 1.0}, "gamma", id="gamma"),
+        pytest.param(
+            {"loss_weighting": {"name": "p2", "params": {}}},
+            "loss_weighting",
+            id="loss-weighting",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "builder_name",
+    ["gaussian_denoising", "class_conditional_gaussian_denoising"],
+)
+def test_standard_gaussian_builders_reject_retired_p2_parameters(
+    builder_name: str,
+    retired_params: dict[str, Any],
+    parameter_name: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=rf"unknown {builder_name} training parameter\(s\): {parameter_name}",
+    ):
+        build_training_plan(
+            ComponentConfig(name=builder_name, params=retired_params),
+            primary_model=PluginGaussianDenoiser(),
+            process=gaussian_process(),
+            objective=MSEObjective(),
+            model_factory=lambda config: (_ for _ in ()).throw(
+                AssertionError(f"unexpected model construction: {config}")
+            ),
+            objective_factory=lambda config: (_ for _ in ()).throw(
+                AssertionError(f"unexpected objective construction: {config}")
+            ),
+        )
 
 
 def test_namespaced_training_builder_composes_custom_strategy() -> None:

@@ -219,18 +219,29 @@ def test_maintained_examples_publish_grounded_results() -> None:
 def test_public_docs_do_not_advertise_retired_p2_support() -> None:
     """Keep the retired experiment out of the supported user surface."""
 
-    public_paths = (
-        PROJECT_ROOT / "README.md",
-        DOCS_ROOT / "index.md",
-        DOCS_ROOT / "framework.md",
-        DOCS_ROOT / "api" / "extensions.md",
-        DOCS_ROOT / "configuration" / "index.md",
-        DOCS_ROOT / "configuration" / "compatibility-and-migration.md",
-        DOCS_ROOT / "configuration" / "workflows.md",
-        DOCS_ROOT / "configuration" / "reference.md",
-        DOCS_ROOT / "tutorials" / "afhq-v2.md",
-        DOCS_ROOT / "tutorials" / "super-resolution.md",
-        AFHQ_README,
+    published_docs = (
+        path
+        for path in DOCS_ROOT.rglob("*.md")
+        if "development" not in path.relative_to(DOCS_ROOT).parts
+    )
+    example_surfaces = (
+        path
+        for pattern in ("*.md", "*.yaml", "*.yml")
+        for path in (PROJECT_ROOT / "examples").rglob(pattern)
+    )
+    public_paths = sorted(
+        {
+            PROJECT_ROOT / "README.md",
+            DOCS_ROOT / "configuration" / "_reference.yaml",
+            *published_docs,
+            *example_surfaces,
+        }
+    )
+    retired_symbols = (
+        "P2GaussianDenoisingTrainingBuilder",
+        "P2GaussianDenoisingTrainingStrategy",
+        "ClassConditionalP2GaussianDenoisingTrainingBuilder",
+        "ClassConditionalP2GaussianDenoisingTrainingStrategy",
     )
 
     for path in public_paths:
@@ -239,3 +250,4 @@ def test_public_docs_do_not_advertise_retired_p2_support() -> None:
             re.search(r"(?<![A-Za-z0-9])P2(?![A-Za-z0-9])", content, re.IGNORECASE)
             is None
         ), path
+        assert all(symbol not in content for symbol in retired_symbols), path
