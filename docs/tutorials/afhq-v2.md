@@ -435,8 +435,7 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
   --resume outputs/afhq-v2/adm-128-learned-range-v/<run-id> \
   --epochs 200 \
   --artifact-verification-workers 8 \
-  --device cuda \
-  --deterministic
+  --device cuda
 ```
 
 恢复以 checkpoint config 为权威；model、optimizer、precision、accumulation 和 data
@@ -451,7 +450,7 @@ formal Evaluation 的 subject：
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow sample \
-  --checkpoint outputs/afhq-v2/adm-128/<run-id> \
+  --checkpoint outputs/afhq-v2/adm-128-learned-range-v/<run-id> \
   --config examples/showcases/afhq-v2/experiments/sampling/ddim50-cfg2.yaml \
   --output-dir outputs/afhq-v2/samples/adm-ddim50-cfg2
 ```
@@ -562,7 +561,7 @@ maintained evidence surface，也不提供 compatibility guarantee。
 训练 run 的稳定布局包括：
 
 ```text
-outputs/afhq-v2/adm-128/<run-id>/
+outputs/afhq-v2/adm-128-learned-range-v/<run-id>/
 ├── resolved_config.yaml
 ├── run_manifest.yaml
 ├── train.log

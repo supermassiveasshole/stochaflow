@@ -181,10 +181,11 @@ for the current raw or EMA snapshot, executes the task-owned sampling and metric
 protocol, and returns only its declared canonical `valid/metrics/*`
 observations. The Trainer feeds those observations into the same monitor,
 `best.pt`, and early-stopping lifecycle used by ordinary validation metrics.
-The evaluator profile digest, cadence, metric keys, and last completed result
-are strict-resume state; non-due epochs do not reuse a stale value or consume
-patience. A registry catalog injected at this composition boundary remains the
-authority for the complete collaboration: EvaluationBuilder construction,
+The evaluator profile digest, cadence, metric keys, interval/final observation
+history, and last completed result are strict-resume state; non-due epochs do
+not reuse a stale value or consume patience. A registry catalog injected at this
+composition boundary remains the authority for the complete collaboration:
+EvaluationBuilder construction,
 MetricEngine construction, and writer-free SamplingBuilder execution all use
 the corresponding registries from that same catalog rather than falling back
 to process-global registries.

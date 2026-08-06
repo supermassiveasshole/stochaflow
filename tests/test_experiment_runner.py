@@ -1,6 +1,7 @@
 """Tests for shared experiment runner orchestration."""
 
 import hashlib
+import pickle
 import random
 from argparse import ArgumentParser, Namespace
 from copy import deepcopy
@@ -370,6 +371,8 @@ def _training_loop_state(
 def _epoch_validation_loop_state(
     *,
     last_evaluated_epoch: int | None,
+    monitor_observations: int | None = None,
+    off_cadence_final_epochs: list[int] | None = None,
 ) -> dict[str, Any]:
     monitor = "valid/metrics/distribution/aggregate.fid"
     kid = "valid/metrics/distribution/aggregate.kid_mean"
@@ -377,10 +380,14 @@ def _epoch_validation_loop_state(
     state = _training_loop_state(
         best_epoch=last_evaluated_epoch,
         best_metric_value=12.5 if observed else None,
-        monitor_observations=1 if observed else 0,
+        monitor_observations=(
+            (1 if observed else 0)
+            if monitor_observations is None
+            else monitor_observations
+        ),
         monitor=monitor,
     )
-    state["epoch_validation"] = {
+    epoch_validation = {
         "identity": {
             "profile_digest": "a" * 64,
             "metric_keys": [monitor, kid],
@@ -393,6 +400,11 @@ def _epoch_validation_loop_state(
         "last_evaluated_epoch": last_evaluated_epoch,
         "last_metrics": {monitor: 12.5, kid: 0.125} if observed else {},
     }
+    if off_cadence_final_epochs is not None:
+        epoch_validation["off_cadence_final_epochs"] = (
+            off_cadence_final_epochs
+        )
+    state["epoch_validation"] = epoch_validation
     return state
 
 
@@ -428,6 +440,37 @@ def _best_payload(
             "training_loop": best_snapshot_loop,
         },
     }
+
+
+def _resume_candidate_payload(
+    *,
+    epoch: int,
+    kind: str,
+    best_epoch: int,
+    best_metric_value: float,
+    observations_without_improvement: int = 0,
+    monitor_observations: int | None = None,
+    global_step: int | None = None,
+) -> CheckpointState:
+    """Build one strict filename-bound checkpoint candidate for resolver tests."""
+
+    loop_state = _training_loop_state(
+        best_epoch=best_epoch,
+        best_metric_value=best_metric_value,
+        observations_without_improvement=observations_without_improvement,
+        monitor_observations=monitor_observations,
+        monitor="valid/loss",
+    )
+    payload = _best_payload(loop_state, epoch=epoch)
+    payload["global_step"] = epoch * 2 if global_step is None else global_step
+    metadata = _checkpoint_metadata(payload)
+    if kind == "periodic":
+        metadata["checkpoint_kind"] = None
+    elif kind in {"best", "latest"}:
+        metadata["checkpoint_kind"] = kind
+    else:
+        raise ValueError(f"unsupported test checkpoint kind: {kind}")
+    return payload
 
 
 def _strict_resume_fields(*, epoch: int, global_step: int) -> CheckpointState:
@@ -1668,6 +1711,56 @@ def test_strict_resume_materializes_matching_sibling_best_in_new_run(tmp_path):
     assert ema_devices == [trainer.device, trainer.device]
 
 
+def test_materialized_legacy_final_best_survives_target_expansion(
+    tmp_path: Path,
+) -> None:
+    loop_state = _epoch_validation_loop_state(
+        last_evaluated_epoch=105,
+        monitor_observations=2,
+    )
+    source_payload = _best_payload(loop_state, epoch=105)
+    source_payload["global_step"] = 210
+    source_payload["config"] = {"trainer": {"num_epochs": 105}}
+    source_payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    source = tmp_path / "old-run" / "checkpoints" / "best.pt"
+    source.parent.mkdir(parents=True)
+    CheckpointManager.save_payload(source_payload, source)
+
+    trainer = RecordingTrainer()
+    trainer.best_epoch = 105
+    trainer.best_metric_value = 12.5
+    trainer.checkpoint_dir = tmp_path / "new-run" / "checkpoints"
+    trainer.checkpoint_config = {"trainer": {"num_epochs": 200}}
+    trainer.checkpoint_metadata = {"extension_plugins": []}
+    training = _training_components(trainer, RecordingLogger())
+    fit_state = experiment_runner._checkpoint_training_fit_state(source_payload)
+
+    inherited = experiment_runner._materialize_inherited_best(
+        training,
+        checkpoint=source,
+        checkpoint_payload=source_payload,
+        checkpoint_kind="best",
+        fit_state=fit_state,
+    )
+
+    assert inherited == trainer.checkpoint_dir / "best.pt"
+    assert inherited is not None
+    inherited_payload = CheckpointManager.load_payload(inherited)
+    inherited_loop = _checkpoint_metadata(inherited_payload)["training_loop"]
+    assert isinstance(inherited_loop, dict)
+    inherited_validation = inherited_loop["epoch_validation"]
+    assert isinstance(inherited_validation, dict)
+    assert inherited_validation["off_cadence_final_epochs"] == [105]
+    epoch, global_step, _ = experiment_runner._parse_strict_resume_state(
+        inherited_payload,
+        require_cuda_compatibility=False,
+    )
+    assert (epoch, global_step) == (105, 210)
+
+
 def test_strict_resume_rejects_terminal_early_stopping_state(tmp_path):
     trainer = RecordingTrainer()
     logger = RecordingLogger()
@@ -1792,7 +1885,7 @@ def test_strict_resume_requires_scheduled_epoch_validation_state() -> None:
 
     with pytest.raises(
         ValueError,
-        match="missing the scheduled observation at epoch 100",
+        match="missing a declared interval or final observation",
     ):
         experiment_runner._parse_strict_resume_state(
             payload,
@@ -1813,7 +1906,7 @@ def test_strict_resume_rejects_evaluated_non_final_off_cadence_epoch() -> None:
 
     with pytest.raises(
         ValueError,
-        match="unexpected off-cadence observation at epoch 101",
+        match="outside the declared interval/final observation history",
     ):
         experiment_runner._parse_strict_resume_state(
             payload,
@@ -1899,6 +1992,7 @@ def test_strict_resume_accepts_evaluated_off_cadence_final_epoch() -> None:
     metadata = _checkpoint_metadata(payload)
     metadata["training_loop"] = _epoch_validation_loop_state(
         last_evaluated_epoch=105,
+        monitor_observations=2,
     )
 
     epoch, global_step, _ = experiment_runner._parse_strict_resume_state(
@@ -1907,6 +2001,296 @@ def test_strict_resume_accepts_evaluated_off_cadence_final_epoch() -> None:
     )
 
     assert (epoch, global_step) == (105, 210)
+
+
+def test_strict_resume_normalizes_legacy_final_before_target_expansion() -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=105,
+        global_step=210,
+        configured_final_epoch=105,
+    )
+    payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=105,
+        monitor_observations=2,
+    )
+
+    normalized = experiment_runner._checkpoint_training_fit_state(
+        payload
+    ).to_dict()
+    epoch_validation = normalized["epoch_validation"]
+    assert isinstance(epoch_validation, dict)
+    assert epoch_validation["off_cadence_final_epochs"] == [105]
+
+    payload["config"] = {"trainer": {"num_epochs": 200}}
+    metadata["training_loop"] = normalized
+    epoch, global_step, _ = experiment_runner._parse_strict_resume_state(
+        payload,
+        require_cuda_compatibility=False,
+    )
+
+    assert (epoch, global_step) == (105, 210)
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_epoch", "monitor_observations"),
+    [(110, 2), (200, 11)],
+)
+def test_strict_resume_normalizes_proven_empty_legacy_final_history(
+    checkpoint_epoch: int,
+    monitor_observations: int,
+) -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=checkpoint_epoch,
+        global_step=checkpoint_epoch * 2,
+        configured_final_epoch=200,
+    )
+    payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    _checkpoint_metadata(payload)["training_loop"] = (
+        _epoch_validation_loop_state(
+            last_evaluated_epoch=checkpoint_epoch,
+            monitor_observations=monitor_observations,
+        )
+    )
+
+    normalized = experiment_runner._checkpoint_training_fit_state(
+        payload
+    ).to_dict()
+
+    epoch_validation = normalized["epoch_validation"]
+    assert isinstance(epoch_validation, dict)
+    assert epoch_validation["off_cadence_final_epochs"] == []
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_epoch", "monitor_observations"),
+    [(110, 3), (200, 12)],
+)
+def test_strict_resume_rejects_hidden_legacy_staged_final_history(
+    checkpoint_epoch: int,
+    monitor_observations: int,
+) -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=checkpoint_epoch,
+        global_step=checkpoint_epoch * 2,
+        configured_final_epoch=200,
+    )
+    payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    _checkpoint_metadata(payload)["training_loop"] = (
+        _epoch_validation_loop_state(
+            last_evaluated_epoch=checkpoint_epoch,
+            monitor_observations=monitor_observations,
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"exactly match.*observation history"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+@pytest.mark.parametrize("monitor_kind", ["disabled", "ordinary"])
+def test_strict_resume_rejects_unproven_legacy_interval_history(
+    monitor_kind: str,
+) -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=110,
+        global_step=220,
+        configured_final_epoch=200,
+    )
+    loop_state = _epoch_validation_loop_state(
+        last_evaluated_epoch=110,
+        monitor_observations=2,
+    )
+    if monitor_kind == "disabled":
+        epoch_validation = loop_state["epoch_validation"]
+        loop_state = _training_loop_state()
+        loop_state["epoch_validation"] = epoch_validation
+    else:
+        policy = loop_state["monitor_policy"]
+        assert isinstance(policy, dict)
+        policy["metric"] = "valid/loss"
+        loop_state["best_metric_value"] = 0.5
+        payload["metrics"] = {"valid/loss": 0.5}
+    _checkpoint_metadata(payload)["training_loop"] = loop_state
+
+    with pytest.raises(
+        ValueError,
+        match=r"lacks a complete observation history.*formal monitor counter",
+    ):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_accepts_complete_staged_final_history() -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=115,
+        global_step=230,
+        configured_final_epoch=200,
+    )
+    payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    loop_state = _epoch_validation_loop_state(
+        last_evaluated_epoch=115,
+        monitor_observations=4,
+        off_cadence_final_epochs=[105, 115],
+    )
+    loop_state["best_epoch"] = 105
+    loop_state["best_metric_value"] = 10.0
+    loop_state["observations_without_improvement"] = 2
+    _checkpoint_metadata(payload)["training_loop"] = loop_state
+
+    epoch, global_step, _ = experiment_runner._parse_strict_resume_state(
+        payload,
+        require_cuda_compatibility=False,
+    )
+
+    assert (epoch, global_step) == (115, 230)
+
+
+def test_strict_resume_rejects_ambiguous_legacy_multi_stage_final_history() -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=115,
+        global_step=230,
+        configured_final_epoch=115,
+    )
+    payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    loop_state = _epoch_validation_loop_state(
+        last_evaluated_epoch=115,
+        monitor_observations=4,
+    )
+    loop_state["best_epoch"] = 105
+    loop_state["best_metric_value"] = 10.0
+    loop_state["observations_without_improvement"] = 2
+    _checkpoint_metadata(payload)["training_loop"] = loop_state
+
+    with pytest.raises(ValueError, match=r"exactly match.*observation history"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_does_not_infer_legacy_final_for_later_checkpoint() -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=106,
+        global_step=212,
+        configured_final_epoch=105,
+    )
+    loop_state = _epoch_validation_loop_state(
+        last_evaluated_epoch=105,
+        monitor_observations=2,
+    )
+    _checkpoint_metadata(payload)["training_loop"] = loop_state
+
+    with pytest.raises(
+        ValueError,
+        match="outside the declared interval/final observation history",
+    ):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_rejects_unverifiable_legacy_final_history() -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=105,
+        global_step=210,
+        configured_final_epoch=105,
+    )
+    loop_state = _epoch_validation_loop_state(
+        last_evaluated_epoch=105,
+        monitor_observations=2,
+    )
+    loop_state["best_metric_value"] = 0.5
+    policy = loop_state["monitor_policy"]
+    assert isinstance(policy, dict)
+    policy["metric"] = "valid/loss"
+    payload["metrics"] = {
+        "valid/loss": 0.5,
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    _checkpoint_metadata(payload)["training_loop"] = loop_state
+
+    with pytest.raises(ValueError, match="lacks a complete observation history"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("final_epochs", "message"),
+    [
+        ([105, 105], "strictly increasing"),
+        ([115, 105], "strictly increasing"),
+        ([100], "must not contain interval-scheduled"),
+        ([116], "must not be ahead"),
+    ],
+)
+def test_strict_resume_rejects_invalid_final_observation_history(
+    final_epochs: list[int],
+    message: str,
+) -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=115,
+        global_step=230,
+        configured_final_epoch=115,
+    )
+    loop_state = _epoch_validation_loop_state(
+        last_evaluated_epoch=115,
+        monitor_observations=4,
+        off_cadence_final_epochs=final_epochs,
+    )
+    _checkpoint_metadata(payload)["training_loop"] = loop_state
+
+    with pytest.raises(ValueError, match=message):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_rejects_null_final_observation_history() -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=100,
+        global_step=200,
+    )
+    loop_state = _epoch_validation_loop_state(
+        last_evaluated_epoch=100,
+        monitor_observations=1,
+        off_cadence_final_epochs=[],
+    )
+    epoch_validation = loop_state["epoch_validation"]
+    assert isinstance(epoch_validation, dict)
+    epoch_validation["off_cadence_final_epochs"] = None
+    _checkpoint_metadata(payload)["training_loop"] = loop_state
+
+    with pytest.raises(TypeError, match="off_cadence_final_epochs must be a list"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
 
 
 def test_strict_resume_rejects_unevaluated_off_cadence_final_epoch() -> None:
@@ -2746,11 +3130,374 @@ def test_resolve_resume_checkpoint_requires_an_explicit_existing_target(tmp_path
 def test_resolve_resume_checkpoint_accepts_run_directory(tmp_path):
     checkpoint_path = tmp_path / "run" / "checkpoints" / "latest.pt"
     checkpoint_path.parent.mkdir(parents=True)
-    checkpoint_path.write_bytes(b"latest")
+    payload = _resume_candidate_payload(
+        epoch=1,
+        kind="latest",
+        best_epoch=1,
+        best_metric_value=0.5,
+    )
+    CheckpointManager.save_payload(payload, checkpoint_path)
 
-    resolved = experiment_runner._resolve_resume_checkpoint(tmp_path / "run")
+    resolved_path, resolved_payload = (
+        experiment_runner._resolve_resume_checkpoint(tmp_path / "run")
+    )
 
-    assert resolved == checkpoint_path
+    assert resolved_path == checkpoint_path
+    assert resolved_payload is not None
+    assert resolved_payload.get("epoch") == 1
+
+
+def test_resume_accepts_case_variant_checkpoint_directory(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "run" / "CHECKPOINTS"
+    checkpoint_dir.mkdir(parents=True)
+    latest = checkpoint_dir / "latest.pt"
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=1,
+            kind="latest",
+            best_epoch=1,
+            best_metric_value=0.5,
+        ),
+        latest,
+    )
+
+    for resume_target in (checkpoint_dir, checkpoint_dir.parent):
+        resolved_path, resolved_payload = (
+            experiment_runner._resolve_resume_checkpoint(resume_target)
+        )
+
+        assert resolved_path == latest
+        assert resolved_payload is not None
+        assert resolved_payload.get("epoch") == 1
+
+
+def test_resume_directory_selects_future_best_after_latest_publish_failure(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    latest = checkpoint_dir / "latest.pt"
+    best = checkpoint_dir / "best.pt"
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=1,
+            kind="latest",
+            best_epoch=1,
+            best_metric_value=0.5,
+        ),
+        latest,
+    )
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=2,
+            kind="best",
+            best_epoch=2,
+            best_metric_value=0.25,
+            monitor_observations=2,
+        ),
+        best,
+    )
+
+    resolved, payload = experiment_runner._resolve_resume_checkpoint(
+        checkpoint_dir.parent
+    )
+
+    assert resolved == best
+    assert payload is not None
+    assert payload.get("epoch") == 2
+
+
+def test_resume_explicit_file_does_not_upgrade_to_future_sibling(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    latest = checkpoint_dir / "latest.pt"
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=1,
+            kind="latest",
+            best_epoch=1,
+            best_metric_value=0.5,
+        ),
+        latest,
+    )
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=2,
+            kind="best",
+            best_epoch=2,
+            best_metric_value=0.25,
+            monitor_observations=2,
+        ),
+        checkpoint_dir / "best.pt",
+    )
+
+    resolved, payload = experiment_runner._resolve_resume_checkpoint(latest)
+
+    assert resolved == latest
+    assert payload is not None
+    assert payload.get("epoch") == 1
+
+
+def test_resume_directory_selects_periodic_after_latest_publish_failure(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    latest = checkpoint_dir / "latest.pt"
+    best = checkpoint_dir / "best.pt"
+    periodic = checkpoint_dir / "epoch_0002.pt"
+    epoch_one = _resume_candidate_payload(
+        epoch=1,
+        kind="latest",
+        best_epoch=1,
+        best_metric_value=0.5,
+    )
+    CheckpointManager.save_payload(epoch_one, latest)
+    epoch_one_best = deepcopy(epoch_one)
+    _checkpoint_metadata(epoch_one_best)["checkpoint_kind"] = "best"
+    CheckpointManager.save_payload(epoch_one_best, best)
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=2,
+            kind="periodic",
+            best_epoch=1,
+            best_metric_value=0.5,
+            observations_without_improvement=1,
+            monitor_observations=2,
+        ),
+        periodic,
+    )
+
+    resolved, payload = experiment_runner._resolve_resume_checkpoint(
+        checkpoint_dir
+    )
+
+    assert resolved == periodic
+    assert payload is not None
+    assert payload.get("epoch") == 2
+
+
+def test_resume_directory_prefers_latest_at_equal_or_greater_progress(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    latest = checkpoint_dir / "latest.pt"
+    best = checkpoint_dir / "best.pt"
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=2,
+            kind="latest",
+            best_epoch=1,
+            best_metric_value=0.5,
+            observations_without_improvement=1,
+            monitor_observations=2,
+        ),
+        latest,
+    )
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=1,
+            kind="best",
+            best_epoch=1,
+            best_metric_value=0.5,
+        ),
+        best,
+    )
+
+    resolved, payload = experiment_runner._resolve_resume_checkpoint(
+        checkpoint_dir.parent
+    )
+
+    assert resolved == latest
+    assert payload is not None
+    assert payload.get("epoch") == 2
+
+
+def test_resume_directory_accepts_best_as_only_published_snapshot(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    best = checkpoint_dir / "best.pt"
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=1,
+            kind="best",
+            best_epoch=1,
+            best_metric_value=0.5,
+        ),
+        best,
+    )
+
+    resolved, payload = experiment_runner._resolve_resume_checkpoint(
+        checkpoint_dir.parent
+    )
+
+    assert resolved == best
+    assert payload is not None
+    assert payload.get("epoch") == 1
+
+
+def test_resume_directory_rejects_inherited_best_as_only_snapshot(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    payload = _resume_candidate_payload(
+        epoch=1,
+        kind="best",
+        best_epoch=1,
+        best_metric_value=0.5,
+    )
+    _checkpoint_metadata(payload)["inherited_from"] = str(
+        tmp_path / "parent" / "checkpoints" / "best.pt"
+    )
+    CheckpointManager.save_payload(payload, checkpoint_dir / "best.pt")
+
+    with pytest.raises(ValueError, match="only an inherited best checkpoint"):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir.parent)
+
+
+def test_resume_directory_rejects_same_epoch_state_conflict(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    latest = _resume_candidate_payload(
+        epoch=2,
+        kind="latest",
+        best_epoch=2,
+        best_metric_value=0.25,
+        monitor_observations=2,
+    )
+    best = _resume_candidate_payload(
+        epoch=2,
+        kind="best",
+        best_epoch=1,
+        best_metric_value=0.5,
+        observations_without_improvement=1,
+        monitor_observations=2,
+    )
+    CheckpointManager.save_payload(latest, checkpoint_dir / "latest.pt")
+    CheckpointManager.save_payload(best, checkpoint_dir / "best.pt")
+
+    with pytest.raises(ValueError, match="disagree on metrics or training-loop"):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir.parent)
+
+
+def test_resume_directory_rejects_corrupt_candidate(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=1,
+            kind="latest",
+            best_epoch=1,
+            best_metric_value=0.5,
+        ),
+        checkpoint_dir / "latest.pt",
+    )
+    (checkpoint_dir / "best.pt").write_bytes(b"not-a-checkpoint")
+
+    with pytest.raises((RuntimeError, pickle.UnpicklingError)) as error:
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir.parent)
+    assert "mmap can only be used" in str(error.value) or (
+        "Weights only load failed" in str(error.value)
+    )
+
+
+def test_resume_directory_rejects_mixed_lineage_configs(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    latest = _resume_candidate_payload(
+        epoch=1,
+        kind="latest",
+        best_epoch=1,
+        best_metric_value=0.5,
+    )
+    best = deepcopy(latest)
+    best["config"] = {"identity": "another-run"}
+    _checkpoint_metadata(best)["checkpoint_kind"] = "best"
+    CheckpointManager.save_payload(latest, checkpoint_dir / "latest.pt")
+    CheckpointManager.save_payload(best, checkpoint_dir / "best.pt")
+
+    with pytest.raises(ValueError, match="different configs"):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir.parent)
+
+
+def test_resume_directory_rejects_mixed_sibling_lineage(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    latest = _resume_candidate_payload(
+        epoch=1,
+        kind="latest",
+        best_epoch=1,
+        best_metric_value=0.5,
+    )
+    best = deepcopy(latest)
+    _checkpoint_metadata(latest)["config_source"] = "checkpoint"
+    _checkpoint_metadata(latest)["lineage"] = {"resumed_from": "parent-a.pt"}
+    best_metadata = _checkpoint_metadata(best)
+    best_metadata["checkpoint_kind"] = "best"
+    best_metadata["config_source"] = "checkpoint"
+    best_metadata["lineage"] = {"resumed_from": "parent-b.pt"}
+    CheckpointManager.save_payload(latest, checkpoint_dir / "latest.pt")
+    CheckpointManager.save_payload(best, checkpoint_dir / "best.pt")
+
+    with pytest.raises(ValueError, match="different lineage"):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir.parent)
+
+
+def test_resume_directory_rejects_global_step_regression(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=2,
+            kind="latest",
+            best_epoch=2,
+            best_metric_value=0.5,
+            monitor_observations=2,
+            global_step=20,
+        ),
+        checkpoint_dir / "latest.pt",
+    )
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=3,
+            kind="best",
+            best_epoch=3,
+            best_metric_value=0.25,
+            monitor_observations=3,
+            global_step=19,
+        ),
+        checkpoint_dir / "best.pt",
+    )
+
+    with pytest.raises(ValueError, match="regress global_step"):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir.parent)
+
+
+def test_resume_directory_rejects_noncanonical_numbered_checkpoint_name(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    CheckpointManager.save_payload(
+        _resume_candidate_payload(
+            epoch=1,
+            kind="periodic",
+            best_epoch=1,
+            best_metric_value=0.5,
+        ),
+        checkpoint_dir / "epoch_00001.pt",
+    )
+
+    with pytest.raises(ValueError, match="noncanonical numbered checkpoint"):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir.parent)
 
 
 def test_resolve_training_inputs_uses_checkpoint_config_for_strict_resume(

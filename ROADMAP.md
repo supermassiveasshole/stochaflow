@@ -107,8 +107,9 @@ Experiment exit evidence:
 - use validation aggregate FID as the `best.pt` monitor. KID and per-class
   metrics remain logged validation evidence; diagnostics and test metrics have
   no selection authority;
-- preserve the evaluation profile digest, metric surface, cadence, and last
-  completed observation across strict resume;
+- preserve the evaluation profile digest, metric surface, cadence, complete
+  interval/final observation history, and last completed result across strict
+  resume;
 - after training, run the frozen full 1,467-example official-test Evaluation
   exactly once for the validation-selected checkpoint and publish its immutable
   result bundle;

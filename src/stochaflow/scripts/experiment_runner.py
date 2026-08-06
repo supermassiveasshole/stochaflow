@@ -3,10 +3,13 @@
 import argparse
 import hashlib
 import math
+import re
 import warnings
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
@@ -381,14 +384,304 @@ def _resolve_monitor(config: StochaflowConfig) -> str:
 
 def _resolve_resume_checkpoint(
     resume: Path | None,
-) -> Path | None:
+) -> tuple[Path | None, CheckpointState | None]:
     if resume is None:
-        return None
+        return None, None
     if resume.is_file():
-        return resume
+        return resume, CheckpointManager.load_payload(resume, map_location="cpu")
     if resume.is_dir():
-        return CheckpointManager.find_latest(resume)
+        return _resolve_resume_directory_checkpoint(resume)
     raise FileNotFoundError(f"checkpoint does not exist: {resume}")
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeCheckpointCandidate:
+    """Small validated summary of one atomic directory-resume candidate."""
+
+    path: Path
+    epoch: int
+    global_step: int
+    kind: str
+    priority: int
+    config: object
+    config_source: object
+    lineage: object
+    extension_plugins: tuple[ExtensionPluginProvenance, ...]
+    config_overlays: list[dict[str, Any]]
+    data_artifacts: DataArtifactBindings | None
+    metrics: dict[str, float]
+    fit_state: TrainingFitState
+    inherited_from: object
+
+
+_EPOCH_CHECKPOINT_PATTERN = re.compile(r"^epoch_([0-9]{4,})\.pt$")
+
+
+def _numbered_checkpoint_epoch(path: Path) -> int:
+    """Parse the trainer's zero-padded positive epoch filename."""
+
+    match = _EPOCH_CHECKPOINT_PATTERN.fullmatch(path.name)
+    if match is None:
+        raise ValueError(f"malformed numbered checkpoint filename: {path}")
+    epoch = int(match.group(1))
+    if epoch <= 0:
+        raise ValueError(f"numbered checkpoint epoch must be positive: {path}")
+    if path.name != f"epoch_{epoch:04d}.pt":
+        raise ValueError(f"noncanonical numbered checkpoint filename: {path}")
+    return epoch
+
+
+def _checkpoint_candidate_directory(root: Path) -> Path:
+    """Resolve one checkpoint directory without mixing sibling lineages."""
+
+    root = root.resolve()
+    direct = (
+        root
+        if root.name.casefold() == "checkpoints"
+        else root / "checkpoints"
+    )
+    if direct.is_dir():
+        return direct.resolve()
+    directories: dict[Path, float] = {}
+    for path in root.rglob("*.pt"):
+        if (
+            not path.is_file()
+            or path.parent.name.casefold() != "checkpoints"
+        ):
+            continue
+        if path.name not in {"latest.pt", "best.pt"} and (
+            _EPOCH_CHECKPOINT_PATTERN.fullmatch(path.name) is None
+        ):
+            continue
+        directory = path.parent.resolve()
+        directories[directory] = max(
+            directories.get(directory, float("-inf")),
+            path.stat().st_mtime,
+        )
+    if not directories:
+        raise FileNotFoundError(
+            "could not find a resumable checkpoint directory under: "
+            f"{root}"
+        )
+    return max(
+        directories,
+        key=lambda directory: (directories[directory], str(directory)),
+    )
+
+
+def _candidate_checkpoint_paths(checkpoint_dir: Path) -> tuple[Path, ...]:
+    """Return canonical and highest numbered checkpoint paths in one run."""
+
+    paths = [
+        path
+        for path in (
+            checkpoint_dir / "latest.pt",
+            checkpoint_dir / "best.pt",
+        )
+        if path.is_file()
+    ]
+    numbered: list[tuple[int, Path]] = []
+    for path in checkpoint_dir.glob("epoch_*.pt"):
+        if not path.is_file():
+            continue
+        numbered.append((_numbered_checkpoint_epoch(path), path))
+    if numbered:
+        paths.append(max(numbered, key=lambda item: item[0])[1])
+    if not paths:
+        raise FileNotFoundError(
+            f"checkpoint directory contains no resumable snapshots: {checkpoint_dir}"
+        )
+    return tuple(paths)
+
+
+def _resume_candidate(
+    path: Path,
+    payload: CheckpointState,
+) -> ResumeCheckpointCandidate:
+    """Strictly validate and summarize one filename-bound candidate."""
+
+    epoch, global_step, _ = _parse_strict_resume_state(
+        payload,
+        require_cuda_compatibility=False,
+    )
+    metadata = cast(object, payload.get("metadata"))
+    if type(metadata) is not dict:
+        raise TypeError("resume candidate metadata must be an exact mapping")
+    checkpoint_kind = cast(dict[str, Any], metadata).get("checkpoint_kind")
+    if path.name == "latest.pt":
+        expected_kind = "latest"
+        priority = 3
+    elif path.name == "best.pt":
+        expected_kind = "best"
+        priority = 1
+    else:
+        filename_epoch = _numbered_checkpoint_epoch(path)
+        if filename_epoch != epoch:
+            raise ValueError(
+                f"numbered checkpoint filename epoch does not match payload: {path}"
+            )
+        expected_kind = None
+        priority = 2
+    if checkpoint_kind != expected_kind:
+        raise ValueError(
+            f"resume checkpoint '{path}' must declare checkpoint_kind="
+            f"{expected_kind!r}"
+        )
+    metadata_mapping = cast(dict[str, Any], metadata)
+    return ResumeCheckpointCandidate(
+        path=path,
+        epoch=epoch,
+        global_step=global_step,
+        kind="epoch" if expected_kind is None else expected_kind,
+        priority=priority,
+        config=payload.get("config"),
+        config_source=metadata_mapping.get("config_source"),
+        lineage=metadata_mapping.get("lineage"),
+        extension_plugins=parse_extension_plugin_provenance(
+            metadata_mapping.get("extension_plugins")
+        ),
+        config_overlays=_load_checkpoint_config_overlays(payload),
+        data_artifacts=_checkpoint_data_artifacts(
+            payload,
+            path="resume candidate metadata.data_artifacts",
+        ),
+        metrics=_checkpoint_epoch_metrics(
+            payload.get("metrics"),
+            path="resume candidate checkpoint metrics",
+        ),
+        fit_state=_checkpoint_training_fit_state(payload),
+        inherited_from=metadata_mapping.get("inherited_from"),
+    )
+
+
+def _validate_resume_candidate_lineage(
+    reference: ResumeCheckpointCandidate,
+    candidate: ResumeCheckpointCandidate,
+) -> None:
+    """Require directory candidates to describe one exact training lineage."""
+
+    if candidate.config != reference.config:
+        raise ValueError("resume checkpoint candidates have different configs")
+    if candidate.config_source != reference.config_source:
+        raise ValueError(
+            "resume checkpoint candidates have different config source"
+        )
+    if candidate.lineage != reference.lineage:
+        raise ValueError("resume checkpoint candidates have different lineage")
+    if candidate.extension_plugins != reference.extension_plugins:
+        raise ValueError(
+            "resume checkpoint candidates have different extension provenance"
+        )
+    if candidate.config_overlays != reference.config_overlays:
+        raise ValueError(
+            "resume checkpoint candidates have different config overlay history"
+        )
+    if candidate.data_artifacts != reference.data_artifacts:
+        raise ValueError(
+            "resume checkpoint candidates have different data artifacts"
+        )
+
+
+def _validate_same_progress_candidates(
+    candidates: tuple[ResumeCheckpointCandidate, ...],
+) -> None:
+    """Reject contradictory snapshots and regressing cross-epoch progress."""
+
+    by_epoch: dict[int, list[ResumeCheckpointCandidate]] = {}
+    for candidate in candidates:
+        by_epoch.setdefault(candidate.epoch, []).append(candidate)
+    for epoch, peers in by_epoch.items():
+        global_steps = {candidate.global_step for candidate in peers}
+        if len(global_steps) != 1:
+            raise ValueError(
+                "resume checkpoint candidates disagree on global_step at "
+                f"epoch {epoch}"
+            )
+        if len(peers) < 2:
+            continue
+        reference_metrics = peers[0].metrics
+        reference_state = peers[0].fit_state.to_dict()
+        for candidate in peers[1:]:
+            metrics = candidate.metrics
+            state = candidate.fit_state.to_dict()
+            if metrics != reference_metrics or state != reference_state:
+                raise ValueError(
+                    "resume checkpoint candidates disagree on metrics or "
+                    f"training-loop state at epoch {epoch}"
+                )
+    ordered_progress = sorted(
+        (epoch, peers[0].global_step)
+        for epoch, peers in by_epoch.items()
+    )
+    for previous, current in pairwise(ordered_progress):
+        if current[1] < previous[1]:
+            raise ValueError(
+                "resume checkpoint candidates regress global_step between "
+                f"epochs {previous[0]} and {current[0]}"
+            )
+
+
+def _resolve_resume_directory_checkpoint(
+    root: Path,
+) -> tuple[Path, CheckpointState]:
+    """Select the highest lineage-consistent atomic snapshot in one run."""
+
+    checkpoint_dir = _checkpoint_candidate_directory(root)
+    candidates_list: list[ResumeCheckpointCandidate] = []
+    selected: ResumeCheckpointCandidate | None = None
+    selected_payload: CheckpointState | None = None
+    for path in _candidate_checkpoint_paths(checkpoint_dir):
+        payload = CheckpointManager.load_payload(
+            path,
+            map_location="cpu",
+            mmap=True,
+        )
+        candidate = _resume_candidate(path, payload)
+        candidates_list.append(candidate)
+        candidate_key = (
+            candidate.epoch,
+            candidate.global_step,
+            candidate.priority,
+        )
+        selected_key = (
+            (selected.epoch, selected.global_step, selected.priority)
+            if selected is not None
+            else None
+        )
+        if selected_key is None or candidate_key > selected_key:
+            selected = candidate
+            selected_payload = payload
+        else:
+            del payload
+    candidates = tuple(candidates_list)
+    reference = candidates[0]
+    for candidate in candidates[1:]:
+        _validate_resume_candidate_lineage(reference, candidate)
+    _validate_same_progress_candidates(candidates)
+    if (
+        len(candidates) == 1
+        and candidates[0].kind == "best"
+        and candidates[0].inherited_from is not None
+    ):
+        raise ValueError(
+            "run directory contains only an inherited best checkpoint and "
+            "does not preserve the selected parent progress; resume the "
+            "explicit parent checkpoint instead"
+        )
+    latest = next(
+        (candidate for candidate in candidates if candidate.kind == "latest"),
+        None,
+    )
+    if latest is not None:
+        furthest_epoch = max(candidate.epoch for candidate in candidates)
+        if furthest_epoch > latest.epoch + 1:
+            raise ValueError(
+                "resume checkpoint candidates advance more than one epoch "
+                "beyond latest.pt"
+            )
+    assert selected is not None
+    assert selected_payload is not None
+    return selected.path, selected_payload
 
 
 def _load_training_checkpoint_config(payload: CheckpointState) -> StochaflowConfig:
@@ -670,8 +963,7 @@ def _resolve_training_inputs(args: argparse.Namespace) -> ResolvedTrainingInputs
         raise ValueError("--observability-config requires --resume")
 
     startup_cwd = Path.cwd().resolve()
-    checkpoint_path = _resolve_resume_checkpoint(requested_resume)
-    checkpoint: CheckpointState | None = None
+    checkpoint_path, checkpoint = _resolve_resume_checkpoint(requested_resume)
     config_overlays: list[dict[str, Any]] = []
     if checkpoint_path is None:
         assert config_path is not None
@@ -679,10 +971,7 @@ def _resolve_training_inputs(args: argparse.Namespace) -> ResolvedTrainingInputs
         plan = prepare_extension_plugins(unresolved_config)
         config_source = "external"
     else:
-        checkpoint = CheckpointManager.load_payload(
-            checkpoint_path,
-            map_location="cpu",
-        )
+        assert checkpoint is not None
         checkpoint_config = _load_training_checkpoint_config(checkpoint)
         config_overlays = _load_checkpoint_config_overlays(checkpoint)
         if observability_path is None:
@@ -783,6 +1072,11 @@ def _restore_training_state(
         raise TypeError(
             "checkpoint metadata is missing training_loop state required for resume"
         )
+    restored_state_payload = cast(
+        CheckpointState,
+        {**payload, "metadata": loaded.metadata},
+    )
+    fit_state = _checkpoint_training_fit_state(restored_state_payload)
     if loaded.epoch != selected_epoch or loaded.global_step != selected_global_step:
         raise RuntimeError("restored checkpoint progress differs from its payload")
     training.trainer.global_step = selected_global_step
@@ -802,7 +1096,7 @@ def _restore_training_state(
             "checkpoint metadata.checkpoint_kind must be 'best', 'latest', or null"
         )
     training.trainer.restore_fit_state(
-        training_loop_state,
+        fit_state.to_dict(),
         best_checkpoint_path=None,
     )
     if training.trainer.stopped_early:
@@ -815,7 +1109,7 @@ def _restore_training_state(
         checkpoint=checkpoint,
         checkpoint_payload=payload,
         checkpoint_kind=checkpoint_kind,
-        training_loop_state=training_loop_state,
+        fit_state=fit_state,
     )
     training.trainer.best_checkpoint_path = previous_best
     if restore_mps_rng and rng_state.torch_mps is None:
@@ -883,6 +1177,48 @@ def _checkpoint_configured_final_epoch(payload: CheckpointState) -> int:
     return cast(int, final_epoch)
 
 
+def _raw_epoch_validation_includes_final(value: object) -> bool:
+    """Return a validated-enough hint for legacy final-state normalization."""
+
+    if not isinstance(value, Mapping):
+        return False
+    epoch_validation = value.get("epoch_validation")
+    if not isinstance(epoch_validation, Mapping):
+        return False
+    identity = epoch_validation.get("identity")
+    if not isinstance(identity, Mapping):
+        return False
+    cadence = identity.get("cadence")
+    return isinstance(cadence, Mapping) and cadence.get("include_final") is True
+
+
+def _checkpoint_training_fit_state(
+    payload: CheckpointState,
+) -> TrainingFitState:
+    """Parse and normalize persisted fit state with legacy final provenance."""
+
+    metadata = cast(object, payload.get("metadata"))
+    if type(metadata) is not dict:
+        raise TypeError("strict resume requires checkpoint metadata as an exact mapping")
+    training_loop = cast(dict[str, Any], metadata).get("training_loop")
+    checkpoint_epoch = cast(object, payload.get("epoch"))
+    configured_final_epoch = (
+        _checkpoint_configured_final_epoch(payload)
+        if _raw_epoch_validation_includes_final(training_loop)
+        else None
+    )
+    legacy_final_epoch = (
+        configured_final_epoch
+        if type(checkpoint_epoch) is int
+        and checkpoint_epoch == configured_final_epoch
+        else None
+    )
+    return TrainingFitState.from_mapping(
+        training_loop,
+        legacy_epoch_validation_final_epoch=legacy_final_epoch,
+    )
+
+
 def _validate_checkpoint_epoch_validation_metrics(
     fit_state: TrainingFitState,
     *,
@@ -901,10 +1237,20 @@ def _validate_checkpoint_epoch_validation_metrics(
             "strict resume epoch validation state is ahead of the checkpoint "
             "epoch"
         )
+    if last_epoch != state.latest_observation_through(checkpoint_epoch):
+        raise ValueError(
+            "strict resume epoch validation state is missing a declared "
+            "interval or final observation"
+        )
     evaluated_now = last_epoch == checkpoint_epoch
-    scheduled_now = state.identity.cadence.is_due(
-        checkpoint_epoch,
-        final_epoch=configured_final_epoch,
+    cadence = state.identity.cadence
+    scheduled_now = (
+        cadence.is_interval_due(checkpoint_epoch)
+        or (
+            cadence.include_final
+            and configured_final_epoch == checkpoint_epoch
+        )
+        or checkpoint_epoch in state.off_cadence_final_epochs
     )
     if scheduled_now and not evaluated_now:
         raise ValueError(
@@ -967,10 +1313,7 @@ def _parse_strict_resume_state(
     metadata = cast(object, payload.get("metadata"))
     if type(metadata) is not dict:
         raise TypeError("strict resume requires checkpoint metadata as an exact mapping")
-    metadata_mapping = cast(dict[str, Any], metadata)
-    fit_state = TrainingFitState.from_mapping(
-        metadata_mapping.get("training_loop")
-    )
+    fit_state = _checkpoint_training_fit_state(payload)
     metrics = _checkpoint_epoch_metrics(
         payload.get("metrics"),
         path="strict resume checkpoint metrics",
@@ -1107,8 +1450,7 @@ def _validate_inherited_best(
             f"inherited best checkpoint '{source}' must declare "
             "metadata.checkpoint_kind='best'"
         )
-    candidate_loop = cast(object, metadata.get("training_loop"))
-    candidate_fit_state = TrainingFitState.from_mapping(candidate_loop)
+    candidate_fit_state = _checkpoint_training_fit_state(payload)
     _validate_best_snapshot_fit_state(
         candidate_fit_state,
         label=f"inherited best checkpoint '{source}'",
@@ -1162,7 +1504,7 @@ def _preflight_inherited_best(
     metadata = cast(object, checkpoint_payload.get("metadata"))
     if not isinstance(metadata, dict):
         raise TypeError("checkpoint metadata must be a mapping")
-    fit_state = TrainingFitState.from_mapping(metadata.get("training_loop"))
+    fit_state = _checkpoint_training_fit_state(checkpoint_payload)
     if fit_state.stopped_early:
         raise ValueError(
             "checkpoint training already stopped early; strict resume cannot "
@@ -1218,13 +1560,12 @@ def _materialize_inherited_best(
     checkpoint: Path,
     checkpoint_payload: CheckpointState,
     checkpoint_kind: object,
-    training_loop_state: object,
+    fit_state: TrainingFitState,
 ) -> Path | None:
     best_epoch = training.trainer.best_epoch
     best_metric = training.trainer.best_metric_value
     if best_epoch is None or best_metric is None:
         return None
-    fit_state = TrainingFitState.from_mapping(training_loop_state)
     monitor = fit_state.monitor
     mode = fit_state.mode
     if monitor is None or mode is None:
@@ -1263,6 +1604,7 @@ def _materialize_inherited_best(
         if not isinstance(candidate_metadata_value, dict):
             raise TypeError("inherited best checkpoint metadata must be a mapping")
         candidate_metadata = candidate_metadata_value
+        candidate_fit_state = _checkpoint_training_fit_state(candidate_payload)
         materialized_payload = dict(candidate_payload)
         if training.trainer.checkpoint_config is not None:
             materialized_payload["config"] = training.trainer.checkpoint_config
@@ -1272,7 +1614,7 @@ def _materialize_inherited_best(
             "checkpoint_kind": "best",
             "monitor": monitor,
             "mode": mode,
-            "training_loop": candidate_metadata["training_loop"],
+            "training_loop": candidate_fit_state.to_dict(),
             "inherited_from": str(source),
         }
         CheckpointManager.save_payload(materialized_payload, destination)

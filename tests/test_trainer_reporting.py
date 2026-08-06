@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, NamedTuple, cast
 
 import pytest
@@ -68,6 +69,48 @@ class MetricRecordingLogger(ExperimentLogger):
         return None
 
 
+class FailingEpochLogger(ExperimentLogger):
+    """Fail after checkpoint publication for one configured epoch summary."""
+
+    def __init__(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def log_config(self, config: dict[str, Any]) -> None:
+        del config
+
+    def log_metrics(self, metrics: dict[str, Any], *, step: int) -> None:
+        del step
+        if metrics.get("system/trainer/epoch") == float(self.epoch):
+            raise RuntimeError("epoch logger failed")
+
+    def close(self) -> None:
+        return None
+
+
+class FailingEarlyStoppingLogger(ExperimentLogger):
+    """Fail only when the persisted early-stopping event is reported."""
+
+    def log_config(self, config: dict[str, Any]) -> None:
+        del config
+
+    def log_metrics(self, metrics: dict[str, Any], *, step: int) -> None:
+        del metrics, step
+
+    def log_text(
+        self,
+        tag: str,
+        text: str,
+        *,
+        step: int | None = None,
+    ) -> None:
+        del text, step
+        if tag == "early_stopping":
+            raise RuntimeError("early-stopping logger failed")
+
+    def close(self) -> None:
+        return None
+
+
 class RecordingReporter:
     def __init__(self) -> None:
         self.phase_enabled: list[bool] = []
@@ -106,6 +149,14 @@ class RecordingReporter:
     def on_epoch_end(self, **kwargs) -> None:
         del kwargs
         self.epoch_summaries += 1
+
+
+class FailingEarlyStoppingReporter(RecordingReporter):
+    """Fail only when the persisted early-stopping event is reported."""
+
+    def on_early_stopping(self, text: str) -> None:
+        del text
+        raise RuntimeError("early-stopping reporter failed")
 
 
 def test_final_reporter_renders_complete_phase_test_metrics(tmp_path) -> None:
@@ -578,6 +629,181 @@ def test_fit_tracks_best_checkpoint_without_early_stopping(tmp_path) -> None:
     assert best_checkpoint_path is not None
     assert best_checkpoint_path == tmp_path / "checkpoints" / "best.pt"
     assert best_checkpoint_path.exists()
+
+
+def _install_two_epoch_improvement(trainer: Trainer) -> None:
+    validation_losses = iter((1.0, 0.5))
+    trainer.train_epoch = lambda *args, **kwargs: {
+        "loss": 0.2,
+        "num_batches": 1.0,
+        "duration_seconds": 0.0,
+    }
+    trainer.evaluate_epoch = lambda *args, **kwargs: {
+        "loss": next(validation_losses),
+        "num_batches": 1.0,
+        "duration_seconds": 0.0,
+    }
+
+
+def _install_two_epoch_early_stop(trainer: Trainer) -> None:
+    validation_losses = iter((0.1, 0.2))
+    trainer.train_epoch = lambda *args, **kwargs: {
+        "loss": 0.2,
+        "num_batches": 1.0,
+        "duration_seconds": 0.0,
+    }
+    trainer.evaluate_epoch = lambda *args, **kwargs: {
+        "loss": next(validation_losses),
+        "num_batches": 1.0,
+        "duration_seconds": 0.0,
+    }
+
+
+def _checkpoint_epoch(path: Path) -> int | None:
+    return cast(int | None, CheckpointManager.load_payload(path).get("epoch"))
+
+
+def test_epoch_logger_failure_leaves_best_latest_and_periodic_at_new_epoch(
+    tmp_path,
+) -> None:
+    trainer = _build_trainer(tmp_path, logger=FailingEpochLogger(epoch=2))
+    _install_two_epoch_improvement(trainer)
+
+    with pytest.raises(RuntimeError, match="epoch logger failed"):
+        trainer.fit(
+            _make_loader(),
+            num_epochs=2,
+            validation_dataloader=_make_loader(),
+            show_progress=False,
+        )
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    assert _checkpoint_epoch(checkpoint_dir / "best.pt") == 2
+    assert _checkpoint_epoch(checkpoint_dir / "latest.pt") == 2
+    assert _checkpoint_epoch(checkpoint_dir / "epoch_0002.pt") == 2
+
+
+def test_periodic_checkpoint_failure_leaves_latest_at_new_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    trainer = _make_trainer(tmp_path)
+    _install_two_epoch_improvement(trainer)
+    manager = trainer.checkpoint_manager
+    assert manager is not None
+    original_save = CheckpointManager.save
+
+    def failing_save(
+        current: CheckpointManager,
+        path: Path,
+        *args: Any,
+        **kwargs: Any,
+    ):
+        if current is manager and path.name == "epoch_0002.pt":
+            raise RuntimeError("periodic checkpoint failed")
+        return original_save(current, path, *args, **kwargs)
+
+    monkeypatch.setattr(CheckpointManager, "save", failing_save)
+
+    with pytest.raises(RuntimeError, match="periodic checkpoint failed"):
+        trainer.fit(
+            _make_loader(),
+            num_epochs=2,
+            validation_dataloader=_make_loader(),
+            show_progress=False,
+        )
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    assert _checkpoint_epoch(checkpoint_dir / "best.pt") == 2
+    assert _checkpoint_epoch(checkpoint_dir / "latest.pt") == 2
+    assert not (checkpoint_dir / "epoch_0002.pt").exists()
+
+
+def test_latest_checkpoint_failure_leaves_new_best_and_old_latest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    trainer = _make_trainer(tmp_path)
+    _install_two_epoch_improvement(trainer)
+    manager = trainer.checkpoint_manager
+    assert manager is not None
+    original_save = CheckpointManager.save
+
+    def failing_save(
+        current: CheckpointManager,
+        path: Path,
+        *args: Any,
+        **kwargs: Any,
+    ):
+        epoch = kwargs.get("epoch")
+        if current is manager and path.name == "latest.pt" and epoch == 2:
+            raise RuntimeError("latest checkpoint failed")
+        return original_save(current, path, *args, **kwargs)
+
+    monkeypatch.setattr(CheckpointManager, "save", failing_save)
+
+    with pytest.raises(RuntimeError, match="latest checkpoint failed"):
+        trainer.fit(
+            _make_loader(),
+            num_epochs=2,
+            validation_dataloader=_make_loader(),
+            show_progress=False,
+        )
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    assert _checkpoint_epoch(checkpoint_dir / "best.pt") == 2
+    assert _checkpoint_epoch(checkpoint_dir / "latest.pt") == 1
+    assert not (checkpoint_dir / "epoch_0002.pt").exists()
+
+
+def test_early_stopping_logger_failure_leaves_latest_and_periodic_stop_state(
+    tmp_path,
+) -> None:
+    trainer = _build_trainer(tmp_path, logger=FailingEarlyStoppingLogger())
+    _install_two_epoch_early_stop(trainer)
+
+    with pytest.raises(RuntimeError, match="early-stopping logger failed"):
+        trainer.fit(
+            _make_loader(),
+            num_epochs=2,
+            validation_dataloader=_make_loader(),
+            show_progress=False,
+            early_stopping_patience=1,
+        )
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    assert _checkpoint_epoch(checkpoint_dir / "best.pt") == 1
+    for checkpoint in (
+        checkpoint_dir / "latest.pt",
+        checkpoint_dir / "epoch_0002.pt",
+    ):
+        payload = CheckpointManager.load_payload(checkpoint)
+        assert payload.get("epoch") == 2
+        metadata = cast(dict[str, Any], payload.get("metadata"))
+        training_loop = cast(dict[str, Any], metadata["training_loop"])
+        assert training_loop["stopped_early"] is True
+
+
+def test_early_stopping_reporter_failure_follows_checkpoint_publication(
+    tmp_path,
+) -> None:
+    trainer = _make_trainer(tmp_path)
+    _install_two_epoch_early_stop(trainer)
+
+    with pytest.raises(RuntimeError, match="early-stopping reporter failed"):
+        trainer.fit(
+            _make_loader(),
+            num_epochs=2,
+            validation_dataloader=_make_loader(),
+            show_progress=False,
+            early_stopping_patience=1,
+            reporter=FailingEarlyStoppingReporter(),
+        )
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    assert _checkpoint_epoch(checkpoint_dir / "best.pt") == 1
+    assert _checkpoint_epoch(checkpoint_dir / "latest.pt") == 2
+    assert _checkpoint_epoch(checkpoint_dir / "epoch_0002.pt") == 2
 
 
 def test_fit_without_validation_disables_best_tracking_by_default(tmp_path) -> None:

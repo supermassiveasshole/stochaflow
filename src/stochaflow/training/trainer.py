@@ -402,19 +402,11 @@ def _validate_epoch_validation_resume(
         raise ValueError(
             "restored epoch validation state is ahead of the completed epoch"
         )
-    latest_scheduled = identity.cadence.latest_scheduled_epoch(completed_epoch)
-    if identity.cadence.include_final:
-        if latest_scheduled is not None and (
-            last_epoch is None or last_epoch < latest_scheduled
-        ):
-            raise ValueError(
-                "restored epoch validation state is missing a scheduled "
-                "observation"
-            )
-    elif last_epoch != latest_scheduled:
+    latest_observation = state.latest_observation_through(completed_epoch)
+    if last_epoch != latest_observation:
         raise ValueError(
-            "restored epoch validation state does not match the declared "
-            "cadence"
+            "restored epoch validation state is missing a declared interval "
+            "or final observation"
         )
 
 
@@ -642,7 +634,12 @@ class TrainingFitState:
         )
 
     @classmethod
-    def from_mapping(cls, state: object) -> TrainingFitState:
+    def from_mapping(
+        cls,
+        state: object,
+        *,
+        legacy_epoch_validation_final_epoch: int | None = None,
+    ) -> TrainingFitState:
         """Parse the strict persisted mapping without mutating trainer state."""
 
         if not isinstance(state, Mapping):
@@ -739,7 +736,17 @@ class TrainingFitState:
         epoch_validation = (
             None
             if epoch_validation_value is None
-            else EpochValidationState.from_mapping(epoch_validation_value)
+            else EpochValidationState.from_mapping(
+                epoch_validation_value,
+                legacy_final_epoch=legacy_epoch_validation_final_epoch,
+            )
+        )
+        legacy_final_history_missing = (
+            epoch_validation is not None
+            and isinstance(epoch_validation_value, Mapping)
+            and "off_cadence_final_epochs" not in epoch_validation_value
+            and epoch_validation.identity.cadence.include_final
+            and epoch_validation.last_evaluated_epoch is not None
         )
         if not tracking_enabled:
             if (
@@ -758,6 +765,18 @@ class TrainingFitState:
             raise ValueError(
                 "enabled best tracking requires training_loop.monitor_policy"
             )
+        if legacy_final_history_missing:
+            assert epoch_validation is not None
+            if (
+                not tracking_enabled
+                or policy is None
+                or policy.metric not in epoch_validation.identity.metric_keys
+            ):
+                raise ValueError(
+                    "legacy include-final validation state lacks a complete "
+                    "observation history that can be verified by its formal "
+                    "monitor counter"
+                )
         if best_epoch is not None and observations == 0:
             raise ValueError(
                 "recorded best state requires at least one monitor observation"
@@ -769,6 +788,68 @@ class TrainingFitState:
                 "stopped_early requires a patience threshold reached by "
                 "observations_without_improvement"
             )
+        if (
+            tracking_enabled
+            and policy is not None
+            and epoch_validation is not None
+            and policy.metric in epoch_validation.identity.metric_keys
+        ):
+            last_epoch = epoch_validation.last_evaluated_epoch
+            expected_observations = epoch_validation.observation_count_through(
+                0 if last_epoch is None else last_epoch
+            )
+            if observations != expected_observations:
+                raise ValueError(
+                    "training_loop.monitor_observations must exactly match "
+                    "the epoch validation observation history"
+                )
+            if expected_observations == 0:
+                if best_epoch is not None:
+                    raise ValueError(
+                        "epoch validation monitor cannot record a best epoch "
+                        "without an observation"
+                    )
+            else:
+                if best_epoch is None or best_metric is None or last_epoch is None:
+                    raise ValueError(
+                        "epoch validation monitor observations require a "
+                        "recorded best epoch and metric"
+                    )
+                if (
+                    best_epoch > last_epoch
+                    or not epoch_validation.is_observation_epoch(best_epoch)
+                ):
+                    raise ValueError(
+                        "training_loop.best_epoch must belong to the epoch "
+                        "validation observation history"
+                    )
+                expected_wait = epoch_validation.observations_after(
+                    best_epoch,
+                    through=last_epoch,
+                )
+                if wait != expected_wait:
+                    raise ValueError(
+                        "training_loop.observations_without_improvement must "
+                        "match observations after the recorded best epoch"
+                    )
+                last_value = epoch_validation.last_metrics[policy.metric]
+                if best_epoch == last_epoch:
+                    if float(best_metric) != last_value:
+                        raise ValueError(
+                            "training_loop.best_metric_value must match the "
+                            "last epoch validation observation at best_epoch"
+                        )
+                else:
+                    improved = (
+                        last_value < float(best_metric) - policy.min_delta
+                        if policy.mode == "min"
+                        else last_value > float(best_metric) + policy.min_delta
+                    )
+                    if improved:
+                        raise ValueError(
+                            "epoch validation last metric improves on the "
+                            "recorded best but best state was not advanced"
+                        )
         return cls(
             best_epoch=best_epoch,
             best_metric_value=(
@@ -1918,7 +1999,10 @@ class Trainer:
                         )
                     self._epoch_validation_state = (
                         self._epoch_validation_state.with_result(
-                            epoch_validation_result
+                            epoch_validation_result,
+                            final_epoch=(
+                                num_epochs if epoch == num_epochs else None
+                            ),
                         )
                     )
                 successful_updates = train_metrics.get(
@@ -1931,14 +2015,10 @@ class Trainer:
                     epoch_index=epoch,
                     metrics=epoch_metrics,
                 )
-                history.append(dict(epoch_metrics))
-                with preserve_global_rng_state(self.device):
-                    self.logger.log_metrics(
-                        epoch_metrics,
-                        step=self.global_step,
-                    )
 
                 status = "-"
+                best_observation: dict[str, float] | None = None
+                early_stopping_text: str | None = None
                 if should_track_best:
                     assert monitor_policy is not None
                     current_value = epoch_metrics.get(monitor_policy.metric)
@@ -1989,16 +2069,10 @@ class Trainer:
                                     },
                                 )
                             )
-                            with preserve_global_rng_state(self.device):
-                                self.logger.log_metrics(
-                                    {
-                                        "best/epoch": float(epoch),
-                                        f"best/{monitor_policy.metric}": (
-                                            best_value
-                                        ),
-                                    },
-                                    step=self.global_step,
-                                )
+                            best_observation = {
+                                "best/epoch": float(epoch),
+                                f"best/{monitor_policy.metric}": best_value,
+                            }
                         else:
                             self.observations_without_improvement += 1
                             if early_stopping_patience is not None:
@@ -2021,17 +2095,30 @@ class Trainer:
                                     f"{self.best_metric_value}; observations="
                                     f"{self.monitor_observations}"
                                 )
-                                self.logger.log_text(
-                                    "early_stopping",
-                                    early_stopping_text,
-                                    step=self.global_step,
-                                )
-                                if reporter is not None:
-                                    reporter.on_early_stopping(
-                                        early_stopping_text
-                                    )
-                self._maybe_save_checkpoint(epoch, epoch_metrics)
                 self._save_latest_checkpoint(epoch, epoch_metrics)
+                self._maybe_save_checkpoint(epoch, epoch_metrics)
+                history.append(dict(epoch_metrics))
+                with preserve_global_rng_state(self.device):
+                    self.logger.log_metrics(
+                        epoch_metrics,
+                        step=self.global_step,
+                    )
+                if best_observation is not None:
+                    with preserve_global_rng_state(self.device):
+                        self.logger.log_metrics(
+                            best_observation,
+                            step=self.global_step,
+                        )
+                if early_stopping_text is not None:
+                    with preserve_global_rng_state(self.device):
+                        self.logger.log_text(
+                            "early_stopping",
+                            early_stopping_text,
+                            step=self.global_step,
+                        )
+                    if reporter is not None:
+                        with preserve_global_rng_state(self.device):
+                            reporter.on_early_stopping(early_stopping_text)
                 if reporter is not None:
                     with preserve_global_rng_state(self.device):
                         reporter.on_epoch_end(

@@ -19,7 +19,8 @@ is unavailable.
 - Added cadence-controlled epoch-end validation Evaluation over the current raw
   or EMA snapshot. Declared `valid/metrics/*` observations now feed the existing
   best-checkpoint and early-stopping lifecycle, with profile identity, cadence,
-  and the last completed result persisted for strict resume.
+  complete interval/final observation history, and the last completed result
+  persisted for strict resume.
 - Added structured training outcomes and completed-run manifest publication.
 - Added standalone checkpoint evaluation with explicit raw/EMA selection,
   registered Evaluation Builders, exact completeness, and immutable results.
@@ -105,6 +106,17 @@ is unavailable.
 
 ### Fixed
 
+- Made run-directory strict resume select the highest lineage-consistent atomic
+  snapshot across `latest.pt`, `best.pt`, and the highest numbered checkpoint,
+  while explicit-file resume remains exact. Contradictory, corrupt, regressing,
+  mixed-lineage, and inherited-best-only candidate sets now fail closed.
+- Reordered epoch publication so an improved `best.pt` is followed by
+  `latest.pt`, then an optional numbered checkpoint, before epoch logging and
+  reporting. Directory recovery now retains the furthest successfully published
+  epoch boundary after any later publication failure.
+- Persisted every staged off-cadence final validation observation, validated
+  exact monitor/best/patience counters against that history, and normalized only
+  provably unambiguous legacy final state before expanding a resume target.
 - Allowed strict resume from non-due epoch-validation checkpoints whose current
   epoch metrics intentionally omit sparse validation observations, while
   requiring scheduled/evaluated checkpoints to exactly match their persisted

@@ -367,14 +367,14 @@ uv run --project examples/showcases/afhq-v2 stochaflow train \
   --resume outputs/afhq-v2/adm-128-learned-range-v/<run-id> \
   --epochs 200 \
   --artifact-verification-workers 8 \
-  --device cuda \
-  --deterministic
+  --device cuda
 ```
 
 checkpoint v12 严格恢复 model、Process、Objective、optimizer、scheduler、EMA、
 precision/scaler topology、global step、epoch-boundary RNG、训练循环状态和 data
-artifact identity。epoch validation 的 profile digest、metric keys、cadence、last evaluated
-epoch 和最后一组 FID/KID 也会恢复；改变其中任一项必须 fresh train。恢复前会用
+artifact identity。epoch validation 的 profile digest、metric keys、cadence、完整的
+interval/off-cadence-final observation history、last evaluated epoch 和最后一组 FID/KID
+也会恢复；改变其中任一项必须 fresh train。恢复前会用
 `require/full` 重新验证同一个 prepared artifact；source、
 materialization、manifest 或内容 identity 不一致时，在恢复训练资产前失败。运行时
 validation policy 不进入 artifact identity，而由 checkpoint 的 resolved config 与 seed
@@ -384,7 +384,7 @@ validation policy 不进入 artifact identity，而由 checkpoint 的 resolved c
 
 当前 Gaussian inference recipe 还显式冻结 `variance.mode`（本 recipe 为
 `learned_range`）。
-v10 及更早 checkpoint 会被 strict resume 拒绝，框架不会补写或迁移；旧 ADM
+v11 及更早 checkpoint 会被 strict resume 拒绝，框架不会补写或迁移；旧 ADM
 checkpoint 还另外存在完整 topology/state 不兼容，因此 sampling 也会失败。
 
 resume 创建新的 sibling run，不续写旧日志。它不能通过 config 替换 model、optimizer、
@@ -398,7 +398,7 @@ precision 或 accumulation。`--observability-config` 只用于允许的 diagnos
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow sample \
-  --checkpoint outputs/afhq-v2/adm-128/<run-id> \
+  --checkpoint outputs/afhq-v2/adm-128-learned-range-v/<run-id> \
   --config examples/showcases/afhq-v2/experiments/sampling/ddim50-cfg2.yaml \
   --output-dir outputs/afhq-v2/samples/adm-ddim50-cfg2
 ```

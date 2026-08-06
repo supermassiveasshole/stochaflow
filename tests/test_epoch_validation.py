@@ -178,6 +178,7 @@ def test_epoch_evaluator_metrics_select_and_persist_best_checkpoint(
             "valid/metrics/fid": 10.0,
             "valid/metrics/kid": 0.01,
         },
+        "off_cadence_final_epochs": [],
     }
 
 
@@ -231,6 +232,61 @@ def test_epoch_evaluator_include_final_runs_unscheduled_final_epoch(
     )
 
     assert [epoch for epoch, _ in evaluator.calls] == [3, 4]
+    state = _training_loop_state(tmp_path / "checkpoints" / "latest.pt")
+    assert state["epoch_validation"]["off_cadence_final_epochs"] == [4]
+
+
+def test_epoch_evaluator_staged_resume_preserves_all_final_observations(
+    tmp_path,
+) -> None:
+    identity = _identity(
+        first_epoch=3,
+        every_n_epochs=3,
+        include_final=True,
+    )
+    first = _trainer(tmp_path)
+    first_evaluator = RecordingEpochValidationEvaluator(
+        identity=identity,
+        metrics_by_epoch={
+            3: {"valid/metrics/fid": 5.0, "valid/metrics/kid": 0.05},
+            4: {"valid/metrics/fid": 4.0, "valid/metrics/kid": 0.04},
+        },
+    )
+    first.fit(
+        _loader(),
+        num_epochs=4,
+        show_progress=False,
+        epoch_validation_evaluator=first_evaluator,
+        early_stopping_monitor="valid/metrics/fid",
+    )
+    checkpoint_dir = tmp_path / "checkpoints"
+    first_state = _training_loop_state(checkpoint_dir / "latest.pt")
+
+    resumed = _trainer(tmp_path)
+    resumed.restore_fit_state(
+        first_state,
+        best_checkpoint_path=checkpoint_dir / "best.pt",
+    )
+    resumed_evaluator = RecordingEpochValidationEvaluator(
+        identity=identity,
+        metrics_by_epoch={
+            6: {"valid/metrics/fid": 3.0, "valid/metrics/kid": 0.03},
+            8: {"valid/metrics/fid": 2.0, "valid/metrics/kid": 0.02},
+        },
+    )
+    resumed.fit(
+        _loader(),
+        num_epochs=8,
+        start_epoch=5,
+        show_progress=False,
+        epoch_validation_evaluator=resumed_evaluator,
+        early_stopping_monitor="valid/metrics/fid",
+    )
+
+    assert [epoch for epoch, _ in resumed_evaluator.calls] == [6, 8]
+    state = _training_loop_state(checkpoint_dir / "latest.pt")
+    assert state["monitor_observations"] == 4
+    assert state["epoch_validation"]["off_cadence_final_epochs"] == [4, 8]
 
 
 def test_epoch_evaluator_preserves_global_rng_streams(tmp_path) -> None:

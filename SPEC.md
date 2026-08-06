@@ -104,9 +104,10 @@ The canonical configuration reference is
   observations MUST NOT silently influence model selection.
 - A configured epoch-end validation Evaluation MAY evaluate the current raw or
   EMA training snapshot and publish canonical `valid/metrics/*` observations.
-  Its profile, metric surface, cadence, and last completed observation MUST be
-  strict-resume state. Epochs outside the cadence MUST NOT reuse an older
-  observation or advance early-stopping patience.
+  Its profile, metric surface, cadence, complete interval/final observation
+  history, and last completed result MUST be strict-resume state. Epochs outside
+  the cadence MUST NOT reuse an older observation or advance early-stopping
+  patience.
 - A completed training run SHOULD expose a structured outcome containing final
   metrics, selected checkpoints, and published artifact references.
 
@@ -176,16 +177,19 @@ The canonical configuration reference is
    use explicit format or schema versions.
 2. Resume MUST validate the complete state required by the selected lifecycle;
    it MUST NOT silently load a semantically incompatible checkpoint.
-3. Unsupported old formats MUST fail closed unless an explicit, tested migration
+3. An explicit checkpoint-file resume MUST use that exact snapshot. A directory
+   resume MUST select the highest complete, lineage-consistent atomic snapshot
+   and MUST fail closed on contradictory or ambiguous candidates.
+4. Unsupported old formats MUST fail closed unless an explicit, tested migration
    exists.
-4. Publication of a completed result or manifest MUST occur only after required
+5. Publication of a completed result or manifest MUST occur only after required
    files and reporters finish successfully.
-5. Artifact publication SHOULD use atomic staging where partial output would be
+6. Artifact publication SHOULD use atomic staging where partial output would be
    ambiguous or unsafe.
-6. Sampling bundles MUST confine writer paths to a private sibling staging
+7. Sampling bundles MUST confine writer paths to a private sibling staging
    directory, record portable relative artifact paths, and atomically publish
    to an absent final directory. Failure MUST leave no final bundle.
-7. Generated datasets, checkpoints, routine run outputs, credentials, and
+8. Generated datasets, checkpoints, routine run outputs, credentials, and
    machine-specific caches MUST NOT be committed.
 
 Stochaflow is pre-1.0 software. Breaking changes are permitted, but they MUST be

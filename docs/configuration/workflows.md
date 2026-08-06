@@ -74,9 +74,11 @@ DataSource/DataBuilder 的通用扩展能力。
 
 `--progress` 与 `--no-progress` 互斥，并显式开启或关闭本次运行的进度条；都不指定时
 继承 YAML 或 checkpoint 中的值。最终生效值写入新 run 及其 checkpoint，因此后续
-resume 默认继承最近一次选择。`--deterministic` 启用 PyTorch 的严格
+resume 默认继承最近一次选择。`--deterministic` 是仅开启本次 invocation 的单向 flag；
+省略时为 `false`，不会继承前一次 runtime 选择。它启用 PyTorch 的严格
 deterministic-algorithm 模式，遇到没有确定性实现的算子会报错，而不是静默使用非确定性
-kernel。配置随机 seed 仍应固定，但跨设备、PyTorch 版本和第三方算子不保证逐位一致。
+kernel。同一 lineage 应在 fresh train 和所有 sibling resume 中一致地传入或省略该 flag。
+配置随机 seed 仍应固定，但跨设备、PyTorch 版本和第三方算子不保证逐位一致。
 同理，`--epochs` 和 `--limit-batches` 不会按参数名猜测并改写 optimizer/scheduler
 constructor kwargs。
 
@@ -107,7 +109,7 @@ config 字段覆盖进入 resolved config；`limit-batches`、deterministic、�
 
 | 调用 | 目录中选择的 checkpoint | 默认输出 |
 | --- | --- | --- |
-| `train --resume <run-or-root>` | 递归查找最近修改的 `checkpoints/latest.pt` | 在原 run 的 output root 下创建新的兄弟 run |
+| `train --resume <run-or-root>` | 先定位最近活动的 `checkpoints/`，再从 `latest.pt`、`best.pt` 与最大编号的 `epoch_*.pt` 中选择最高完整 snapshot | 在原 run 的 output root 下创建新的兄弟 run |
 | `sample --checkpoint <run-or-root>` | 递归查找最近修改的 `checkpoints/best.pt` | `<checkpoint-run>/samples/<timestamp>/` |
 | `evaluate --config <file>` | config 中的 checkpoint path；相对路径以 config 目录为基准 | `<checkpoint-run>/evaluations/<timestamp>/`，或显式的新 output directory |
 
@@ -116,6 +118,14 @@ config 字段覆盖进入 resolved config；`limit-batches`、deterministic、�
 `checkpoints/latest.pt`，它表示 final checkpoint，而不是经过验证集选择的 best。需要冻结
 精确 lineage 时也应传 checkpoint 文件。`train --output-dir` 是新建 timestamped run 的
 父目录，而 `sample --output-dir` 是本次 artifact 的最终目录。
+
+训练的目录 resume 不按文件名或 mtime 猜测同一 run 内的进度。候选必须是可完整解析的
+v12 epoch-boundary snapshot，具有相同 resolved config、config source、lineage、extension
+provenance、overlay history 和 data artifact identity；同 epoch 的 global step、metrics 与
+training-loop state 也必须一致。框架按 payload 中的 `(epoch, global_step)` 选择最高进度，
+同进度依次偏好 `latest.pt`、编号 checkpoint、`best.pt`。任一候选损坏、进度倒退或身份冲突
+都会 fail closed。显式 checkpoint 文件保持 exact semantics，不会自动升级到目录中的另一
+文件。
 sampling 目录总会写
 `resolved_sampling.yaml`；训练 run 总会写 `resolved_config.yaml` 和
 `run_manifest.yaml`。
@@ -165,6 +175,12 @@ metrics/log 路径。没有 test split 时 `phase_test_metrics` 是空 mapping�
 `artifacts.checkpoint_every` 控制编号 checkpoint 的频率；`latest.pt` 在每个完成 epoch 后
 更新。`best.pt` 只由 `valid/loss` 或 `valid/metrics/<id>[/<subkey>]` 更新；没有 validation
 时默认关闭 best tracking。此时显式采样应传 final `latest.pt`。
+
+一个 epoch 的 selection state 确定后，Trainer 依次原子发布改进后的 `best.pt`、
+`latest.pt`、到期的编号 checkpoint，最后才调用 epoch logger/reporter。若其中一步失败，
+异常仍向上传播且 run 不会伪装成 completed；目录 resume 会从已经成功发布的最高一致
+snapshot 恢复。新 sibling 在训练第一个 epoch 前只有 inherited `best.pt` 时，该文件不证明
+父 checkpoint 的完整进度，因而不能单独作为目录恢复点；应显式恢复原父 checkpoint。
 
 ## 恢复训练
 
@@ -451,8 +467,11 @@ checkpoint 或 completeness。
 不更新 `best.pt`、也不推进 patience；到期 Evaluation 失败、缺 key、非 finite、重复 ID 或
 数量不完整都会 fail closed。`include_final` 可保证目标训练的最终 epoch 额外评估一次。
 
-profile digest、metric keys、cadence、last evaluated epoch 和最后一组 metrics 都进入
-strict-resume state。训练内运行不配置 prediction sink，也不发布 standalone immutable
+profile digest、metric keys、cadence、完整的 interval/off-cadence-final observation history、
+last evaluated epoch 和最后一组 metrics 都进入 strict-resume state。interval observation
+由冻结 cadence 推导；每次 staged training 的非 interval final epoch 则以严格递增列表持久化，
+从而精确校验 monitor observation count、best epoch 与 patience。训练内运行不配置
+prediction sink，也不发布 standalone immutable
 result bundle，所以它是选模用 validation evidence，不是 formal benchmark。要从已经存在
 的多个 checkpoints 选一个，只需对每个 subject 运行同一 standalone validation
 Evaluation，再按同一个 primary metric 比较；无需另一套 selection runtime。

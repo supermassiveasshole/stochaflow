@@ -129,10 +129,21 @@ epoch 都必须存在且 finite。若 monitor 来自 `trainer.validation_evaluat
 旧值、不保存新的 `best.pt`，也不推进 patience。到期运行缺失、非 finite、sample ID 重复或
 strict completeness 不满足时立即失败。
 
-live evaluator 的 profile digest、exact metric keys、cadence、last evaluated epoch 和最后一
-组 metrics 属于 checkpoint strict-resume state。resume 必须提供相同 identity，且不能跳过
-已经到期但未完成的 observation。`include_final: true` 可以要求目标训练的最后一个 epoch
-额外执行一次，即使它不落在 interval 上。
+live evaluator 的 profile digest、exact metric keys、cadence、完整 interval/final observation
+history、last evaluated epoch 和最后一组 metrics 属于 checkpoint strict-resume state。
+resume 必须提供相同 identity，且不能跳过已经到期但未完成的 observation。
+`include_final: true` 可以要求目标训练的最后一个 epoch 额外执行一次，即使它不落在
+interval 上。interval observation 由 cadence 推导；每个 staged target 产生的 off-cadence
+final epoch 保存在严格递增且去重的 `off_cadence_final_epochs` 中。
+
+当前 writer 总是显式保存该列表，空历史写为 `[]`，显式 `null` 非法。较早的同格式
+checkpoint 若缺少该字段，只在 history 可无歧义证明时规范化：当 `include_final: true` 且已有
+observation 时，monitor 必须是该 formal Evaluation metric，且 counter 必须精确等于从 interval
+cadence 与可证明的当前 final 重建出的数量。普通 interval 状态只有在 counter 等于 interval
+count 时才等价于空列表；单个 legacy off-cadence final 还必须同时等于 checkpoint epoch 与其
+保存的 target epoch。无法证明是否还有更早 staged final 的旧状态 fail closed。inherited best
+在改写新 target config 前先持久化规范化后的完整历史，因此后续 sibling resume 不会把旧
+final 误判为任意 off-cadence 结果。
 
 没有 validation DataLoader 时，Trainer 默认关闭 best tracking，不创建或伪造 best
 metric/epoch/checkpoint；显式请求 best tracking 或 early stopping 会在训练循环开始前失败。
@@ -358,7 +369,9 @@ force；name/distribution/target identity 不匹配会失败。即使 provenance
    及其原生依赖。checkpoint 不承担环境快照职责。
 3. strict resume 优先复制整个 run directory。启用了 best tracking 的 latest/epoch
    checkpoint 还依赖同一 `checkpoints/` 目录中经过 lineage 校验的 `best.pt`；没有
-   validation、因而未启用 best tracking 的 run 不产生这项依赖。
+   validation、因而未启用 best tracking 的 run 不产生这项依赖。目录恢复会检查
+   `latest.pt`、`best.pt` 与最大编号 checkpoint，并选择最高一致 snapshot；只剩 inherited
+   best 而没有父进度 snapshot 时必须显式提供原父 checkpoint。
 4. 同步数据、模型外部资产和配置中引用的文件。相对 data/output 路径与 Builder 私有
    path 都以目标进程启动 cwd 解释；必要时从项目根运行并显式覆盖 output dir。
 5. 核对 device/backend。strict resume 若恢复 CUDA/MPS RNG，目标 backend 必须可用；

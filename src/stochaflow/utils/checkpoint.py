@@ -1030,6 +1030,7 @@ class CheckpointManager:
         path: str | Path,
         *,
         map_location: str | torch.device | None = None,
+        mmap: bool = False,
     ) -> CheckpointState:
         """Read and validate the top-level checkpoint payload."""
 
@@ -1038,6 +1039,7 @@ class CheckpointManager:
             checkpoint_path,
             map_location=map_location,
             weights_only=True,
+            mmap=mmap,
         )
         return validate_checkpoint_payload(raw_state, source=checkpoint_path)
 
