@@ -382,6 +382,7 @@ def _validate_epoch_validation_resume(
     identity: EpochValidationIdentity | None,
     *,
     completed_epoch: int,
+    completed_global_step: int,
 ) -> None:
     """Require strict evaluator identity and completed cadence observations."""
 
@@ -401,6 +402,23 @@ def _validate_epoch_validation_resume(
     if last_epoch is not None and last_epoch > completed_epoch:
         raise ValueError(
             "restored epoch validation state is ahead of the completed epoch"
+        )
+    if any(
+        result.global_step > completed_global_step
+        for result in state.results
+    ):
+        raise ValueError(
+            "restored epoch validation state is ahead of the completed "
+            "global_step"
+        )
+    if (
+        state.last_result is not None
+        and state.last_result.epoch == completed_epoch
+        and state.last_result.global_step != completed_global_step
+    ):
+        raise ValueError(
+            "restored current epoch validation result global_step must match "
+            "the completed global_step"
         )
     latest_observation = state.latest_observation_through(completed_epoch)
     if last_epoch != latest_observation:
@@ -599,6 +617,44 @@ class MonitorPolicy:
         }
 
 
+def _replay_epoch_validation_monitor(
+    state: EpochValidationState,
+    *,
+    policy: MonitorPolicy,
+    patience: int | None,
+) -> tuple[int | None, float | None, int, bool]:
+    """Derive selection and stopping state from the complete result history."""
+
+    best_epoch: int | None = None
+    best_metric: float | None = None
+    wait = 0
+    stopped = False
+    for index, result in enumerate(state.results):
+        current = result.metrics[policy.metric]
+        improved = (
+            best_metric is None
+            or (
+                current < best_metric - policy.min_delta
+                if policy.mode == "min"
+                else current > best_metric + policy.min_delta
+            )
+        )
+        if improved:
+            best_epoch = result.epoch
+            best_metric = current
+            wait = 0
+        else:
+            wait += 1
+        if patience is not None and wait >= patience:
+            stopped = True
+            if index != len(state.results) - 1:
+                raise ValueError(
+                    "epoch validation result history continues after the "
+                    "early-stopping boundary"
+                )
+    return best_epoch, best_metric, wait, stopped
+
+
 @dataclass(frozen=True, slots=True)
 class TrainingFitState:
     """Validated selection and observation-based stopping checkpoint state."""
@@ -637,8 +693,6 @@ class TrainingFitState:
     def from_mapping(
         cls,
         state: object,
-        *,
-        legacy_epoch_validation_final_epoch: int | None = None,
     ) -> TrainingFitState:
         """Parse the strict persisted mapping without mutating trainer state."""
 
@@ -736,17 +790,7 @@ class TrainingFitState:
         epoch_validation = (
             None
             if epoch_validation_value is None
-            else EpochValidationState.from_mapping(
-                epoch_validation_value,
-                legacy_final_epoch=legacy_epoch_validation_final_epoch,
-            )
-        )
-        legacy_final_history_missing = (
-            epoch_validation is not None
-            and isinstance(epoch_validation_value, Mapping)
-            and "off_cadence_final_epochs" not in epoch_validation_value
-            and epoch_validation.identity.cadence.include_final
-            and epoch_validation.last_evaluated_epoch is not None
+            else EpochValidationState.from_mapping(epoch_validation_value)
         )
         if not tracking_enabled:
             if (
@@ -765,18 +809,6 @@ class TrainingFitState:
             raise ValueError(
                 "enabled best tracking requires training_loop.monitor_policy"
             )
-        if legacy_final_history_missing:
-            assert epoch_validation is not None
-            if (
-                not tracking_enabled
-                or policy is None
-                or policy.metric not in epoch_validation.identity.metric_keys
-            ):
-                raise ValueError(
-                    "legacy include-final validation state lacks a complete "
-                    "observation history that can be verified by its formal "
-                    "monitor counter"
-                )
         if best_epoch is not None and observations == 0:
             raise ValueError(
                 "recorded best state requires at least one monitor observation"
@@ -790,66 +822,51 @@ class TrainingFitState:
             )
         if (
             tracking_enabled
+            and patience is not None
+            and wait >= patience
+            and not stopped_early
+        ):
+            raise ValueError(
+                "training_loop.stopped_early must be true when the patience "
+                "threshold has been reached"
+            )
+        if (
+            tracking_enabled
             and policy is not None
             and epoch_validation is not None
             and policy.metric in epoch_validation.identity.metric_keys
         ):
-            last_epoch = epoch_validation.last_evaluated_epoch
-            expected_observations = epoch_validation.observation_count_through(
-                0 if last_epoch is None else last_epoch
+            expected_observations = len(epoch_validation.results)
+            (
+                expected_best_epoch,
+                expected_best_metric,
+                expected_wait,
+                expected_stopped,
+            ) = _replay_epoch_validation_monitor(
+                epoch_validation,
+                policy=policy,
+                patience=patience,
             )
             if observations != expected_observations:
                 raise ValueError(
                     "training_loop.monitor_observations must exactly match "
                     "the epoch validation observation history"
                 )
-            if expected_observations == 0:
-                if best_epoch is not None:
-                    raise ValueError(
-                        "epoch validation monitor cannot record a best epoch "
-                        "without an observation"
-                    )
-            else:
-                if best_epoch is None or best_metric is None or last_epoch is None:
-                    raise ValueError(
-                        "epoch validation monitor observations require a "
-                        "recorded best epoch and metric"
-                    )
-                if (
-                    best_epoch > last_epoch
-                    or not epoch_validation.is_observation_epoch(best_epoch)
-                ):
-                    raise ValueError(
-                        "training_loop.best_epoch must belong to the epoch "
-                        "validation observation history"
-                    )
-                expected_wait = epoch_validation.observations_after(
-                    best_epoch,
-                    through=last_epoch,
+            if best_epoch != expected_best_epoch or best_metric != expected_best_metric:
+                raise ValueError(
+                    "training_loop best state must exactly match the complete "
+                    "epoch validation result history"
                 )
-                if wait != expected_wait:
-                    raise ValueError(
-                        "training_loop.observations_without_improvement must "
-                        "match observations after the recorded best epoch"
-                    )
-                last_value = epoch_validation.last_metrics[policy.metric]
-                if best_epoch == last_epoch:
-                    if float(best_metric) != last_value:
-                        raise ValueError(
-                            "training_loop.best_metric_value must match the "
-                            "last epoch validation observation at best_epoch"
-                        )
-                else:
-                    improved = (
-                        last_value < float(best_metric) - policy.min_delta
-                        if policy.mode == "min"
-                        else last_value > float(best_metric) + policy.min_delta
-                    )
-                    if improved:
-                        raise ValueError(
-                            "epoch validation last metric improves on the "
-                            "recorded best but best state was not advanced"
-                        )
+            if wait != expected_wait:
+                raise ValueError(
+                    "training_loop.observations_without_improvement must "
+                    "exactly match the complete epoch validation result history"
+                )
+            if stopped_early != expected_stopped:
+                raise ValueError(
+                    "training_loop.stopped_early must exactly match the complete "
+                    "epoch validation result history"
+                )
         return cls(
             best_epoch=best_epoch,
             best_metric_value=(
@@ -1889,8 +1906,6 @@ class Trainer:
             self._epoch_validation_state = (
                 EpochValidationState(
                     identity=epoch_validation_identity,
-                    last_evaluated_epoch=None,
-                    last_metrics={},
                 )
                 if epoch_validation_identity is not None
                 else None
@@ -1915,6 +1930,7 @@ class Trainer:
                 self._epoch_validation_state,
                 epoch_validation_identity,
                 completed_epoch=start_epoch - 1,
+                completed_global_step=self.global_step,
             )
         best_value = self.best_metric_value
         try:

@@ -5,7 +5,6 @@ import hashlib
 import math
 import re
 import warnings
-from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -608,16 +607,63 @@ def _validate_same_progress_candidates(
                     "resume checkpoint candidates disagree on metrics or "
                     f"training-loop state at epoch {epoch}"
                 )
-    ordered_progress = sorted(
-        (epoch, peers[0].global_step)
-        for epoch, peers in by_epoch.items()
+    ordered = sorted(
+        (peers[0] for peers in by_epoch.values()),
+        key=lambda candidate: candidate.epoch,
     )
-    for previous, current in pairwise(ordered_progress):
-        if current[1] < previous[1]:
+    for previous, current in pairwise(ordered):
+        if current.global_step < previous.global_step:
             raise ValueError(
                 "resume checkpoint candidates regress global_step between "
-                f"epochs {previous[0]} and {current[0]}"
+                f"epochs {previous.epoch} and {current.epoch}"
             )
+        _validate_fit_state_transition(previous, current)
+
+
+def _validate_fit_state_transition(
+    previous: ResumeCheckpointCandidate,
+    current: ResumeCheckpointCandidate,
+) -> None:
+    """Require one later candidate to extend the persisted fit state."""
+
+    before = previous.fit_state
+    after = current.fit_state
+    if (
+        before.tracking_enabled != after.tracking_enabled
+        or before.monitor_policy != after.monitor_policy
+        or before.early_stopping_patience != after.early_stopping_patience
+    ):
+        raise ValueError(
+            "resume checkpoint candidates change the tracking policy between "
+            f"epochs {previous.epoch} and {current.epoch}"
+        )
+    before_validation = before.epoch_validation
+    after_validation = after.epoch_validation
+    if (before_validation is None) != (after_validation is None):
+        raise ValueError(
+            "resume checkpoint candidates change epoch validation state "
+            f"between epochs {previous.epoch} and {current.epoch}"
+        )
+    if before_validation is not None and after_validation is not None:
+        if before_validation.identity != after_validation.identity:
+            raise ValueError(
+                "resume checkpoint candidates change epoch validation identity"
+            )
+        before_results = before_validation.results
+        after_results = after_validation.results
+        if (
+            len(after_results) < len(before_results)
+            or after_results[: len(before_results)] != before_results
+        ):
+            raise ValueError(
+                "later resume checkpoint epoch validation history must extend "
+                "the earlier exact result prefix"
+            )
+    if before.stopped_early:
+        raise ValueError(
+            "resume checkpoint candidates continue after an early-stopping "
+            "boundary"
+        )
 
 
 def _resolve_resume_directory_checkpoint(
@@ -1176,52 +1222,23 @@ def _checkpoint_configured_final_epoch(payload: CheckpointState) -> int:
     return cast(int, final_epoch)
 
 
-def _raw_epoch_validation_includes_final(value: object) -> bool:
-    """Return a validated-enough hint for legacy final-state normalization."""
-
-    if not isinstance(value, Mapping):
-        return False
-    epoch_validation = value.get("epoch_validation")
-    if not isinstance(epoch_validation, Mapping):
-        return False
-    identity = epoch_validation.get("identity")
-    if not isinstance(identity, Mapping):
-        return False
-    cadence = identity.get("cadence")
-    return isinstance(cadence, Mapping) and cadence.get("include_final") is True
-
-
 def _checkpoint_training_fit_state(
     payload: CheckpointState,
 ) -> TrainingFitState:
-    """Parse and normalize persisted fit state with legacy final provenance."""
+    """Parse the versioned strict-resume fit state."""
 
     metadata = cast(object, payload.get("metadata"))
     if type(metadata) is not dict:
         raise TypeError("strict resume requires checkpoint metadata as an exact mapping")
     training_loop = cast(dict[str, Any], metadata).get("training_loop")
-    checkpoint_epoch = cast(object, payload.get("epoch"))
-    configured_final_epoch = (
-        _checkpoint_configured_final_epoch(payload)
-        if _raw_epoch_validation_includes_final(training_loop)
-        else None
-    )
-    legacy_final_epoch = (
-        configured_final_epoch
-        if type(checkpoint_epoch) is int
-        and checkpoint_epoch == configured_final_epoch
-        else None
-    )
-    return TrainingFitState.from_mapping(
-        training_loop,
-        legacy_epoch_validation_final_epoch=legacy_final_epoch,
-    )
+    return TrainingFitState.from_mapping(training_loop)
 
 
 def _validate_checkpoint_epoch_validation_metrics(
     fit_state: TrainingFitState,
     *,
     checkpoint_epoch: int,
+    checkpoint_global_step: int,
     configured_final_epoch: int | None,
     metrics: dict[str, float],
 ) -> None:
@@ -1235,6 +1252,16 @@ def _validate_checkpoint_epoch_validation_metrics(
         raise ValueError(
             "strict resume epoch validation state is ahead of the checkpoint "
             "epoch"
+        )
+    future_steps = [
+        result.global_step
+        for result in state.results
+        if result.global_step > checkpoint_global_step
+    ]
+    if future_steps:
+        raise ValueError(
+            "strict resume epoch validation result global_step is ahead of "
+            "the checkpoint global_step"
         )
     if last_epoch != state.latest_observation_through(checkpoint_epoch):
         raise ValueError(
@@ -1260,6 +1287,15 @@ def _validate_checkpoint_epoch_validation_metrics(
         raise ValueError(
             "strict resume epoch validation state contains an unexpected "
             f"off-cadence observation at epoch {checkpoint_epoch}"
+        )
+    if (
+        evaluated_now
+        and state.last_result is not None
+        and state.last_result.global_step != checkpoint_global_step
+    ):
+        raise ValueError(
+            "strict resume current epoch validation result global_step must "
+            "match the checkpoint global_step"
         )
 
     declared_keys = set(state.identity.metric_keys)
@@ -1327,6 +1363,7 @@ def _parse_strict_resume_state(
     _validate_checkpoint_epoch_validation_metrics(
         fit_state,
         checkpoint_epoch=cast(int, epoch),
+        checkpoint_global_step=cast(int, global_step),
         configured_final_epoch=configured_final_epoch,
         metrics=metrics,
     )

@@ -13,6 +13,7 @@ from typing import Any, cast
 from stochaflow.utils.config import validate_training_monitor_key
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_EPOCH_VALIDATION_STATE_SCHEMA_VERSION = 1
 
 
 def _positive_int(value: object, *, path: str) -> int:
@@ -289,15 +290,43 @@ class EpochValidationResult:
             ),
         )
 
+    @classmethod
+    def from_mapping(cls, value: object) -> EpochValidationResult:
+        """Parse one strict persisted epoch validation result."""
+
+        if not isinstance(value, Mapping):
+            raise TypeError("epoch validation result must be a mapping")
+        required = {"epoch", "global_step", "metrics"}
+        if set(value) != required:
+            missing = sorted(required - set(value))
+            unknown = sorted(set(value) - required, key=str)
+            raise ValueError(
+                "epoch validation result has invalid fields: "
+                f"missing={missing or '<none>'}, "
+                f"unknown={unknown or '<none>'}"
+            )
+        return cls(
+            epoch=value["epoch"],
+            global_step=value["global_step"],
+            metrics=value["metrics"],
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize this completed result for checkpoint metadata."""
+
+        return {
+            "epoch": self.epoch,
+            "global_step": self.global_step,
+            "metrics": dict(self.metrics),
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class EpochValidationState:
     """Strict-resume state for a configured epoch validation evaluator."""
 
     identity: EpochValidationIdentity
-    last_evaluated_epoch: int | None
-    last_metrics: Mapping[str, float]
-    off_cadence_final_epochs: tuple[int, ...] = ()
+    results: tuple[EpochValidationResult, ...] = ()
 
     def __post_init__(self) -> None:
         identity = cast(object, self.identity)
@@ -306,93 +335,90 @@ class EpochValidationState:
                 "epoch validation state.identity must be "
                 "EpochValidationIdentity"
             )
-        last_epoch = cast(object, self.last_evaluated_epoch)
-        if last_epoch is not None:
-            last_epoch = _positive_int(
-                last_epoch,
-                path="epoch validation state.last_evaluated_epoch",
-            )
-        metrics = _validation_metrics(
-            cast(object, self.last_metrics),
-            path="epoch validation state.last_metrics",
-            allow_empty=last_epoch is None,
-        )
-        if last_epoch is None and metrics:
-            raise ValueError(
-                "epoch validation state without a last epoch requires empty "
-                "last_metrics"
-            )
-        if last_epoch is not None and set(metrics) != set(self.identity.metric_keys):
-            raise ValueError(
-                "epoch validation state.last_metrics must exactly match the "
-                "declared metric keys"
-            )
-        raw_final_epochs = cast(object, self.off_cadence_final_epochs)
-        if not isinstance(raw_final_epochs, tuple):
-            raise TypeError(
-                "epoch validation state.off_cadence_final_epochs must be a tuple"
-            )
-        final_epochs: list[int] = []
-        previous = 0
-        for index, raw_epoch in enumerate(raw_final_epochs):
-            final_epoch = _positive_int(
-                raw_epoch,
-                path=(
-                    "epoch validation state.off_cadence_final_epochs"
-                    f"[{index}]"
-                ),
-            )
-            if final_epoch <= previous:
+        raw_results = cast(object, self.results)
+        if not isinstance(raw_results, tuple):
+            raise TypeError("epoch validation state.results must be a tuple")
+        results: list[EpochValidationResult] = []
+        previous_epoch = 0
+        previous_global_step = 0
+        interval_epochs: list[int] = []
+        cadence = self.identity.cadence
+        for index, raw_result in enumerate(raw_results):
+            if not isinstance(raw_result, EpochValidationResult):
+                raise TypeError(
+                    "epoch validation state.results"
+                    f"[{index}] must be EpochValidationResult"
+                )
+            result = raw_result
+            if result.epoch <= previous_epoch:
                 raise ValueError(
-                    "epoch validation state.off_cadence_final_epochs must be "
-                    "strictly increasing"
+                    "epoch validation state result epochs must be strictly "
+                    "increasing"
                 )
-            if not self.identity.cadence.include_final:
+            if results and result.global_step < previous_global_step:
                 raise ValueError(
-                    "epoch validation state.off_cadence_final_epochs requires "
-                    "include_final=true"
+                    "epoch validation state result global_step values must be "
+                    "non-decreasing"
                 )
-            if self.identity.cadence.is_interval_due(final_epoch):
+            if set(result.metrics) != set(self.identity.metric_keys):
                 raise ValueError(
-                    "epoch validation state.off_cadence_final_epochs must not "
-                    "contain interval-scheduled epochs"
+                    "epoch validation state result metrics must exactly match "
+                    "the declared metric keys"
                 )
-            final_epochs.append(final_epoch)
-            previous = final_epoch
-        if last_epoch is None:
-            if final_epochs:
+            if cadence.is_interval_due(result.epoch):
+                interval_epochs.append(result.epoch)
+            elif not cadence.include_final:
                 raise ValueError(
-                    "epoch validation state without a last epoch requires empty "
-                    "off_cadence_final_epochs"
+                    "epoch validation state contains an off-cadence result "
+                    "while include_final=false"
                 )
-        else:
-            if final_epochs and final_epochs[-1] > last_epoch:
-                raise ValueError(
-                    "epoch validation state.off_cadence_final_epochs must not "
-                    "be ahead of last_evaluated_epoch"
-                )
-            latest_interval = self.identity.cadence.latest_scheduled_epoch(
-                last_epoch
+            results.append(result)
+            previous_epoch = result.epoch
+            previous_global_step = result.global_step
+        if results:
+            expected_interval_count = cadence.interval_count_through(
+                results[-1].epoch
             )
-            observations = tuple(
-                value
-                for value in (
-                    latest_interval,
-                    final_epochs[-1] if final_epochs else None,
-                )
-                if value is not None
-            )
-            if not observations or last_epoch != max(observations):
+            expected_interval_epochs = [
+                cadence.first_epoch + index * cadence.every_n_epochs
+                for index in range(expected_interval_count)
+            ]
+            if interval_epochs != expected_interval_epochs:
                 raise ValueError(
-                    "epoch validation state.last_evaluated_epoch is outside the "
-                    "declared interval/final observation history"
+                    "epoch validation state is missing or reorders an interval "
+                    "result"
                 )
-        object.__setattr__(self, "last_evaluated_epoch", last_epoch)
-        object.__setattr__(self, "last_metrics", metrics)
-        object.__setattr__(
-            self,
-            "off_cadence_final_epochs",
-            tuple(final_epochs),
+        object.__setattr__(self, "results", tuple(results))
+
+    @property
+    def last_result(self) -> EpochValidationResult | None:
+        """Return the last completed result in the persisted history."""
+
+        return self.results[-1] if self.results else None
+
+    @property
+    def last_evaluated_epoch(self) -> int | None:
+        """Return the epoch of the last completed result, if any."""
+
+        result = self.last_result
+        return None if result is None else result.epoch
+
+    @property
+    def last_metrics(self) -> Mapping[str, float]:
+        """Return the metric surface of the last completed result."""
+
+        result = self.last_result
+        return MappingProxyType({}) if result is None else result.metrics
+
+    @property
+    def off_cadence_final_epochs(self) -> tuple[int, ...]:
+        """Return recorded final observations outside the interval cadence."""
+
+        cadence = self.identity.cadence
+        return tuple(
+            result.epoch
+            for result in self.results
+            if not cadence.is_interval_due(result.epoch)
         )
 
     def with_result(
@@ -408,30 +434,30 @@ class EpochValidationState:
                 "epoch validation result metrics must exactly match the "
                 "declared metric keys"
             )
-        previous_epoch = self.last_evaluated_epoch
-        if previous_epoch is not None and result.epoch <= previous_epoch:
+        previous = self.last_result
+        if previous is not None and result.epoch <= previous.epoch:
             raise ValueError(
                 "epoch validation result epoch must follow the previous "
                 "evaluated epoch"
             )
+        if previous is not None and result.global_step < previous.global_step:
+            raise ValueError(
+                "epoch validation result global_step must not precede the "
+                "previous result"
+            )
         cadence = self.identity.cadence
-        final_epochs = self.off_cadence_final_epochs
-        if not cadence.is_interval_due(result.epoch):
-            if (
-                not cadence.include_final
-                or final_epoch is None
-                or final_epoch != result.epoch
-            ):
-                raise ValueError(
-                    "off-cadence epoch validation result must be the declared "
-                    "final epoch"
-                )
-            final_epochs = (*final_epochs, result.epoch)
+        if not cadence.is_interval_due(result.epoch) and (
+            not cadence.include_final
+            or final_epoch is None
+            or final_epoch != result.epoch
+        ):
+            raise ValueError(
+                "off-cadence epoch validation result must be the declared "
+                "final epoch"
+            )
         return EpochValidationState(
             identity=self.identity,
-            last_evaluated_epoch=result.epoch,
-            last_metrics=result.metrics,
-            off_cadence_final_epochs=final_epochs,
+            results=(*self.results, result),
         )
 
     def observation_count_through(self, completed_epoch: int) -> int:
@@ -441,10 +467,7 @@ class EpochValidationState:
             cast(object, completed_epoch),
             path="completed_epoch",
         )
-        final_count = sum(
-            epoch <= completed for epoch in self.off_cadence_final_epochs
-        )
-        return self.identity.cadence.interval_count_through(completed) + final_count
+        return sum(result.epoch <= completed for result in self.results)
 
     def is_observation_epoch(self, epoch: int) -> bool:
         """Return whether one epoch is in the persisted observation history."""
@@ -453,10 +476,7 @@ class EpochValidationState:
             cast(object, epoch),
             path="epoch validation observation epoch",
         )
-        return (
-            self.identity.cadence.is_interval_due(epoch_value)
-            or epoch_value in self.off_cadence_final_epochs
-        )
+        return any(result.epoch == epoch_value for result in self.results)
 
     def observations_after(self, epoch: int, *, through: int) -> int:
         """Return the persisted observation count after ``epoch`` through a bound."""
@@ -502,65 +522,53 @@ class EpochValidationState:
     def from_mapping(
         cls,
         value: object,
-        *,
-        legacy_final_epoch: int | None = None,
     ) -> EpochValidationState:
         """Parse one strict persisted evaluator state."""
 
         if not isinstance(value, Mapping):
             raise TypeError("training_loop.epoch_validation must be a mapping")
-        required = {"identity", "last_evaluated_epoch", "last_metrics"}
-        optional = {"off_cadence_final_epochs"}
-        if not required.issubset(value) or not set(value).issubset(
-            required | optional
-        ):
+        required = {"schema_version", "identity", "results"}
+        if set(value) != required:
             missing = sorted(required - set(value))
-            unknown = sorted(set(value) - required - optional, key=str)
+            unknown = sorted(set(value) - required, key=str)
             raise ValueError(
                 "training_loop.epoch_validation has invalid fields: "
                 f"missing={missing or '<none>'}, "
                 f"unknown={unknown or '<none>'}"
             )
+        version = value["schema_version"]
+        if type(version) is not int:
+            raise TypeError(
+                "training_loop.epoch_validation.schema_version must be an "
+                "exact int"
+            )
+        if version != _EPOCH_VALIDATION_STATE_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported training_loop.epoch_validation schema_version "
+                f"{version!r}; expected "
+                f"{_EPOCH_VALIDATION_STATE_SCHEMA_VERSION}"
+            )
         identity = EpochValidationIdentity.from_mapping(value["identity"])
-        last_epoch = value["last_evaluated_epoch"]
-        if "off_cadence_final_epochs" not in value:
-            inferred_final_epochs: tuple[int, ...] = ()
-            if (
-                last_epoch is not None
-                and legacy_final_epoch == last_epoch
-                and identity.cadence.include_final
-                and not identity.cadence.is_interval_due(last_epoch)
-            ):
-                inferred_final_epochs = (last_epoch,)
-        else:
-            raw_final_epochs = value["off_cadence_final_epochs"]
-            if not isinstance(raw_final_epochs, list):
-                raise TypeError(
-                    "training_loop.epoch_validation."
-                    "off_cadence_final_epochs must be a list"
-                )
-            inferred_final_epochs = tuple(raw_final_epochs)
+        raw_results = value["results"]
+        if not isinstance(raw_results, list):
+            raise TypeError(
+                "training_loop.epoch_validation.results must be a list"
+            )
         return cls(
             identity=identity,
-            last_evaluated_epoch=value["last_evaluated_epoch"],
-            last_metrics=_validation_metrics(
-                value["last_metrics"],
-                path="training_loop.epoch_validation.last_metrics",
-                allow_empty=value["last_evaluated_epoch"] is None,
+            results=tuple(
+                EpochValidationResult.from_mapping(result)
+                for result in raw_results
             ),
-            off_cadence_final_epochs=inferred_final_epochs,
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize this state for checkpoint metadata."""
 
         return {
+            "schema_version": _EPOCH_VALIDATION_STATE_SCHEMA_VERSION,
             "identity": self.identity.to_dict(),
-            "last_evaluated_epoch": self.last_evaluated_epoch,
-            "last_metrics": dict(self.last_metrics),
-            "off_cadence_final_epochs": list(
-                self.off_cadence_final_epochs
-            ),
+            "results": [result.to_dict() for result in self.results],
         }
 
 

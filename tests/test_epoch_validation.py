@@ -22,6 +22,8 @@ from stochaflow.training import (
     TrainingDiagnostic,
     TrainingPlan,
 )
+from stochaflow.training.trainer import TrainingFitState
+from stochaflow.training.validation import EpochValidationState
 from stochaflow.utils.checkpoint import CheckpointManager
 
 PROFILE_DIGEST = "a" * 64
@@ -190,13 +192,26 @@ def test_epoch_evaluator_metrics_select_and_persist_best_checkpoint(
     assert best_metrics["valid/metrics/fid"] == 10.0
     state = _training_loop_state(best_path)
     assert state["epoch_validation"] == {
+        "schema_version": 1,
         "identity": evaluator.identity.to_dict(),
-        "last_evaluated_epoch": 4,
-        "last_metrics": {
-            "valid/metrics/fid": 10.0,
-            "valid/metrics/kid": 0.01,
-        },
-        "off_cadence_final_epochs": [],
+        "results": [
+            {
+                "epoch": 2,
+                "global_step": 2,
+                "metrics": {
+                    "valid/metrics/fid": 20.0,
+                    "valid/metrics/kid": 0.02,
+                },
+            },
+            {
+                "epoch": 4,
+                "global_step": 4,
+                "metrics": {
+                    "valid/metrics/fid": 10.0,
+                    "valid/metrics/kid": 0.01,
+                },
+            },
+        ],
     }
 
 
@@ -251,7 +266,9 @@ def test_epoch_evaluator_include_final_runs_unscheduled_final_epoch(
 
     assert [epoch for epoch, _ in evaluator.calls] == [3, 4]
     state = _training_loop_state(tmp_path / "checkpoints" / "latest.pt")
-    assert state["epoch_validation"]["off_cadence_final_epochs"] == [4]
+    assert [
+        result["epoch"] for result in state["epoch_validation"]["results"]
+    ] == [3, 4]
 
 
 def test_epoch_evaluator_staged_resume_preserves_all_final_observations(
@@ -285,6 +302,7 @@ def test_epoch_evaluator_staged_resume_preserves_all_final_observations(
         first_state,
         best_checkpoint_path=checkpoint_dir / "best.pt",
     )
+    resumed.global_step = 4
     resumed_evaluator = RecordingEpochValidationEvaluator(
         identity=identity,
         metrics_by_epoch={
@@ -304,7 +322,9 @@ def test_epoch_evaluator_staged_resume_preserves_all_final_observations(
     assert [epoch for epoch, _ in resumed_evaluator.calls] == [6, 8]
     state = _training_loop_state(checkpoint_dir / "latest.pt")
     assert state["monitor_observations"] == 4
-    assert state["epoch_validation"]["off_cadence_final_epochs"] == [4, 8]
+    assert [
+        result["epoch"] for result in state["epoch_validation"]["results"]
+    ] == [3, 4, 6, 8]
 
 
 def test_epoch_evaluator_preserves_global_rng_streams(tmp_path) -> None:
@@ -406,8 +426,13 @@ def test_epoch_diagnostic_failure_follows_due_evaluation_checkpoint_publication(
         assert state["best_metric_value"] == 10.0
         assert state["monitor_observations"] == 2
         assert state["observations_without_improvement"] == 0
-        assert state["epoch_validation"]["last_evaluated_epoch"] == 2
-        assert state["epoch_validation"]["last_metrics"] == expected_metrics
+        epoch_validation = state["epoch_validation"]
+        assert epoch_validation["schema_version"] == 1
+        assert epoch_validation["results"][-1] == {
+            "epoch": 2,
+            "global_step": 2,
+            "metrics": expected_metrics,
+        }
 
 
 def test_epoch_evaluator_rejects_metric_collision_before_checkpointing(
@@ -486,6 +511,7 @@ def test_epoch_evaluator_strict_resume_preserves_identity_and_cadence(
         state,
         best_checkpoint_path=tmp_path / "checkpoints" / "best.pt",
     )
+    resumed.global_step = 2
     resumed_evaluator = RecordingEpochValidationEvaluator(
         identity=identity,
         metrics_by_epoch={
@@ -506,7 +532,7 @@ def test_epoch_evaluator_strict_resume_preserves_identity_and_cadence(
     resumed_state = _training_loop_state(
         tmp_path / "checkpoints" / "latest.pt"
     )
-    assert resumed_state["epoch_validation"]["last_evaluated_epoch"] == 4
+    assert resumed_state["epoch_validation"]["results"][-1]["epoch"] == 4
 
 
 def test_epoch_evaluator_resume_rejects_changed_profile_before_training(
@@ -528,12 +554,18 @@ def test_epoch_evaluator_resume_rejects_changed_profile_before_training(
             },
             "early_stopping_patience": None,
             "epoch_validation": {
+                "schema_version": 1,
                 "identity": _identity().to_dict(),
-                "last_evaluated_epoch": 2,
-                "last_metrics": {
-                    "valid/metrics/fid": 2.0,
-                    "valid/metrics/kid": 0.02,
-                },
+                "results": [
+                    {
+                        "epoch": 2,
+                        "global_step": 2,
+                        "metrics": {
+                            "valid/metrics/fid": 2.0,
+                            "valid/metrics/kid": 0.02,
+                        },
+                    }
+                ],
             },
         }
     )
@@ -564,3 +596,240 @@ def test_epoch_validation_result_rejects_non_finite_metrics(value: float) -> Non
             global_step=0,
             metrics={"valid/metrics/fid": value},
         )
+
+
+def test_epoch_validation_state_round_trip_preserves_complete_results() -> None:
+    identity = _identity(
+        first_epoch=1,
+        every_n_epochs=2,
+        include_final=True,
+    )
+    state = EpochValidationState(
+        identity=identity,
+        results=(
+            EpochValidationResult(
+                epoch=1,
+                global_step=3,
+                metrics={
+                    "valid/metrics/fid": 3.0,
+                    "valid/metrics/kid": 0.03,
+                },
+            ),
+            EpochValidationResult(
+                epoch=3,
+                global_step=7,
+                metrics={
+                    "valid/metrics/fid": 2.0,
+                    "valid/metrics/kid": 0.02,
+                },
+            ),
+            EpochValidationResult(
+                epoch=4,
+                global_step=7,
+                metrics={
+                    "valid/metrics/fid": 1.0,
+                    "valid/metrics/kid": 0.01,
+                },
+            ),
+        ),
+    )
+
+    restored = EpochValidationState.from_mapping(state.to_dict())
+
+    assert restored == state
+    assert restored.last_result == state.results[-1]
+    assert restored.last_evaluated_epoch == 4
+    assert restored.last_metrics["valid/metrics/fid"] == 1.0
+    assert restored.off_cadence_final_epochs == (4,)
+
+
+@pytest.mark.parametrize("version", [True, 0, 2])
+def test_epoch_validation_state_rejects_invalid_schema_version(
+    version: object,
+) -> None:
+    value = {
+        "schema_version": version,
+        "identity": _identity().to_dict(),
+        "results": [],
+    }
+
+    with pytest.raises((TypeError, ValueError), match="schema_version"):
+        EpochValidationState.from_mapping(value)
+
+
+def test_epoch_validation_state_rejects_unversioned_legacy_layout() -> None:
+    legacy = {
+        "identity": _identity().to_dict(),
+        "last_evaluated_epoch": 2,
+        "last_metrics": {
+            "valid/metrics/fid": 2.0,
+            "valid/metrics/kid": 0.02,
+        },
+        "off_cadence_final_epochs": [],
+    }
+
+    with pytest.raises(ValueError, match="schema_version"):
+        EpochValidationState.from_mapping(legacy)
+
+
+def test_epoch_validation_state_rejects_interval_gap() -> None:
+    with pytest.raises(ValueError, match="missing or reorders"):
+        EpochValidationState(
+            identity=_identity(first_epoch=2, every_n_epochs=2),
+            results=(
+                EpochValidationResult(
+                    epoch=4,
+                    global_step=4,
+                    metrics={
+                        "valid/metrics/fid": 1.0,
+                        "valid/metrics/kid": 0.01,
+                    },
+                ),
+            ),
+        )
+
+
+def test_epoch_validation_state_rejects_global_step_regression() -> None:
+    with pytest.raises(ValueError, match=r"global_step.*non-decreasing"):
+        EpochValidationState(
+            identity=_identity(first_epoch=1, every_n_epochs=1),
+            results=(
+                EpochValidationResult(
+                    epoch=1,
+                    global_step=2,
+                    metrics={
+                        "valid/metrics/fid": 2.0,
+                        "valid/metrics/kid": 0.02,
+                    },
+                ),
+                EpochValidationResult(
+                    epoch=2,
+                    global_step=1,
+                    metrics={
+                        "valid/metrics/fid": 1.0,
+                        "valid/metrics/kid": 0.01,
+                    },
+                ),
+            ),
+        )
+
+
+def test_epoch_validation_state_rejects_off_cadence_without_final_policy() -> None:
+    with pytest.raises(ValueError, match="off-cadence"):
+        EpochValidationState(
+            identity=_identity(
+                first_epoch=2,
+                every_n_epochs=2,
+                include_final=False,
+            ),
+            results=(
+                EpochValidationResult(
+                    epoch=1,
+                    global_step=1,
+                    metrics={
+                        "valid/metrics/fid": 1.0,
+                        "valid/metrics/kid": 0.01,
+                    },
+                ),
+            ),
+        )
+
+
+def _fit_state_mapping_for_history(
+    values: list[float],
+    *,
+    mode: str,
+    min_delta: float,
+    best_epoch: int,
+    best_value: float,
+    wait: int,
+    patience: int | None = None,
+    stopped_early: bool = False,
+) -> dict[str, Any]:
+    identity = _identity(first_epoch=1, every_n_epochs=1)
+    return {
+        "best_epoch": best_epoch,
+        "best_metric_value": best_value,
+        "observations_without_improvement": wait,
+        "monitor_observations": len(values),
+        "stopped_early": stopped_early,
+        "tracking_enabled": True,
+        "monitor_policy": {
+            "metric": "valid/metrics/fid",
+            "mode": mode,
+            "min_delta": min_delta,
+        },
+        "early_stopping_patience": patience,
+        "epoch_validation": {
+            "schema_version": 1,
+            "identity": identity.to_dict(),
+            "results": [
+                {
+                    "epoch": epoch,
+                    "global_step": epoch,
+                    "metrics": {
+                        "valid/metrics/fid": value,
+                        "valid/metrics/kid": 0.01,
+                    },
+                }
+                for epoch, value in enumerate(values, start=1)
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("mode", "values", "best_value"),
+    [
+        ("min", [10.0, 9.6, 9.4], 9.4),
+        ("max", [1.0, 1.4, 1.6], 1.6),
+    ],
+)
+def test_fit_state_replays_complete_history_with_min_delta(
+    mode: str,
+    values: list[float],
+    best_value: float,
+) -> None:
+    mapping = _fit_state_mapping_for_history(
+        values,
+        mode=mode,
+        min_delta=0.5,
+        best_epoch=3,
+        best_value=best_value,
+        wait=0,
+    )
+
+    restored = TrainingFitState.from_mapping(mapping)
+
+    assert restored.best_epoch == 3
+    assert restored.best_metric_value == best_value
+
+
+def test_fit_state_rejects_best_not_derived_from_complete_history() -> None:
+    mapping = _fit_state_mapping_for_history(
+        [10.0, 9.6, 9.4],
+        mode="min",
+        min_delta=0.5,
+        best_epoch=2,
+        best_value=9.6,
+        wait=1,
+    )
+
+    with pytest.raises(ValueError, match=r"best state.*complete"):
+        TrainingFitState.from_mapping(mapping)
+
+
+def test_fit_state_rejects_history_after_early_stopping_boundary() -> None:
+    mapping = _fit_state_mapping_for_history(
+        [1.0, 2.0, 3.0],
+        mode="min",
+        min_delta=0.0,
+        best_epoch=1,
+        best_value=1.0,
+        wait=2,
+        patience=1,
+        stopped_early=True,
+    )
+
+    with pytest.raises(ValueError, match=r"continues after.*early-stopping"):
+        TrainingFitState.from_mapping(mapping)

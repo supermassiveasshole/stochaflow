@@ -65,6 +65,45 @@ def test_inference_projection_excludes_training_lifecycle_state() -> None:
     assert checkpoint_epoch_and_step(payload) == (3, 17)
 
 
+def test_inference_projection_accepts_legacy_epoch_validation_summary() -> None:
+    legacy_training_loop = {
+        "epoch_validation": {
+            "identity": {
+                "profile_digest": "a" * 64,
+                "metric_keys": ["valid/metrics/fid"],
+                "cadence": {
+                    "first_epoch": 100,
+                    "every_n_epochs": 10,
+                    "include_final": True,
+                },
+            },
+            "last_evaluated_epoch": 200,
+            "last_metrics": {"valid/metrics/fid": 20.0},
+            "off_cadence_final_epochs": [],
+        }
+    }
+    metadata = {
+        "extension_plugins": [],
+        "training_loop": legacy_training_loop,
+    }
+    payload = cast(
+        CheckpointState,
+        {
+            "format_version": CHECKPOINT_FORMAT_VERSION,
+            "config": {"experiment": {"name": "legacy-e200"}},
+            "inference_recipe": None,
+            "metadata": metadata,
+            "model_state_dict": {"weight": torch.ones(1)},
+            "inference_asset_descriptors": {},
+        },
+    )
+
+    projected = project_inference_checkpoint(payload)
+
+    assert projected.get("format_version") == CHECKPOINT_FORMAT_VERSION
+    assert projected.get("metadata") is metadata
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

@@ -53,6 +53,11 @@ is unavailable.
 
 ### Changed
 
+- Versioned the nested epoch-validation strict-resume state independently from
+  outer checkpoint v12. New checkpoints persist every completed result with its
+  epoch, global step, and exact metric surface; unversioned summary-only state
+  now fails strict resume while remaining valid for read-only inference and
+  Evaluation projection.
 - Made ordinary pixel-space AFHQ learned-range-v training the active quality
   closeout. This candidate jointly changes the scale layout and variance head;
   it is not an isolated learned-variance result or an exact epsilon-prediction
@@ -115,9 +120,10 @@ is unavailable.
   `latest.pt`, then an optional numbered checkpoint, before epoch diagnostics,
   logging, and reporting. Directory recovery now retains the furthest
   successfully published epoch boundary after any later publication failure.
-- Persisted every staged off-cadence final validation observation, validated
-  exact monitor/best/patience counters against that history, and normalized only
-  provably unambiguous legacy final state before expanding a resume target.
+- Persisted every interval and staged-final validation result, including its
+  epoch, global step, and exact metrics. Strict resume now replays
+  monitor/best/patience/stopping state from that full history instead of
+  reconstructing observations from cadence summaries.
 - Allowed strict resume from non-due epoch-validation checkpoints whose current
   epoch metrics intentionally omit sparse validation observations, while
   requiring scheduled/evaluated checkpoints to exactly match their persisted

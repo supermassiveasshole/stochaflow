@@ -129,21 +129,20 @@ epoch 都必须存在且 finite。若 monitor 来自 `trainer.validation_evaluat
 旧值、不保存新的 `best.pt`，也不推进 patience。到期运行缺失、非 finite、sample ID 重复或
 strict completeness 不满足时立即失败。
 
-live evaluator 的 profile digest、exact metric keys、cadence、完整 interval/final observation
-history、last evaluated epoch 和最后一组 metrics 属于 checkpoint strict-resume state。
-resume 必须提供相同 identity，且不能跳过已经到期但未完成的 observation。
-`include_final: true` 可以要求目标训练的最后一个 epoch 额外执行一次，即使它不落在
-interval 上。interval observation 由 cadence 推导；每个 staged target 产生的 off-cadence
-final epoch 保存在严格递增且去重的 `off_cadence_final_epochs` 中。
+live evaluator 的 profile digest、exact metric keys、cadence 和完整 interval/final result
+history 属于 checkpoint strict-resume state。`metadata.training_loop.epoch_validation` 使用独立
+`schema_version: 1`，并按 epoch 顺序保存每个 completed result 的 `epoch`、`global_step` 和
+全部声明 metrics。last result、last evaluated epoch、last metrics 和 staged off-cadence final
+都从这一个 `results` authority 派生，不再重复保存 summary 字段。resume 必须提供相同
+identity，不能跳过任何已到期 interval observation；result epoch 严格递增、global step
+单调不下降，selection、patience 和 stopping state 必须能从完整 metrics history 精确重放。
 
-当前 writer 总是显式保存该列表，空历史写为 `[]`，显式 `null` 非法。较早的同格式
-checkpoint 若缺少该字段，只在 history 可无歧义证明时规范化：当 `include_final: true` 且已有
-observation 时，monitor 必须是该 formal Evaluation metric，且 counter 必须精确等于从 interval
-cadence 与可证明的当前 final 重建出的数量。普通 interval 状态只有在 counter 等于 interval
-count 时才等价于空列表；单个 legacy off-cadence final 还必须同时等于 checkpoint epoch 与其
-保存的 target epoch。无法证明是否还有更早 staged final 的旧状态 fail closed。inherited best
-在改写新 target config 前先持久化规范化后的完整历史，因此后续 sibling resume 不会把旧
-final 误判为任意 off-cadence 结果。
+`include_final: true` 可以要求每个 staged target 的最后一个 epoch 额外执行一次，即使它不落
+在 interval 上。这样的 result 留在完整 history 中；扩展后续 target 不会删除或重解释它。
+旧的 unversioned summary-only epoch-validation state 缺少逐 observation metrics/global step，
+因此不能 strict resume，也不会由 counter、best state 或 sibling checkpoint 猜测补齐。外层
+checkpoint 仍是 v12：read-only inference、sampling 和 formal Evaluation 会投影掉 training
+lifecycle state，因而仍可使用这类 checkpoint；只有 strict training resume fail closed。
 
 没有 validation DataLoader 时，Trainer 默认关闭 best tracking，不创建或伪造 best
 metric/epoch/checkpoint；显式请求 best tracking 或 early stopping 会在训练循环开始前失败。
