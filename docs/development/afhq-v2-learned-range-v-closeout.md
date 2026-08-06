@@ -5,9 +5,10 @@
 - Recorded: 2026-08-06
 
 This record tracks the remaining quality gate for the maintained pixel-space
-ADM workflow. The run manifest and published Evaluation bundles are the
-authoritative evidence; training diagnostics in this document are observational
-only.
+ADM workflow. The run manifest, metrics log, and checkpoint selection state are
+the authoritative live-validation evidence; the eventual standalone official
+test publishes the immutable Evaluation bundle. Training diagnostics in this
+document are observational only.
 
 ## Frozen run identity
 
@@ -226,6 +227,55 @@ variance, sample count, split, sampler, step count, CFG, checkpoint, and metric
 provider differences beside every number. It may establish end-to-end product
 quality under disclosed protocols; it must not claim an isolated learned-range,
 topology, or capacity effect.
+
+### Published AFHQ benchmark boundary
+
+The commonly cited StarGAN v2 AFHQ number is not a noise-to-image generation
+benchmark. The accepted paper reports latent-guided FID 16.3 / LPIPS 0.451 and
+reference-guided FID 19.7 / LPIPS 0.432; the official repository's ten-seed
+repeat reports 16.18 +/- 0.15 / 0.4501 +/- 0.0007 and 19.78 +/- 0.01 /
+0.4315 +/- 0.0002, respectively. These values measure 256x256 multi-domain
+image translation, not 128x128 class-conditional generation from noise. See
+the [accepted paper](https://openaccess.thecvf.com/content_CVPR_2020/papers/Choi_StarGAN_v2_Diverse_Image_Synthesis_for_Multiple_Domains_CVPR_2020_paper.pdf)
+and [official reproduction table](https://github.com/clovaai/stargan-v2/blob/master/README.md).
+
+For each of the six directed source-to-target domain pairs, the StarGAN v2
+protocol translates 500 source-domain test images ten times, compares the
+resulting 5,000 fakes with target-domain *training* images, and then averages
+the six FIDs. It uses a project-specific torchvision Inception-v3 pipeline and
+repeats the experiment across ten seeds. The current Stochaflow protocol will
+instead evaluate one frozen EMA checkpoint once, generating 1,467 images from
+noise against the AFHQ-v2 official-test split, reporting pooled and per-class
+TorchMetrics/torch-fidelity FID/KID. The task, conditioning, real-reference
+split, resolution, fake count, aggregation, feature pipeline, repetition, and
+dataset version all differ. The exact translation protocol is documented in
+the [supplement Appendix C](https://openaccess.thecvf.com/content_CVPR_2020/supplemental/Choi_StarGAN_v2_Diverse_CVPR_2020_supplemental.pdf),
+[official evaluation loop](https://github.com/clovaai/stargan-v2/blob/master/metrics/eval.py),
+and [FID implementation](https://github.com/clovaai/stargan-v2/blob/master/metrics/fid.py).
+
+Consequently, StarGAN v2's FID 16.3 (or 16.18 repeat) is historical context,
+not a target line or a numerically rankable comparator for this run. A strict
+comparison would require a separate 256x256 source-conditioned translation
+model and the original six-direction, target-train-reference, 5,000-fake per
+pair, ten-seed evaluation protocol. The original paper used the pre-2021 AFHQ
+release; the official repository notes that AFHQ-v2 changed resampling and file
+format and reduced the dataset from 16,130 to 15,803 images.
+
+The P2 paper is closer in algorithm family but still does not provide a
+comparable benchmark. Its AFHQ experiment is 256x256 *AFHQ-Dogs* single-class
+unconditional generation with a linear beta schedule, epsilon prediction,
+learned-range variance, 2.4 million training images, and 50,000 generated
+samples. Table 1 reports FID and KID (the displayed KID values are scaled by
+1,000): 12.47 / 4.79 for the 1,000-step baseline and 11.55 / 4.10 for P2; at
+250 sampling steps it reports 12.95 / 5.25 and 11.66 / 4.20. See the
+[P2 paper](https://openaccess.thecvf.com/content/CVPR2022/papers/Choi_Perception_Prioritized_Training_of_Diffusion_Models_CVPR_2022_paper.pdf),
+[supplement](https://openaccess.thecvf.com/content/CVPR2022/supplemental/Choi_Perception_Prioritized_Training_CVPR_2022_supplemental.pdf),
+and [official implementation](https://github.com/jychoi118/P2-weighting).
+The present run instead uses AFHQ-v2 cat/dog/wild class conditioning at 128x128,
+cosine, v-prediction plus learned range, DDPM-100, and 900 validation or 1,467
+official-test samples. Its FID therefore must not be ranked against the paper's
+11.55. Those results remain recipe context only and do not reopen the retired
+P2 implementation scope.
 
 ## Scope boundary
 
