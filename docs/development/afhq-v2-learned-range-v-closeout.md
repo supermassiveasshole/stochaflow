@@ -1,6 +1,6 @@
 # AFHQ-v2 Learned-Range-v Closeout
 
-- Status: running; production checkpoint-selection Evaluation begins at epoch 100
+- Status: running; epoch-100 production checkpoint-selection Evaluation verified
 - Scope: AFHQ-v2 128x128, ordinary pixel-space class-conditional generation
 - Recorded: 2026-08-06
 
@@ -129,7 +129,7 @@ are required until epoch 100 completes.
 
 | Epoch | Complete examples | Aggregate FID | Aggregate KID mean | `best.pt` after epoch | Evidence status |
 | ---: | ---: | ---: | ---: | :---: | --- |
-| 100 | pending | pending | pending | pending | pending |
+| 100 | 900 | 31.802366 | 0.003904 | 100 | verified |
 | 110 | pending | pending | pending | pending | pending |
 | 120 | pending | pending | pending | pending | pending |
 | 130 | pending | pending | pending | pending | pending |
@@ -143,6 +143,27 @@ are required until epoch 100 completes.
 
 Do not populate this table from Diagnostics, ordinary validation loss, partial
 sampling, or a different profile.
+
+The epoch-100 Evaluation completed at global step 42,000. Its complete metric
+surface was:
+
+| Scope | FID | KID mean | KID std |
+| --- | ---: | ---: | ---: |
+| aggregate | 31.802366 | 0.003904 | 0.000854 |
+| cat | 32.745491 | 0.008232 | 0.001078 |
+| dog | 70.156059 | 0.025607 | 0.001863 |
+| wild | 22.746731 | 0.004202 | 0.000919 |
+
+The strict 900-example Evaluation returned successfully under the frozen
+profile, after which `best.pt`, `epoch_0100.pt`, and `latest.pt` were published
+in that order. All three are format-v12 epoch-100 / step-42,000 checkpoints,
+contain identical epoch metrics, record the same 12 validation observations,
+and pass the current strict-resume parser. `best.pt` records aggregate FID as a
+lower-is-better monitor with one observation and epoch 100 as the current best.
+The epoch-100 Diagnostic manifest reports `errors: []`; its EMA DDPM-100 and
+DDIM-50 grids are class-correct and free of systematic color noise or visible
+mode collapse. Dog remains the weakest class by a substantial FID margin, so
+the result is an initial selection baseline rather than a final checkpoint.
 
 ## Completion and final-test gate
 
