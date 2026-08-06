@@ -229,6 +229,16 @@ bounded RTX 4090 capacity verification：100,351,366 parameters、micro batch 8 
 accumulation 4、45.17 images/s、10.455 GiB peak reserved memory，25 次 measured updates
 无 non-finite observation。默认五层 ADM 的容量结果不外推给该 candidate。
 
+该外部 schema-v3 report 位于 ignored machine outputs，其文件 SHA-256 为
+`9AD2DE671F2D27A81DC6467DBF45EA2392507A6D1FAC5F694A56C5A53E7C70F4`；report 记录的
+source config SHA-256 为
+`c7867104bb5194130b2b98984e66449d37e36f16a3f4e61f9bcbb18e3e2cfae6`，当前 checked-in
+production YAML SHA-256 为
+`766DB805E9862C2CE24C8B2F90BC133ED0C23A055EBBC19BC79160C30D8D74D6`。两者的
+capacity-critical model、Process、training recipe 与 batch/accumulation 相同，但完整 YAML
+不是 byte-identical；该 report 只作为 candidate capacity evidence，不能冒充当前完整
+production config authority、validation cadence 或 quality evidence。report 本身不进入仓库。
+
 ### A2 — Class-aware AFHQ Evaluation（scope revised，repository contract complete）
 
 原单类别 reproduction lane 已取消，不再新增专用 DataSource、训练 recipe、采样
@@ -243,14 +253,18 @@ class-aware evaluation contract 与回归测试已经通过。RTX 4090 的容量
 operational evidence 已完成；DGX 跨设备复跑与长训练质量结果仍属于后续运行验收，不阻塞
 A0/A1、A2、Metrics 或 main 合并。通用
 Evaluation Operation 已完成 E0 outcome foundation 与 E1 standalone checkpoint
-vertical slice、E2 artifact/offline scoring 与 E3 AFHQ-v2 class-aware quality slice。public
-profile 固定 full official test 493/491/483、pinned EMA、DDIM-50/CFG 2.0、aggregate/per-class
-FID/KID，并发布可 offline replay 的 predictions。
+vertical slice、E2 artifact/offline scoring 与 E3 AFHQ-v2 class-aware quality slice。
+A2 的 `formal-ddim50-cfg2-official-test.yaml` 是历史 fixed-variance v-prediction baseline
+profile：它固定 full official test 493/491/483、pinned EMA、DDIM-50/CFG 2.0、
+aggregate/per-class FID/KID，并发布可 offline replay 的 predictions。A3 当前 candidate
+使用独立的 `formal-ddpm100-cfg2-official-test-learned-range-v.yaml`，固定
+v-prediction + learned-range、DDPM-100/CFG 2.0；它只在 A3 validation 冻结唯一 subject 后
+运行。两份 public profile 不能混称、互换或比较为同一 protocol。
 
-该 profile 当前固定现有 AFHQ production 的 v-prediction recipe；它关闭的是 public
-evaluation 架构/配置 readiness。已退休 weighting recipe 的 controlled A/B 数值、协议与
-解释集中保留在 [`p2-experiment-closeout.md`](p2-experiment-closeout.md)，不再对应 active
-gate、supported recipe 或仓库内 maintained profile。
+A2 关闭的是 public evaluation 架构/配置 readiness，不是 A3 learned-range-v 的质量证据。
+已退休 weighting recipe 的 controlled A/B 数值、协议与解释集中保留在
+[`p2-experiment-closeout.md`](p2-experiment-closeout.md)，不再对应 active gate、supported
+recipe 或仓库内 maintained profile。
 
 ### A3 — Learned-range-v Production-Quality Closeout（Active）
 
