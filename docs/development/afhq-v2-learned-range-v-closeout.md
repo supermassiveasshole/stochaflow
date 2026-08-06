@@ -1,6 +1,6 @@
 # AFHQ-v2 Learned-Range-v Closeout
 
-- Status: running; epoch-130 production checkpoint-selection Evaluation verified
+- Status: running; epoch-140 production checkpoint-selection Evaluation verified
 - Scope: AFHQ-v2 128x128, ordinary pixel-space class-conditional generation
 - Recorded: 2026-08-06
 
@@ -137,7 +137,7 @@ silently approximating missing history.
 | 110 | 900 | 30.408995 | 0.003643 | 110 | verified |
 | 120 | 900 | 29.181736 | 0.003361 | 120 | verified |
 | 130 | 900 | 28.108370 | 0.003002 | 130 | verified |
-| 140 | pending | pending | pending | pending | pending |
+| 140 | 900 | 27.684380 | 0.002869 | 140 | verified |
 | 150 | pending | pending | pending | pending | pending |
 | 160 | pending | pending | pending | pending | pending |
 | 170 | pending | pending | pending | pending | pending |
@@ -237,7 +237,31 @@ and 900 is 0.002005, 0.010548, and 0.064367; these four-example Diagnostic
 measurements are observations only and have no checkpoint-selection authority.
 Training continued normally after publication.
 
-### Interim comparison through epoch 130
+The epoch-140 Evaluation completed at global step 58,800 with the same strict
+900-example profile. Its complete metric surface was:
+
+| Scope | FID | KID mean | KID std |
+| --- | ---: | ---: | ---: |
+| aggregate | 27.684380 | 0.002869 | 0.000801 |
+| cat | 31.386343 | 0.005965 | 0.000834 |
+| dog | 61.335091 | 0.016877 | 0.001506 |
+| wild | 19.323236 | 0.002299 | 0.000671 |
+
+All four FID scopes improved for a fourth consecutive observation. Relative to
+epoch 130, aggregate FID decreased by 0.423990 and aggregate KID mean decreased
+by 0.000132; cat, dog, and wild FID decreased by 0.006004, 1.084682, and
+0.505484. `best.pt` therefore advanced atomically to epoch 140 / step 58,800
+with five complete monitor observations and zero observations without
+improvement. Its top-level 12-key metric surface exactly matches the persisted
+unversioned validation summary. The epoch-140 Diagnostic manifest reports
+`errors: []`; reconstruction and both DDPM-100/DDIM-50 tensor/PNG pairs are
+complete. Both 12-sample grids remain class-correct, diverse, and free of
+systematic hue noise or visible mode collapse. The highest-noise reconstruction
+remains deliberately soft but preserves subject structure. These Diagnostic
+artifacts remain observations only and have no checkpoint-selection authority.
+Training continued normally after publication.
+
+### Interim comparison through epoch 140
 
 Among the retained fixed-variance current-ADM validation candidates (epochs
 160, 180, 183, and 200), epoch 200 has the lowest aggregate FID. Its result is
@@ -247,9 +271,9 @@ It used the same validation data identity, 900-example allocation, EMA, CFG,
 seed, and FID/KID provider parameters, but used fixed variance, DDIM-50, and a
 sampling batch of 30 rather than learned range, DDPM-100, and a batch of 15. Its
 aggregate FID/KID mean was 30.577572 / 0.005761; cat, dog, and wild FID were
-34.594212, 62.956085, and 24.328765. At epoch 130, learned range is numerically
-lower by 2.469202 aggregate FID and 0.002760 KID mean, and its cat, dog, and wild
-FID are lower by 3.201865, 0.536312, and 4.500045. The sampler, topology,
+34.594212, 62.956085, and 24.328765. At epoch 140, learned range is numerically
+lower by 2.893192 aggregate FID and 0.002892 KID mean, and its cat, dog, and wild
+FID are lower by 3.207869, 1.620994, and 5.005529. The sampler, topology,
 variance, and optimizer-budget differences still prevent a strict ranking.
 
 The strongest retained legacy-ADM result is epoch 170 at
