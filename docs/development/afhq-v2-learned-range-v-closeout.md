@@ -165,6 +165,37 @@ DDIM-50 grids are class-correct and free of systematic color noise or visible
 mode collapse. Dog remains the weakest class by a substantial FID margin, so
 the result is an initial selection baseline rather than a final checkpoint.
 
+### Interim comparison at epoch 100
+
+The closest retained fixed-variance current-ADM validation result is epoch 200
+at
+`G:\stochaflow\outputs\afhq-v2\evaluations\current-adm-cosine-v-20260805\validation\epoch_0200`.
+It used the same validation data identity, 900-example allocation, EMA, CFG,
+seed, and FID/KID provider parameters, but used fixed variance, DDIM-50, and a
+sampling batch of 30 rather than learned range, DDPM-100, and a batch of 15. Its
+aggregate FID/KID mean was 30.577572 / 0.005761; cat, dog, and wild FID were
+34.594212, 62.956085, and 24.328765. The learned-range epoch-100 observation is
+therefore numerically close at half the optimizer budget, with lower observed
+KID and lower cat/wild FID but higher aggregate and dog FID. The sampler and
+model-recipe differences prevent a strict ranking.
+
+The strongest retained legacy-ADM result is epoch 170 at
+`G:\stochaflow\outputs\afhq-v2\evaluations\formal\epoch_0170`, with aggregate
+FID/KID mean 30.239530 / 0.005310. It instead used a 300-per-class subset of the
+official test split, DDIM-50, and the older metric profile with KID subset size
+300. It is historical context, not a directly comparable validation result.
+
+The learned-range and current fixed-variance epoch-100 DDIM-50 Diagnostics do
+share EMA, CFG 2.0, seed, step count, and 12-sample class allocation. Their
+common random noise yields closely corresponding scenes, but the retained
+tensors are distinct (MSE 0.015472, cosine similarity 0.950862). Both grids are
+clean and class-correct; the learned-range grid is slightly sharper by visual
+inspection, but 12 Diagnostic examples have no ranking authority. The nearest
+retained legacy grid is epoch 130 and has 30% more optimizer steps, so it is not
+an equal-budget comparison. Learned-range DDPM-100 looks stronger than its own
+DDIM-50 observation, especially for dog, but neither historical baseline has a
+matching DDPM-100 artifact.
+
 ## Completion and final-test gate
 
 Training closes only after the manifest reports `completed` with final epoch
