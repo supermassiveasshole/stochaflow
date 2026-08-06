@@ -367,6 +367,35 @@ def _training_loop_state(
     }
 
 
+def _epoch_validation_loop_state(
+    *,
+    last_evaluated_epoch: int | None,
+) -> dict[str, Any]:
+    monitor = "valid/metrics/distribution/aggregate.fid"
+    kid = "valid/metrics/distribution/aggregate.kid_mean"
+    observed = last_evaluated_epoch is not None
+    state = _training_loop_state(
+        best_epoch=last_evaluated_epoch,
+        best_metric_value=12.5 if observed else None,
+        monitor_observations=1 if observed else 0,
+        monitor=monitor,
+    )
+    state["epoch_validation"] = {
+        "identity": {
+            "profile_digest": "a" * 64,
+            "metric_keys": [monitor, kid],
+            "cadence": {
+                "first_epoch": 100,
+                "every_n_epochs": 10,
+                "include_final": True,
+            },
+        },
+        "last_evaluated_epoch": last_evaluated_epoch,
+        "last_metrics": {monitor: 12.5, kid: 0.125} if observed else {},
+    }
+    return state
+
+
 def _best_payload(
     loop_state: dict[str, Any],
     *,
@@ -411,6 +440,17 @@ def _strict_resume_fields(*, epoch: int, global_step: int) -> CheckpointState:
             "training_loop": _training_loop_state(),
         },
     }
+
+
+def _epoch_validation_resume_fields(
+    *,
+    epoch: int,
+    global_step: int,
+    configured_final_epoch: int = 200,
+) -> CheckpointState:
+    payload = _strict_resume_fields(epoch=epoch, global_step=global_step)
+    payload["config"] = {"trainer": {"num_epochs": configured_final_epoch}}
+    return payload
 
 
 def _checkpoint_metadata(payload: CheckpointState) -> dict[str, Any]:
@@ -1704,7 +1744,7 @@ def test_strict_resume_rejects_non_numeric_epoch_metrics() -> None:
         )
 
 
-def test_strict_resume_requires_monitor_in_current_metrics() -> None:
+def test_strict_resume_requires_dense_monitor_in_current_metrics() -> None:
     payload = _strict_resume_fields(epoch=1, global_step=2)
     metadata = _checkpoint_metadata(payload)
     metadata["training_loop"] = _training_loop_state(
@@ -1712,6 +1752,157 @@ def test_strict_resume_requires_monitor_in_current_metrics() -> None:
     )
 
     with pytest.raises(ValueError, match=r"missing monitor 'valid/loss'"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_epoch", "last_evaluated_epoch"),
+    [(99, None), (101, 100)],
+)
+def test_strict_resume_allows_sparse_monitor_between_epoch_evaluations(
+    checkpoint_epoch: int,
+    last_evaluated_epoch: int | None,
+) -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=checkpoint_epoch,
+        global_step=checkpoint_epoch * 2,
+    )
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=last_evaluated_epoch,
+    )
+
+    epoch, global_step, _ = experiment_runner._parse_strict_resume_state(
+        payload,
+        require_cuda_compatibility=False,
+    )
+
+    assert (epoch, global_step) == (checkpoint_epoch, checkpoint_epoch * 2)
+
+
+def test_strict_resume_requires_scheduled_epoch_validation_state() -> None:
+    payload = _epoch_validation_resume_fields(epoch=100, global_step=200)
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="missing the scheduled observation at epoch 100",
+    ):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_requires_complete_current_epoch_validation_metrics() -> None:
+    monitor = "valid/metrics/distribution/aggregate.fid"
+    payload = _epoch_validation_resume_fields(epoch=100, global_step=200)
+    payload["metrics"] = {monitor: 12.5}
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=100,
+    )
+
+    with pytest.raises(ValueError, match="missing epoch validation key"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_requires_current_epoch_validation_metrics_to_match() -> None:
+    payload = _epoch_validation_resume_fields(epoch=100, global_step=200)
+    payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 11.0,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=100,
+    )
+
+    with pytest.raises(ValueError, match="disagree with epoch validation"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_rejects_stale_metrics_at_non_evaluated_epoch() -> None:
+    payload = _epoch_validation_resume_fields(epoch=101, global_step=202)
+    payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+    }
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=100,
+    )
+
+    with pytest.raises(ValueError, match="contain stale epoch validation key"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_rejects_epoch_validation_state_from_future() -> None:
+    payload = _epoch_validation_resume_fields(epoch=99, global_step=198)
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=100,
+    )
+
+    with pytest.raises(ValueError, match="ahead of the checkpoint epoch"):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
+def test_strict_resume_accepts_evaluated_off_cadence_final_epoch() -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=105,
+        global_step=210,
+        configured_final_epoch=105,
+    )
+    payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=105,
+    )
+
+    epoch, global_step, _ = experiment_runner._parse_strict_resume_state(
+        payload,
+        require_cuda_compatibility=False,
+    )
+
+    assert (epoch, global_step) == (105, 210)
+
+
+def test_strict_resume_rejects_unevaluated_off_cadence_final_epoch() -> None:
+    payload = _epoch_validation_resume_fields(
+        epoch=105,
+        global_step=210,
+        configured_final_epoch=105,
+    )
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=100,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="missing the scheduled observation at epoch 105",
+    ):
         experiment_runner._parse_strict_resume_state(
             payload,
             require_cuda_compatibility=False,

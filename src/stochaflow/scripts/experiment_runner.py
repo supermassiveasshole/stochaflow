@@ -859,6 +859,85 @@ def _checkpoint_epoch_metrics(
     return metrics
 
 
+def _checkpoint_configured_final_epoch(payload: CheckpointState) -> int:
+    """Return the original final epoch frozen into one checkpoint config."""
+
+    config = cast(object, payload.get("config"))
+    if type(config) is not dict:
+        raise TypeError(
+            "strict resume with include_final epoch validation requires "
+            "checkpoint config as an exact mapping"
+        )
+    trainer = cast(dict[object, object], config).get("trainer")
+    if type(trainer) is not dict:
+        raise TypeError(
+            "strict resume with include_final epoch validation requires "
+            "checkpoint config.trainer as an exact mapping"
+        )
+    final_epoch = cast(dict[object, object], trainer).get("num_epochs")
+    if type(final_epoch) is not int or cast(int, final_epoch) <= 0:
+        raise TypeError(
+            "strict resume with include_final epoch validation requires "
+            "checkpoint config.trainer.num_epochs as a positive integer"
+        )
+    return cast(int, final_epoch)
+
+
+def _validate_checkpoint_epoch_validation_metrics(
+    fit_state: TrainingFitState,
+    *,
+    checkpoint_epoch: int,
+    configured_final_epoch: int | None,
+    metrics: dict[str, float],
+) -> None:
+    """Require current metrics to agree with sparse evaluator state."""
+
+    state = fit_state.epoch_validation
+    if state is None:
+        return
+    last_epoch = state.last_evaluated_epoch
+    if last_epoch is not None and last_epoch > checkpoint_epoch:
+        raise ValueError(
+            "strict resume epoch validation state is ahead of the checkpoint "
+            "epoch"
+        )
+    evaluated_now = last_epoch == checkpoint_epoch
+    scheduled_now = state.identity.cadence.is_due(
+        checkpoint_epoch,
+        final_epoch=configured_final_epoch,
+    )
+    if scheduled_now and not evaluated_now:
+        raise ValueError(
+            "strict resume epoch validation state is missing the scheduled "
+            f"observation at epoch {checkpoint_epoch}"
+        )
+
+    declared_keys = set(state.identity.metric_keys)
+    current_keys = declared_keys & set(metrics)
+    if not evaluated_now:
+        if current_keys:
+            raise ValueError(
+                "strict resume non-evaluated checkpoint metrics contain stale "
+                "epoch validation key(s): " + ", ".join(sorted(current_keys))
+            )
+        return
+
+    missing = sorted(declared_keys - current_keys)
+    if missing:
+        raise ValueError(
+            "strict resume evaluated checkpoint metrics are missing epoch "
+            "validation key(s): " + ", ".join(missing)
+        )
+    mismatched = sorted(
+        key for key in declared_keys if metrics[key] != state.last_metrics[key]
+    )
+    if mismatched:
+        raise ValueError(
+            "strict resume checkpoint metrics disagree with epoch validation "
+            "last_metrics for key(s): " + ", ".join(mismatched)
+        )
+
+
 def _parse_strict_resume_state(
     payload: CheckpointState,
     *,
@@ -891,11 +970,26 @@ def _parse_strict_resume_state(
         payload.get("metrics"),
         path="strict resume checkpoint metrics",
     )
+    epoch_validation_state = fit_state.epoch_validation
+    configured_final_epoch = (
+        _checkpoint_configured_final_epoch(payload)
+        if epoch_validation_state is not None
+        and epoch_validation_state.identity.cadence.include_final
+        else None
+    )
+    _validate_checkpoint_epoch_validation_metrics(
+        fit_state,
+        checkpoint_epoch=cast(int, epoch),
+        configured_final_epoch=configured_final_epoch,
+        metrics=metrics,
+    )
     monitor = fit_state.monitor
     if monitor is not None and monitor not in metrics:
-        raise ValueError(
-            f"strict resume checkpoint metrics are missing monitor {monitor!r}"
-        )
+        state = fit_state.epoch_validation
+        if state is None or monitor not in state.identity.metric_keys:
+            raise ValueError(
+                f"strict resume checkpoint metrics are missing monitor {monitor!r}"
+            )
     return cast(int, epoch), cast(int, global_step), rng_state
 
 
