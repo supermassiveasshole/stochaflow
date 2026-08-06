@@ -911,6 +911,11 @@ def _validate_checkpoint_epoch_validation_metrics(
             "strict resume epoch validation state is missing the scheduled "
             f"observation at epoch {checkpoint_epoch}"
         )
+    if evaluated_now and not scheduled_now:
+        raise ValueError(
+            "strict resume epoch validation state contains an unexpected "
+            f"off-cadence observation at epoch {checkpoint_epoch}"
+        )
 
     declared_keys = set(state.identity.metric_keys)
     current_keys = declared_keys & set(metrics)

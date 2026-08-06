@@ -108,7 +108,8 @@ is unavailable.
 - Allowed strict resume from non-due epoch-validation checkpoints whose current
   epoch metrics intentionally omit sparse validation observations, while
   requiring scheduled/evaluated checkpoints to exactly match their persisted
-  metric surface and rejecting stale observations on non-due checkpoints.
+  metric surface, rejecting stale observations, and rejecting claimed
+  evaluations outside the frozen cadence or original final epoch.
 - Propagated an injected RegistryCatalog through epoch validation Evaluation
   builders, MetricEngine construction, and writer-free SamplingBuilder
   execution instead of partially falling back to process-global registries.

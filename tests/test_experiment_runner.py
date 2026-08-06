@@ -1800,6 +1800,27 @@ def test_strict_resume_requires_scheduled_epoch_validation_state() -> None:
         )
 
 
+def test_strict_resume_rejects_evaluated_non_final_off_cadence_epoch() -> None:
+    payload = _epoch_validation_resume_fields(epoch=101, global_step=202)
+    payload["metrics"] = {
+        "valid/metrics/distribution/aggregate.fid": 12.5,
+        "valid/metrics/distribution/aggregate.kid_mean": 0.125,
+    }
+    metadata = _checkpoint_metadata(payload)
+    metadata["training_loop"] = _epoch_validation_loop_state(
+        last_evaluated_epoch=101,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="unexpected off-cadence observation at epoch 101",
+    ):
+        experiment_runner._parse_strict_resume_state(
+            payload,
+            require_cuda_compatibility=False,
+        )
+
+
 def test_strict_resume_requires_complete_current_epoch_validation_metrics() -> None:
     monitor = "valid/metrics/distribution/aggregate.fid"
     payload = _epoch_validation_resume_fields(epoch=100, global_step=200)
