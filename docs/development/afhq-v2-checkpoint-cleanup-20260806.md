@@ -1,10 +1,12 @@
-# AFHQ-v2 checkpoint cleanup pre-deletion audit — 2026-08-06
+# AFHQ-v2 checkpoint cleanup record — 2026-08-06
 
-Status: pending explicit approval for the exact destructive target set below.
-No checkpoint listed in this record has been removed by this cleanup yet.
+Status: completed after explicit approval on 2026-08-06.
+All checkpoint directories listed in this record were permanently removed and
+verified absent. The active learned-range run was outside the target set and
+its checkpoint directory and `latest.pt` remained intact.
 
-This record audits the proposed cleanup of superseded AFHQ-v2 training
-attempts. The retained experiment evidence was verified before any removal:
+This record audits the completed cleanup of superseded AFHQ-v2 training
+attempts. The retained experiment evidence was verified before removal:
 
 - 19/19 runs retained `run_manifest.yaml`, `resolved_config.yaml`,
   `metrics.jsonl`, and `train.log`;
@@ -16,13 +18,14 @@ attempts. The retained experiment evidence was verified before any removal:
 - Evaluation manifests retain the evaluated checkpoint epoch, path, and
   SHA-256 identity.
 
-The proposed cleanup targets 19 `checkpoints` directories containing 236
+The cleanup removed 19 `checkpoints` directories containing 236
 checkpoint files plus one zero-byte interrupted atomic-write temporary file.
 Their logical size was 480,367,477,703 bytes (447.377 GiB). Metrics, manifests,
-logs, diagnostics, samples, prediction artifacts, and Evaluation results would
-be retained. After deletion, these runs could no longer be resumed or re-sampled.
+logs, diagnostics, samples, prediction artifacts, and Evaluation results were
+retained. These runs can no longer be resumed or re-sampled. Immediately after
+verification, the G: volume reported 687.386 GiB available.
 
-Proposed directories:
+Deleted directories:
 
 ```text
 G:\stochaflow\outputs\afhq-v2\acceptance\20260726_214216\checkpoints
