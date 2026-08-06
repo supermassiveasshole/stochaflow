@@ -14,7 +14,10 @@ from stochaflow.processes import DiscreteGaussianProcess
 from stochaflow.training import GaussianDenoisingTrainingStrategy, MSEObjective
 from stochaflow.training.gaussian import GaussianVarianceConfig
 from stochaflow.training.gaussian.loss import GaussianLossComputation
-from stochaflow.training.gaussian.variance import learned_range_log_variance
+from stochaflow.training.gaussian.variance import (
+    _discretized_gaussian_log_likelihood,
+    learned_range_log_variance,
+)
 
 REFERENCE = (
     Path(__file__).parent
@@ -210,6 +213,133 @@ def test_learned_range_vb_detaches_mean_prediction_but_trains_variance() -> None
     assert mean.grad is None or not torch.any(mean.grad)
     assert variance_head.grad is not None
     assert torch.any(variance_head.grad != 0)
+
+
+def _production_v_cosine_hybrid(
+    dtype: torch.dtype,
+) -> tuple[GaussianLossComputation, torch.Tensor, torch.Tensor]:
+    process = DiscreteGaussianProcess(
+        {
+            "name": "cosine_alpha_bar",
+            "params": {
+                "num_timesteps": 1000,
+                "s": 0.008,
+                "max_beta": 0.999,
+            },
+        }
+    )
+    strategy = InspectableGaussianStrategy(
+        PlaceholderDenoiser(),
+        process,
+        MSEObjective("mean"),
+        prediction_type="v",
+        variance=GaussianVarianceConfig(mode="learned_range"),
+    )
+    clean = torch.tensor(
+        [[-0.75, 0.25], [0.5, -0.125], [0.875, -0.625]],
+        dtype=dtype,
+    ).reshape(3, 1, 1, 2)
+    noise = torch.tensor(
+        [[0.5, -0.25], [-0.75, 0.125], [0.375, 0.875]],
+        dtype=dtype,
+    ).reshape_as(clean)
+    state_times = torch.tensor([1, 500, 1000])
+    mean_head = torch.tensor(
+        [[0.125, -0.375], [0.25, 0.625], [-0.5, 0.25]],
+        dtype=dtype,
+    ).reshape_as(clean)
+    mean_head.requires_grad_(True)
+    variance_head = torch.tensor(
+        [[-0.75, 0.5], [0.0, 0.75], [-0.5, 0.25]],
+        dtype=dtype,
+    ).reshape_as(clean)
+    variance_head.requires_grad_(True)
+
+    return (
+        compute_loss(
+            strategy,
+            clean=clean,
+            noise=noise,
+            state_times=state_times,
+            raw_model_output=torch.cat((mean_head, variance_head), dim=1),
+        ),
+        mean_head,
+        variance_head,
+    )
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_production_v_cosine_learned_range_hybrid_is_finite(
+    dtype: torch.dtype,
+) -> None:
+    result, _, _ = _production_v_cosine_hybrid(dtype)
+
+    assert result.per_sample_loss is not None
+    assert result.per_sample_variational_bound is not None
+    assert torch.all(torch.isfinite(result.per_sample_loss))
+    assert torch.all(torch.isfinite(result.per_sample_variational_bound))
+
+
+def test_production_v_cosine_learned_range_hybrid_has_split_gradients() -> None:
+    result, mean_head, variance_head = _production_v_cosine_hybrid(torch.float32)
+    simple_mean = mean_head.detach().clone().requires_grad_(True)
+    simple_loss = (
+        (simple_mean - result.target.detach()).square().flatten(1).mean(dim=1).mean()
+    )
+    (expected_mean_grad,) = torch.autograd.grad(simple_loss, simple_mean)
+
+    result.loss.backward()
+
+    assert mean_head.grad is not None
+    assert variance_head.grad is not None
+    assert torch.all(torch.isfinite(mean_head.grad))
+    assert torch.all(torch.isfinite(variance_head.grad))
+    assert torch.any(mean_head.grad != 0)
+    assert torch.any(variance_head.grad != 0)
+    torch.testing.assert_close(
+        mean_head.grad,
+        expected_mean_grad,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+
+
+def test_decoder_likelihood_handles_exact_pixel_tails() -> None:
+    values = torch.tensor([[-1.0, 0.0, 1.0]], dtype=torch.float64)
+    means = torch.zeros_like(values)
+    log_scales = torch.zeros_like(values)
+
+    actual = _discretized_gaussian_log_likelihood(
+        values,
+        means=means,
+        log_scales=log_scales,
+    )
+    half_bin = 1.0 / 255.0
+    exact_cdf = torch.special.ndtr
+    expected = torch.stack(
+        (
+            torch.log(exact_cdf(values[0, 0] + half_bin)),
+            torch.log(
+                exact_cdf(values[0, 1] + half_bin)
+                - exact_cdf(values[0, 1] - half_bin)
+            ),
+            torch.log1p(-exact_cdf(values[0, 2] - half_bin)),
+        )
+    )
+
+    assert torch.all(torch.isfinite(actual))
+    torch.testing.assert_close(
+        actual[0, 0],
+        actual[0, 2],
+        rtol=0.0,
+        atol=1e-12,
+    )
+    torch.testing.assert_close(
+        actual[0],
+        expected,
+        rtol=0.0,
+        atol=1.2e-3,
+    )
 
 
 def test_learned_range_calls_mse_per_sample_once() -> None:
