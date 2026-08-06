@@ -62,6 +62,8 @@ the current EMA snapshot. The frozen profile is:
 
 - builder: `afhq-v2.class-conditional-generation`;
 - protocol: `afhq-v2-adm-learned-range-v-ddpm100-validation-v1`;
+- persisted live profile digest:
+  `bc9bf92cf2a479a3dcbdee614feb720d0d979d065a8a0ce14ee4d633e1bef42a`;
 - sampling: EMA, DDPM 100, CFG 2.0, clipping enabled, seed 20260726;
 - sample plan: 900 images in batches of 15, exactly 300 for each of cat, dog,
   and wild;
@@ -90,6 +92,10 @@ valid/metrics/distribution/wild.kid_std
 minimized. KID and per-class values are recorded evidence but do not
 independently select a checkpoint. Early stopping is disabled. An epoch outside
 the configured cadence must not reuse a stale observation or update `best.pt`.
+The digest and complete metric surface above were already persisted in the
+format-v12 `latest.pt` strict-resume state before the first due Evaluation;
+`last_evaluated_epoch: null`, empty last metrics, and zero monitor observations
+are required until epoch 100 completes.
 
 | Epoch | Complete examples | Aggregate FID | Aggregate KID mean | `best.pt` after epoch | Evidence status |
 | ---: | ---: | ---: | ---: | :---: | --- |
