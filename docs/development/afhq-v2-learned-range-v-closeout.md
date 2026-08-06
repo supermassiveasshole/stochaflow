@@ -123,10 +123,13 @@ valid/metrics/distribution/wild.kid_std
 minimized. KID and per-class values are recorded evidence but do not
 independently select a checkpoint. Early stopping is disabled. An epoch outside
 the configured cadence must not reuse a stale observation or update `best.pt`.
-The digest and complete metric surface above were already persisted in the
-format-v12 `latest.pt` strict-resume state before the first due Evaluation;
+The frozen launch source persisted the profile digest and complete metric
+surface in an unversioned validation summary before the first due Evaluation;
 `last_evaluated_epoch: null`, empty last metrics, and zero monitor observations
-are required until epoch 100 completes.
+were correct until epoch 100 completed. Under the schema-v1 complete-history
+state, these historical checkpoints remain valid inference and Evaluation
+subjects but intentionally fail current strict training resume rather than
+silently approximating missing history.
 
 | Epoch | Complete examples | Aggregate FID | Aggregate KID mean | `best.pt` after epoch | Evidence status |
 | ---: | ---: | ---: | ---: | :---: | --- |
@@ -158,9 +161,13 @@ surface was:
 The strict 900-example Evaluation returned successfully under the frozen
 profile, after which `best.pt`, `epoch_0100.pt`, and `latest.pt` were published
 in that order. All three are format-v12 epoch-100 / step-42,000 checkpoints,
-contain identical epoch metrics, record the same 12 validation observations,
-and pass the current strict-resume parser. `best.pt` records aggregate FID as a
-lower-is-better monitor with one observation and epoch 100 as the current best.
+contain identical epoch metrics, and record the same 12 validation observations.
+They passed the parser frozen into the launch source and are internally
+consistent with that run's unversioned summary writer. The current schema-v1
+parser intentionally rejects them for strict training resume because they lack
+complete history; inference and formal Evaluation projection remain supported.
+`best.pt` records aggregate FID as a lower-is-better monitor with one observation
+and epoch 100 as the current best.
 The epoch-100 Diagnostic manifest reports `errors: []`; its EMA DDPM-100 and
 DDIM-50 grids are class-correct and free of systematic color noise or visible
 mode collapse. Dog remains the weakest class by a substantial FID margin, so
@@ -232,7 +239,8 @@ Training continued normally after publication.
 
 ### Interim comparison through epoch 130
 
-The closest retained fixed-variance current-ADM validation result is epoch 200
+Among the retained fixed-variance current-ADM validation candidates (epochs
+160, 180, 183, and 200), epoch 200 has the lowest aggregate FID. Its result is
 at
 `G:\stochaflow\outputs\afhq-v2\evaluations\current-adm-cosine-v-20260805\validation\epoch_0200`.
 It used the same validation data identity, 900-example allocation, EMA, CFG,

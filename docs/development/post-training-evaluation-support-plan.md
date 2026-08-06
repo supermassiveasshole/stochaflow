@@ -118,7 +118,7 @@ both”应按三条轴回答：
 | Diagnostic | 训练上下文中的按 cadence probe | 额外 forward/sampling/cache/artifact | 通用 test lifecycle |
 | Prediction/Sampling | 一次推理或生成 | predictions/samples | reference comparison、质量结论 |
 | Evaluation | 一个冻结 subject/data/protocol 的运行 | 推理、metric、measurement、artifact、provenance | 训练更新、搜索建议 |
-| Selection | validation results 上的决策 | 候选、约束、tie-break、选择记录 | test split |
+| Validation comparison | 对同一 protocol 的 validation results 作普通确定性 metric 比较 | subject IDs、primary metric、tie-break 说明 | test split、新 selector runtime |
 | Gate | 对既有 EvaluationResult 应用准入政策 | 阈值、baseline delta、pass/fail | 重算 metric、修改 result |
 | BenchmarkSuite | 多个版本化 EvaluationCase | 固定数据/推理/metric 协议 | 单一万能 metric |
 | Reporter | result 的呈现 | JSON/YAML/Markdown/图表 | 重跑模型、重新解释协议 |
@@ -256,7 +256,7 @@ strict EvaluationConfig
 - predictions 的可重放保存与按 ID join；
 - 1/2/4 NFE 多 case benchmark；
 - latency/peak memory 协议；
-- comparison、selection record、result gate；
+- protocol-compatible comparison、普通 metric 排序说明、result gate；
 - 独立结果目录和可比较 protocol digest。
 
 因此 `Trainer.evaluate_epoch()` 应继续成为 phase evaluation primitive；正式
@@ -400,7 +400,7 @@ checkpoint/bundle/prediction artifact content digest
 - 改变其中任一字段必须产生新的 evaluation/protocol identity，不能覆盖旧结果；
 - operation 只读 subject，不修改 checkpoint、best pointer、EMA 或 training state。
 
-### 5.2 Selection 与 final test 分离
+### 5.2 Checkpoint choice 与 final test 分离
 
 ```text
 periodic/best checkpoints
@@ -1152,7 +1152,7 @@ Reporter 不能：
 - 把不同 protocol digest 的数值画成可直接比较序列而不显式标注；
 - 根据结果修改 gate threshold。
 
-## 12. EvaluationResult、Comparison、Selection 与 Gate
+## 12. EvaluationResult、Comparison、checkpoint choice 与 Gate
 
 ### 12.1 结果模型
 
@@ -1706,7 +1706,7 @@ profile，不要求 pixel 与 latent 两条主线互相等待。
 交付：
 
 - 本计划评审通过；
-- 冻结 Metric/Diagnostic/Evaluation/Selection/Gate 术语；
+- 冻结 Metric/Diagnostic/Evaluation/validation comparison/Gate 术语；
 - immutable public `TrainingRunOutcome` 同时保存完整 final 与 phase-test canonical
   mappings、checkpoint selection 和 artifact paths；
 - training manifest 成功时持久化 completed outcome，training/reporter/logger 失败时不

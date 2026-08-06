@@ -470,10 +470,12 @@ checkpoint 或 completeness。
 不更新 `best.pt`、也不推进 patience；到期 Evaluation 失败、缺 key、非 finite、重复 ID 或
 数量不完整都会 fail closed。`include_final` 可保证目标训练的最终 epoch 额外评估一次。
 
-profile digest、metric keys、cadence、完整的 interval/off-cadence-final observation history、
-last evaluated epoch 和最后一组 metrics 都进入 strict-resume state。interval observation
-由冻结 cadence 推导；每次 staged training 的非 interval final epoch 则以严格递增列表持久化，
-从而精确校验 monitor observation count、best epoch 与 patience。训练内运行不配置
+`metadata.training_loop.epoch_validation` 使用独立的 schema version 1，并持久化每个已完成
+interval/final Evaluation 的 epoch、global step 与完整且精确匹配的 metric keys。last result、
+last evaluated epoch、last metrics 与 off-cadence final 均从完整 history 推导；strict resume
+要求 identity 和 history prefix 精确一致，并重放 monitor、`best.pt`、patience 与 stopped state。
+旧的 unversioned summary state 会拒绝 strict training resume，但仍可用于 inference projection。
+训练内运行不配置
 prediction sink，也不发布 standalone immutable
 result bundle，所以它是选模用 validation evidence，不是 formal benchmark。要从已经存在
 的多个 checkpoints 选一个，只需对每个 subject 运行同一 standalone validation

@@ -356,7 +356,20 @@ def test_afhq_learned_range_recipe_uses_live_validation_evaluation() -> None:
     providers = validation["metrics"][0]["params"]["providers"]
     assert [provider["name"] for provider in providers] == ["kid", "fid"]
     assert all(provider["params"]["antialias"] is True for provider in providers)
-    assert len(validation["metric_keys"]) == 12
+    assert validation["metric_keys"] == [
+        "valid/metrics/distribution/aggregate.fid",
+        "valid/metrics/distribution/aggregate.kid_mean",
+        "valid/metrics/distribution/aggregate.kid_std",
+        "valid/metrics/distribution/cat.fid",
+        "valid/metrics/distribution/cat.kid_mean",
+        "valid/metrics/distribution/cat.kid_std",
+        "valid/metrics/distribution/dog.fid",
+        "valid/metrics/distribution/dog.kid_mean",
+        "valid/metrics/distribution/dog.kid_std",
+        "valid/metrics/distribution/wild.fid",
+        "valid/metrics/distribution/wild.kid_mean",
+        "valid/metrics/distribution/wild.kid_std",
+    ]
     monitor = raw["trainer"]["early_stopping"]["monitor"]
     assert monitor == "valid/metrics/distribution/aggregate.fid"
     assert monitor in validation["metric_keys"]
