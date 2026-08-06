@@ -51,7 +51,6 @@ uv sync --project examples/showcases/afhq-v2 --locked
 stochaflow-afhq-v2-prepare
 stochaflow-afhq-v2-capacity
 stochaflow evaluate
-stochaflow-afhq-v2-evaluate  # historical comparison only
 ```
 
 ### 当前 checkout 的正式 Evaluation 安装契约
@@ -561,10 +560,9 @@ data:
 ```
 
 再次执行 `stochaflow evaluate` 会认证并重放 paired records，不加载 checkpoint、不构造
-model 或原 DataBuilder、不再次采样，也不修改 live producer。旧
-`stochaflow-afhq-v2-evaluate` 与旧
-`experiments/evaluation/ddim50-cfg2-kid-fid.yaml` 只作为历史结果对照；它们不属于当前
-maintained evidence surface，也不提供 compatibility guarantee。
+model 或原 DataBuilder、不再次采样，也不修改 live producer。早期 evaluator 的静态比较
+结果继续保留在仓库归档的开发记录中；可执行的 legacy evaluator 和其私有配置 schema
+已退休。
 
 ## 结果与追溯
 

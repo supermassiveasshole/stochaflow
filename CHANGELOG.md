@@ -98,6 +98,10 @@ is unavailable.
 
 ### Removed
 
+- Removed the legacy AFHQ-v2 evaluator executable, its private configuration and
+  result runtime, and the superseded 900-sample profile. Maintained AFHQ
+  benchmarks now use only the public formal Evaluation operation; static
+  historical comparisons remain development records.
 - Removed the experimental P2 TrainingBuilder/Strategy recipes and their AFHQ
   smoke, profiling, production, selection, and official-test profiles. Their
   completed runs remain documented only as historical development evidence.

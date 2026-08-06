@@ -1283,9 +1283,9 @@ quality。建议：
 
 训练期 diagnostic 只记录日志和 artifact，不能成为 best-checkpoint monitor。若完整
 restore quality 未来需要参与候选选择，应由显式 validation
-`EvaluationResult`/`SelectionRecord` 冻结 subject、data 与 protocol；它不借用 diagnostic
-cadence，也不改变 Training 当前 validation-only monitor 契约。正式 test Evaluation
-永不反向参与 selection。
+Evaluation 冻结 subject、data 与 protocol，再由调用方对 protocol-compatible results 的
+预声明 metric 做普通比较；它不借用 diagnostic cadence、不新增 selector runtime，也不改变
+Training 当前 validation-only monitor 契约。正式 test Evaluation 永不反向参与 selection。
 
 ### 12.3 Consistency profile
 

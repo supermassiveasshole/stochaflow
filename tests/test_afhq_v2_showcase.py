@@ -149,9 +149,6 @@ def test_afhq_showcase_registers_source_and_formal_evaluation_extensions() -> No
         "stochaflow-afhq-v2-capacity": (
             "stochaflow_afhq_v2.tools.capacity:main"
         ),
-        "stochaflow-afhq-v2-evaluate": (
-            "stochaflow_afhq_v2.tools.evaluate:main"
-        ),
     }
     assert declaration["tool"]["setuptools"]["package-data"] == {
         "stochaflow_afhq_v2": ["resources/*.yaml"]

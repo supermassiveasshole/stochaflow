@@ -53,8 +53,9 @@ learned-range-v closeout 或分支合并。
    phase mapping；Evaluation 的治理语义由其显式 purpose/result contract 管理。
 4. **正式 test 只接受一个已经冻结的 subject。**
    test 结果永不反馈到 checkpoint selection、early stopping、HPO suggestion 或
-   pruning。若需要在训练后比较多个 checkpoint，应在 validation split 上生成
-   `SelectionRecord`，再对唯一选中 subject 执行 final test。
+   pruning。若需要在训练后比较多个 checkpoint，应在 validation split 上对每个
+   subject 运行同一 Evaluation，按预先冻结的 metric 与 direction 普通比较，再对唯一
+   选中 subject 执行 final test。
 5. **区分 phase evaluation 与 task-level evaluation。**
    `TrainingStrategy.evaluation_step()` 适合 validation/test loss 和低成本 epoch
    metric；SR 完整 restore、Gaussian 生成、consistency 1/2/4 NFE 曲线、FID/KID
@@ -403,9 +404,9 @@ checkpoint/bundle/prediction artifact content digest
 
 ```text
 periodic/best checkpoints
--> validation evaluation results
--> SelectionPolicy
--> SelectionRecord(frozen subject)
+-> one validation EvaluationResult per checkpoint
+-> ordinary comparison of one declared validation metric
+-> frozen selected subject
 -> exactly one final test evaluation
 ```
 
@@ -690,13 +691,14 @@ protocol:
 
 | purpose | 合法 split | 决策资格 |
 | --- | --- | --- |
-| `selection_candidate` | validation | 产生候选事实；E4 才提供 SelectionPolicy |
+| `selection_candidate` | validation | 产生候选事实；调用方可按冻结 metric 普通比较 |
 | `final_test` | test | 当前只报告；不能 selection/HPO，E4 才提供 gate |
 | `benchmark` | 显式 validation 或 test | 当前只报告；若未来要选模须另跑 `selection_candidate` |
 
-一个 `EvaluationRun` 始终只评估一个 subject。`SelectionPolicy` 消费多个
-`selection_candidate` results；`BenchmarkSuite` 消费/调度多个预声明 cases。这样
-purpose 不会演变成一个让 Runner 按模式执行任务数学的枚举。
+一个 `EvaluationRun` 始终只评估一个 subject。训练后选模由调用方重复运行完全相同的
+validation Evaluation，并对 protocol-compatible results 的冻结 metric 做普通比较；不新增
+selector runtime、registry 或 public contract。`BenchmarkSuite` 消费/调度多个预声明
+cases。这样 purpose 不会演变成一个让 Runner 按模式执行任务数学的枚举。
 
 ### 7.3 Config 中的 Metric declaration
 
@@ -1223,17 +1225,18 @@ Comparison 是既有 results 上的只读操作：
 - comparison result 记录输入 result digests，不覆盖原结果；
 - 不重新运行模型。
 
-### 12.4 Selection
+### 12.4 Checkpoint selection by comparison
 
 训练后若要用完整 restore/generation 质量选择 checkpoint：
 
 ```text
 one EvaluationResult per candidate on validation
--> SelectionPolicy
--> SelectionRecord
+-> compare one declared primary metric and direction
+-> freeze the winning checkpoint subject
 ```
 
-`SelectionPolicy` 可表达：
+这不是另一套 selector runtime。调用方只对 protocol-compatible validation results 做普通、
+确定性的比较。比较输入必须预先冻结：
 
 - primary metric + direction；
 - 绝对约束；
@@ -1251,10 +1254,9 @@ tie-break by latency, then training step
 ```
 
 FID/KID 不应作为 conditional SR 唯一 selection metric，因为它们不能证明输出遵从
-对应 LR input。
-
-`SelectionRecord` 至少记录所有候选 result digest、排除原因、政策、胜者和冻结 subject
-identity。它只接受 validation results；输入包含 test result 时立即失败。
+对应 LR input。若调用方发布 comparison artifact，它应记录候选 result digest、排除原因、
+比较规则、胜者和冻结 subject identity，但该 artifact 不是新的 framework contract。比较
+只能接受 validation results；输入包含 test result 时立即失败。
 
 ### 12.5 Gate
 
@@ -1829,12 +1831,12 @@ promotion-quality evidence 不再是本计划的运行验收或剩余交付；�
 - CM forward count 与 NFE 准确；
 - performance measurement 有 warmup/sync/repeat metadata。
 
-### Stage E4：Comparison、Selection、Gate 与 Suite
+### Stage E4：Comparison、Gate 与 Suite
 
 交付：
 
 - result comparison；
-- validation-only SelectionPolicy/Record；
+- application-owned validation comparison report；
 - absolute/baseline-relative Gate；
 - versioned BenchmarkSuite descriptor；
 - recipe evaluation entries；
@@ -1842,7 +1844,7 @@ promotion-quality evidence 不再是本计划的运行验收或剩余交付；�
 
 退出条件：
 
-- test result 无法进入 SelectionPolicy；
+- test result 无法进入 checkpoint comparison；
 - final test request 无法包含多个候选；
 - incomplete/non-finite result 无法通过默认 gate；
 - 不同 protocol 不能静默比较；
@@ -2017,7 +2019,7 @@ reference-cache 和 gate-fail 项尚属未来范围，不能反向作为当前 A
 | 把 Evaluation 塞进 Diagnostic | 无法独立重跑 checkpoint | 复用底层 provider，不复用 callback 外壳 |
 | 把 Sampling 当 Evaluation | 有图片但无 reference/协议结论 | 独立 operation/result |
 | raw/EMA 混用 | metric 与最终 artifact 不同 subject | resolved weight identity |
-| test 上挑 checkpoint/NFE | 数据泄漏 | SelectionRecord validation-only |
+| test 上挑 checkpoint/NFE | 数据泄漏 | 只比较 protocol-compatible validation results |
 | batch mean 等权 | 不同 batch partition 改变结果 | 显式 num_examples/Metric state |
 | 样本重复或缺失 | FID/PSNR 等正式分数错误 | exact IDs/completeness/fail closed |
 | metric preprocessing 漂移 | 数值不可比较 | protocol digest/versioned profile |

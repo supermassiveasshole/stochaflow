@@ -20,7 +20,6 @@ quality = [
 [project.scripts]
 stochaflow-afhq-v2-prepare = "stochaflow_afhq_v2.tools.prepare:main"
 stochaflow-afhq-v2-capacity = "stochaflow_afhq_v2.tools.capacity:main"
-stochaflow-afhq-v2-evaluate = "stochaflow_afhq_v2.tools.evaluate:main"
 
 [project.entry-points."stochaflow.extensions"]
 stochaflow-afhq-v2 = "stochaflow_afhq_v2.stochaflow_ext"

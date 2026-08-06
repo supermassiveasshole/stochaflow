@@ -68,9 +68,7 @@ Stochaflow。
 
 - `stochaflow-afhq-v2-prepare`；
 - `stochaflow-afhq-v2-capacity`；
-- public `stochaflow evaluate`；
-- legacy `stochaflow-afhq-v2-evaluate` 仅作为历史结果对照，不属于当前 maintained
-  evidence surface，也不提供 compatibility guarantee。
+- public `stochaflow evaluate`。
 
 ### 当前 checkout 的正式 Evaluation 安装契约
 
@@ -537,10 +535,9 @@ data:
 sample plan 重放同一 AFHQ Metric，不加载 checkpoint、不构造模型、不再次执行
 SamplingBuilder 或原 DataBuilder，也不修改 producer artifact。
 
-旧 `stochaflow-afhq-v2-evaluate` 与
-`experiments/evaluation/ddim50-cfg2-kid-fid.yaml` 仅作为历史结果对照；它们不属于当前
-maintained evidence surface，也不提供 compatibility guarantee。新的 benchmark 与报告都
-必须来自 public `stochaflow evaluate`。
+早期 evaluator 的静态比较结果继续保留在仓库归档的开发记录中；可执行的 legacy
+evaluator 和其私有配置 schema 已退休。新的 benchmark 与报告都必须来自 public
+`stochaflow evaluate`。
 
 public runtime 在评估开始前认证稳定 checkpoint snapshot、execution device、quality
 provider 和严格 `DataArtifactBindings`。只有采样、metrics、prediction manifest、result

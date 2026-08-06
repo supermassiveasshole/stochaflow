@@ -849,9 +849,9 @@ subject 必须匹配 profile 固定的 prediction/variance recipe。learned-rang
 half。正式 test 始终只在 validation 选出唯一 checkpoint 后运行一次，不能反向改变
 训练 monitor 或 best checkpoint。
 
-旧 `stochaflow-afhq-v2-evaluate` 与旧
-`experiments/evaluation/ddim50-cfg2-kid-fid.yaml` 只作为历史结果对照；它们不属于当前
-maintained evidence surface，也不提供 compatibility guarantee。
+早期 AFHQ evaluator 的静态比较结果继续保留在仓库归档的开发记录中；可执行的 legacy
+evaluator 和其私有配置 schema 已退休。maintained benchmark 统一使用 public
+`stochaflow evaluate`。
 
 当前 runtime 提供通用 prediction persistence/replay substrate；core FID/KID providers 与上述 AFHQ
 profile 已闭合当前普通像素图像生成的 formal Evaluation vertical slice。SR、consistency、
