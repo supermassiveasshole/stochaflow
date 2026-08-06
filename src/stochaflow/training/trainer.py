@@ -809,10 +809,23 @@ class TrainingFitState:
             raise ValueError(
                 "enabled best tracking requires training_loop.monitor_policy"
             )
-        if best_epoch is not None and observations == 0:
-            raise ValueError(
-                "recorded best state requires at least one monitor observation"
-            )
+        if tracking_enabled and observations == 0:
+            if best_epoch is not None or wait != 0:
+                raise ValueError(
+                    "training_loop with zero monitor observations requires "
+                    "null best state and observations_without_improvement=0"
+                )
+        elif tracking_enabled:
+            if best_epoch is None:
+                raise ValueError(
+                    "training_loop with monitor observations requires complete "
+                    "best state"
+                )
+            if wait >= observations:
+                raise ValueError(
+                    "training_loop observations_without_improvement must be "
+                    "less than monitor_observations"
+                )
         if stopped_early and (
             patience is None or wait < patience
         ):

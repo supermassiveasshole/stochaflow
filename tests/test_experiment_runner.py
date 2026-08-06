@@ -449,6 +449,17 @@ def _best_payload(
         "observations_without_improvement": 0,
         "stopped_early": False,
     }
+    if epoch is None:
+        epoch_validation = loop_state.get("epoch_validation")
+        epoch_validation_keys = (
+            cast(dict[str, Any], epoch_validation)
+            .get("identity", {})
+            .get("metric_keys", [])
+            if isinstance(epoch_validation, dict)
+            else []
+        )
+        if monitor not in epoch_validation_keys:
+            best_snapshot_loop["monitor_observations"] = best_epoch
     return {
         "format_version": CHECKPOINT_FORMAT_VERSION,
         "precision_kind": "fp32",
@@ -464,7 +475,9 @@ def _best_payload(
         "metadata": {
             "extension_plugins": [],
             "checkpoint_kind": "best",
-            "training_loop": best_snapshot_loop,
+            "training_loop": (
+                best_snapshot_loop if epoch is None else deepcopy(loop_state)
+            ),
         },
     }
 
@@ -475,17 +488,24 @@ def _resume_candidate_payload(
     kind: str,
     best_epoch: int,
     best_metric_value: float,
-    observations_without_improvement: int = 0,
+    observations_without_improvement: int | None = None,
     monitor_observations: int | None = None,
     global_step: int | None = None,
 ) -> CheckpointState:
     """Build one strict filename-bound checkpoint candidate for resolver tests."""
 
+    wait = (
+        epoch - best_epoch
+        if observations_without_improvement is None
+        else observations_without_improvement
+    )
     loop_state = _training_loop_state(
         best_epoch=best_epoch,
         best_metric_value=best_metric_value,
-        observations_without_improvement=observations_without_improvement,
-        monitor_observations=monitor_observations,
+        observations_without_improvement=wait,
+        monitor_observations=(
+            epoch if monitor_observations is None else monitor_observations
+        ),
         monitor="valid/loss",
     )
     payload = _best_payload(loop_state, epoch=epoch)
@@ -496,8 +516,15 @@ def _resume_candidate_payload(
         metadata["training_loop"] = loop_state
     elif kind in {"best", "latest"}:
         metadata["checkpoint_kind"] = kind
-        if kind == "latest":
-            metadata["training_loop"] = loop_state
+        metadata["training_loop"] = (
+            {
+                **loop_state,
+                "observations_without_improvement": 0,
+                "stopped_early": False,
+            }
+            if kind == "best"
+            else loop_state
+        )
     else:
         raise ValueError(f"unsupported test checkpoint kind: {kind}")
     return payload
@@ -1465,6 +1492,7 @@ def test_strict_resume_rejects_sibling_best_from_future_epoch(tmp_path):
         best_epoch=1,
         best_metric_value=0.5,
         observations_without_improvement=1,
+        monitor_observations=2,
         monitor="valid/loss",
     )
     future_loop = {
@@ -1524,6 +1552,7 @@ def test_strict_resume_rejects_mismatched_sibling_best_identity(
         best_epoch=1,
         best_metric_value=0.5,
         observations_without_improvement=1,
+        monitor_observations=2,
         monitor="valid/loss",
     )
     candidate_loop = deepcopy(selected_loop)
@@ -1568,7 +1597,7 @@ def test_strict_resume_rejects_mismatched_sibling_best_identity(
         (
             "observations_without_improvement",
             1,
-            "observations_without_improvement=0",
+            "less than monitor_observations",
         ),
         (
             "stopped_early",
@@ -1586,6 +1615,8 @@ def test_strict_resume_rejects_noncanonical_best_snapshot_state(
     loop_state = _training_loop_state(
         best_epoch=1,
         best_metric_value=0.5,
+        observations_without_improvement=1,
+        monitor_observations=2,
         monitor="valid/loss",
     )
     selected = _best_payload(loop_state, epoch=2)
@@ -1621,6 +1652,7 @@ def test_strict_resume_rejects_sibling_from_another_run(
         best_epoch=1,
         best_metric_value=0.5,
         observations_without_improvement=1,
+        monitor_observations=2,
         monitor="valid/loss",
     )
     selected_payload = _best_payload(loop_state, epoch=2)
@@ -1689,6 +1721,7 @@ def test_strict_resume_materializes_matching_sibling_best_in_new_run(tmp_path):
         best_epoch=1,
         best_metric_value=0.5,
         observations_without_improvement=1,
+        monitor_observations=2,
         monitor="valid/loss",
     )
     loaded = SimpleNamespace(
@@ -1916,6 +1949,56 @@ def test_strict_resume_requires_dense_monitor_in_current_metrics() -> None:
         experiment_runner._parse_strict_resume_state(
             payload,
             require_cuda_compatibility=False,
+        )
+
+
+def test_explicit_file_resume_rejects_observations_without_best_state(
+    tmp_path: Path,
+) -> None:
+    payload = _strict_resume_fields(epoch=1, global_step=2)
+    payload["metrics"] = {"valid/loss": 0.5}
+    _checkpoint_metadata(payload)["training_loop"] = _training_loop_state(
+        monitor="valid/loss",
+        monitor_observations=1,
+    )
+
+    with pytest.raises(ValueError, match="requires complete best state"):
+        experiment_runner._preflight_inherited_best(
+            tmp_path / "checkpoint.pt",
+            payload,
+            target_epoch=2,
+        )
+
+
+@pytest.mark.parametrize(
+    ("monitor_observations", "wait", "message"),
+    [
+        (1, 0, "monitor_observations must equal the checkpoint epoch"),
+        (2, 0, "must equal checkpoint_epoch minus best_epoch"),
+        (2, 2, "less than monitor_observations"),
+    ],
+)
+def test_explicit_file_resume_rejects_incomplete_dense_monitor_state(
+    tmp_path: Path,
+    monitor_observations: int,
+    wait: int,
+    message: str,
+) -> None:
+    payload = _strict_resume_fields(epoch=2, global_step=4)
+    payload["metrics"] = {"valid/loss": 0.5}
+    _checkpoint_metadata(payload)["training_loop"] = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        observations_without_improvement=wait,
+        monitor_observations=monitor_observations,
+        monitor="valid/loss",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        experiment_runner._preflight_inherited_best(
+            tmp_path / "checkpoint.pt",
+            payload,
+            target_epoch=3,
         )
 
 
@@ -2196,6 +2279,7 @@ def test_strict_resume_accepts_history_without_selection_authority(
         assert isinstance(policy, dict)
         policy["metric"] = "valid/loss"
         loop_state["best_metric_value"] = 0.5
+        loop_state["monitor_observations"] = 110
         payload["metrics"] = {
             "valid/loss": 0.5,
             "valid/metrics/distribution/aggregate.fid": 12.5,
@@ -2297,6 +2381,7 @@ def test_strict_resume_accepts_complete_history_with_ordinary_monitor() -> None:
         monitor_observations=2,
     )
     loop_state["best_metric_value"] = 0.5
+    loop_state["monitor_observations"] = 105
     policy = loop_state["monitor_policy"]
     assert isinstance(policy, dict)
     policy["metric"] = "valid/loss"
@@ -2444,6 +2529,9 @@ def test_strict_resume_ignores_removed_metric_source_metadata() -> None:
     payload["metrics"] = {"valid/loss": 0.5}
     metadata = _checkpoint_metadata(payload)
     metadata["training_loop"] = _training_loop_state(
+        best_epoch=1,
+        best_metric_value=0.5,
+        monitor_observations=1,
         monitor="valid/loss",
     )
     metadata["metric_sources"] = {
@@ -3092,6 +3180,7 @@ def test_strict_resume_preflights_sibling_best_before_any_run_side_effect(
         best_epoch=1,
         best_metric_value=0.5,
         observations_without_improvement=1,
+        monitor_observations=2,
         monitor="valid/loss",
     )
     selected = _best_payload(loop_state, epoch=2)
@@ -3197,10 +3286,12 @@ def test_strict_resume_preflights_complete_loop_state_before_plugin_activation(
             best_epoch=1,
             best_metric_value=0.5,
             observations_without_improvement=1,
+            monitor_observations=2,
             stopped_early=True,
             monitor="valid/loss",
             early_stopping_patience=1,
         )
+        payload["epoch"] = 2
         payload["metrics"] = {"valid/loss": 0.5}
         metadata["metric_sources"] = {
             "valid/loss": {
@@ -3473,6 +3564,111 @@ def test_resume_directory_prefers_latest_at_equal_or_greater_progress(
     assert payload.get("epoch") == 2
 
 
+def test_resume_directory_rejects_dense_monitor_counter_regression(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    periodic = _resume_candidate_payload(
+        epoch=2,
+        kind="periodic",
+        best_epoch=2,
+        best_metric_value=0.25,
+    )
+    latest = _resume_candidate_payload(
+        epoch=3,
+        kind="latest",
+        best_epoch=2,
+        best_metric_value=0.25,
+        observations_without_improvement=1,
+        monitor_observations=2,
+    )
+    CheckpointManager.save_payload(periodic, checkpoint_dir / "epoch_0002.pt")
+    CheckpointManager.save_payload(latest, checkpoint_dir / "latest.pt")
+
+    with pytest.raises(
+        ValueError,
+        match="monitor_observations must equal the checkpoint epoch",
+    ):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir)
+
+
+def test_resume_directory_rejects_ordinary_best_epoch_regression(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    periodic = _resume_candidate_payload(
+        epoch=2,
+        kind="periodic",
+        best_epoch=2,
+        best_metric_value=0.25,
+    )
+    latest = _resume_candidate_payload(
+        epoch=3,
+        kind="latest",
+        best_epoch=1,
+        best_metric_value=0.5,
+    )
+    CheckpointManager.save_payload(periodic, checkpoint_dir / "epoch_0002.pt")
+    CheckpointManager.save_payload(latest, checkpoint_dir / "latest.pt")
+
+    with pytest.raises(ValueError, match="best_epoch regresses"):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir)
+
+
+def test_resume_directory_rejects_changed_metric_for_same_best_epoch(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    periodic = _resume_candidate_payload(
+        epoch=2,
+        kind="periodic",
+        best_epoch=1,
+        best_metric_value=0.5,
+    )
+    latest = _resume_candidate_payload(
+        epoch=3,
+        kind="latest",
+        best_epoch=1,
+        best_metric_value=0.4,
+    )
+    CheckpointManager.save_payload(periodic, checkpoint_dir / "epoch_0002.pt")
+    CheckpointManager.save_payload(latest, checkpoint_dir / "latest.pt")
+
+    with pytest.raises(ValueError, match="changes without a new best epoch"):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir)
+
+
+def test_resume_directory_rejects_new_best_below_min_delta(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    periodic = _resume_candidate_payload(
+        epoch=2,
+        kind="periodic",
+        best_epoch=1,
+        best_metric_value=0.5,
+    )
+    latest = _resume_candidate_payload(
+        epoch=3,
+        kind="latest",
+        best_epoch=3,
+        best_metric_value=0.45,
+    )
+    for payload in (periodic, latest):
+        state = cast(dict[str, Any], _checkpoint_metadata(payload)["training_loop"])
+        policy = cast(dict[str, Any], state["monitor_policy"])
+        policy["min_delta"] = 0.1
+    CheckpointManager.save_payload(periodic, checkpoint_dir / "epoch_0002.pt")
+    CheckpointManager.save_payload(latest, checkpoint_dir / "latest.pt")
+
+    with pytest.raises(ValueError, match="mode and min_delta"):
+        experiment_runner._resolve_resume_checkpoint(checkpoint_dir)
+
+
 def test_resume_directory_accepts_exact_validation_history_prefix(
     tmp_path: Path,
 ) -> None:
@@ -3590,16 +3786,16 @@ def test_resume_directory_rejects_same_epoch_state_conflict(
         best_metric_value=0.25,
         monitor_observations=2,
     )
-    best = _resume_candidate_payload(
+    periodic = _resume_candidate_payload(
         epoch=2,
-        kind="best",
+        kind="periodic",
         best_epoch=1,
         best_metric_value=0.5,
         observations_without_improvement=1,
         monitor_observations=2,
     )
     CheckpointManager.save_payload(latest, checkpoint_dir / "latest.pt")
-    CheckpointManager.save_payload(best, checkpoint_dir / "best.pt")
+    CheckpointManager.save_payload(periodic, checkpoint_dir / "epoch_0002.pt")
 
     with pytest.raises(ValueError, match="disagree on metrics or training-loop"):
         experiment_runner._resolve_resume_checkpoint(checkpoint_dir.parent)

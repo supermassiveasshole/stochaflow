@@ -215,6 +215,43 @@ def test_epoch_evaluator_metrics_select_and_persist_best_checkpoint(
     }
 
 
+def test_non_due_epoch_preserves_sparse_selection_state_and_best(
+    tmp_path,
+) -> None:
+    trainer = _trainer(tmp_path)
+    evaluator = RecordingEpochValidationEvaluator(
+        identity=_identity(first_epoch=1, every_n_epochs=3),
+        metrics_by_epoch={
+            1: {"valid/metrics/fid": 10.0, "valid/metrics/kid": 0.01},
+        },
+    )
+
+    history = trainer.fit(
+        _loader(),
+        num_epochs=2,
+        show_progress=False,
+        epoch_validation_evaluator=evaluator,
+        early_stopping_monitor="valid/metrics/fid",
+    )
+
+    assert [epoch for epoch, _ in evaluator.calls] == [1]
+    assert "valid/metrics/fid" not in history[1]
+    checkpoint_dir = tmp_path / "checkpoints"
+    best_path = checkpoint_dir / "best.pt"
+    best_payload = CheckpointManager.load_payload(best_path)
+    assert best_payload.get("epoch") == 1
+    best_state = _training_loop_state(best_path)
+    latest_state = _training_loop_state(checkpoint_dir / "latest.pt")
+    for field in (
+        "best_epoch",
+        "best_metric_value",
+        "monitor_observations",
+        "observations_without_improvement",
+    ):
+        assert latest_state[field] == best_state[field]
+    assert latest_state["epoch_validation"] == best_state["epoch_validation"]
+
+
 def test_external_monitor_patience_counts_observations_not_epochs(tmp_path) -> None:
     trainer = _trainer(tmp_path)
     evaluator = RecordingEpochValidationEvaluator(
@@ -832,4 +869,38 @@ def test_fit_state_rejects_history_after_early_stopping_boundary() -> None:
     )
 
     with pytest.raises(ValueError, match=r"continues after.*early-stopping"):
+        TrainingFitState.from_mapping(mapping)
+
+
+@pytest.mark.parametrize(
+    ("best_epoch", "best_value", "observations", "wait", "message"),
+    [
+        (1, 0.5, 0, 0, "zero monitor observations requires null best"),
+        (None, None, 1, 0, "monitor observations requires complete best"),
+        (1, 0.5, 1, 1, "less than monitor_observations"),
+    ],
+)
+def test_fit_state_rejects_impossible_generic_monitor_state(
+    best_epoch: int | None,
+    best_value: float | None,
+    observations: int,
+    wait: int,
+    message: str,
+) -> None:
+    mapping = {
+        "best_epoch": best_epoch,
+        "best_metric_value": best_value,
+        "observations_without_improvement": wait,
+        "monitor_observations": observations,
+        "stopped_early": False,
+        "tracking_enabled": True,
+        "monitor_policy": {
+            "metric": "valid/loss",
+            "mode": "min",
+            "min_delta": 0.0,
+        },
+        "early_stopping_patience": None,
+    }
+
+    with pytest.raises(ValueError, match=message):
         TrainingFitState.from_mapping(mapping)

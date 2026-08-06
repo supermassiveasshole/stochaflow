@@ -664,6 +664,70 @@ def _validate_fit_state_transition(
             "resume checkpoint candidates continue after an early-stopping "
             "boundary"
         )
+    if not before.tracking_enabled:
+        return
+    policy = before.monitor_policy
+    if policy is None:
+        raise ValueError(
+            "resume checkpoint candidates enabled tracking without a monitor "
+            "policy"
+        )
+    if (
+        before_validation is not None
+        and policy.metric in before_validation.identity.metric_keys
+    ):
+        return
+
+    observation_delta = (
+        after.monitor_observations - before.monitor_observations
+    )
+    expected_delta = current.epoch - previous.epoch
+    if observation_delta != expected_delta:
+        raise ValueError(
+            "ordinary validation monitor observations must advance once per "
+            "epoch between resume checkpoint candidates"
+        )
+    before_best_epoch = before.best_epoch
+    after_best_epoch = after.best_epoch
+    before_best_metric = before.best_metric_value
+    after_best_metric = after.best_metric_value
+    if (
+        before_best_epoch is None
+        or after_best_epoch is None
+        or before_best_metric is None
+        or after_best_metric is None
+    ):
+        raise ValueError(
+            "ordinary validation resume checkpoint candidates require complete "
+            "best state"
+        )
+    if after_best_epoch < before_best_epoch:
+        raise ValueError(
+            "ordinary validation best_epoch regresses between resume "
+            "checkpoint candidates"
+        )
+    if after_best_epoch == before_best_epoch:
+        if after_best_metric != before_best_metric:
+            raise ValueError(
+                "ordinary validation best metric changes without a new best "
+                "epoch between resume checkpoint candidates"
+            )
+        return
+    if not previous.epoch < after_best_epoch <= current.epoch:
+        raise ValueError(
+            "ordinary validation new best_epoch must fall after the previous "
+            "checkpoint and through the current checkpoint"
+        )
+    improved = (
+        after_best_metric < before_best_metric - policy.min_delta
+        if policy.mode == "min"
+        else after_best_metric > before_best_metric + policy.min_delta
+    )
+    if not improved:
+        raise ValueError(
+            "ordinary validation new best metric does not satisfy the "
+            "configured mode and min_delta"
+        )
 
 
 def _resolve_resume_directory_checkpoint(
@@ -1324,6 +1388,50 @@ def _validate_checkpoint_epoch_validation_metrics(
         )
 
 
+def _validate_checkpoint_dense_monitor_state(
+    fit_state: TrainingFitState,
+    *,
+    checkpoint_epoch: int,
+) -> None:
+    """Require ordinary validation monitoring to account for every epoch."""
+
+    if not fit_state.tracking_enabled:
+        return
+    monitor = fit_state.monitor
+    if monitor is None:
+        raise ValueError(
+            "strict resume enabled best tracking requires a monitor policy"
+        )
+    epoch_validation = fit_state.epoch_validation
+    if (
+        epoch_validation is not None
+        and monitor in epoch_validation.identity.metric_keys
+    ):
+        return
+    if fit_state.monitor_observations != checkpoint_epoch:
+        raise ValueError(
+            "strict resume ordinary validation monitor_observations must "
+            "equal the checkpoint epoch"
+        )
+    best_epoch = fit_state.best_epoch
+    if best_epoch is None:
+        raise ValueError(
+            "strict resume ordinary validation monitoring requires a best epoch"
+        )
+    if best_epoch > checkpoint_epoch:
+        raise ValueError(
+            "strict resume ordinary validation best_epoch must not exceed "
+            "the checkpoint epoch"
+        )
+    expected_wait = checkpoint_epoch - best_epoch
+    if fit_state.observations_without_improvement != expected_wait:
+        raise ValueError(
+            "strict resume ordinary validation "
+            "observations_without_improvement must equal checkpoint_epoch "
+            "minus best_epoch"
+        )
+
+
 def _parse_strict_resume_state(
     payload: CheckpointState,
     *,
@@ -1374,6 +1482,10 @@ def _parse_strict_resume_state(
             raise ValueError(
                 f"strict resume checkpoint metrics are missing monitor {monitor!r}"
             )
+    _validate_checkpoint_dense_monitor_state(
+        fit_state,
+        checkpoint_epoch=cast(int, epoch),
+    )
     return cast(int, epoch), cast(int, global_step), rng_state
 
 

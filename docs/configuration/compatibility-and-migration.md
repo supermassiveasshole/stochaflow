@@ -129,6 +129,11 @@ epoch 都必须存在且 finite。若 monitor 来自 `trainer.validation_evaluat
 旧值、不保存新的 `best.pt`，也不推进 patience。到期运行缺失、非 finite、sample ID 重复或
 strict completeness 不满足时立即失败。
 
+普通 phase monitor 的 strict-resume state 是逐 epoch 的 dense history：checkpoint epoch 必须
+等于 monitor observation 数，`best_epoch` 不能晚于 checkpoint，wait counter 必须等于二者
+之差。目录恢复还要求较晚 candidate 单调延伸 observation、best epoch 与满足 mode/min-delta
+的 best metric；缺失、倒退或相互矛盾的 sibling 会 fail closed。
+
 live evaluator 的 profile digest、exact metric keys、cadence 和完整 interval/final result
 history 属于 checkpoint strict-resume state。`metadata.training_loop.epoch_validation` 使用独立
 `schema_version: 1`，并按 epoch 顺序保存每个 completed result 的 `epoch`、`global_step` 和
