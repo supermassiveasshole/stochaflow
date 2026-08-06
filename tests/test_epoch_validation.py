@@ -17,7 +17,9 @@ from stochaflow.training import (
     EpochValidationIdentity,
     EpochValidationResult,
     SupervisedTrainingStrategy,
+    TrainEpochEndEvent,
     Trainer,
+    TrainingDiagnostic,
     TrainingPlan,
 )
 from stochaflow.utils.checkpoint import CheckpointManager
@@ -77,6 +79,17 @@ class RecordingEpochValidationEvaluator(EpochValidationEvaluator):
         )
 
 
+class FailingEpochDiagnostic(TrainingDiagnostic):
+    """Fail after observing one configured completed epoch."""
+
+    def __init__(self, fail_epoch: int) -> None:
+        self.fail_epoch = fail_epoch
+
+    def on_train_epoch_end(self, event: TrainEpochEndEvent) -> None:
+        if event.epoch_index == self.fail_epoch:
+            raise RuntimeError("epoch diagnostic failed")
+
+
 def _identity(
     *,
     first_epoch: int = 2,
@@ -99,7 +112,11 @@ def _identity(
     )
 
 
-def _trainer(tmp_path) -> Trainer:
+def _trainer(
+    tmp_path,
+    *,
+    diagnostic: TrainingDiagnostic | None = None,
+) -> Trainer:
     model = ScalarRegressor()
     objective = nn.MSELoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
@@ -112,6 +129,7 @@ def _trainer(tmp_path) -> Trainer:
         ),
         optimizer,
         device="cpu",
+        diagnostics=() if diagnostic is None else (diagnostic,),
         checkpoint_manager=CheckpointManager(
             model=model,
             objective=objective,
@@ -343,6 +361,53 @@ def test_epoch_evaluator_failure_cannot_publish_completed_checkpoints(
     assert not (tmp_path / "checkpoints" / "best.pt").exists()
     assert not (tmp_path / "checkpoints" / "latest.pt").exists()
     assert not (tmp_path / "checkpoints" / "epoch_0001.pt").exists()
+
+
+def test_epoch_diagnostic_failure_follows_due_evaluation_checkpoint_publication(
+    tmp_path,
+) -> None:
+    trainer = _trainer(
+        tmp_path,
+        diagnostic=FailingEpochDiagnostic(fail_epoch=2),
+    )
+    evaluator = RecordingEpochValidationEvaluator(
+        identity=_identity(first_epoch=1, every_n_epochs=1),
+        metrics_by_epoch={
+            1: {"valid/metrics/fid": 20.0, "valid/metrics/kid": 0.02},
+            2: {"valid/metrics/fid": 10.0, "valid/metrics/kid": 0.01},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="epoch diagnostic failed"):
+        trainer.fit(
+            _loader(),
+            num_epochs=2,
+            show_progress=False,
+            epoch_validation_evaluator=evaluator,
+            early_stopping_monitor="valid/metrics/fid",
+        )
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    expected_metrics = {
+        "valid/metrics/fid": 10.0,
+        "valid/metrics/kid": 0.01,
+    }
+    for filename in ("best.pt", "latest.pt", "epoch_0002.pt"):
+        checkpoint = checkpoint_dir / filename
+        payload = CheckpointManager.load_payload(checkpoint)
+        assert payload.get("epoch") == 2
+        metrics = payload.get("metrics")
+        assert isinstance(metrics, dict)
+        assert {
+            key: metrics[key] for key in expected_metrics
+        } == expected_metrics
+        state = _training_loop_state(checkpoint)
+        assert state["best_epoch"] == 2
+        assert state["best_metric_value"] == 10.0
+        assert state["monitor_observations"] == 2
+        assert state["observations_without_improvement"] == 0
+        assert state["epoch_validation"]["last_evaluated_epoch"] == 2
+        assert state["epoch_validation"]["last_metrics"] == expected_metrics
 
 
 def test_epoch_evaluator_rejects_metric_collision_before_checkpointing(

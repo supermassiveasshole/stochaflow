@@ -112,9 +112,9 @@ is unavailable.
   mixed-lineage, inherited-best-only, and multiple-nested-directory candidate
   sets now fail closed.
 - Reordered epoch publication so an improved `best.pt` is followed by
-  `latest.pt`, then an optional numbered checkpoint, before epoch logging and
-  reporting. Directory recovery now retains the furthest successfully published
-  epoch boundary after any later publication failure.
+  `latest.pt`, then an optional numbered checkpoint, before epoch diagnostics,
+  logging, and reporting. Directory recovery now retains the furthest
+  successfully published epoch boundary after any later publication failure.
 - Persisted every staged off-cadence final validation observation, validated
   exact monitor/best/patience counters against that history, and normalized only
   provably unambiguous legacy final state before expanding a resume target.

@@ -2011,10 +2011,6 @@ class Trainer:
                 )
                 if successful_updates > 0:
                     self._step_lr_scheduler("epoch")
-                self._emit_epoch_diagnostics(
-                    epoch_index=epoch,
-                    metrics=epoch_metrics,
-                )
 
                 status = "-"
                 best_observation: dict[str, float] | None = None
@@ -2097,6 +2093,10 @@ class Trainer:
                                 )
                 self._save_latest_checkpoint(epoch, epoch_metrics)
                 self._maybe_save_checkpoint(epoch, epoch_metrics)
+                self._emit_epoch_diagnostics(
+                    epoch_index=epoch,
+                    metrics=epoch_metrics,
+                )
                 history.append(dict(epoch_metrics))
                 with preserve_global_rng_state(self.device):
                     self.logger.log_metrics(
