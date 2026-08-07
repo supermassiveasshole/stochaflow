@@ -1,8 +1,8 @@
 # AFHQ-v2 Learned-Range-v Closeout
 
-- Status: running; epoch-140 production checkpoint-selection Evaluation verified
+- Status: training complete; epoch-190 selected by validation; official test pending
 - Scope: AFHQ-v2 128x128, ordinary pixel-space class-conditional generation
-- Recorded: 2026-08-06
+- Recorded: 2026-08-08
 
 This record tracks the remaining quality gate for the maintained pixel-space
 ADM workflow. The run manifest, metrics log, and checkpoint selection state are
@@ -138,12 +138,12 @@ silently approximating missing history.
 | 120 | 900 | 29.181736 | 0.003361 | 120 | verified |
 | 130 | 900 | 28.108370 | 0.003002 | 130 | verified |
 | 140 | 900 | 27.684380 | 0.002869 | 140 | verified |
-| 150 | pending | pending | pending | pending | pending |
-| 160 | pending | pending | pending | pending | pending |
-| 170 | pending | pending | pending | pending | pending |
-| 180 | pending | pending | pending | pending | pending |
-| 190 | pending | pending | pending | pending | pending |
-| 200 | pending | pending | pending | pending | pending |
+| 150 | 900 | 27.321005 | 0.002778 | 150 | verified |
+| 160 | 900 | 26.583092 | 0.002613 | 160 | verified |
+| 170 | 900 | 26.153811 | 0.002467 | 170 | verified |
+| 180 | 900 | 25.976568 | 0.002438 | 180 | verified |
+| 190 | 900 | 25.757212 | 0.002426 | 190 | verified |
+| 200 | 900 | 25.797792 | 0.002471 | 190 | verified; no improvement |
 
 Do not populate this table from Diagnostics, ordinary validation loss, partial
 sampling, or a different profile.
@@ -261,7 +261,38 @@ remains deliberately soft but preserves subject structure. These Diagnostic
 artifacts remain observations only and have no checkpoint-selection authority.
 Training continued normally after publication.
 
-### Interim comparison through epoch 140
+Epochs 150 through 190 each completed the same strict profile and advanced
+`best.pt`. Epoch 200 completed the required final observation but did not
+improve aggregate FID, so the selected checkpoint correctly remained epoch 190
+/ step 79,800. The selected metric surface was:
+
+| Scope | FID | KID mean | KID std |
+| --- | ---: | ---: | ---: |
+| aggregate | 25.757212 | 0.002426 | 0.000863 |
+| cat | 31.201916 | 0.004289 | 0.000537 |
+| dog | 57.407429 | 0.012291 | 0.001138 |
+| wild | 17.726252 | 0.001825 | 0.000712 |
+
+The final epoch-200 surface was aggregate FID/KID mean 25.797792 / 0.002471,
+with cat, dog, and wild FID 31.661898, 57.183121, and 17.674807. This is a
+small aggregate regression from epoch 190 even though dog and wild continued
+to improve, which is exactly why aggregate validation FID rather than final
+epoch or a Diagnostic observation owns selection.
+
+All 11 scheduled Evaluations from epochs 100 through 200 returned exactly 12
+finite aggregate/per-class FID/KID observations under the 900-example strict
+profile. The completed run manifest records final epoch 200, zero skipped
+optimizer steps, best epoch 190, and `selected_checkpoint_kind: best`.
+`best.pt` is format v12, epoch 190 / step 79,800, and has SHA256
+`CD550951F04604FB6B170FC5B05FE82E8426EC429CEB5DE6D2A1791238FCCDFE`.
+`latest.pt` and `epoch_0200.pt` are format v12 epoch 200 / step 84,000
+snapshots; both preserve all 11 monitor observations, the final validation
+result, and epoch 190 as the selected best. The epoch-200 Diagnostic manifest
+reports `errors: []`; reconstruction and both DDPM-100/DDIM-50 tensor/PNG pairs
+are complete, class-correct, diverse, and free of systematic color noise or
+visible mode collapse.
+
+### Final comparison through epoch 200
 
 Among the retained fixed-variance current-ADM validation candidates (epochs
 160, 180, 183, and 200), epoch 200 has the lowest aggregate FID. Its result is
@@ -271,10 +302,11 @@ It used the same validation data identity, 900-example allocation, EMA, CFG,
 seed, and FID/KID provider parameters, but used fixed variance, DDIM-50, and a
 sampling batch of 30 rather than learned range, DDPM-100, and a batch of 15. Its
 aggregate FID/KID mean was 30.577572 / 0.005761; cat, dog, and wild FID were
-34.594212, 62.956085, and 24.328765. At epoch 140, learned range is numerically
-lower by 2.893192 aggregate FID and 0.002892 KID mean, and its cat, dog, and wild
-FID are lower by 3.207869, 1.620994, and 5.005529. The sampler, topology,
-variance, and optimizer-budget differences still prevent a strict ranking.
+34.594212, 62.956085, and 24.328765. The validation-selected learned-range
+candidate is numerically lower by 4.820360 aggregate FID and about 0.003335 KID
+mean, and its cat, dog, and wild FID are lower by 3.392296, 5.548656, and
+6.602513. The sampler, topology, variance, and optimizer-budget differences
+still prevent a strict ranking.
 
 The strongest retained legacy-ADM result is epoch 170 at
 `G:\stochaflow\outputs\afhq-v2\evaluations\formal\epoch_0170`, with aggregate
