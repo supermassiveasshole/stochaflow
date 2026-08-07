@@ -73,13 +73,13 @@ The former P2 experiment surface was retired after its controlled runs showed
 no verified benefit. It remains only as a development record and is not a
 supported training recipe or active product gate.
 
-## Active Priority
+## Completed Pixel-Space Closeout
 
-### Pixel-space AFHQ learned-range quality closeout
+### AFHQ learned-range quality evidence
 
 The active branch closes ordinary pixel-space image generation with a coherent
-training and validation workflow. The production quality candidate keeps the
-canonical ADM input/output-block graph, cosine Process, v-prediction, and
+training, validation, and final-test workflow. The production quality candidate
+keeps the canonical ADM input/output-block graph, cosine Process, v-prediction, and
 data/optimizer budget, but jointly changes the default five-level
 `[1,1,2,3,4]` / 8x8 model to `[1,2,3,4]` / 16x16 and changes the variance head
 to learned range. It is therefore a topology-and-variance candidate, not an
@@ -96,26 +96,22 @@ Repository merge evidence:
   canonical validation metric keys, strict-resume state, and existing
   `best.pt` monitor integration.
 
-Experiment exit evidence:
+Completed experiment evidence:
 
-- fresh-train the maintained learned-range-v AFHQ recipe from random
-  initialization; no earlier fixed-variance or retired experiment checkpoint is
-  resume-compatible;
-- from epoch 100 through 200, every 10 epochs execute the complete 900-example
-  validation Evaluation using EMA, sampling batches of 15,
-  aggregate/per-class FID and KID, and strict completeness;
-- use validation aggregate FID as the `best.pt` monitor. KID and per-class
-  metrics remain logged validation evidence; diagnostics and test metrics have
-  no selection authority;
-- preserve the evaluation profile digest, metric surface, cadence, complete
-  interval/final observation history, and last completed result across strict
-  resume;
-- after training, run the frozen full 1,467-example official-test Evaluation
-  exactly once for the validation-selected checkpoint and publish its immutable
-  result bundle;
-- compare the learned-range result with the fixed-variance current-ADM and
-  legacy-ADM records under explicitly documented protocol differences. Do not
-  claim quality or architecture superiority without comparable evidence.
+- the maintained learned-range-v AFHQ recipe completed 200 epochs from random
+  initialization with zero skipped optimizer updates;
+- all 11 scheduled 900-example EMA validation Evaluations from epochs 100
+  through 200 completed with aggregate/per-class FID and KID, strict
+  completeness, and a preserved interval/final observation history;
+- validation aggregate FID selected epoch 190 (`best.pt`) at 25.757212, while
+  KID and per-class observations remained evidence without independent
+  selection authority;
+- the frozen EMA/DDPM-100/CFG-2 official-test Evaluation ran exactly once on
+  the selected checkpoint and all 1,467 official-test images, publishing
+  aggregate FID 20.247791 and KID mean 0.002929 with zero missing sample IDs;
+- the learned-range, fixed-variance current-ADM, and legacy-ADM results are
+  recorded with their protocol differences. They establish disclosed
+  end-to-end quality but not an isolated topology or variance effect.
 
 The candidate has its own bounded RTX 4090 evidence: 100,351,366 parameters,
 micro batch 8 / accumulation 4, 45.17 images/s, 10.455 GiB peak reserved memory,
@@ -125,13 +121,13 @@ diagnostics run every 10 epochs with DDPM-100 and DDIM-50, while periodic
 checkpoints are retained every 50 epochs; those diagnostics remain observations
 and have no selection authority.
 
-## After the pixel-space closeout
+## Current Decision Gate
 
-No implementation milestone is currently selected after the learned-range
-pixel-space evidence. Codec/latent diffusion, consistency methods, super-resolution,
-distillation, Stable Diffusion integration, and new algorithm families are
-neither `Next` nor `Planned`; they require a fresh roadmap decision after the
-result is published.
+No implementation milestone is currently selected after the completed
+learned-range pixel-space evidence. Codec/latent diffusion, consistency methods,
+super-resolution, distillation, Stable Diffusion integration, and new algorithm
+families are neither `Next` nor `Planned`; they require a fresh roadmap decision
+after the published result is reviewed.
 
 If one of those tasks is later accepted, its first vertical slice must deliver
 training observability, checkpoint-backed inference, and task-appropriate

@@ -40,6 +40,13 @@ is unavailable.
   learned-range-v head. Its complete validation Evaluation samples 300 examples
   per class every 10 epochs from epoch 100 through 200, in batches of 15, and
   reports aggregate and per-class FID/KID for selecting `best.pt`.
+- Completed that fresh candidate through epoch 200 with zero skipped optimizer
+  updates. Eleven strict 900-example validation Evaluations selected epoch 190
+  at aggregate FID 25.757212; one subsequent frozen 1,467-example official-test
+  Evaluation reported aggregate FID 20.247791 and KID mean 0.002929 with zero
+  missing sample IDs. Historical ADM comparisons retain their disclosed
+  protocol differences and are not treated as isolated variance or topology
+  ablations.
 - Recorded a schema-v3 corrected-topology capacity sweep from an RTX 4090 with
   PyTorch 2.11/CUDA 12.8: four BF16 micro-batch trials, each with 5 warmup and
   25 measured updates, completed with zero non-finite observations.
@@ -58,8 +65,9 @@ is unavailable.
   epoch, global step, and exact metric surface; unversioned summary-only state
   now fails strict resume while remaining valid for read-only inference and
   Evaluation projection.
-- Made ordinary pixel-space AFHQ learned-range-v training the active quality
-  closeout. This candidate jointly changes the scale layout and variance head;
+- Closed ordinary pixel-space AFHQ learned-range-v training, validation
+  selection, and final-test publication. This candidate jointly changes the
+  scale layout and variance head;
   it is not an isolated learned-variance result or an exact epsilon-prediction
   IDDPM reproduction. Future tasks still require an explicit roadmap decision
   and must deliver observability, checkpoint inference, and formal Evaluation

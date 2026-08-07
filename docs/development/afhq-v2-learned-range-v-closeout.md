@@ -1,14 +1,14 @@
 # AFHQ-v2 Learned-Range-v Closeout
 
-- Status: training complete; epoch-190 selected by validation; official test pending
+- Status: complete; epoch-190 validation-selected and official test published
 - Scope: AFHQ-v2 128x128, ordinary pixel-space class-conditional generation
 - Recorded: 2026-08-08
 
-This record tracks the remaining quality gate for the maintained pixel-space
-ADM workflow. The run manifest, metrics log, and checkpoint selection state are
-the authoritative live-validation evidence; the eventual standalone official
-test publishes the immutable Evaluation bundle. Training diagnostics in this
-document are observational only.
+This record closes the maintained pixel-space ADM quality gate. The run
+manifest, metrics log, and checkpoint selection state are the authoritative
+live-validation evidence; the standalone official test publishes the immutable
+final Evaluation bundle. Training diagnostics in this document are
+observational only.
 
 ## Frozen run identity
 
@@ -325,19 +325,39 @@ an equal-budget comparison. Learned-range DDPM-100 looks stronger than its own
 DDIM-50 observation, especially for dog, but neither historical baseline has a
 matching DDPM-100 artifact.
 
-## Completion and final-test gate
+## Completion and official-test result
 
-Training closes only after the manifest reports `completed` with final epoch
-200 and `latest.pt`, `epoch_0200.pt`, the validation-selected `best.pt`, and the
-epoch-200 diagnostic artifacts are complete. The final validation Evaluation
-must contain all 12 observations and strict 900-example completeness evidence.
+The training completion gate passed: the manifest reports `completed` at epoch
+200, `latest.pt` and `epoch_0200.pt` preserve the complete 11-result validation
+history, `best.pt` identifies epoch 190, and the epoch-200 diagnostic artifacts
+are complete. Every validation Evaluation contains all 12 declared observations
+and strict 900-example completeness evidence.
 
-Only then replace the placeholder subject in
+After validation selected epoch 190, the frozen profile in
 `examples/showcases/afhq-v2/experiments/evaluation/formal-ddpm100-cfg2-official-test-learned-range-v.yaml`
-with the exact selected checkpoint. Execute that frozen EMA/DDPM-100/CFG-2
-profile once on all 1,467 official-test images (493 cat, 491 dog, 483 wild) and
-publish its immutable result bundle. Official-test data and metrics must not be
-read or used during checkpoint selection.
+was bound to that exact checkpoint and executed once. The immutable result is
+published at
+`G:\stochaflow\outputs\afhq-v2\evaluations\learned-range-v-ddpm100-cfg2-official-test-20260808`.
+It uses EMA, DDPM-100, CFG 2.0, and all 1,467 official-test images (493 cat,
+491 dog, and 483 wild).
+
+| Scope | FID | KID mean | KID std |
+| --- | ---: | ---: | ---: |
+| Aggregate | 20.247791 | 0.002929 | 0.000890 |
+| Cat | 27.090010 | 0.005950 | 0.001022 |
+| Dog | 45.633183 | 0.012438 | 0.001570 |
+| Wild | 15.047059 | 0.002985 | 0.001247 |
+
+The result records 1,467 expected, observed, and unique sample IDs with zero
+missing IDs. Its protocol digest is
+`866ea390335eb2959d1324626bb446495a2b69ada9f54f0a5d631a641ed41bd8`;
+the subject checkpoint SHA256 is
+`cd550951f04604fb6b170fc5b05fe82e8426ec429ceb5de6d2a1791238fccdfe`;
+and `result.json` has SHA256
+`6e6f0731e9668f2d94873359e23d01447ed33fa3a6ae81e8a34dbcf76cc27f40`.
+The decoded prediction audit is class-correct and diverse, with clean contours
+and texture and no systematic hue noise or visible mode collapse. Official-test
+data and metrics were not read or used during checkpoint selection.
 
 ## Comparison boundary
 
@@ -350,7 +370,7 @@ four-level `[1,2,3,4]` graph, three model outputs, and fixed variance. Both used
 cosine and v-prediction, but their historical diagnostic and post-training
 Evaluation protocols are not the learned-range validation profile above.
 
-Therefore the eventual three-way report must state topology, capacity,
+Therefore the three-way report states topology, capacity,
 variance, sample count, split, sampler, step count, CFG, checkpoint, and metric
 provider differences beside every number. It may establish end-to-end product
 quality under disclosed protocols; it must not claim an isolated learned-range,
