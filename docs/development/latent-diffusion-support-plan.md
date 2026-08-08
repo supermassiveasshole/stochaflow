@@ -368,9 +368,8 @@ stochaflow optional diffusers provider
 diffusers dependency
 ```
 
-`diffusers` 应作为可选 extra，不进入最小 core dependency。Intel macOS
-已经是 deprecated/best-effort target；本 feature 不为其冻结旧版 Diffusers
-或 Torch 组合。
+`diffusers` 应作为可选 extra，不进入最小 core dependency。Intel macOS 不受支持；
+本 feature 不为其冻结旧版 Diffusers 或 Torch 组合。
 
 ## 6. Codec capability
 

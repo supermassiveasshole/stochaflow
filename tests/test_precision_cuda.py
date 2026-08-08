@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -214,11 +213,10 @@ def test_cuda_fp16_scale_underflow_fails_before_false_success() -> None:
         torch.tensor(0.0, dtype=torch.float32),
         torch.tensor(1.0, dtype=torch.float32),
     ).item()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        scaler = torch.cuda.amp.GradScaler(
-            init_scale=minimum_positive_float32,
-        )
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        init_scale=minimum_positive_float32,
+    )
     precision = PrecisionRuntime(
         kind="fp16-mixed",
         device_type="cuda",
@@ -276,12 +274,11 @@ def test_cuda_fp16_scale_underflow_fails_before_false_success() -> None:
     reason="CUDA is unavailable",
 )
 def test_cuda_fp16_scale_growth_counts_as_successful_update() -> None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        scaler = torch.cuda.amp.GradScaler(
-            init_scale=8.0,
-            growth_interval=1,
-        )
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        init_scale=8.0,
+        growth_interval=1,
+    )
     precision = PrecisionRuntime(
         kind="fp16-mixed",
         device_type="cuda",

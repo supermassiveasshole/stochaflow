@@ -7,9 +7,8 @@
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-27
 - 本次排期修订日期：2026-07-29
-- PyTorch 兼容基线：Supported 平台以 `torch>=2.11,<3` 为设计下限；Intel macOS 已是
-  Deprecated / best effort，其 `torch==2.2.2` compatibility lane 保持
-  single-process，不承诺本提案中的 distributed 能力，也不作为设计下限
+- PyTorch 兼容基线：Supported 平台以 `torch>=2.11,<3` 为设计下限；Intel macOS
+  不受支持，也不属于本提案的设计或验收范围
 - 关联计划：
   [正式 Metrics 扩展 API](../api/extensions.md#metrics)、
   [训练后 Evaluation 与 Benchmark](post-training-evaluation-support-plan.md)、
@@ -238,15 +237,15 @@ DTensor，按每参数 dim-0 分片；每次调用形成一个通信组，因此
 
 ### 4.2 首版平台支持
 
-| 能力 | Linux CUDA/NCCL | CPU/Gloo | Windows | MPS | Intel macOS Torch 2.2（Deprecated / best effort） |
-| --- | --- | --- | --- | --- | --- |
-| single | 支持 | 支持 | 支持 | 支持 | best effort（非设计或验收目标） |
-| DDP 单机 | production target | correctness/CI | 探测后决定，不预先承诺 NCCL | 不支持 | 不支持 |
-| DDP 多机 | acceptance target | 测试/调试 | 后置 | 不支持 | 不支持 |
-| replicated sampling | production target | correctness/CI | backend gate 后 | 不支持 | 不支持 |
-| FSDP2 training | production gate 后 | 非生产测试 | 后置 | 不支持 | 不支持 |
-| FSDP2 inference | production gate 后 | 非生产测试 | 后置 | 不支持 | 不支持 |
-| elastic world-size change | 后置 | 后置 | 后置 | 不支持 | 不支持 |
+| 能力 | Linux CUDA/NCCL | CPU/Gloo | Windows | MPS |
+| --- | --- | --- | --- | --- |
+| single | 支持 | 支持 | 支持 | 支持 |
+| DDP 单机 | production target | correctness/CI | 探测后决定，不预先承诺 NCCL | 不支持 |
+| DDP 多机 | acceptance target | 测试/调试 | 后置 | 不支持 |
+| replicated sampling | production target | correctness/CI | backend gate 后 | 不支持 |
+| FSDP2 training | production gate 后 | 非生产测试 | 后置 | 不支持 |
+| FSDP2 inference | production gate 后 | 非生产测试 | 后置 | 不支持 |
+| elastic world-size change | 后置 | 后置 | 后置 | 不支持 |
 
 Runtime 不根据表格猜 capability；启动时检查：
 

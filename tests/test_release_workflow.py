@@ -11,6 +11,10 @@ WORKFLOWS_ROOT = PROJECT_ROOT / ".github" / "workflows"
 WORKFLOW_PATH = PROJECT_ROOT / ".github" / "workflows" / "release.yml"
 TEST_WORKFLOW_PATH = PROJECT_ROOT / ".github" / "workflows" / "tests.yml"
 PROJECT_METADATA_PATH = PROJECT_ROOT / "pyproject.toml"
+REPOSITORY_LOCK_PATHS = (
+    PROJECT_ROOT / "uv.lock",
+    PROJECT_ROOT / "examples" / "showcases" / "afhq-v2" / "uv.lock",
+)
 PUBLIC_TUTORIAL_PATHS = (
     PROJECT_ROOT / "docs" / "tutorials" / "custom-generation-family.md",
     PROJECT_ROOT / "docs" / "tutorials" / "reuse-gaussian-components.md",
@@ -193,6 +197,85 @@ def test_supported_python_314_lanes_pin_the_stable_patch_baseline() -> None:
         ("windows-latest", "3.14.6"),
         ("macos-latest", "3.14.6"),
     }
+
+
+def test_release_matrix_and_dependencies_exclude_intel_macos() -> None:
+    """Do not silently restore the retired Intel macOS compatibility lane."""
+
+    workflow = yaml.load(
+        TEST_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert isinstance(workflow, dict)
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    test_job = jobs["test"]
+    assert isinstance(test_job, dict)
+    strategy = test_job["strategy"]
+    assert isinstance(strategy, dict)
+    matrix = strategy["matrix"]
+    assert isinstance(matrix, dict)
+    entries = matrix["include"]
+    assert isinstance(entries, list)
+    assert all(
+        not isinstance(entry, dict) or entry.get("os") != "macos-15-intel"
+        for entry in entries
+    )
+
+    metadata = tomllib.loads(PROJECT_METADATA_PATH.read_text(encoding="utf-8"))
+    project = metadata["project"]
+    assert isinstance(project, dict)
+    dependencies = project["dependencies"]
+    assert isinstance(dependencies, list)
+    assert not any(
+        "sys_platform == 'darwin'" in item
+        and "platform_machine == 'x86_64'" in item
+        for item in dependencies
+    )
+    uv_settings = metadata["tool"]["uv"]
+    assert isinstance(uv_settings, dict)
+    required_environments = uv_settings["required-environments"]
+    assert isinstance(required_environments, list)
+    assert not any(
+        "sys_platform == 'darwin'" in marker
+        and "platform_machine == 'x86_64'" in marker
+        for marker in required_environments
+    )
+
+    showcase_metadata = tomllib.loads(AFHQ_METADATA_PATH.read_text(encoding="utf-8"))
+    showcase_environments = showcase_metadata["tool"]["uv"]["environments"]
+    assert isinstance(showcase_environments, list)
+    assert set(showcase_environments) == {
+        "sys_platform == 'linux'",
+        "sys_platform == 'win32'",
+        "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    }
+
+    retired_packages = {
+        ("numpy", "1.26.4"),
+        ("torch", "2.2.2"),
+        ("torchvision", "0.17.2"),
+    }
+    for lock_path in REPOSITORY_LOCK_PATHS:
+        lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+        markers = (
+            *lock.get("resolution-markers", []),
+            *lock.get("required-markers", []),
+            *lock.get("supported-markers", []),
+        )
+        assert not any(
+            "sys_platform == 'darwin'" in marker
+            and "platform_machine == 'x86_64'" in marker
+            for marker in markers
+        ), lock_path
+        packages = lock["package"]
+        assert isinstance(packages, list)
+        locked_identities = {
+            (package.get("name"), package.get("version"))
+            for package in packages
+            if isinstance(package, dict)
+        }
+        assert locked_identities.isdisjoint(retired_packages), lock_path
 
 
 def test_public_release_references_match_project_version() -> None:

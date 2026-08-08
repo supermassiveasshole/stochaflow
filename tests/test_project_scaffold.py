@@ -154,7 +154,7 @@ def test_create_project_writes_deterministic_installable_distribution(
     stochaflow_version = str(Version(metadata.version("stochaflow")))
     assert project["project"]["dependencies"] == [
         _release_wheel_requirement(stochaflow_version),
-        "torch>=2.2,<3",
+        "torch>=2.11,<3",
     ]
     stochaflow_requirement = Requirement(project["project"]["dependencies"][0])
     assert stochaflow_requirement.name == "stochaflow"

@@ -63,6 +63,8 @@ is unavailable.
 
 ### Changed
 
+- Raised extension-project Torch declarations to the package-wide 2.11 minimum
+  and migrated FP16 scaling/checkpoint identity to `torch.amp.GradScaler`.
 - Moved checkpoint inference-asset reconstruction into the shared `inference`
   layer and the reusable epoch Evaluation adapter into `training`, preserving
   sampling as a downstream consumer and `scripts` as operation entry points.
@@ -112,6 +114,8 @@ is unavailable.
 
 ### Removed
 
+- Removed the Intel macOS dependency pins, CI lane, and runtime test exception;
+  macOS x86_64 is no longer a supported or best-effort target.
 - Removed the legacy AFHQ-v2 evaluator executable, its private configuration and
   result runtime, and the superseded 900-sample profile. Maintained AFHQ
   benchmarks now use only the public formal Evaluation operation; static

@@ -7,7 +7,6 @@ import json
 import math
 import pickle
 import random
-import warnings
 from collections import OrderedDict
 from copy import deepcopy
 from pathlib import Path
@@ -339,24 +338,14 @@ def _module_tensor_identity_and_version_snapshot(
     return snapshot
 
 
-def _cuda_grad_scaler(*, initial_scale: float = 65_536.0) -> torch.cuda.amp.GradScaler:
-    # PyTorch <= 2.2 imports this probe into grad_scaler; newer releases look it
-    # up through common. Patch both call sites so CPU-only CI exercises enabled
-    # scaler checkpoint semantics instead of PyTorch's CUDA availability policy.
-    with (
-        patch(
-            "torch.cuda.amp.common.amp_definitely_not_available",
-            return_value=False,
-        ),
-        patch(
-            "torch.cuda.amp.grad_scaler.amp_definitely_not_available",
-            return_value=False,
-            create=True,
-        ),
-        warnings.catch_warnings(),
+def _cuda_grad_scaler(*, initial_scale: float = 65_536.0) -> torch.amp.GradScaler:
+    # Patch CUDA availability so CPU-only CI can exercise enabled scaler
+    # checkpoint semantics without requiring an accelerator.
+    with patch(
+        "torch.cuda.amp.common.amp_definitely_not_available",
+        return_value=False,
     ):
-        warnings.simplefilter("ignore", FutureWarning)
-        return torch.cuda.amp.GradScaler(init_scale=initial_scale)
+        return torch.amp.GradScaler("cuda", init_scale=initial_scale)
 
 
 def _inference_asset_descriptors() -> dict[str, InferenceAssetDescriptor]:
@@ -521,7 +510,7 @@ def test_non_fp16_checkpoints_forbid_scaler_state(
     assert "grad_scaler_class" not in state
     assert "grad_scaler_state_dict" not in state
 
-    state["grad_scaler_class"] = "torch.cuda.amp.grad_scaler.GradScaler"
+    state["grad_scaler_class"] = "torch.amp.grad_scaler.GradScaler"
     state["grad_scaler_state_dict"] = {}
     with pytest.raises(ValueError, match="cannot contain GradScaler field"):
         manager.restore_payload(state, path="unexpected-scaler.pt")
@@ -529,9 +518,23 @@ def test_non_fp16_checkpoints_forbid_scaler_state(
 
 def test_checkpoint_manager_rejects_invalid_runtime_scaler_topology() -> None:
     scaler = _cuda_grad_scaler()
+    legacy_scaler = object.__new__(torch.cuda.amp.GradScaler)
+    cpu_scaler = torch.amp.GradScaler("cpu")
 
     with pytest.raises(ValueError, match=r"fp16-mixed.*requires a GradScaler"):
         CheckpointManager(nn.Linear(1, 1), precision_kind="fp16-mixed")
+    with pytest.raises(TypeError, match=r"must be torch\.amp\.GradScaler"):
+        CheckpointManager(
+            nn.Linear(1, 1),
+            precision_kind="fp16-mixed",
+            grad_scaler=legacy_scaler,
+        )
+    with pytest.raises(ValueError, match="GradScaler must target CUDA"):
+        CheckpointManager(
+            nn.Linear(1, 1),
+            precision_kind="fp16-mixed",
+            grad_scaler=cpu_scaler,
+        )
     with pytest.raises(ValueError, match=r"fp32.*cannot use a GradScaler"):
         CheckpointManager(
             nn.Linear(1, 1),
@@ -663,9 +666,7 @@ def test_fp16_scaler_save_load_round_trip(tmp_path: Path) -> None:
 
     payload = CheckpointManager.load_payload(checkpoint)
     assert payload.get("precision_kind") == "fp16-mixed"
-    assert payload.get("grad_scaler_class") == (
-        "torch.cuda.amp.grad_scaler.GradScaler"
-    )
+    assert payload.get("grad_scaler_class") == "torch.amp.grad_scaler.GradScaler"
     assert payload.get("grad_scaler_state_dict") == source_scaler.state_dict()
 
     target_model = nn.Linear(1, 1)

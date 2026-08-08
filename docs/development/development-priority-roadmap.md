@@ -432,7 +432,7 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 | [Data Artifact Producer Lifecycle](data-artifact-producer-lifecycle-refactor.md) | Done | B0 maintenance | 当前 follow-up 通过验证 | 作为 prepared posterior 基座，不重开 lifecycle |
 | [Data Layer Composition Boundary](data-layer-composition-boundary-review.md) | Done | Base | 已实施 | image-backed 与 prepared-backed 使用两个 recipe-level Builder |
 | [Sampling Request Config Refactor](sampling-request-config-refactor.md) | Superseded by C1 | Done | Hydra C1 | 仅保留为历史记录，不维持 v10/v11 dual authority |
-| [Legacy Intel macOS Lifecycle](legacy-intel-macos-pytorch-test-lifecycle.md) | Done | Maintenance | 无 | Deprecated / best effort，不约束新 codec/DiT |
+| [Legacy Intel macOS Lifecycle](legacy-intel-macos-pytorch-test-lifecycle.md) | Retired | Removed | 无 | CI lane、依赖 pins 与 runtime skip 已删除；Intel macOS 不受支持 |
 | [Gaussian loss 与 ADM topology](../../ARCHITECTURE.md) | Core implemented；A3 experiment active | Priority P2 | live validation merge -> fresh learned-range-v run -> official test | Retired weighting recipe 已移除；当前只闭合 learned-range-v 与 FID-selected best checkpoint，不是 latent implementation |
 | [Latent Diffusion](latent-diffusion-support-plan.md) | Post-A3 re-decision candidate | Unscheduled | A3 evidence published -> root roadmap decision | 不属于当前分支；不得把 branch merge 解释为自动启动 L0–L3 |
 | [Hydra Configuration Migration](hydra-configuration-composition-migration-plan.md) | Split；C0/C1 Done；remainder unscheduled | Later | A3 后与 codec/latent 一并重排 | plain-authority cutover 已关闭；H0-H3/H4 均不进入当前分支 |
@@ -514,7 +514,7 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 - 不为 Dataset/Sampler/DataLoader 建立通用 YAML graph；
 - 不用通用 `_target_`、`class_name` 或任意 dotted import path 表达 Torch 能力；
 - 不因 DGX Spark 容量较大而提前引入 distributed；
-- 不让 Deprecated Intel macOS lane 决定 Diffusers、DiT 或 quality dependency。
+- 不为 unsupported Intel macOS 恢复 dependency、CI 或 runtime 兼容路径。
 
 ## 7. 建议提交切片
 

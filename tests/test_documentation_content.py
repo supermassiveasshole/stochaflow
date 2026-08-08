@@ -175,6 +175,9 @@ def test_platform_policy_documents_the_python_314_patch_baseline() -> None:
     assert "3.14.0" in policy
     assert "3.14.4" in policy
     assert "从 3.14.5 起恢复" in policy
+    assert "Intel" in policy
+    assert "不受支持" in policy
+    assert "Deprecated / best effort" not in policy
 
 
 def test_maintained_examples_publish_grounded_results() -> None:

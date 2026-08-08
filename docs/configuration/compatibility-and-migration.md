@@ -63,7 +63,9 @@ checkpoint 不能 strict resume，也不能作为 `stochaflow sample` 的输入�
   module state；
 - optimizer/scheduler 的 concrete class identity 与 state；
 - EMA runtime shadows 与可直接推理的 EMA model projection；
-- `precision_kind`，以及仅在 `fp16-mixed` 时存在的 GradScaler class/state；
+- `precision_kind`，以及仅在 `fp16-mixed` 时存在的
+  `torch.amp.GradScaler("cuda")` class/state；旧 `torch.cuda.amp` class identity
+  不属于当前 v12 contract；
 - 始终存在的 typed `inference_asset_descriptors` mapping；没有外部推理资产时为 `{}`；
 - 始终存在的 `inference_recipe`；`null` 表示不支持 checkpoint-backed inference，
   否则严格保存 `{schema_version: 1, name, contract}`；

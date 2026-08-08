@@ -175,8 +175,7 @@ checkpoint：FID **25.7572**。冻结后的一次 full official-test Evaluation 
 - [架构说明](https://github.com/supermassiveasshole/stochaflow/blob/main/ARCHITECTURE.md)：
   稳定所有权、依赖方向与组合边界。
 - [框架概览与当前能力](framework.md)：当前内置能力、工作流和 extension 心智模型。
-- [平台支持政策](platform-support.md)：Supported、Deprecated / best effort 等级和
-  当前 CI 验证矩阵。
+- [平台支持政策](platform-support.md)：当前 Supported CI 矩阵和明确排除项。
 - [配置手册](configuration/index.md)：从最小 YAML 到多源数据、K-fold、自定义组件、
   训练恢复、checkpoint evaluation 与排错。
 - [完整字段参考](configuration/reference.md)：由 dataclass、Registry 和 CLI 自动生成。

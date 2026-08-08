@@ -1,18 +1,15 @@
 # Legacy Intel macOS PyTorch Test Lifecycle
 
 - 文档性质：已实施的开发决策记录；不属于公开 API
-- 状态：Implemented
-- 统一排期：
-  [Development Priority Roadmap](development-priority-roadmap.md)；仅维护
-  Deprecated / best-effort lane，不进入新能力设计关键路径
+- 状态：Retired；兼容 lane、依赖 pins 与运行时 skip 已于 2026-08-08 移除
+- 统一排期：[Development Priority Roadmap](development-priority-roadmap.md)；不再维护
 - 日期：2026-07-28
-- 平台支持等级：Deprecated / best effort
-- 适用范围：`macos-15-intel`、Python 3.12、PyTorch 2.2.2 transitional
-  best-effort CI lane
+- 平台支持等级：Unsupported
+- 适用范围：仅记录已删除的 `macos-15-intel` / PyTorch 2.2.2 历史验证路径
 
-Intel macOS 已进入逐步退出支持的迁移期。当前 dependency pins 和 CI lane 仅用于
-best-effort 兼容性观察，不再表示完整支持，也不要求未来 framework capability 为该
-平台增加专用适配。公开定义以[平台支持政策](../platform-support.md)为准。
+Intel macOS 的迁移期已经结束。当前源码、dependency metadata 与 CI 均不再包含该
+平台的专用兼容路径，也不要求 framework capability 为其增加适配。公开定义以
+[平台支持政策](../platform-support.md)为准；下文只保留移除前问题与决策的历史记录。
 
 ## 1. 触发问题
 
@@ -76,7 +73,7 @@ CI 继续保留：
 guard 的自测只使用 deterministic process doubles。它不再为了测试 cleanup state
 machine 而创建真实 `spawn`/resource tracker。
 
-### 2.3 明确 deprecated legacy 平台例外
+### 2.3 当时的 deprecated legacy 平台例外
 
 曾实现过一项只在 Intel macOS + PyTorch 2.2.x 运行的 fresh-interpreter regression：
 它在独立 POSIX session 中执行 `num_workers=1, persistent_workers=False` 的同一
@@ -92,7 +89,7 @@ worker-count case，并设置 60 秒上限。实际 CI 结果是：
 interpreter lifecycle。保留一个必然失败的 isolated regression，或通过 `os._exit(0)`
 强制变绿，都没有价值。
 
-最终只在以下精确组合跳过 multi-worker runtime case：
+迁移期最终只在以下精确组合跳过 multi-worker runtime case：
 
 ```text
 sys.platform == "darwin"
@@ -101,16 +98,16 @@ torch.__version__.startswith("2.2.")
 ```
 
 Ubuntu、Windows 和 ARM macOS 继续执行完整 `num_workers=1`、双 epoch deterministic
-contract。Intel macOS 仍执行 loader construction 和
-`persistent_workers=True` 参数透传测试，但不启动 DataLoader worker。
+contract。Intel macOS 当时仍执行 loader construction 和
+`persistent_workers=True` 参数透传测试，但不启动 DataLoader worker；这些 skip 现已删除。
 
-保留 Intel CI job 是迁移期观测手段，而不是 Supported 等级承诺。该 job 可以继续暴露
-不涉及已知上游缺口的 framework 回归；它不要求把缺失的 multi-worker lifecycle
-重新实现到 Stochaflow 内，也不阻止未来通过独立变更移除整个 compatibility lane。
+保留 Intel CI job 曾是迁移期观测手段，而不是 Supported 等级承诺。该 job 用于暴露
+不涉及已知上游缺口的 framework 回归；2026-08-08 已连同整个 compatibility lane
+移除。
 
 ## 3. 边界与取舍
 
-- 这是 deprecated / best-effort dependency compatibility lane 的测试策略，不改变
+- 这是已删除的 dependency compatibility lane 的历史测试策略，不改变
   DataLoader public config，也不在 framework runtime 中调用 PyTorch 私有
   `_shutdown_workers()`。
 - production config 仍可选择 `persistent_workers: true`；该选项的具体 worker lifecycle
@@ -119,9 +116,8 @@ contract。Intel macOS 仍执行 loader construction 和
 - session guard 只承诺管理 `multiprocessing.active_children()` 返回的普通 child；
   resource tracker 和 PyTorch native manager 不在该保证内，不能假装 guard 能观察或
   可移植地终止它们。
-- 精确 platform/version skip 比全局禁用 multi-worker 测试更窄；依赖升级后条件自然
-  失效。若该 transitional lane 届时仍保留，新版本会重新执行真实 runtime case 以提供
-  回归信号，但这不会恢复 Supported 等级。
+- 精确 platform/version skip 曾比全局禁用 multi-worker 测试更窄；该 skip 已随
+  transitional lane 一起删除，当前支持矩阵重新执行真实 runtime case。
 - hard timeout 是未知退出问题的最后 failure bound，不是通过条件。
 
 ## 4. 验收

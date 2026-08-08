@@ -475,8 +475,7 @@ uv build
 ```
 
 Supported validation targets are Linux x86_64, Windows x86_64, and macOS arm64.
-Intel macOS is **Deprecated / best effort** and retains a transitional pinned
-dependency path; it must not be assumed to support every current feature. The
+Intel macOS is unsupported and has no dependency or CI compatibility lane. The
 source checkout routes Windows GPU dependencies through PyTorch's CUDA 12.8
 wheel index. See the [platform support policy](docs/platform-support.md) for the
 current Python and CI matrix.

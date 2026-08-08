@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import warnings
 from contextlib import nullcontext
 from typing import Literal, cast
 
@@ -28,17 +27,8 @@ def _usable_grad_scale(value: object, *, path: str) -> float:
     return scale
 
 
-def _cuda_grad_scaler() -> torch.cuda.amp.GradScaler:
-    # The unified torch.amp.GradScaler constructor is unavailable in the
-    # supported PyTorch 2.2 line. Keep the compatible constructor without
-    # surfacing its newer-version deprecation warning.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"`torch\.cuda\.amp\.GradScaler",
-            category=FutureWarning,
-        )
-        return torch.cuda.amp.GradScaler()
+def _cuda_grad_scaler() -> torch.amp.GradScaler:
+    return torch.amp.GradScaler("cuda")
 
 
 class PrecisionRuntime:
@@ -50,7 +40,7 @@ class PrecisionRuntime:
         kind: PrecisionKind,
         device_type: str,
         autocast_dtype: torch.dtype | None,
-        grad_scaler: torch.cuda.amp.GradScaler | None,
+        grad_scaler: torch.amp.GradScaler | None,
     ) -> None:
         if kind not in PRECISION_KINDS:
             raise ValueError(f"unsupported precision kind: {kind!r}")
@@ -62,13 +52,12 @@ class PrecisionRuntime:
                 "automatic precision supports only cpu, cuda, and mps devices"
             )
         scaler_value = cast(object, grad_scaler)
-        if scaler_value is not None and not isinstance(
-            scaler_value,
-            torch.cuda.amp.GradScaler,
-        ):
+        if scaler_value is not None and type(scaler_value) is not torch.amp.GradScaler:
             raise TypeError(
-                "precision grad_scaler must be torch.cuda.amp.GradScaler or None"
+                "precision grad_scaler must be torch.amp.GradScaler or None"
             )
+        if scaler_value is not None and getattr(scaler_value, "_device", None) != "cuda":
+            raise ValueError("precision GradScaler must target CUDA")
         if kind == "fp32":
             if autocast_dtype is not None or grad_scaler is not None:
                 raise ValueError("fp32 precision cannot use autocast or a GradScaler")

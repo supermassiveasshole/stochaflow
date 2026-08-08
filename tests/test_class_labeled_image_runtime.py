@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import platform
 import random
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +24,6 @@ from stochaflow.data.image_contracts import (
 from stochaflow.data.recipe_config import LoaderRecipeConfig
 from stochaflow.data.samplers import EpochTaggedIndexSampler
 from stochaflow.data.transforms import ImageTransform
-
-LEGACY_INTEL_MACOS_TORCH_22 = (
-    sys.platform == "darwin"
-    and platform.machine() == "x86_64"
-    and torch.__version__.startswith("2.2.")
-)
 
 
 def patterned_image(*, offset: int = 0) -> Image.Image:
@@ -210,13 +202,6 @@ def test_epoch_tagged_sampler_always_propagates_epoch() -> None:
         shuffled.set_epoch(True)
 
 
-@pytest.mark.skipif(
-    LEGACY_INTEL_MACOS_TORCH_22,
-    reason=(
-        "PyTorch 2.2 multi-worker DataLoader shutdown can hang the "
-        "deprecated/best-effort Intel macOS interpreter"
-    ),
-)
 def test_class_labeled_loader_is_worker_count_independent(
     tmp_path: Path,
 ) -> None:

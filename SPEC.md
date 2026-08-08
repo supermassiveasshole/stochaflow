@@ -4,7 +4,7 @@
 >
 > Applies to: the current source tree
 >
-> Last reviewed: 2026-08-01
+> Last reviewed: 2026-08-08
 
 This document defines the product-level contract of Stochaflow: what the
 framework is responsible for, which observable guarantees supported workflows
@@ -191,6 +191,10 @@ The canonical configuration reference is
    to an absent final directory. Failure MUST leave no final bundle.
 8. Generated datasets, checkpoints, routine run outputs, credentials, and
    machine-specific caches MUST NOT be committed.
+9. Maintained host-platform support MUST be limited to the matrix declared in
+   [`docs/platform-support.md`](docs/platform-support.md). macOS x86_64 is
+   explicitly unsupported; core, dependency metadata, CI, and tests MUST NOT
+   retain dedicated compatibility paths for it without revising this contract.
 
 Stochaflow is pre-1.0 software. Breaking changes are permitted, but they MUST be
 intentional, documented in `Unreleased`, and accompanied by explicit rejection

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
-
 import pytest
 import torch
 from torch import nn
@@ -122,15 +120,21 @@ def test_precision_runtime_enforces_internal_topology() -> None:
             grad_scaler=None,
         )
 
+    with pytest.raises(ValueError, match="GradScaler must target CUDA"):
+        PrecisionRuntime(
+            kind="fp16-mixed",
+            device_type="cuda",
+            autocast_dtype=torch.float16,
+            grad_scaler=torch.amp.GradScaler("cpu"),
+        )
+
 
 @pytest.mark.parametrize("invalid_scale", [0.0, float("nan"), float("inf")])
 def test_precision_runtime_rejects_unusable_grad_scaler_at_construction(
     invalid_scale: float,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        scaler = torch.cuda.amp.GradScaler(enabled=False)
+    scaler = torch.amp.GradScaler("cuda", enabled=False)
     monkeypatch.setattr(scaler, "is_enabled", lambda: True)
     monkeypatch.setattr(scaler, "get_scale", lambda: invalid_scale)
 

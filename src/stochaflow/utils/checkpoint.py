@@ -282,7 +282,7 @@ class CheckpointManager:
     lr_scheduler: LRScheduler | None = None
     ema: ExponentialMovingAverage | None = None
     precision_kind: str = "fp32"
-    grad_scaler: torch.cuda.amp.GradScaler | None = None
+    grad_scaler: torch.amp.GradScaler | None = None
     inference_asset_descriptors: dict[str, InferenceAssetDescriptor] = field(
         default_factory=dict
     )
@@ -296,14 +296,13 @@ class CheckpointManager:
             path="checkpoint manager precision_kind",
         )
         scaler_value = cast(object, self.grad_scaler)
-        if scaler_value is not None and not isinstance(
-            scaler_value,
-            torch.cuda.amp.GradScaler,
-        ):
+        if scaler_value is not None and type(scaler_value) is not torch.amp.GradScaler:
             raise TypeError(
                 "checkpoint manager grad_scaler must be "
-                "torch.cuda.amp.GradScaler or None"
+                "torch.amp.GradScaler or None"
             )
+        if scaler_value is not None and getattr(scaler_value, "_device", None) != "cuda":
+            raise ValueError("checkpoint manager GradScaler must target CUDA")
         if self.precision_kind == "fp16-mixed":
             if scaler_value is None:
                 raise ValueError(
