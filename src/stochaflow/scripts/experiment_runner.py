@@ -434,13 +434,23 @@ def _checkpoint_candidate_directory(root: Path) -> Path:
     """Resolve one checkpoint directory without mixing sibling lineages."""
 
     root = root.resolve()
-    direct = (
-        root
-        if root.name.casefold() == "checkpoints"
-        else root / "checkpoints"
+    if root.name.casefold() == "checkpoints":
+        return root
+    direct_directories = tuple(
+        path
+        for path in root.iterdir()
+        if path.is_dir() and path.name.casefold() == "checkpoints"
     )
-    if direct.is_dir():
-        return direct.resolve()
+    if len(direct_directories) == 1:
+        return direct_directories[0].resolve()
+    if len(direct_directories) > 1:
+        rendered = ", ".join(
+            str(path.resolve()) for path in sorted(direct_directories)
+        )
+        raise ValueError(
+            "resume directory contains multiple direct checkpoint directories: "
+            f"{rendered}"
+        )
     directories: set[Path] = set()
     for path in root.rglob("*.pt"):
         if (

@@ -139,6 +139,9 @@ is unavailable.
 - Created validated nested prediction-shard parents and made tensor/image
   writers reject payload and trajectory batch counts that disagree with their
   declared `SamplingBatch.num_samples`.
+- Preserved the filesystem's actual checkpoint-directory spelling during
+  run-directory resume discovery, avoiding a path-identity mismatch on
+  case-insensitive macOS filesystems.
 - Made run-directory strict resume select the highest lineage-consistent atomic
   snapshot across `latest.pt`, `best.pt`, and the highest numbered checkpoint,
   while explicit-file resume remains exact. Contradictory, corrupt, regressing,
