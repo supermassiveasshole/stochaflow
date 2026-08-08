@@ -1333,13 +1333,13 @@ def test_sampling_inputs_drop_training_only_checkpoint_state(tmp_path: Path) -> 
         "format_version",
         "config",
         "inference_recipe",
-        "metadata",
         "model_state_dict",
         "ema_model_state_dict",
         "process_state_dict",
         "inference_asset_descriptors",
         "inference_asset_state_dicts",
     }
+    assert "metadata" not in inputs.checkpoint
     assert inputs.checkpoint["inference_asset_descriptors"] == {}
     assert inputs.checkpoint["inference_asset_state_dicts"] == {}
     persisted = torch.load(checkpoint, weights_only=True)

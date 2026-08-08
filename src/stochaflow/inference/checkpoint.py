@@ -13,7 +13,6 @@ import torch
 from torch import nn
 
 from stochaflow.processes.base import Process
-from stochaflow.sampling.assets import InferenceAssetProvider
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     CheckpointManager,
@@ -34,6 +33,7 @@ from stochaflow.utils.sampling_recipe import (
     sampling_recipe_from_dict,
 )
 
+from .assets import InferenceAssetProvider
 from .model import InferenceModelProvider
 
 
@@ -43,7 +43,6 @@ class InferenceCheckpointView(TypedDict, total=False):
     format_version: int
     config: dict[str, Any]
     inference_recipe: dict[str, Any] | None
-    metadata: dict[str, Any]
     model_state_dict: dict[str, Any]
     ema_model_state_dict: dict[str, Any]
     process_state_dict: dict[str, Any]
@@ -157,7 +156,6 @@ def project_inference_checkpoint(
         "format_version",
         "config",
         "inference_recipe",
-        "metadata",
         "model_state_dict",
         "ema_model_state_dict",
         "process_state_dict",

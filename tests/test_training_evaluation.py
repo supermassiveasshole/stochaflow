@@ -23,15 +23,15 @@ from stochaflow.sampling import (
     SamplingBuilder,
     SamplingOutput,
 )
-from stochaflow.scripts.epoch_validation import (
-    EvaluationBackedEpochValidator,
-    LiveEpochEvaluationSubject,
-)
 from stochaflow.training import (
     ExponentialMovingAverage,
     SupervisedTrainingStrategy,
     Trainer,
     TrainingPlan,
+)
+from stochaflow.training.epoch_evaluation import (
+    EvaluationBackedEpochValidator,
+    LiveEpochEvaluationSubject,
 )
 from stochaflow.utils.checkpoint import CheckpointManager
 from stochaflow.utils.config import (

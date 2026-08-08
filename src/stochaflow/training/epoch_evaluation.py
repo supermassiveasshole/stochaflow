@@ -17,14 +17,14 @@ from stochaflow.evaluation import (
     execute_evaluation_plan,
 )
 from stochaflow.evaluation.artifacts import canonical_sha256
+from stochaflow.inference import InferenceAssetProvider
 from stochaflow.metrics import MetricSpec
-from stochaflow.sampling import InferenceAssetProvider
-from stochaflow.training import (
+from stochaflow.training.trainer import Trainer
+from stochaflow.training.validation import (
     EpochValidationCadence,
     EpochValidationEvaluator,
     EpochValidationIdentity,
     EpochValidationResult,
-    Trainer,
 )
 from stochaflow.utils.checkpoint import (
     inference_asset_descriptors_from_projections,

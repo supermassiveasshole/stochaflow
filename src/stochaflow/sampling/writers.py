@@ -67,6 +67,11 @@ def _tensor_samples(batches: Sequence[SamplingBatch]) -> torch.Tensor:
             )
         if batch.samples.ndim == 0:
             raise ValueError("sampling tensors must include a batch dimension")
+        if batch.samples.shape[0] != batch.num_samples:
+            raise ValueError(
+                f"sampling batch {index} tensor count does not match "
+                f"num_samples: {batch.samples.shape[0]} != {batch.num_samples}"
+            )
         parts.append(batch.samples.detach().cpu())
     try:
         return torch.cat(parts, dim=0)
@@ -106,6 +111,17 @@ def _tensor_trajectory(
                 raise TypeError(
                     f"trajectory batch {batch_index} observation {observation_index} "
                     "is not a tensor"
+                )
+            if observation.state.ndim == 0:
+                raise ValueError(
+                    f"trajectory batch {batch_index} observation "
+                    f"{observation_index} must include a batch dimension"
+                )
+            if observation.state.shape[0] != batch.num_samples:
+                raise ValueError(
+                    f"trajectory batch {batch_index} observation "
+                    f"{observation_index} tensor count does not match "
+                    "num_samples"
                 )
             parts[observation_index].append(observation.state.detach().cpu())
     try:

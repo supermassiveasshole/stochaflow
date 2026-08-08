@@ -100,12 +100,17 @@ def test_homepage_presents_mnist_before_afhq() -> None:
 
     homepage = (DOCS_ROOT / "index.md").read_text(encoding="utf-8")
     mnist_asset = "mnist_ddim50_epoch_0183_samples.png"
+    afhq_asset = (
+        "afhq_v2_adm_learned_range_v_best_ddpm100_cfg2_samples.png"
+    )
     afhq_card = "AFHQ-v2 · class-conditional ADM"
     legacy_afhq_asset = "afhq_v2_adm_ddim50_epoch_0170_samples.png"
 
     assert homepage.index(mnist_asset) < homepage.index(afhq_card)
     assert f"_static/{mnist_asset}" in homepage
     assert (PROJECT_ROOT / "assets" / "readme" / mnist_asset).is_file()
+    assert f"_static/{afhq_asset}" in homepage
+    assert (PROJECT_ROOT / "assets" / "readme" / afhq_asset).is_file()
     assert legacy_afhq_asset not in homepage
 
 
@@ -190,7 +195,7 @@ def test_maintained_examples_publish_grounded_results() -> None:
     assert "100,351,366" in normalized_afhq
     assert "45.17 images/s" in normalized_afhq
     assert "10.455 GiB" in normalized_afhq
-    assert "current result surface" in normalized_afhq
+    assert "Validation-selected E190" in normalized_afhq
     assert "train-adm-128-learned-range-v.yaml" in normalized_afhq
     assert (
         "formal-ddpm100-cfg2-official-test-learned-range-v.yaml"
@@ -198,11 +203,20 @@ def test_maintained_examples_publish_grounded_results() -> None:
     )
     assert "aggregate FID" in normalized_afhq
     assert "`best.pt`" in normalized_afhq
+    assert "Validation-selected E190" in afhq
+    assert "**25.7572**" in afhq
+    assert "**20.2478**" in afhq
+    assert (
+        "afhq_v2_adm_learned_range_v_best_ddpm100_cfg2_samples.png"
+        in afhq
+    )
     assert "EvaluationBuilder" in normalized_afhq
     assert "Metrics" in normalized_afhq
     assert "Aggregate FID | **30.240**" not in afhq
     assert "Aggregate KID | **0.005310 ± 0.000701**" not in afhq
     assert "afhq_v2_adm_ddim50_epoch_0170_samples.png" not in afhq
+    assert "**25.7572**" in afhq_tutorial
+    assert "**20.2478**" in afhq_tutorial
     assert "subset size 200" in afhq_tutorial
     assert "subset size 300" not in afhq_tutorial
 

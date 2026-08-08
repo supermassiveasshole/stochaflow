@@ -5,6 +5,7 @@ package root lightweight avoids importing runtime factories during contract
 imports.
 """
 
+from .assets import InferenceAssetProvider
 from .model import (
     InferenceModelProvider,
     PinnedInferenceModelProvider,
@@ -13,6 +14,7 @@ from .model import (
 )
 
 __all__ = [
+    "InferenceAssetProvider",
     "InferenceModelProvider",
     "PinnedInferenceModelProvider",
     "PinnedWeightSelection",

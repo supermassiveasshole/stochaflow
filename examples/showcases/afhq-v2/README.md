@@ -391,14 +391,16 @@ precision 或 accumulation。`--observability-config` 只用于允许的 diagnos
 
 ## 6. CFG 采样与结果
 
-可以从训练 run 的 convenience `best.pt` 生成每类 12 张、共 36 张 DDIM-50 展示 sample；
-该命令不决定 formal Evaluation subject：
+可以从训练 run 的 convenience `best.pt` 生成每类 12 张、共 36 张 DDPM-100 展示
+sample。这个 profile 与 validation/official-test 使用相同 sampler contract，但独立展示
+命令不决定 formal Evaluation subject：
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow sample \
-  --checkpoint outputs/afhq-v2/adm-128-learned-range-v/<run-id> \
-  --config examples/showcases/afhq-v2/experiments/sampling/ddim50-cfg2.yaml \
-  --output-dir outputs/afhq-v2/samples/adm-ddim50-cfg2
+  --checkpoint outputs/afhq-v2/adm-128-learned-range-v/<run-id>/checkpoints/best.pt \
+  --config examples/showcases/afhq-v2/experiments/sampling/ddpm100-cfg2-readme.yaml \
+  --device cuda \
+  --output-dir outputs/afhq-v2/samples/adm-learned-range-v-best-ddpm100-cfg2
 ```
 
 这份 profile 是完整、独立的 sample invocation：`sample:` 显式冻结 sampler、options、
@@ -416,15 +418,30 @@ variance half。DDPM 消费 learned variance，DDIM 明确忽略 variance half�
 
 ### Corrected ADM 结果状态
 
-canonical topology 切换前的 900-real/900-generated DDIM-50 AFHQ 指标、checkpoint 与
-sample panel 来自旧的、不兼容 ADM graph，已从 current result surface 移除。它们不能
-证明 corrected ADM 或当前 topology + variance candidate。learned-range-v quality run
-完成、validation 选中 checkpoint 且 official-test bundle 发布前，本 README 不发布该
-recipe 的 production-quality baseline；即使完成，联合改动也不能形成 isolated learned
-variance 结论。
+canonical topology 切换前的指标与 sample panel 来自不兼容的 ADM graph，不能证明当前
+模型。当前 learned-range-v run 已完成 200 epochs / 84,000 optimizer updates；11 次完整
+900-image validation Evaluation 以 aggregate FID 选中 epoch 190 / step 79,800 的 EMA
+`best.pt`。epoch 200 的 validation FID 为 25.7978，未优于 epoch 190 的 25.7572，因此
+selector 正确保留 E190。
 
-新的三类 production run 使用 public class-aware formal profile，统一报告 aggregate 与
-cat/dog/wild per-class KID/FID。
+| Evidence | Aggregate FID | Aggregate KID mean ± std | Examples |
+| --- | ---: | ---: | ---: |
+| Validation-selected E190 | **25.7572** | **0.002426 ± 0.000863** | 900 |
+| One-shot official test | **20.2478** | **0.002929 ± 0.000890** | 1,467 |
+
+official-test 的 cat/dog/wild FID 分别为 27.0900、45.6332 和 15.0471；expected、observed
+与 unique sample IDs 均为 1,467，没有 missing IDs。official test 在 validation 冻结唯一
+checkpoint 后只运行一次，未参与 selection。
+
+<img src="../../../assets/readme/afhq_v2_adm_learned_range_v_best_ddpm100_cfg2_samples.png" width="780" alt="从 E190 EMA learned-range ADM checkpoint 使用 DDPM-100 和 CFG 2.0 生成的 36 张 AFHQ-v2 样本">
+
+展示面板固定 EMA、DDPM-100、CFG 2.0、seed `20260726`，按 cat、dog、wild 各 12 张
+排列；其 checkpoint SHA-256 为
+`cd550951f04604fb6b170fc5b05fe82e8426ec429ceb5de6d2a1791238fccdfe`，与 official-test
+subject 相同。该 candidate 同时改变 scale layout 与 variance head，因此结果不能归因成
+isolated learned-range 或 topology ablation。它与 256×256 AFHQ translation 及单类
+AFHQ-Dogs benchmark 的任务、split、样本数和 feature pipeline 也不同，不能直接按 FID
+排名。
 
 ### Production 输出布局
 
@@ -503,7 +520,8 @@ runtime 只把已经解析为 EMA（或另一个 profile 显式选择的 raw）�
 AFHQ Builder，Builder 不能再次选择权重。生成经由 checkpoint-bound
 `EvaluationSamplingCapability` 调用与 `stochaflow sample` 共用的 SamplingBuilder execution
 seam；该调用不发布普通 sampling writers。FID/KID provider 通过
-`REGISTRIES.metrics` 构造，AFHQ Metric 负责 aggregate/per-class scopes 和每类
+当前 `MetricEngine` 的注入 registry authority 构造，AFHQ Metric 负责
+aggregate/per-class scopes 和每类
 reference/generated exact completeness。
 
 成功目录为：

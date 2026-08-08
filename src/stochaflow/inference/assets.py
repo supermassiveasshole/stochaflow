@@ -58,17 +58,17 @@ class InferenceAssetProvider:
 
         validated_descriptors = validate_inference_asset_descriptors(
             dict(descriptor_value),
-            path="sampling inference_asset_descriptors",
+            path="inference asset descriptors",
         )
         validated_states: dict[str, Mapping[str, object]] = {}
         for asset_name_value, state_value in state_dict_value.items():
             asset_name = _nonempty_exact_string(
                 asset_name_value,
-                path="sampling inference asset state name",
+                path="inference asset state name",
             )
             if not isinstance(state_value, Mapping):
                 raise TypeError(
-                    "sampling inference asset state "
+                    "inference asset state "
                     f"{asset_name!r} must be a mapping"
                 )
             validated_states[asset_name] = cast(Mapping[str, object], state_value)
@@ -82,7 +82,7 @@ class InferenceAssetProvider:
             missing = sorted(referenced_assets - state_assets)
             unexpected = sorted(state_assets - referenced_assets)
             raise ValueError(
-                "sampling inference asset states do not match descriptors: "
+                "inference asset states do not match descriptors: "
                 f"missing={missing or '<none>'}, "
                 f"unexpected={unexpected or '<none>'}"
             )
@@ -148,10 +148,7 @@ class InferenceAssetProvider:
         module = module_value
         training_asset_name = descriptor["training_asset_name"]
         state_dict = self._state_dicts[training_asset_name]
-        state_path = (
-            "sampling.inference_asset_state_dicts"
-            f"[{training_asset_name!r}]"
-        )
+        state_path = f"inference asset state {training_asset_name!r}"
         validate_module_state_dict_compatibility(
             module,
             state_dict,

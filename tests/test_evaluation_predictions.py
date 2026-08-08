@@ -327,6 +327,29 @@ def test_jsonl_sink_streams_and_finalizes_exact_sample_plan(tmp_path: Path) -> N
         sink.finalize()
 
 
+def test_jsonl_sink_creates_portable_nested_shard_parent(tmp_path: Path) -> None:
+    root = tmp_path / "artifact"
+    root.mkdir()
+    sink = JsonlPredictionArtifactSink(
+        root,
+        expected_samples=sample_plan(),
+        relative_path="shards/predictions.jsonl",
+    )
+    sink.consume(
+        evaluation_output(
+            tuple(
+                prediction_record(sample.sample_id, float(index))
+                for index, sample in enumerate(sample_plan())
+            )
+        )
+    )
+
+    draft = sink.finalize()
+
+    assert draft.shards[0].path == "shards/predictions.jsonl"
+    assert (root / "shards" / "predictions.jsonl").is_file()
+
+
 def test_materializer_uses_draft_transform_and_gallery_metadata(
     tmp_path: Path,
 ) -> None:

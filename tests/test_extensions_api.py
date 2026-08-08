@@ -15,7 +15,15 @@ import yaml
 from torch.utils.data import DataLoader, TensorDataset
 from torchmetrics import Metric
 
-from stochaflow import data, metrics, models, processes, sampling, training
+from stochaflow import (
+    data,
+    inference,
+    metrics,
+    models,
+    processes,
+    sampling,
+    training,
+)
 from stochaflow import extensions as public
 from stochaflow.scripts import experiment_runner
 from stochaflow.training import diagnostics
@@ -215,8 +223,8 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "GaussianTransition": sampling.GaussianTransition,
         "GenerativeDynamics": sampling.GenerativeDynamics,
         "InferenceAssetProjection": training.InferenceAssetProjection,
-        "InferenceAssetProvider": sampling.InferenceAssetProvider,
-        "InferenceModelProvider": sampling.InferenceModelProvider,
+        "InferenceAssetProvider": inference.InferenceAssetProvider,
+        "InferenceModelProvider": inference.InferenceModelProvider,
         "IMAGE_DATA_SOURCES": data.IMAGE_DATA_SOURCES,
         "ImageDataSource": data.ImageDataSource,
         "ImageDimensionTable": data.ImageDimensionTable,

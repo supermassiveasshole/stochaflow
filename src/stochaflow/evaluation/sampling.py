@@ -16,6 +16,7 @@ from stochaflow.evaluation.config import (
     _thaw_evaluation_value,
 )
 from stochaflow.evaluation.subject import CheckpointSubjectInputs
+from stochaflow.inference import InferenceAssetProvider
 from stochaflow.inference.checkpoint import (
     build_checkpointed_process,
     build_inference_asset_provider,
@@ -23,7 +24,6 @@ from stochaflow.inference.checkpoint import (
 )
 from stochaflow.inference.model import PinnedInferenceModelProvider
 from stochaflow.processes.base import Process
-from stochaflow.sampling.assets import InferenceAssetProvider
 from stochaflow.sampling.builder import (
     SamplingBuilder,
     SamplingBuilderContext,

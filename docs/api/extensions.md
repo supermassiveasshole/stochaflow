@@ -208,7 +208,11 @@ binding 是框架内部协作，不是 extension facade 的公共 helper API。
 `MetricSpec`，而不是公开一个继承 `MetricSpec` 的 training-specific 类型。
 `MetricEngine` 的公共 surface 只有构造、`required_channels`、`update()`、`compute()`、
 `reset()` 与 `to()`；构造时可显式注入 metric `Registry`，缺省才使用
-`REGISTRIES.metrics`。接受 prepared payload 的路径属于训练 runtime 内部协议。
+`REGISTRIES.metrics`。如果 composite Metric 在这次同步构造调用栈内继续调用
+`build_metric()`，嵌套构造会继承外层显式注入的同一个 Registry；调用栈退出或构造失败时
+该临时 authority 会恢复。它不是可跨 Evaluation 生命周期查询的 service locator；没有显式
+或继承 authority 的独立调用才回退到 `REGISTRIES.metrics`。接受 prepared payload 的路径
+属于训练 runtime 内部协议。
 
 `REGISTRIES.metrics` 只接受 `torchmetrics.Metric` 子类。Stochaflow 不解析任意
 `torchmetrics.*` class path，也不镜像上游 namespace；第三方 extension 应注册自己的

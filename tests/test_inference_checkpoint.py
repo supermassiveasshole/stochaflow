@@ -56,16 +56,16 @@ def test_inference_projection_excludes_training_lifecycle_state() -> None:
         "format_version",
         "config",
         "inference_recipe",
-        "metadata",
         "model_state_dict",
         "inference_asset_descriptors",
         "inference_asset_state_dicts",
     }
+    assert "metadata" not in projected
     assert projected.get("model_state_dict") is model_state
     assert checkpoint_epoch_and_step(payload) == (3, 17)
 
 
-def test_inference_projection_accepts_legacy_epoch_validation_summary() -> None:
+def test_inference_projection_excludes_legacy_epoch_validation_summary() -> None:
     legacy_training_loop = {
         "epoch_validation": {
             "identity": {
@@ -101,7 +101,7 @@ def test_inference_projection_accepts_legacy_epoch_validation_summary() -> None:
     projected = project_inference_checkpoint(payload)
 
     assert projected.get("format_version") == CHECKPOINT_FORMAT_VERSION
-    assert projected.get("metadata") is metadata
+    assert "metadata" not in projected
 
 
 @pytest.mark.parametrize(

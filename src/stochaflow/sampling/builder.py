@@ -10,11 +10,11 @@ from typing import Any
 
 import torch
 
+from stochaflow.inference import InferenceAssetProvider
 from stochaflow.inference.model import InferenceModelProvider, WeightSelection
 from stochaflow.processes.base import Process
 from stochaflow.utils.registry import REGISTRIES
 
-from .assets import InferenceAssetProvider
 from .writers import SamplingBatch
 
 

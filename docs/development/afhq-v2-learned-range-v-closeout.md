@@ -359,6 +359,28 @@ The decoded prediction audit is class-correct and diverse, with clean contours
 and texture and no systematic hue noise or visible mode collapse. Official-test
 data and metrics were not read or used during checkpoint selection.
 
+## README showcase sampling
+
+The validation-selected checkpoint was sampled independently for the public
+README panel with
+`examples/showcases/afhq-v2/experiments/sampling/ddpm100-cfg2-readme.yaml`.
+The invocation used the checkpoint's frozen training source
+`1ae02d09d464001274a8c7147b8537b6cc84597d`, EMA, DDPM-100, CFG 2.0, seed
+`20260726`, and exactly 12 cat, 12 dog, and 12 wild samples. Its resolved bundle
+is at
+`G:\stochaflow\outputs\afhq-v2\samples\adm-learned-range-v-best-ddpm100-cfg2-readme`.
+
+The committed panel is
+`assets/readme/afhq_v2_adm_learned_range_v_best_ddpm100_cfg2_samples.png`;
+its SHA256 is
+`c1bd202cc9923517ef27bfc365f9a3978202caed63d85c0c240b7513a75b97bc`.
+The resolved sampling manifest identifies the same epoch-190 / step-79,800
+checkpoint SHA256 as the official-test subject. Visual review found all three
+class blocks correct and diverse, with clean contours and no systematic hue
+noise or visible mode collapse. This 36-image panel is qualitative evidence;
+the validation and official-test Evaluation bundles remain the quantitative
+authority.
+
 ## Comparison boundary
 
 The fixed-variance current-ADM record is

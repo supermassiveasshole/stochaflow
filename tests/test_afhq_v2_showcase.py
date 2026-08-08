@@ -59,7 +59,7 @@ _README_SAMPLING_CONFIG = (
     _SHOWCASE
     / "experiments"
     / "sampling"
-    / "ddim50-cfg2-readme.yaml"
+    / "ddpm100-cfg2-readme.yaml"
 )
 _LOCK = (
     _SHOWCASE
@@ -561,6 +561,9 @@ def test_afhq_sampling_profile_is_complete_and_checkpoint_driven() -> None:
 def test_afhq_readme_sampling_request_is_explicit_and_reproducible() -> None:
     resolved = load_sample_config(_README_SAMPLING_CONFIG).sample
 
+    assert resolved.sampler is not None
+    assert resolved.sampler.name == "ddpm"
+    assert resolved.sampler.params == {"num_inference_steps": 100}
     assert resolved.num_samples == 36
     assert resolved.batch_size == 12
     assert resolved.seed == 20260726
@@ -576,7 +579,7 @@ def test_afhq_readme_sampling_request_is_explicit_and_reproducible() -> None:
         ],
         "trajectory": {
             "enabled": False,
-            "every_steps": 5,
+            "every_steps": 10,
         },
     }
     assert resolved.writers[1].name == "image"

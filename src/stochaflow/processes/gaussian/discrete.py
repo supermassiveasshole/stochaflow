@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import cast
 
 import torch
@@ -25,6 +25,7 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
 
     _reference_alpha_bar_t: torch.Tensor
     _runtime_alpha_bar_t: torch.Tensor
+    _coefficient_storage_dtype: torch.dtype
     marginal_signal_t: torch.Tensor
     marginal_noise_t: torch.Tensor
     sqrt_posterior_variance_t: torch.Tensor
@@ -377,6 +378,7 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
             ),
         )
         storage_dtype = snapshot.storage_dtype
+        self._coefficient_storage_dtype = storage_dtype
         reference_alpha_bar = torch.cat(
             (torch.ones_like(alpha_bar[:1]), alpha_bar),
         )
@@ -405,6 +407,100 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
         if runtime.device.type == "mps":
             return self._runtime_alpha_bar_t
         return self._reference_alpha_bar_t.to(device=runtime.device)
+
+    def get_extra_state(self) -> dict[str, object]:
+        """Persist the host-resident precision authority for selected pairs."""
+
+        return {
+            "schema_version": 1,
+            "storage_dtype": str(self._coefficient_storage_dtype).removeprefix(
+                "torch."
+            ),
+            "reference_alpha_bar_t": (
+                self._reference_alpha_bar_t.detach().cpu().clone()
+            ),
+        }
+
+    def set_extra_state(self, state: object) -> None:
+        """Restore and validate the selected-pair coefficient authority."""
+
+        if not isinstance(state, Mapping):
+            raise TypeError("discrete Gaussian Process extra state must be a mapping")
+        declared = cast(Mapping[object, object], state)
+        expected_fields = {
+            "schema_version",
+            "storage_dtype",
+            "reference_alpha_bar_t",
+        }
+        if set(declared) != expected_fields:
+            missing = sorted(expected_fields - set(declared))
+            unexpected = sorted(set(declared) - expected_fields, key=str)
+            raise ValueError(
+                "discrete Gaussian Process extra state fields do not match: "
+                f"missing={missing or '<none>'}, "
+                f"unexpected={unexpected or '<none>'}"
+            )
+        version = declared["schema_version"]
+        if type(version) is not int or version != 1:
+            raise ValueError(
+                "discrete Gaussian Process extra state schema_version must be 1"
+            )
+        storage_dtype = declared["storage_dtype"]
+        expected_storage_dtype = str(
+            self._coefficient_storage_dtype
+        ).removeprefix("torch.")
+        if type(storage_dtype) is not str or storage_dtype != expected_storage_dtype:
+            raise ValueError(
+                "discrete Gaussian Process extra state storage_dtype must match "
+                f"the constructed schedule: {expected_storage_dtype!r}"
+            )
+        reference = declared["reference_alpha_bar_t"]
+        if type(reference) is not torch.Tensor:
+            raise TypeError(
+                "discrete Gaussian Process reference_alpha_bar_t must be a Tensor"
+            )
+        reference = cast(torch.Tensor, reference)
+        expected_shape = (self.num_timesteps + 1,)
+        if reference.shape != expected_shape:
+            raise ValueError(
+                "discrete Gaussian Process reference_alpha_bar_t shape must be "
+                f"{expected_shape}"
+            )
+        if not torch.is_floating_point(reference):
+            raise TypeError(
+                "discrete Gaussian Process reference_alpha_bar_t must be floating-point"
+            )
+        if reference.requires_grad:
+            raise TypeError(
+                "discrete Gaussian Process reference_alpha_bar_t must not require "
+                "gradients"
+            )
+        host_reference = reference.detach().cpu()
+        if not torch.isfinite(host_reference).all():
+            raise ValueError(
+                "discrete Gaussian Process reference_alpha_bar_t must be finite"
+            )
+        runtime_reference = (
+            self.marginal_signal_t.detach().cpu().to(dtype=host_reference.dtype).square()
+        )
+        storage_precision = torch.finfo(self._coefficient_storage_dtype).eps
+        if not torch.allclose(
+            host_reference,
+            runtime_reference,
+            rtol=8.0 * storage_precision,
+            atol=0.0,
+        ):
+            raise ValueError(
+                "discrete Gaussian Process reference_alpha_bar_t does not match "
+                "the persisted marginal coefficients"
+            )
+        self._reference_alpha_bar_t = host_reference.clone()
+        self._runtime_alpha_bar_t.copy_(
+            host_reference.to(
+                device=self._runtime_alpha_bar_t.device,
+                dtype=self._runtime_alpha_bar_t.dtype,
+            )
+        )
 
     @staticmethod
     def _validate_snapshot_tensors(

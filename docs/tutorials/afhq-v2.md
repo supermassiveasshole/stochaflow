@@ -350,7 +350,8 @@ DiT 候选实现同一
 这是 breaking ADM cutover。旧 `transformer_depths`、`middle_transformer_depth` 等
 配置字段已删除；旧 stage-level skip/Spatial Transformer checkpoint 的 raw、EMA 与
 optimizer state 均不能 resume、sample、partial load 或转换。必须 fresh train。
-corrected ADM 尚无已发布的长训练质量结果。
+当前 published long-training result 来自上述 fresh learned-range candidate；它不恢复、
+转换或部分加载任何旧 topology checkpoint。
 
 生产配置不启用 early stopping。ADM 的 micro-batches 和 optimizer updates 为：
 
@@ -444,14 +445,16 @@ directory，不续写旧日志。
 
 ## Classifier-free guidance sampling
 
-训练后可从显式指定的 checkpoint 生成 class-balanced DDIM-50 展示结果；该展示路径不决定
-formal Evaluation 的 subject：
+训练后可从显式指定的 validation-selected checkpoint 生成 class-balanced DDPM-100
+展示结果。该 profile 与 learned-range validation/official-test 使用相同 sampler contract，
+但展示路径不决定 formal Evaluation 的 subject：
 
 ```bash
 uv run --project examples/showcases/afhq-v2 stochaflow sample \
-  --checkpoint outputs/afhq-v2/adm-128-learned-range-v/<run-id> \
-  --config examples/showcases/afhq-v2/experiments/sampling/ddim50-cfg2.yaml \
-  --output-dir outputs/afhq-v2/samples/adm-ddim50-cfg2
+  --checkpoint outputs/afhq-v2/adm-128-learned-range-v/<run-id>/checkpoints/best.pt \
+  --config examples/showcases/afhq-v2/experiments/sampling/ddpm100-cfg2-readme.yaml \
+  --device cuda \
+  --output-dir outputs/afhq-v2/samples/adm-learned-range-v-best-ddpm100-cfg2
 ```
 
 这份 profile 是完整、独立的 `sample:` invocation，显式冻结 sampler、options、shape、
@@ -484,16 +487,29 @@ conditional variance half。DDPM 消费 learned variance，DDIM 明确忽略 var
 
 ## Corrected ADM 结果状态
 
-canonical topology 切换前的 900-real/900-generated DDIM-50 AFHQ 数值与样本来自旧的、
-checkpoint-incompatible ADM graph。它们已经从 current result surface 移除，不能用于
-证明 corrected ADM 或当前 topology + variance candidate。在 learned-range-v run 完成、
-validation 选中 checkpoint 并冻结新的 resolved config 与 official-test artifacts 前，本页
-不发布该 recipe 的 production-quality baseline。即使完成，联合改动也不能支持 isolated
-learned-variance、isolated topology 或 exact epsilon-prediction IDDPM 结论。
+canonical topology 切换前的数值与样本来自 checkpoint-incompatible ADM graph，不能证明
+当前模型。maintained learned-range-v run 已完成 200 epochs / 84,000 optimizer updates。
+epoch 100 至 200 的 11 次完整、同协议 900-image validation Evaluation 选中 E190 / step
+79,800 EMA checkpoint；E200 的 aggregate FID 25.7978 未优于 E190 的 25.7572。
 
-AFHQ maintained pixel-image Evaluation 已迁移到 public `EvaluationBuilder`/Metric/profile
-路径。该完成状态表示正式执行与 artifact contract 已具备，不表示 learned-range-v 的
-长训练质量数值已经产生。
+| Evidence | Aggregate FID | Aggregate KID mean ± std | Examples |
+| --- | ---: | ---: | ---: |
+| Validation-selected E190 | **25.7572** | **0.002426 ± 0.000863** | 900 |
+| One-shot official test | **20.2478** | **0.002929 ± 0.000890** | 1,467 |
+
+official-test 的 cat/dog/wild FID 是 27.0900、45.6332、15.0471；exact completeness 为
+1,467 expected / observed / unique，missing 为 0。official test 只在 selection 冻结后运行
+一次，未反向改变 checkpoint。
+
+<img src="../_static/afhq_v2_adm_learned_range_v_best_ddpm100_cfg2_samples.png" width="780" alt="从 E190 EMA learned-range ADM checkpoint 使用 DDPM-100 和 CFG 2.0 生成的 36 张 AFHQ-v2 样本">
+
+该面板固定 EMA、DDPM-100、CFG 2.0、seed `20260726`，按 cat、dog、wild 各 12 张排列。
+checkpoint SHA-256 为
+`cd550951f04604fb6b170fc5b05fe82e8426ec429ceb5de6d2a1791238fccdfe`，与 official-test
+subject 相同。candidate 同时改变 scale layout 与 variance head，不能支持 isolated
+learned-range、isolated topology 或 exact epsilon-prediction IDDPM 归因。与 AFHQ
+translation 和 AFHQ-Dogs benchmark 的任务、分辨率、split、样本数、聚合与 feature
+pipeline 也不同，因此外部 FID 只能作协议背景。
 
 ## Public full-official-test KID/FID Evaluation
 

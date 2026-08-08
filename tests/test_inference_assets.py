@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch import nn
 
-from stochaflow.sampling import InferenceAssetProvider
+from stochaflow.inference import InferenceAssetProvider
 from stochaflow.utils.checkpoint import InferenceAssetDescriptor
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.factory import build_model

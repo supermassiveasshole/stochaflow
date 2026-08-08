@@ -156,12 +156,13 @@ checkpoint 的 validation v-prediction loss 为 **0.07189**。
 :::{container} sf-result-card
 <h3 class="sf-card-title">AFHQ-v2 · class-conditional ADM</h3>
 
-`adm_unet` 使用 canonical input/output block graph、逐 block skip ledger 和 QKV
-residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与样本不作为 corrected
-模型的证据。learned-range-v recipe 在配置 cadence 上运行 300/class validation
-Evaluation，并按 aggregate FID 维护 `best.pt`。
+<img src="_static/afhq_v2_adm_learned_range_v_best_ddpm100_cfg2_samples.png" width="412" height="412" loading="lazy" decoding="async" alt="E190 EMA learned-range ADM 使用 DDPM-100 和 CFG 2.0 生成的 36 张 AFHQ-v2 样本">
 
-<p class="sf-result-meta">live validation FID/KID · public formal test · measured RTX 4090 capacity</p>
+learned-range-v ADM 的 11 次 900-image validation Evaluation 选中 E190 EMA
+checkpoint：FID **25.7572**。冻结后的一次 full official-test Evaluation 使用全部 1,467
+张图片，FID 为 **20.2478**。面板固定 DDPM-100、CFG 2.0 和同一 checkpoint。
+
+<p class="sf-result-meta">200 epochs · 84,000 updates · best epoch 190 · exact per-class evidence</p>
 
 [查看 AFHQ-v2 数据、配置与按类评估流程](tutorials/afhq-v2.md)
 :::

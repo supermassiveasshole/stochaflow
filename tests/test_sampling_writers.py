@@ -79,6 +79,41 @@ def test_image_writer_rejects_wrong_rank(tmp_path: Path) -> None:
         )
 
 
+def test_tensor_writer_rejects_declared_sample_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    context = SamplingArtifactContext(
+        output_dir=tmp_path,
+        batches=(SamplingBatch(samples=torch.zeros((1, 5)), num_samples=2),),
+        metadata={},
+    )
+
+    with pytest.raises(ValueError, match="tensor count does not match"):
+        write_sampling_artifacts([ComponentConfig(name="tensor")], context)
+
+
+def test_tensor_writer_rejects_trajectory_sample_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    samples = torch.zeros((2, 5))
+    context = SamplingArtifactContext(
+        output_dir=tmp_path,
+        batches=(
+            SamplingBatch(
+                samples=samples,
+                num_samples=2,
+                trajectory=(
+                    SamplingObservation(0, 1, torch.zeros((1, 5)), False, {}),
+                ),
+            ),
+        ),
+        metadata={},
+    )
+
+    with pytest.raises(ValueError, match="tensor count does not match"):
+        write_sampling_artifacts([ComponentConfig(name="tensor")], context)
+
+
 @REGISTRIES.sampling_artifact_writers.register("stage2_duplicate_writer")
 class DuplicateWriter(SamplingArtifactWriter):
     def __init__(self, *, key: str) -> None:

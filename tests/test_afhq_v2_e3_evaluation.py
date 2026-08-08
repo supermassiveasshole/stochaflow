@@ -34,19 +34,19 @@ from stochaflow.evaluation import (
 )
 from stochaflow.evaluation.config import _thaw_evaluation_value
 from stochaflow.inference.checkpoint import InferenceCheckpointView
-from stochaflow.metrics import MetricEngine, MetricSpec
+from stochaflow.metrics import MetricEngine, MetricSpec, MetricUpdate
 from stochaflow.sampling import (
     SamplingBatch,
     SamplingBuilder,
     SamplingOutput,
 )
-from stochaflow.scripts.epoch_validation import EvaluationBackedEpochValidator
 from stochaflow.training import (
     ExponentialMovingAverage,
     SupervisedTrainingStrategy,
     Trainer,
     TrainingPlan,
 )
+from stochaflow.training.epoch_evaluation import EvaluationBackedEpochValidator
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     CheckpointManager,
@@ -58,7 +58,7 @@ from stochaflow.utils.config import (
     ValidationEvaluationProtocolConfig,
     load_config_dict,
 )
-from stochaflow.utils.registry import REGISTRIES
+from stochaflow.utils.registry import REGISTRIES, RegistryCatalog
 from stochaflow.utils.sampling_recipe import (
     SamplingRecipe,
     sampling_recipe_to_dict,
@@ -443,6 +443,53 @@ def test_afhq_class_aware_metric_extracts_shared_features_once_per_payload(
     }
     assert result[f"cat.{SHARED_PROVIDER_A}"] == pytest.approx(0.1)
     assert result[f"cat.{SHARED_PROVIDER_B}"] == pytest.approx(0.2)
+
+
+def test_afhq_composite_metric_inherits_metric_engine_registry() -> None:
+    private_provider = "tests.private-afhq-provider"
+    assert private_provider not in REGISTRIES.metrics.names()
+    catalog = RegistryCatalog()
+    catalog.metrics.add(
+        afhq_evaluation.AFHQ_V2_DISTRIBUTION_METRIC,
+        afhq_evaluation.AFHQV2ClassAwareDistributionMetric,
+    )
+    catalog.metrics.add(private_provider, TinyImageGapMetric)
+    spec = MetricSpec(
+        id="distribution",
+        name=afhq_evaluation.AFHQ_V2_DISTRIBUTION_METRIC,
+        channel=afhq_evaluation.AFHQ_V2_IMAGE_PAIR_CHANNEL,
+        params={
+            "class_mapping": {"cat": 0, "dog": 1, "wild": 2},
+            "expected_real": {"cat": 1, "dog": 1, "wild": 1},
+            "expected_fake": {"cat": 1, "dog": 1, "wild": 1},
+            "providers": [{"name": private_provider, "params": {}}],
+        },
+    )
+    engine = MetricEngine([spec], registry=catalog.metrics)
+    labels = torch.tensor([0, 1, 2], dtype=torch.long)
+    real = torch.zeros((3, 3, 128, 128))
+    fake = torch.ones((3, 3, 128, 128))
+
+    engine.update(
+        {
+            afhq_evaluation.AFHQ_V2_IMAGE_PAIR_CHANNEL: MetricUpdate(
+                args=(real, labels),
+                kwargs={"real": True},
+            )
+        }
+    )
+    engine.update(
+        {
+            afhq_evaluation.AFHQ_V2_IMAGE_PAIR_CHANNEL: MetricUpdate(
+                args=(fake, labels),
+                kwargs={"real": False},
+            )
+        }
+    )
+
+    assert engine.compute()[
+        f"distribution/aggregate.{private_provider}"
+    ] == pytest.approx(1.0)
 
 
 def runtime_training_config() -> StochaflowConfig:

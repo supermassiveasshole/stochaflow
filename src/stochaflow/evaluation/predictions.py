@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO, Literal, Protocol, cast, runtime_checkable
 
-from stochaflow.data.artifact_io import canonical_directory, read_regular_file
+from stochaflow.data.artifact_io import (
+    canonical_directory,
+    create_cache_file_exclusive,
+    read_regular_file,
+    remove_cache_file,
+)
 from stochaflow.evaluation.artifacts import canonical_json_bytes, canonical_sha256
 from stochaflow.evaluation.config import (
     EVALUATION_SPLITS,
@@ -576,11 +581,25 @@ class JsonlPredictionArtifactSink:
         )
         parts = PurePosixPath(self._relative_path).parts
         self._path = self._root.joinpath(*parts)
-        canonical_directory(
-            self._path.parent,
-            label="prediction shard parent",
+        descriptor = create_cache_file_exclusive(
+            self._root,
+            self._path,
+            label="prediction shard",
         )
-        self._handle: BinaryIO | None = self._path.open("xb")
+        try:
+            self._handle: BinaryIO | None = cast(
+                BinaryIO,
+                os.fdopen(descriptor, "wb"),
+            )
+        except BaseException:
+            os.close(descriptor)
+            with suppress(FileNotFoundError):
+                remove_cache_file(
+                    self._root,
+                    self._path,
+                    label="prediction shard",
+                )
+            raise
         self._digest = hashlib.sha256()
         self._size_bytes = 0
         self._record_count = 0
@@ -691,7 +710,11 @@ class JsonlPredictionArtifactSink:
             self._handle.close()
             self._handle = None
         with suppress(FileNotFoundError):
-            self._path.unlink()
+            remove_cache_file(
+                self._root,
+                self._path,
+                label="prediction shard",
+            )
         self._aborted = True
 
 

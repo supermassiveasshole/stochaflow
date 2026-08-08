@@ -278,12 +278,138 @@ def test_process_snapshot_moves_as_the_single_authoritative_state() -> None:
     assert process.marginal_noise_t.dtype == torch.float64
     assert process.posterior_mean_coef1.dtype == torch.float64
     assert set(process.state_dict()) == {
+        "_extra_state",
         "marginal_signal_t",
         "marginal_noise_t",
         "sqrt_posterior_variance_t",
         "posterior_mean_coef1",
         "posterior_mean_coef2",
     }
+
+
+def test_process_state_round_trip_preserves_selected_pair_authority() -> None:
+    source = DiscreteGaussianProcess(
+        {
+            "name": "linear_beta",
+            "params": {
+                "num_timesteps": 8,
+                "beta_start": 1.0e-4,
+                "beta_end": 0.01,
+            },
+        }
+    )
+    restored = DiscreteGaussianProcess(
+        {
+            "name": "linear_beta",
+            "params": {
+                "num_timesteps": 8,
+                "beta_start": 1.0e-4,
+                "beta_end": 0.02,
+            },
+        }
+    )
+
+    restored.load_state_dict(source.state_dict(), strict=True)
+
+    state_times = torch.tensor([4])
+    source_scales = source.marginal_scales(state_times, torch.Size([1, 1]))
+    restored_scales = restored.marginal_scales(
+        state_times,
+        torch.Size([1, 1]),
+    )
+    source_snapshot = source.marginal_coefficient_snapshot(
+        state_times,
+        torch.tensor([2]),
+        torch.Size([1, 1]),
+    )
+    restored_snapshot = restored.marginal_coefficient_snapshot(
+        state_times,
+        torch.tensor([2]),
+        torch.Size([1, 1]),
+    )
+    source_bounds = source.reverse_log_variance_bounds(
+        state_times,
+        torch.tensor([2]),
+        torch.Size([1, 1]),
+    )
+    restored_bounds = restored.reverse_log_variance_bounds(
+        state_times,
+        torch.tensor([2]),
+        torch.Size([1, 1]),
+    )
+
+    torch.testing.assert_close(restored_scales.signal, source_scales.signal)
+    torch.testing.assert_close(
+        restored_snapshot.source_alpha_bar,
+        source_snapshot.source_alpha_bar,
+    )
+    torch.testing.assert_close(restored_bounds.lower, source_bounds.lower)
+    torch.testing.assert_close(restored_bounds.upper, source_bounds.upper)
+
+
+def test_process_state_rejects_inconsistent_selected_pair_authority() -> None:
+    source = DiscreteGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 8}}
+    )
+    restored = DiscreteGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 8}}
+    )
+    state = source.state_dict()
+    extra_state = state["_extra_state"]
+    assert isinstance(extra_state, dict)
+    extra_state["reference_alpha_bar_t"] = torch.ones(9)
+
+    with pytest.raises(ValueError, match="does not match"):
+        restored.load_state_dict(state, strict=True)
+
+
+def test_process_state_rejects_cosine_terminal_authority_drift() -> None:
+    source = DiscreteGaussianProcess(
+        {
+            "name": "cosine_alpha_bar",
+            "params": {"num_timesteps": 1000},
+        }
+    )
+    restored = DiscreteGaussianProcess(
+        {
+            "name": "cosine_alpha_bar",
+            "params": {"num_timesteps": 1000},
+        }
+    )
+    state = source.state_dict()
+    extra_state = state["_extra_state"]
+    assert isinstance(extra_state, dict)
+    reference = extra_state["reference_alpha_bar_t"]
+    assert isinstance(reference, torch.Tensor)
+    drifted = reference.clone()
+    drifted[-1] += 9.0e-9
+    extra_state["reference_alpha_bar_t"] = drifted
+
+    with pytest.raises(ValueError, match="does not match"):
+        restored.load_state_dict(state, strict=True)
+
+
+def test_process_state_round_trip_preserves_original_storage_precision() -> None:
+    schedule = {"name": "linear_beta", "params": {"num_timesteps": 8}}
+    source = DiscreteGaussianProcess(schedule).to(dtype=torch.float64)
+    restored = DiscreteGaussianProcess(schedule).to(dtype=torch.float64)
+
+    restored.load_state_dict(source.state_dict(), strict=True)
+
+    source_snapshot = source.marginal_coefficient_snapshot(
+        torch.tensor([8]),
+        torch.tensor([4]),
+        torch.Size([1, 1]),
+    )
+    restored_snapshot = restored.marginal_coefficient_snapshot(
+        torch.tensor([8]),
+        torch.tensor([4]),
+        torch.Size([1, 1]),
+    )
+    torch.testing.assert_close(
+        restored_snapshot.source_alpha_bar,
+        source_snapshot.source_alpha_bar,
+    )
 
 
 @pytest.mark.parametrize(

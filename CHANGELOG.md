@@ -47,6 +47,9 @@ is unavailable.
   missing sample IDs. Historical ADM comparisons retain their disclosed
   protocol differences and are not treated as isolated variance or topology
   ablations.
+- Added a reproducible class-balanced AFHQ-v2 showcase panel sampled from that
+  epoch-190 EMA checkpoint with DDPM-100, CFG 2.0, and the frozen evaluation
+  seed, and published it across the root README and AFHQ documentation.
 - Recorded a schema-v3 corrected-topology capacity sweep from an RTX 4090 with
   PyTorch 2.11/CUDA 12.8: four BF16 micro-batch trials, each with 5 warmup and
   25 measured updates, completed with zero non-finite observations.
@@ -60,6 +63,9 @@ is unavailable.
 
 ### Changed
 
+- Moved checkpoint inference-asset reconstruction into the shared `inference`
+  layer and the reusable epoch Evaluation adapter into `training`, preserving
+  sampling as a downstream consumer and `scripts` as operation entry points.
 - Versioned the nested epoch-validation strict-resume state independently from
   outer checkpoint v12. New checkpoints persist every completed result with its
   epoch, global step, and exact metric surface; unversioned summary-only state
@@ -123,6 +129,16 @@ is unavailable.
 
 ### Fixed
 
+- Excluded checkpoint metadata, including training-loop validation and monitor
+  state, from the read-only inference projection.
+- Preserved the Process-owned high-precision alpha-bar authority across strict
+  state round trips so marginal, selected-pair, and learned-range coefficients
+  cannot diverge after checkpoint loading.
+- Kept nested Metric construction under the active injected registry authority
+  instead of silently falling back to process-global registrations.
+- Created validated nested prediction-shard parents and made tensor/image
+  writers reject payload and trajectory batch counts that disagree with their
+  declared `SamplingBatch.num_samples`.
 - Made run-directory strict resume select the highest lineage-consistent atomic
   snapshot across `latest.pt`, `best.pt`, and the highest numbered checkpoint,
   while explicit-file resume remains exact. Contradictory, corrupt, regressing,

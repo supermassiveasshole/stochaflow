@@ -24,10 +24,10 @@ from stochaflow.metrics.config import METRIC_TAG_SEGMENT_PATTERN
 from stochaflow.scripts.artifact_reporting import (
     RichArtifactVerificationReporter,
 )
-from stochaflow.scripts.epoch_validation import (
+from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
+from stochaflow.training.epoch_evaluation import (
     EvaluationBackedEpochValidator,
 )
-from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
 from stochaflow.training.outcome import (
     CheckpointSelectionKind,
     TrainingRunOutcome,

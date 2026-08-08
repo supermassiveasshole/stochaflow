@@ -1,8 +1,8 @@
 """Sampling builders, solvers, observers, and artifact writers."""
 
+from stochaflow.inference import InferenceAssetProvider
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
-from .assets import InferenceAssetProvider
 from .builder import (
     InferenceModelProvider,
     SamplingBuilder,

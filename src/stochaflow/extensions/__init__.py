@@ -33,6 +33,10 @@ from stochaflow.data import (
     canonical_artifact_digest,
     canonical_artifact_json_bytes,
 )
+from stochaflow.inference import (
+    InferenceAssetProvider,
+    InferenceModelProvider,
+)
 from stochaflow.metrics import MetricUpdate
 from stochaflow.models import DenoiserChannelLayout
 from stochaflow.processes import (
@@ -53,8 +57,6 @@ from stochaflow.sampling import (
     GaussianPrediction,
     GaussianTransition,
     GenerativeDynamics,
-    InferenceAssetProvider,
-    InferenceModelProvider,
     PredictionType,
     Sampler,
     SamplerResult,
