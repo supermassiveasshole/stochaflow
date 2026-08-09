@@ -12,6 +12,7 @@ from functools import wraps
 from pathlib import Path
 from threading import Event
 from typing import Any, ClassVar, cast
+from weakref import ref
 
 import pytest
 
@@ -1015,6 +1016,7 @@ def test_data_artifact_handle_rejects_copy_serialization_and_receipt_reuse(
     assert first.identity == second.identity
     assert first is not second
     assert first != second
+    assert ref(first)() is first
     with pytest.raises(TypeError, match="Store-issued runtime handle"):
         copy(first)
     with pytest.raises(TypeError, match="Store-issued runtime handle"):

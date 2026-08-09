@@ -275,17 +275,32 @@ class DataArtifactIdentity:
 
 
 @final
-@dataclass(frozen=True, slots=True, init=False, weakref_slot=True, eq=False)
+@dataclass(frozen=True, init=False, repr=False, eq=False)
 class DataArtifact[ArtifactPayloadT]:
     """Store-issued runtime handle for managed or referenced content."""
+
+    # Keep the weak-reference slot explicit so exact-handle receipts work on
+    # every supported Python 3.12 patch release as well as newer runtimes.
+    __slots__ = (
+        "__weakref__",
+        "_store_receipt",
+        "identity",
+        "payload",
+        "root",
+    )
 
     root: Path
     identity: DataArtifactIdentity
     payload: ArtifactPayloadT
-    _store_receipt: DataArtifactStoreReceipt = field(
-        repr=False,
-        compare=False,
-    )
+    _store_receipt: DataArtifactStoreReceipt
+
+    def __repr__(self) -> str:
+        """Represent stable fields without exposing runtime Store evidence."""
+
+        return (
+            f"DataArtifact(root={self.root!r}, identity={self.identity!r}, "
+            f"payload={self.payload!r})"
+        )
 
     @property
     def kind(self) -> Literal["managed", "referenced"]:

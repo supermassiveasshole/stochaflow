@@ -73,10 +73,12 @@ is unavailable.
   arbitrary family-owned payloads and family-local source registries remain
   supported. Receipts are bound to exact non-copyable runtime handles, and
   nested worker contexts remain in flight even when a parent catches its own
-  lifecycle error. Promoted the durable lifecycle and composition boundary into the
-  specification, architecture, and public Data documentation, then removed the
-  two completed development decision records while preserving future review
-  triggers under their long-term owners.
+  lifecycle error. An explicit weak-reference slot keeps exact-handle receipts
+  compatible across supported Python 3.12+ patch releases. Promoted the durable
+  lifecycle and composition boundary into the specification, architecture, and
+  public Data documentation, then removed the two completed development
+  decision records while preserving future review triggers under their
+  long-term owners.
 - Reorganized the root roadmap and internal development plans around plain
   current-state, user-outcome, action, and verification sections. Detailed
   future designs now remain in linked development notes, opaque milestone IDs
