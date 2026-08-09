@@ -35,6 +35,7 @@ from stochaflow.data.artifact_io import (
     write_cache_file,
 )
 from stochaflow.data.artifacts import (
+    _DATA_ARTIFACT_STORE_AUTHORITY,
     ArtifactVerificationEvent,
     DataArtifact,
     DataArtifactIdentity,
@@ -950,19 +951,34 @@ class DataArtifactStore:
     ) -> DataArtifact[PayloadT]:
         """Load or build one cache-owned artifact."""
 
+        lease = self.context._begin_materialization()
+        selection_started = False
         try:
-            return self._materialize(
-                kind="managed",
-                artifact_type=artifact_type,
-                source_name=source_name,
-                materializer_name=materializer_name,
-                locator_key=locator_key,
-                referenced_roots={},
-                build=build,
-                load=load,
-            )
-        except ArtifactVerificationObserverFailure as exc:
-            raise exc.error from None
+            if lease.context_outermost:
+                self.context._selection_request_started(
+                    boundary=("store" if lease.logical_outermost else "source")
+                )
+                selection_started = True
+            try:
+                return self._materialize(
+                    kind="managed",
+                    artifact_type=artifact_type,
+                    source_name=source_name,
+                    materializer_name=materializer_name,
+                    locator_key=locator_key,
+                    referenced_roots={},
+                    expected_identity=self.context.expected_identity,
+                    build=build,
+                    load=load,
+                )
+            except ArtifactVerificationObserverFailure as exc:
+                raise exc.error from None
+        finally:
+            try:
+                self.context._end_materialization(lease)
+            finally:
+                if selection_started:
+                    self.context._selection_request_finished()
 
     def materialize_referenced[PayloadT](
         self,
@@ -977,19 +993,34 @@ class DataArtifactStore:
     ) -> DataArtifact[PayloadT]:
         """Load or build an index whose represented content remains external."""
 
+        lease = self.context._begin_materialization()
+        selection_started = False
         try:
-            return self._materialize(
-                kind="referenced",
-                artifact_type=artifact_type,
-                source_name=source_name,
-                materializer_name=materializer_name,
-                locator_key=locator_key,
-                referenced_roots=referenced_roots,
-                build=build,
-                load=load,
-            )
-        except ArtifactVerificationObserverFailure as exc:
-            raise exc.error from None
+            if lease.context_outermost:
+                self.context._selection_request_started(
+                    boundary=("store" if lease.logical_outermost else "source")
+                )
+                selection_started = True
+            try:
+                return self._materialize(
+                    kind="referenced",
+                    artifact_type=artifact_type,
+                    source_name=source_name,
+                    materializer_name=materializer_name,
+                    locator_key=locator_key,
+                    referenced_roots=referenced_roots,
+                    expected_identity=self.context.expected_identity,
+                    build=build,
+                    load=load,
+                )
+            except ArtifactVerificationObserverFailure as exc:
+                raise exc.error from None
+        finally:
+            try:
+                self.context._end_materialization(lease)
+            finally:
+                if selection_started:
+                    self.context._selection_request_finished()
 
     def _materialize[PayloadT](
         self,
@@ -1000,6 +1031,7 @@ class DataArtifactStore:
         materializer_name: str,
         locator_key: Mapping[str, object],
         referenced_roots: Mapping[str, Path],
+        expected_identity: DataArtifactIdentity | None,
         build: Callable[
             [Path],
             ManagedDataArtifactBuild | ReferencedDataArtifactBuild,
@@ -1010,6 +1042,14 @@ class DataArtifactStore:
             artifact_type, path="artifact_type"
         )
         source_name = _non_empty_string(source_name, path="source_name")
+        if (
+            self.context.expected_source_name is not None
+            and source_name != self.context.expected_source_name
+        ):
+            raise ValueError(
+                "requested data artifact producer does not match the selected "
+                "source"
+            )
         materializer_name = _non_empty_string(
             materializer_name, path="materializer_name"
         )
@@ -1023,7 +1063,7 @@ class DataArtifactStore:
         )
         if kind == "managed" and referenced_roots:
             raise ValueError("managed artifacts must not declare referenced_roots")
-        expected = self.context.expected_identity
+        expected = expected_identity
         if expected is not None and (
             expected.kind != kind
             or expected.artifact_type != artifact_type
@@ -1805,16 +1845,15 @@ class DataArtifactStore:
         load: Callable[[DataArtifactLoadContext], PayloadT],
     ) -> DataArtifact[PayloadT]:
         try:
-            artifact_without_payload: DataArtifact[None] = DataArtifact(
-                root=root,
-                identity=validated.identity,
-                payload=None,
+            artifact_root = canonical_directory(
+                root,
+                label="data artifact root",
             )
         except (OSError, TypeError, ValueError) as exc:
             raise DataArtifactValidationError(str(exc)) from exc
         payload = load(
             DataArtifactLoadContext(
-                data_root=artifact_without_payload.root / "data",
+                data_root=artifact_root / "data",
                 identity=validated.identity,
                 domain=validated.domain,
                 verification=verification,
@@ -1822,7 +1861,7 @@ class DataArtifactStore:
         )
         try:
             after_load = scan_regular_files(
-                artifact_without_payload.root,
+                artifact_root,
                 hash_contents=False,
                 label="data artifact load input",
             )
@@ -1838,10 +1877,13 @@ class DataArtifactStore:
         ):
             raise RuntimeError("data artifact load callback mutated its artifact")
         try:
-            return DataArtifact(
-                root=artifact_without_payload.root,
+            return DataArtifact._from_store(
+                _DATA_ARTIFACT_STORE_AUTHORITY,
+                self.context,
+                root=artifact_root,
                 identity=validated.identity,
                 payload=payload,
+                verification=verification,
             )
         except (OSError, TypeError, ValueError) as exc:
             raise RuntimeError(

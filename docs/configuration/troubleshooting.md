@@ -191,6 +191,46 @@ strict resume 使用 checkpoint 的 schema-v2 binding 直接定位 immutable obj
 模型状态前失败。这不是 cache repair 场景：使用原始数据与配置重建 exact artifact，或
 启动新 run。旧 schema binding 没有 adapter，不能 strict resume。
 
+### `different request` / `requested data artifact producer does not match the selected source`
+
+source 返回了另一个 `DataSourceContext` 签发的旧 handle，或 Store identity 的
+`source_name` 与 Builder 选择的 registry name 不同。不要缓存 runtime `DataArtifact`；每次
+请求都通过当前 context 调 Store。组合 source 使用
+`context.nested_source_context(expected_source_name=...)` 创建内部请求，不要直接复用外层
+strict-resume identity，也不要在外层 source 返回后继续使用 nested context。
+
+### `not accepted through its DataSource request during this data build`
+
+正式 Builder 返回了手工 identity 或上一次 build 的 binding。通过
+`DataBuilderContext.data_source_context()` 创建请求，调用
+`materialize_data_source()`，并使用该次返回 artifact 的 identity 创建 bindings。
+
+### `formal DataBuilder must materialize artifacts through DataSource`
+
+正式 Builder 绕过 `DataSource`，直接调用了 `DataArtifactStore`。把 acquisition、读取、验证
+和 materialization 放进名义上的 `DataSource` 子类，再从 Builder 通过
+`materialize_data_source()` 调用它。Store 仍由 source 内部使用，不能成为 Builder 的替代
+入口。
+
+### `accepted source artifacts but returned no artifact bindings` / `accepted a source artifact without returning its binding`
+
+Builder 已接受外部 source artifact，却返回 `artifact_bindings=None` 或空集合。为每个要写入
+provenance 的 artifact 返回 binding。只有完全由 resolved config 与 run seed 决定、没有
+外部输入的 synthetic recipe 才能没有 bindings。
+
+### `was not fully verified during this data build`
+
+strict resume 的 Builder 返回了只有 manifest 验证证据的 artifact。使用
+`DataBuilderContext.data_source_context()`；它会把 checkpoint 的 expected identity 注入请求
+并强制 `full` 验证。不要手工建立较弱的 `DataSourceContext` 来绕过恢复检查。
+
+### `outer data source returned before nested source work completed` / `data Builder returned before all source requests completed`
+
+组合 source 或 Builder 启动了后台 materialization，却在 worker 完成前返回。所有 nested
+source work 必须在外层 `materialize()` 返回前完成并 join；正式 Builder 也必须等待每个顶层
+source 请求结束后再返回 `DataLoaders`。不要把 runtime context、handle 或 worker 留到 build
+窗口关闭以后继续使用。
+
 ### referenced source 报 cache overlap
 
 referenced content 必须位于 `cache_root` 之外；否则 quarantine 或 cache 清理可能把外部

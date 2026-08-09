@@ -85,7 +85,7 @@ a new product direction.
 | Distributed execution | A validated single-device workload misses measured capacity or time requirements | [Plan](docs/development/distributed-training-and-inference-support-plan.md) |
 | Automated model tuning | A stable objective, budget, Evaluation protocol, and reusable single-run library call exist | [Plan](docs/development/automated-model-tuning-plan.md) |
 | Broader artifact metadata, provenance, or capacity models | The metadata, provenance, or resource-evidence direction independently meets its own multi-producer or multi-consumer evidence requirement | [Proposal](docs/development/artifact-metadata-provenance-capacity-model-proposal.md) |
-| Broader data abstractions | Multiple data sources or task recipes need the same new extension behavior | [Done boundary record with reopen conditions](docs/development/data-layer-composition-boundary-review.md) |
+| Broader data abstractions | Multiple independent data sources or task recipes prove the same missing extension behavior | [Recipe helpers](docs/development/data-recipe-extension-ergonomics-plan.md), [streaming](docs/development/streaming-data-lifecycle-support-plan.md), and [storage/payload adapters](docs/development/data-storage-and-payload-adapter-support-plan.md) |
 | New algorithm families | A complete use case proves that current family contracts cannot express it | [Specification](SPEC.md#16-future-compatible-directions) |
 | General workflow orchestrator | At least two stable multi-step workflows share the same control behavior and manual composition is a maintenance problem | [Plan](docs/development/general-workflow-orchestrator-plan.md) |
 

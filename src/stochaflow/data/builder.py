@@ -5,16 +5,21 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
 from torch.utils.data import DataLoader, Dataset
 
 from stochaflow.data.artifact_io import MAX_ARTIFACT_VERIFICATION_WORKERS
+from stochaflow.data.artifact_selection import (
+    DataArtifactSelectionSession,
+    capture_data_artifact_selections,
+)
 from stochaflow.data.artifacts import (
     ArtifactVerificationObserver,
     DataArtifactBindings,
+    DataSourceContext,
 )
 from stochaflow.data.dataloaders import (
     DataLoaders,
@@ -46,6 +51,7 @@ from stochaflow.data.partition import (
 )
 from stochaflow.data.recipe_config import (
     ClassLabeledImageDataBuilderConfig,
+    DataSourceMaterializationConfig,
     ImageDataBuilderConfig,
     MultiResolutionDataBuilderConfig,
     SuperResolutionDataBuilderConfig,
@@ -74,6 +80,12 @@ class DataBuilderContext:
     expected_artifacts: DataArtifactBindings | None = None
     verification_observer: ArtifactVerificationObserver | None = None
     verification_workers: int | None = None
+    _artifact_selection: DataArtifactSelectionSession | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         params = cast(object, self.params)
@@ -122,8 +134,47 @@ class DataBuilderContext:
         """Compare all selected identities before constructing Datasets."""
 
         if self.strict_resume:
-            assert self.expected_artifacts is not None
+            if self.expected_artifacts is None:
+                raise ValueError(
+                    "strict resume checkpoint is missing data artifact identities"
+                )
             self.expected_artifacts.assert_exact(actual)
+
+    def data_source_context(
+        self,
+        materialization: DataSourceMaterializationConfig,
+        *,
+        binding_id: str,
+        source_name: str,
+        path: str,
+    ) -> DataSourceContext:
+        """Build one source request with shared resume and verification policy."""
+
+        expected = None
+        if self.strict_resume:
+            if self.expected_artifacts is None:
+                raise ValueError(
+                    "strict resume checkpoint is missing data artifact identities"
+                )
+            expected = self.expected_artifacts.identity_for(binding_id)
+            if expected.source_name != source_name:
+                raise ValueError(
+                    "strict resume expected a different registered data source"
+                )
+        context = materialization.context(
+            expected_identity=expected,
+            expected_source_name=source_name,
+            verification_observer=self.verification_observer,
+            verification_workers=self.verification_workers,
+            path=path,
+        )
+        if self._artifact_selection is not None:
+            object.__setattr__(
+                context,
+                "_selection_session",
+                self._artifact_selection,
+            )
+        return context
 
 
 class DataBuilder(ABC):
@@ -153,24 +204,44 @@ def build_data_loaders(
     """Construct and validate one registered DataBuilder."""
 
     registries.data_builders.require_base(DataBuilder)
-    builder = cast(
-        DataBuilder,
-        registries.data_builders.create(
-            config.name,
-            DataBuilderContext(
-                params=config.params,
-                seed=seed,
-                strict_resume=strict_resume,
-                expected_artifacts=expected_artifacts,
-                verification_observer=verification_observer,
-                verification_workers=verification_workers,
+    with capture_data_artifact_selections() as artifact_selection:
+        builder_context = DataBuilderContext(
+            params=config.params,
+            seed=seed,
+            strict_resume=strict_resume,
+            expected_artifacts=expected_artifacts,
+            verification_observer=verification_observer,
+            verification_workers=verification_workers,
+        )
+        object.__setattr__(
+            builder_context,
+            "_artifact_selection",
+            artifact_selection,
+        )
+        builder = cast(
+            DataBuilder,
+            registries.data_builders.create(
+                config.name,
+                builder_context,
             ),
-        ),
-    )
-    loaders_value = cast(object, builder.build())
+        )
+        loaders_value = cast(object, builder.build())
     if not isinstance(loaders_value, DataLoaders):
         raise TypeError(
             f"data builder '{config.name}' must return DataLoaders"
+        )
+    artifact_selection.validate(
+        loaders_value.artifact_bindings,
+        strict_resume=strict_resume,
+    )
+    if (
+        strict_resume
+        and expected_artifacts is None
+        and loaders_value.artifact_bindings is not None
+        and len(loaders_value.artifact_bindings) > 0
+    ):
+        raise ValueError(
+            "strict resume checkpoint is missing data artifact identities"
         )
     if strict_resume and expected_artifacts is not None:
         actual_artifacts = loaders_value.artifact_bindings

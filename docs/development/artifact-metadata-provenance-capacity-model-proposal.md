@@ -38,6 +38,8 @@ DataSource
 - 没有通用 `ArtifactDescriptor`、`ArtifactReference`、`DatasetMetadata` 或 metadata bag。
 - 没有来源关系图、转换历史引擎或自动代码/环境快照。
 - 没有 `ExecutionRecord`、资源描述、artifact 目录、描述符注册表或配套 CLI。
+- 没有让 direct-Python/programmatic run 在不使用 Registry recipe 时发布正式 artifact
+  bindings 与 execution provenance 的窄 run context。
 - 没有至少两个仍在维护的产出方和读取方证明需要同一套元数据与来源约定。
 - 没有至少两个基准或报告使用方证明需要同一套资源证据模型。
 
@@ -57,7 +59,8 @@ DataSource
 - **元数据：** 至少两个仍在维护的产出方或工作流反复需要同一组字段，并且至少一个具体读取方
   证明这些字段需要成为公共约定，而不是任务内部数据。
 - **来源记录：** 至少两个独立工作流需要追踪现有 artifact、checkpoint 或 extension 来源记录
-  无法表达的关系，并且至少一个审计或读取方会实际使用该关系。
+  无法表达的关系，并且至少一个审计或读取方会实际使用该关系。Direct-Python run context
+  只有在真实 programmatic consumer 需要发布同类正式证据时，才作为这条路径的候选入口。
 - **资源证据：** 至少两个基准或报告使用方需要同一模型，并能明确区分文件占用、执行前估算
   和实际测量。
 
@@ -136,7 +139,8 @@ DataSource
 - [Artifact 与 Data 规范](../../SPEC.md)
 - [DataSource/DataBuilder 架构边界](../../ARCHITECTURE.md)
 - [根路线图中的跨项目元数据与资源证据入口](../../ROADMAP.md)
-- [Data artifact producer lifecycle 记录](data-artifact-producer-lifecycle-refactor.md)
+- [当前 Data pipeline 契约](../configuration/data-pipeline.md)
+- [Programmatic data provenance 的原始问题](notes/data-layer-composition-boundary-review/research-archive.md)
 
 历史案例只可作为重审线索，不能单独成为持续维护公共能力的理由。本文保留未来支持构想，未经
 维护者明确审阅不得删除。

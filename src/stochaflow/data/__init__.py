@@ -19,6 +19,7 @@ from .artifacts import (
     DataArtifactIdentity,
     DataSource,
     DataSourceContext,
+    materialize_data_source,
 )
 from .builder import (
     ClassLabeledImageDataBuilder,
@@ -84,4 +85,5 @@ __all__ = [
     "build_data_loaders",
     "canonical_artifact_digest",
     "canonical_artifact_json_bytes",
+    "materialize_data_source",
 ]

@@ -222,6 +222,16 @@ concrete classes, or modality-specific fields.
 reads, validates, and transforms external data, then materializes it as a
 verified `DataArtifact`. It must not construct runtime Dataset views, data
 partitions, PyTorch data samplers, collate functions, or DataLoader objects.
+Only `DataArtifactStore` may issue a runtime `DataArtifact`; extensions must use
+the generic source-materialization boundary and must not construct, subclass,
+cache across source requests, or fabricate artifact handles. A
+`DataSourceContext` represents one logical request and must not be reused for
+another selection. Formal Builders may bind only artifacts
+accepted through a DataSource request during that same build, and strict resume
+requires a current full-verification receipt in addition to identity equality.
+These receipts are runtime-only and never belong in manifests or checkpoints;
+they prove declared binding provenance, not how trusted Builder code uses a
+payload.
 
 `DataBuilder` is the runtime data-composition entrypoint. It selects compatible
 sources, binds artifact identities, and assembles Dataset views, splits,

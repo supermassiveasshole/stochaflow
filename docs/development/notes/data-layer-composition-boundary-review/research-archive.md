@@ -1,8 +1,12 @@
 # Data Layer Composition Boundary 原始审查资料
 
 > 本文保存 2026-08-09 文档重构前的完整仓库审查、框架调研、方案比较、
-> API 草案和历史迁移记录。它不是当前行为来源。当前决策见
-> [`data-layer-composition-boundary-review.md`](../../data-layer-composition-boundary-review.md)。
+> API 草案和历史迁移记录。它不是当前行为来源。当前行为以
+> [`SPEC.md`](../../../../SPEC.md)、[`ARCHITECTURE.md`](../../../../ARCHITECTURE.md) 和公开
+> Data 文档为准；future-support 分别由
+> [Data recipe extension](../../data-recipe-extension-ergonomics-plan.md)、
+> [Streaming data lifecycle](../../streaming-data-lifecycle-support-plan.md) 和
+> [Data storage/payload adapter](../../data-storage-and-payload-adapter-support-plan.md)计划负责。
 
 - 文档性质：开发草案；不属于当前公开 API 或正式用户文档
 - 状态：Implemented；数据组合边界与统一 schema-v2 artifact producer lifecycle 已闭环
@@ -14,8 +18,8 @@
 - 制定日期：2026-07-27
 - 审查基线：当前共享工作区中的 data core、AFHQ-v2 showcase、Physics 与
   Knowledge Distillation extension
-- 关联提案：
-  [Data Artifact Producer Lifecycle Refactor](../../data-artifact-producer-lifecycle-refactor.md)；
+- 关联资料：
+  [DataArtifact lifecycle 实施归档](../data-artifact-producer-lifecycle-refactor/implementation-archive.md)；
   [Artifact Metadata, Provenance and Capacity Model](../../artifact-metadata-provenance-capacity-model-proposal.md)
   保持 Deferred
 

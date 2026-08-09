@@ -61,7 +61,8 @@ training 尚未成为当前内置产品能力。
 
 ## 数据与训练工作流
 
-当前数据路径从 `DataSource` 产生 verified `DataArtifact`，再由 `DataBuilder` 组合
+当前数据路径由 `DataSource` 调用 `DataArtifactStore`，Store 完成验证、payload load 和
+加载后复查后，签发不可直接构造或继承的 `DataArtifact`。`DataBuilder` 随后组合
 partition、Dataset、PyTorch sampler、collate 和 train/validation/test iterables。
 framework runtime 不解释 batch 字段；图像、class label、condition、target 或其他结构由
 所选 Builder 和 Strategy 约定。
@@ -69,8 +70,12 @@ framework runtime 不解释 batch 字段；图像、class label、condition、ta
 `DataArtifactStore` 为 built-in 与 extension source 提供同一套 schema-v2 cache lifecycle，
 包括 identity、inventory、locator、locking、staging、verification、quarantine、atomic
 publication 和 strict-resume identity comparison。`managed` 与 `referenced` 表示数据内容
-由 cache 管理还是保留在外部目录，不改变统一 artifact handle。详细配置、验证线程和
-ownership 行为见[数据构建与 artifact 生命周期](configuration/data-pipeline.md)。
+由 cache 管理还是保留在外部目录，不改变统一 artifact handle。每次 source 请求和正式
+Builder 执行还会核对不持久化的 Store receipt，避免把伪造、旧请求、直接 Store 调用或
+未绑定的 identity 写入 checkpoint。payload 可以是任意项目类型；只有 source registry
+和消费它的 Builder 解释领域语义。receipt 证明 binding 来源，不检查受信任 Builder 如何
+使用 payload。详细配置、验证线程和 ownership 行为见
+[数据构建与 artifact 生命周期](configuration/data-pipeline.md)。
 
 训练侧的当前组合为：
 

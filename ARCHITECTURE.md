@@ -129,7 +129,8 @@ composition.
 ```text
 external data
     -> DataSource
-    -> verified DataArtifact
+    -> DataArtifactStore
+    -> sealed DataArtifact
     -> DataBuilder
     -> Dataset views / partitions / samplers / collate / loaders
 ```
@@ -145,6 +146,53 @@ and referenced artifacts are ownership strategies within the same contract;
 payload and domain semantics remain owned by the source family and the consuming
 Builder. Core consumes ready iterables whose batches are structured `Any` and
 does not define universal Dataset, DataLoader, or PyTorch data-sampler schemas.
+
+The Store is also the sole runtime issuer of `DataArtifact`. A handle is sealed
+against direct construction, subclass substitution, copying, serialization,
+and receipt reuse by another object. Its ephemeral receipt is bound to the
+exact handle, the logical request represented by its `DataSourceContext`, and
+the verification strength. Handles therefore use object identity; stable value
+comparison belongs to `DataArtifactIdentity`.
+The `DataSource` base checks receipt origin and verification strength at every
+inheritance/composition layer. The outermost call for each `DataSourceContext`
+also checks that context's expected identity and source; only the outer logical
+request is recorded as a Builder selection. `materialize_data_source()` is the
+explicit composition entry point.
+Calling `super().materialize(context)` with the same context is final-result
+delegation and preserves strict expected-object lookup. A derived source that
+uses its parent artifact only as an intermediate must pass an explicitly
+derived nested context, then publish its own final artifact on the outer
+context.
+One context is one logical request and also uses object identity. Explicitly
+derived nested contexts share its request state and token, and neither the outer
+nor nested context is reusable for another selection.
+Formal `build_data_loaders()` captures source-accepted handles for one Builder
+execution and rejects identity-only, stale, direct-Store, or unbound
+declarations before they can enter checkpoint provenance.
+Every outermost call for a distinct context contributes to the capture window,
+including nested worker contexts; only the outer logical result becomes a
+binding candidate. The window closes when the Builder returns, so a parent
+cannot hide unfinished work by catching its own lifecycle error. Unfinished
+source requests and results arriving after closure fail rather than escaping
+provenance checks.
+Serialized `DataArtifactIdentity` and `DataArtifactBindings` intentionally exclude this
+runtime evidence. The Builder remains the trusted owner of payload use and
+binding-role semantics; receipt validation does not inspect its Dataset or
+iterables.
+
+A composite source derives `nested_source_context()` only while its outer
+parent context is active, and all nested workers finish before that direct
+parent source returns. Nested producers retain Store verification but are not
+recorded as independent Builder selections. The outer producer therefore owns
+binding every nested identity or digest that affects its result into the final
+artifact's authenticated source/materialization facts; core cannot infer that
+semantic dependency from arbitrary payload code.
+
+This boundary is modality-neutral: any family-local source registry may return
+an arbitrary project payload after local managed or filesystem-referenced
+materialization. Remote storage control planes, snapshot-free streams, and
+payload semantics remain outside the Store rather than becoming image-specific
+branches or a framework-global source registry.
 
 ### 5.2 Training
 

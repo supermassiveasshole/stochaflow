@@ -256,7 +256,12 @@ sampler、loader、resume 与 batch contract。只有 artifact 完整契约和�
 referenced producer 共享一个 schema-v2 manifest/cache lifecycle，并都返回统一
 `DataArtifact`；前者由 cache 拥有内容，后者只拥有索引并引用 cache 外部内容。
 extension 只实现领域 build/load callback，不自行计算最终 identity，也不维护 locator、
-locking、publication 或 quarantine。完整符号与 callback 契约见
+locking、publication 或 quarantine。消费 source 时使用 `materialize_data_source()`；
+`DataArtifact` 不能直接构造或继承，跨请求缓存的 handle 也不会被接受。非图像项目保留
+自己的 family-local source Registry 和 payload 类型，不需要全局 DataSource Registry。
+多 source Builder 应通过 `DataBuilderContext.data_source_context()` 为每个逻辑请求创建
+独立 context；不要把一个 context 复用于后续选择或无关的并发选择。
+完整符号与 callback 契约见
 [Extension 公共 API](../api/extensions.md)。
 
 需要查看跨 data/training/sampling 三条扩展轴的 legacy architecture fixture 时，参考两个
@@ -959,21 +964,20 @@ from torch.utils.data import DataLoader
 from stochaflow.extensions import DataBuilder, DataLoaders, REGISTRIES
 
 
-@REGISTRIES.data_builders.register("my-project.physics-data")
-class PhysicsDataBuilder(DataBuilder):
+@REGISTRIES.data_builders.register("my-project.synthetic-records")
+class SyntheticRecordDataBuilder(DataBuilder):
     def build(self) -> DataLoaders:
         params = self.context.params
-        train_dataset, validation_dataset = build_physics_datasets(
-            params["path"],
+        train_dataset = build_synthetic_records(
+            params["sample_count"],
             seed=self.context.seed,
         )
         return DataLoaders(
             train=DataLoader(
                 train_dataset,
-                sampler=PhysicsSampler(train_dataset),
-                collate_fn=physics_collate,
+                sampler=RecordSampler(train_dataset),
+                collate_fn=collate_records,
             ),
-            validation=DataLoader(validation_dataset),
             steps_per_epoch=params.get("steps_per_epoch"),
         )
 ```
@@ -982,9 +986,9 @@ class PhysicsDataBuilder(DataBuilder):
 extensions:
   plugins: [my-project]
 data:
-  name: my-project.physics-data
+  name: my-project.synthetic-records
   params:
-    path: data/simulation.zarr
+    sample_count: 10000
     steps_per_epoch: 1000
 ```
 
@@ -992,6 +996,10 @@ data:
 返回一个 `DataLoaders`；所有 loader 必须可重复迭代，不能直接返回一次性的 generator。
 train loader 通过自身 `len()` 或显式 `steps_per_epoch` 给出有限 epoch。
 validation/test 可以是未知长度的可重复 iterable。
+
+上例完全由 resolved config 与 experiment seed 生成，因此可以没有 artifact bindings。
+读取外部文件、服务或 stream 的 Builder 必须先通过 DataSource/Store 建立正式 artifact 并
+返回 bindings；完整模式见[数据构建与 artifact 生命周期](data-pipeline.md#自定义-databuilder)。
 
 每个 epoch 开始时，Trainer 会对 train loader 的 `sampler` 和 `batch_sampler` 做去重后
 的 duck-typed `set_epoch(epoch)` 调用。其他 Dataset 或 DataLoader 属性只用于

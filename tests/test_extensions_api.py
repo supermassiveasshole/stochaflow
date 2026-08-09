@@ -319,6 +319,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         ),
         "prepare_extension_plugins": plugins.prepare_extension_plugins,
         "gaussian_training_target": training.gaussian_training_target,
+        "materialize_data_source": data.materialize_data_source,
         "normalize_gaussian_prediction": sampling.normalize_gaussian_prediction,
     }
 

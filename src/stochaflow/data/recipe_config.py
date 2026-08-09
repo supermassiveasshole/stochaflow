@@ -230,6 +230,7 @@ class DataSourceMaterializationConfig:
         self,
         *,
         expected_identity: DataArtifactIdentity | None = None,
+        expected_source_name: str | None = None,
         verification_observer: ArtifactVerificationObserver | None = None,
         verification_workers: int | None = None,
         path: str = "data source materialization",
@@ -242,6 +243,7 @@ class DataSourceMaterializationConfig:
             policy=cast(Any, self.policy),
             verification=cast(Any, self.verification),
             expected_identity=expected_identity,
+            expected_source_name=expected_source_name,
             verification_observer=verification_observer,
             verification_workers=(
                 self.verification_workers

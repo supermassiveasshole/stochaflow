@@ -76,6 +76,26 @@ The canonical configuration reference is
 
 - A `DataSource` MUST acquire, read, validate, transform, and materialize
   external data as a verified `DataArtifact`.
+- `DataArtifactStore` MUST be the sole issuer of an accepted `DataArtifact`.
+  Issuance MUST occur only after object validation, payload loading, and the
+  post-load mutation check. Direct construction, subclass stand-ins, copied or
+  serialized handles, and a receipt attached to a different handle MUST fail
+  closed. Runtime handles have object-identity semantics; stable value
+  comparison MUST use `DataArtifactIdentity`.
+- Each source materialization request MUST accept only a Store receipt produced
+  for the same logical request represented by its `DataSourceContext`, including
+  explicitly derived nested contexts. One context represents one logical source
+  request and MUST NOT be copied, serialized, or reused for another source
+  selection. Runtime
+  receipt evidence MUST remain
+  ephemeral and MUST NOT enter artifact identity serialization, manifests,
+  cache keys, or checkpoints.
+- A composite source MAY derive nested contexts for internal producers. Its
+  nested work MUST finish before the direct parent source call returns. A
+  nested context MUST reject work after that parent context closes. The
+  final artifact identity MUST bind every internal artifact fact that can alter
+  the final payload or represented content; nested runtime receipts are not
+  persisted as separate Builder bindings.
 - A `DataSource` MUST NOT construct runtime dataset views, partitions, PyTorch
   samplers, collate functions, or data loaders.
 - A `DataBuilder` MUST own runtime data composition, including source selection,
@@ -85,6 +105,28 @@ The canonical configuration reference is
   keys and semantics belong to the selected Strategy or project component.
 - Inputs that participate in resume, inference, or evaluation MUST carry the
   artifact identity required to validate that use.
+- Formal `DataBuilder` execution MUST reject declared artifact bindings that
+  were not accepted through a `DataSource` request during the current build.
+  A formal Builder MUST NOT call `DataArtifactStore` directly and MUST finish
+  every source request before returning `DataLoaders`; direct Store use,
+  in-flight requests, and late source results MUST fail closed. Every outermost
+  call for a distinct nested context MUST remain counted until it finishes,
+  even when its direct parent catches a lifecycle error.
+  Strict resume MUST additionally require full verification and exact equality
+  with checkpoint identities. Binding-role semantics remain Builder-owned, so
+  one accepted artifact MAY be assigned to more than one role. A binding MAY
+  carry an equal schema-round-tripped identity when the same identity has
+  current accepted receipt evidence; Python object identity is not normative.
+- Artifact payloads and batch semantics MAY be arbitrary project-owned Python
+  values. Core MUST NOT require image types or a universal payload schema;
+  source registries and payload validation remain family-local.
+- A Builder MAY omit artifact bindings only when its inputs are fully determined
+  by resolved configuration and the run seed. External files, services, or
+  streams MUST use a governed artifact boundary before they can provide formal
+  provenance or strict-resume evidence.
+- Runtime receipt checks prove the origin and current verification of declared
+  bindings. They MUST NOT be described as proving that trusted project Builder
+  code actually used a bound payload when assembling its iterables.
 
 ## 5. Training Contract
 

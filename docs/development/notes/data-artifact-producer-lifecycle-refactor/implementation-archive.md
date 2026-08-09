@@ -1,8 +1,9 @@
 # DataArtifact Producer Lifecycle 原始实施记录
 
 > 本文保存 2026-08-09 文档重构前的 API、manifest、迁移和验收明细。
-> 当前决策见
-> [`data-artifact-producer-lifecycle-refactor.md`](../../data-artifact-producer-lifecycle-refactor.md)。
+> 当前行为以 [`SPEC.md`](../../../../SPEC.md)、
+> [`ARCHITECTURE.md`](../../../../ARCHITECTURE.md) 和公开 Data 文档为准；已完成的开发
+> 决策记录已在 lifecycle 闭环后删除。
 
 - 文档性质：已实施的开发决策记录；不属于公开 API
 - 状态：Implemented
@@ -218,3 +219,23 @@ Sphinx -W:                             passed
 
 metadata/provenance/capacity 提案保持 Deferred，直到出现满足其 decision gates 的真实
 重复模式。
+
+## 8. 2026-08-09 lifecycle 强制闭环
+
+后续反向审查发现，原实现允许 extension 直接构造 `DataArtifact`，正式 DataBuilder 也只
+比较可公开构造的 identity bindings。正常 producer 已经使用 Store，但框架不能证明绑定
+来自本次验证。
+
+闭环实现保留 schema v2 和现有 producer callback：
+
+- `DataArtifact` 改为 Store 签发的不可继承 return-only handle；
+- 每个 `DataSourceContext` 和 Store 返回值携带不持久化的请求 receipt；
+- `materialize_data_source()` 核对 source 返回值属于同一次请求；
+- 正式 `build_data_loaders()` 只接受本次执行期间经 DataSource 请求接受的 bindings，并
+  拒绝直接 Store 调用、identity-only 回显和已接受但未绑定的 artifact；
+- strict resume 的 runtime receipt 必须记录 `full` verification；
+- 独立非图像 source、family-local Registry 和自定义 dataclass payload 进入 core tests。
+
+receipt 不进入 manifest、cache key、stable identity serialization 或 checkpoint。该修复没有
+新增全局 DataSource Registry、universal payload schema、remote store 或 live-stream
+lifecycle。

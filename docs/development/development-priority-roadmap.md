@@ -111,8 +111,9 @@ Hydra 只负责更易读的全新训练配置，不与 latent Evaluation 合并�
 | Distributed execution | 单设备执行是当前基线 | 目标 workload 无法满足容量或时间要求 | [Distributed 计划](distributed-training-and-inference-support-plan.md) |
 | Automated tuning | structured outcome 与正式 Evaluation 可复用 | objective、budget、Evaluation 规则和库调用稳定 | [Tuning 计划](automated-model-tuning-plan.md) |
 | Artifact metadata/provenance/capacity | 当前保存每次运行所需的身份和证据 | 任一子方向满足提案内各自的多产出方或多使用方证据条件 | [暂停提案](artifact-metadata-provenance-capacity-model-proposal.md) |
-| Data abstraction 扩展 | artifact lifecycle 与 task-level DataBuilder 已完成 | 多个 source 或 task 证明同一扩展需求 | [已完成边界记录中的重开条件](data-layer-composition-boundary-review.md) |
-| Data producer 扩展 | schema-v2 producer lifecycle 已完成 | 新 producer 暴露现有流程无法表达的问题 | [已完成 lifecycle 记录中的重开条件](data-artifact-producer-lifecycle-refactor.md) |
+| Data recipe helper 与注册体验 | Python 与 recipe-level `DataBuilder` 已可扩展 | 至少两个独立 extension 重复同一构造、状态和失败语义 | [Recipe extension 计划](data-recipe-extension-ergonomics-plan.md) |
+| Streaming data lifecycle | `DataLoaders` 可接受 iterable，现有 artifact 可保存有限 snapshot | 真实 workload 无法由 project-private iterable 和现有 artifact 边界满足 | [Streaming 计划](streaming-data-lifecycle-support-plan.md) |
+| Data storage 与 payload adapter | managed/referenced artifact 与 family-owned payload 已完成 | 多种真实表示重复同一 contract，或出现现有 read boundary 无法拒绝的失败 | [Storage/payload 计划](data-storage-and-payload-adapter-support-plan.md) |
 | 新算法 family | family contract 可以按方法独立扩展 | 完整用例证明当前 contract 不够 | [SPEC](../../SPEC.md#16-future-compatible-directions) |
 | 通用工作流编排器 | 显式命令和产物交接是默认方式 | 至少两个稳定流程重复同一控制逻辑，手工组合已成为维护问题 | [独立暂停计划](general-workflow-orchestrator-plan.md) |
 

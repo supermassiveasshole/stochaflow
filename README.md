@@ -285,15 +285,20 @@ arbitrary Python object graph.
 ### Data
 
 ```text
-DataSource -> DataArtifact -> DataBuilder -> DataLoaders
+DataSource -> DataArtifactStore -> sealed DataArtifact -> DataBuilder -> DataLoaders
 ```
 
 - `DataSource` acquires, validates, transforms, and materializes external data.
-- `DataArtifact` is the verified, identity-bearing result of that producer
-  lifecycle.
+- `DataArtifactStore` is the only issuer of a `DataArtifact`; direct construction,
+  subclass stand-ins, and stale handles from another source request fail closed.
+- `DataArtifact` is the verified, identity-bearing result. Its project-owned
+  payload may represent any data modality.
 - `DataBuilder` is the runtime data-recipe composition root. It owns artifact
   binding, partitioning, Dataset views, transforms, PyTorch samplers, collate
   behavior, and loaders.
+- Formal Builder execution accepts only bindings returned through a DataSource
+  request during that same build; strict resume also requires current full
+  verification.
 - Core training code consumes structured batches without imposing image,
   condition, target, or metadata fields.
 

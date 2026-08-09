@@ -32,6 +32,7 @@ from stochaflow.data import (
     TorchvisionImageArtifactPayload,
     canonical_artifact_digest,
     canonical_artifact_json_bytes,
+    materialize_data_source,
 )
 from stochaflow.inference import (
     InferenceAssetProvider,
@@ -271,6 +272,7 @@ __all__ = [
     "compute_objective",
     "extension_plugin_provenance_to_dicts",
     "gaussian_training_target",
+    "materialize_data_source",
     "normalize_gaussian_prediction",
     "parse_extension_plugin_provenance",
     "prepare_extension_plugins",

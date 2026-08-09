@@ -290,6 +290,7 @@ def test_only_new_data_contract_is_public() -> None:
         "build_data_loaders",
         "canonical_artifact_digest",
         "canonical_artifact_json_bytes",
+        "materialize_data_source",
     }
     for removed in (
         "DataPipeline",

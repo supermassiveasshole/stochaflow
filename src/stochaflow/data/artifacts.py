@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast
+from threading import Lock, get_ident
+from typing import Any, ClassVar, Literal, NoReturn, Protocol, cast, final
+from weakref import ReferenceType, ref
 
 from stochaflow.data.artifact_io import (
     MAX_ARTIFACT_VERIFICATION_WORKERS,
@@ -34,8 +37,60 @@ _IDENTITY_FIELDS = frozenset(
 _BINDING_FIELDS = frozenset({"id", "identity"})
 _COLLECTION_FIELDS = frozenset({"schema_version", "bindings"})
 _SHA256_LENGTH = 64
+_DATA_ARTIFACT_STORE_AUTHORITY = object()
 
 type ArtifactVerificationPhase = Literal["validate"]
+
+
+@dataclass(frozen=True, slots=True)
+class DataArtifactStoreReceipt:
+    """Ephemeral evidence that one Store request verified an artifact."""
+
+    identity: DataArtifactIdentity
+    root: Path
+    artifact_ref: ReferenceType[DataArtifact[Any]] = field(
+        repr=False,
+        compare=False,
+    )
+    request_token: object = field(repr=False, compare=False)
+    verification: Literal["manifest", "full"]
+    authority: object = field(repr=False, compare=False)
+
+    @classmethod
+    def _issue(
+        cls,
+        *,
+        authority: object,
+        artifact: DataArtifact[Any],
+        identity: DataArtifactIdentity,
+        root: Path,
+        request_token: object,
+        verification: Literal["manifest", "full"],
+    ) -> DataArtifactStoreReceipt:
+        if authority is not _DATA_ARTIFACT_STORE_AUTHORITY:
+            raise TypeError("only DataArtifactStore may issue verification receipts")
+        return cls(
+            identity=identity,
+            root=root,
+            artifact_ref=ref(artifact),
+            request_token=request_token,
+            verification=verification,
+            authority=_DATA_ARTIFACT_STORE_AUTHORITY,
+        )
+
+    def _matches(
+        self,
+        *,
+        artifact: DataArtifact[Any],
+        identity: DataArtifactIdentity,
+        root: Path,
+    ) -> bool:
+        return (
+            self.authority is _DATA_ARTIFACT_STORE_AUTHORITY
+            and self.artifact_ref() is artifact
+            and self.identity == identity
+            and self.root == root
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +131,27 @@ class ArtifactVerificationObserver(Protocol):
 
     def __call__(self, event: ArtifactVerificationEvent, /) -> None:
         """Observe one artifact verification progress update."""
+
+
+class DataArtifactSelectionObserver(Protocol):
+    """Observe formal source-request lifecycle and accepted artifacts."""
+
+    def request_started(
+        self,
+        *,
+        boundary: Literal["source", "store"],
+    ) -> None:
+        """Mark one outer runtime request as active."""
+
+    def request_finished(self) -> None:
+        """Mark one outer runtime request as finished."""
+
+    def record(
+        self,
+        artifact: DataArtifact[Any],
+        source_name: str | None,
+    ) -> None:
+        """Record one source-accepted handle."""
 
 
 def _non_empty_string(value: object, *, path: str) -> str:
@@ -198,13 +274,18 @@ class DataArtifactIdentity:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@final
+@dataclass(frozen=True, slots=True, init=False, weakref_slot=True, eq=False)
 class DataArtifact[ArtifactPayloadT]:
-    """Verified runtime handle for managed or referenced content."""
+    """Store-issued runtime handle for managed or referenced content."""
 
     root: Path
     identity: DataArtifactIdentity
     payload: ArtifactPayloadT
+    _store_receipt: DataArtifactStoreReceipt = field(
+        repr=False,
+        compare=False,
+    )
 
     @property
     def kind(self) -> Literal["managed", "referenced"]:
@@ -218,25 +299,166 @@ class DataArtifact[ArtifactPayloadT]:
 
         return self.root / "manifest.json"
 
-    def __post_init__(self) -> None:
-        identity = cast(object, self.identity)
-        if not isinstance(identity, DataArtifactIdentity):
+    def __init__(
+        self,
+        root: Path,
+        identity: DataArtifactIdentity,
+        payload: ArtifactPayloadT,
+    ) -> None:
+        del root, identity, payload
+        raise TypeError(
+            "DataArtifact is issued by DataArtifactStore and cannot be "
+            "constructed directly"
+        )
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        del cls, kwargs
+        raise TypeError("DataArtifact is final and cannot be subclassed")
+
+    def __copy__(self) -> NoReturn:
+        raise TypeError(
+            "DataArtifact is a Store-issued runtime handle and cannot be copied"
+        )
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> NoReturn:
+        del memo
+        raise TypeError(
+            "DataArtifact is a Store-issued runtime handle and cannot be copied"
+        )
+
+    def __reduce__(self) -> NoReturn:
+        raise TypeError(
+            "DataArtifact is a Store-issued runtime handle and cannot be serialized"
+        )
+
+    def __reduce_ex__(self, protocol: int) -> NoReturn:
+        del protocol
+        raise TypeError(
+            "DataArtifact is a Store-issued runtime handle and cannot be serialized"
+        )
+
+    @classmethod
+    def _from_store(
+        cls,
+        authority: object,
+        context: DataSourceContext,
+        *,
+        root: Path,
+        identity: DataArtifactIdentity,
+        payload: ArtifactPayloadT,
+        verification: Literal["manifest", "full"],
+    ) -> DataArtifact[ArtifactPayloadT]:
+        if authority is not _DATA_ARTIFACT_STORE_AUTHORITY:
+            raise TypeError("only DataArtifactStore may issue DataArtifact handles")
+        if cls is not DataArtifact:
+            raise TypeError("DataArtifact is final and cannot be subclassed")
+        if not isinstance(cast(object, context), DataSourceContext):
+            raise TypeError("context must be DataSourceContext")
+        context._require_active_parent()
+        identity_value = cast(object, identity)
+        if not isinstance(identity_value, DataArtifactIdentity):
             raise TypeError("data artifact identity must be DataArtifactIdentity")
-        root = canonical_directory(Path(self.root), label="data artifact root")
+        artifact_root = canonical_directory(Path(root), label="data artifact root")
         encoded, _ = read_regular_file(
-            root,
+            artifact_root,
             "manifest.json",
             label="data artifact manifest",
         )
-        if hashlib.sha256(encoded).hexdigest() != self.identity.manifest_sha256:
+        if hashlib.sha256(encoded).hexdigest() != identity.manifest_sha256:
             raise ValueError(
                 "data artifact manifest SHA-256 does not match its identity"
             )
-        object.__setattr__(self, "root", root)
+        artifact = object.__new__(cls)
+        object.__setattr__(artifact, "root", artifact_root)
+        object.__setattr__(artifact, "identity", identity)
+        object.__setattr__(artifact, "payload", payload)
+        receipt = DataArtifactStoreReceipt._issue(
+            authority=authority,
+            artifact=artifact,
+            identity=identity,
+            root=artifact_root,
+            request_token=context._request_token,
+            verification=verification,
+        )
+        object.__setattr__(artifact, "_store_receipt", receipt)
+        return cast(DataArtifact[ArtifactPayloadT], artifact)
+
+def data_artifact_store_receipt(value: object) -> DataArtifactStoreReceipt:
+    """Return valid Store evidence for an exact DataArtifact handle."""
+
+    if type(value) is not DataArtifact:
+        raise TypeError("data artifact must be an exact DataArtifactStore handle")
+    artifact = cast(DataArtifact[Any], value)
+    receipt = artifact._store_receipt
+    if not receipt._matches(
+        artifact=artifact,
+        identity=artifact.identity,
+        root=artifact.root,
+    ):
+        raise TypeError("data artifact is missing valid DataArtifactStore evidence")
+    return receipt
 
 
 class DataSource[ArtifactPayloadT](ABC):
     """Artifact-producing source that never constructs runtime data loaders."""
+
+    __stochaflow_data_source_lifecycle_wrapper__: ClassVar[
+        Callable[[DataSource[Any], DataSourceContext], DataArtifact[Any]]
+    ]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Wrap each source implementation in the common acceptance boundary."""
+
+        super().__init_subclass__(**kwargs)
+        implementation = cls.__dict__.get("materialize")
+        if implementation is None:
+            return
+        if not callable(implementation):
+            raise TypeError("DataSource.materialize must be callable")
+
+        @wraps(implementation)
+        def checked_materialize(
+            self: DataSource[Any],
+            context: DataSourceContext,
+        ) -> DataArtifact[Any]:
+            if not isinstance(cast(object, context), DataSourceContext):
+                raise TypeError("context must be DataSourceContext")
+            lease = context._begin_materialization()
+            selection_started = False
+            body_succeeded = False
+            end_succeeded = False
+            try:
+                if lease.context_outermost:
+                    context._selection_request_started(boundary="source")
+                    selection_started = True
+                artifact = cast(
+                    Callable[[DataSource[Any], DataSourceContext], object],
+                    implementation,
+                )(self, context)
+                accepted = context._accept_artifact(
+                    cast(DataArtifact[Any], artifact),
+                    enforce_expectations=lease.context_outermost,
+                )
+                body_succeeded = True
+            finally:
+                try:
+                    context._end_materialization(lease)
+                    end_succeeded = True
+                finally:
+                    if selection_started and (
+                        not body_succeeded or not end_succeeded
+                    ):
+                        context._selection_request_finished()
+            try:
+                if lease.logical_outermost:
+                    context._record_accepted_artifact(accepted)
+            finally:
+                if selection_started:
+                    context._selection_request_finished()
+            return accepted
+
+        cls.materialize = checked_materialize
+        cls.__stochaflow_data_source_lifecycle_wrapper__ = checked_materialize
 
     @abstractmethod
     def materialize(
@@ -264,6 +486,17 @@ class DataArtifactBinding:
         """Serialize this binding without runtime cache paths."""
 
         return {"id": self.id, "identity": self.identity.to_dict()}
+
+    @classmethod
+    def from_artifact(
+        cls,
+        binding_id: str,
+        artifact: DataArtifact[Any],
+    ) -> DataArtifactBinding:
+        """Bind one exact Store-issued artifact to a runtime role."""
+
+        data_artifact_store_receipt(artifact)
+        return cls(id=binding_id, identity=artifact.identity)
 
     @classmethod
     def from_dict(
@@ -356,6 +589,20 @@ class DataArtifactBindings:
         }
 
     @classmethod
+    def from_artifacts(
+        cls,
+        artifacts: Sequence[tuple[str, DataArtifact[Any]]],
+    ) -> DataArtifactBindings:
+        """Build canonical runtime bindings from Store-issued handles."""
+
+        return cls(
+            tuple(
+                DataArtifactBinding.from_artifact(binding_id, artifact)
+                for binding_id, artifact in artifacts
+            )
+        )
+
+    @classmethod
     def from_dict(
         cls,
         value: object,
@@ -384,6 +631,172 @@ class DataArtifactBindings:
 
 
 @dataclass(frozen=True, slots=True)
+class DataSourceRequestLease:
+    """One balanced call in a logical and context-local source request."""
+
+    logical_outermost: bool
+    context_outermost: bool
+    context_token: object = field(repr=False)
+
+
+@dataclass(slots=True)
+class DataSourceRequestState:
+    """Thread-safe nesting state for one logical source request context."""
+
+    active_calls: int = 0
+    root_active: bool = False
+    owner_thread_id: int | None = None
+    completed: bool = False
+    context_depths: dict[object, int] = field(default_factory=dict)
+    context_owner_thread_ids: dict[object, int] = field(default_factory=dict)
+    context_parent_tokens: dict[object, object | None] = field(
+        default_factory=dict
+    )
+    active_descendant_counts: dict[object, int] = field(default_factory=dict)
+    completed_contexts: set[object] = field(default_factory=set)
+    lock: Lock = field(default_factory=Lock, repr=False)
+
+    def begin(
+        self,
+        *,
+        context_token: object,
+        parent_context_token: object | None,
+    ) -> DataSourceRequestLease:
+        """Enter one source call and return its balanced request lease."""
+
+        with self.lock:
+            requires_active_parent = parent_context_token is not None
+            if requires_active_parent and (
+                not self.root_active
+                or self.context_depths.get(parent_context_token, 0) <= 0
+            ):
+                raise RuntimeError(
+                    "nested data source context may be used only during its "
+                    "outer source request"
+                )
+            if not requires_active_parent and self.active_calls == 0:
+                if self.completed:
+                    raise RuntimeError(
+                        "data source context cannot be reused for another request"
+                    )
+                self.owner_thread_id = get_ident()
+                self.root_active = True
+            elif (
+                not requires_active_parent
+                and self.owner_thread_id != get_ident()
+            ):
+                raise RuntimeError(
+                    "data source context cannot be reused by independent "
+                    "concurrent selections; derive a nested source context"
+                )
+            context_depth = self.context_depths.get(context_token, 0)
+            if context_depth == 0:
+                if context_token in self.completed_contexts:
+                    raise RuntimeError(
+                        "data source context cannot be reused for another request"
+                    )
+                if (
+                    context_token in self.context_parent_tokens
+                    and self.context_parent_tokens[context_token]
+                    is not parent_context_token
+                ):
+                    raise RuntimeError(
+                        "data source context parent does not match its request"
+                    )
+            elif self.context_owner_thread_ids[context_token] != get_ident():
+                raise RuntimeError(
+                    "data source context cannot be reused by independent "
+                    "concurrent selections; derive a nested source context"
+                )
+            logical_outermost = self.active_calls == 0
+            context_outermost = context_depth == 0
+            if context_outermost:
+                self.context_owner_thread_ids[context_token] = get_ident()
+                self.context_parent_tokens[context_token] = parent_context_token
+                ancestor = parent_context_token
+                visited: set[object] = set()
+                while ancestor is not None:
+                    if ancestor in visited:
+                        raise RuntimeError("data source context parent cycle detected")
+                    visited.add(ancestor)
+                    self.active_descendant_counts[ancestor] = (
+                        self.active_descendant_counts.get(ancestor, 0) + 1
+                    )
+                    ancestor = self.context_parent_tokens.get(ancestor)
+            self.context_depths[context_token] = context_depth + 1
+            self.active_calls += 1
+            return DataSourceRequestLease(
+                logical_outermost=logical_outermost,
+                context_outermost=context_outermost,
+                context_token=context_token,
+            )
+
+    def end(self, lease: DataSourceRequestLease) -> None:
+        """Leave one source call."""
+
+        with self.lock:
+            if self.active_calls <= 0:
+                raise RuntimeError("data source request call state is unbalanced")
+            context_depth = self.context_depths.get(lease.context_token, 0)
+            if context_depth <= 0:
+                raise RuntimeError("data source context call state is unbalanced")
+            unfinished_logical_work = (
+                lease.logical_outermost and self.active_calls != 1
+            )
+            unfinished_context_work = (
+                lease.context_outermost
+                and (
+                    context_depth != 1
+                    or self.active_descendant_counts.get(
+                        lease.context_token,
+                        0,
+                    )
+                    > 0
+                )
+            )
+            self.active_calls -= 1
+            context_depth -= 1
+            if context_depth:
+                self.context_depths[lease.context_token] = context_depth
+            else:
+                self.context_depths.pop(lease.context_token)
+                self.context_owner_thread_ids.pop(lease.context_token)
+            if lease.context_outermost:
+                ancestor = self.context_parent_tokens.get(lease.context_token)
+                while ancestor is not None:
+                    descendant_count = self.active_descendant_counts[ancestor] - 1
+                    if descendant_count:
+                        self.active_descendant_counts[ancestor] = descendant_count
+                    else:
+                        self.active_descendant_counts.pop(ancestor)
+                    ancestor = self.context_parent_tokens.get(ancestor)
+                self.completed_contexts.add(lease.context_token)
+            if lease.logical_outermost:
+                self.root_active = False
+                self.completed = True
+                self.owner_thread_id = None
+            if unfinished_logical_work or unfinished_context_work:
+                raise RuntimeError(
+                    "outer data source returned before nested source work completed"
+                )
+
+    def is_root_active(self) -> bool:
+        """Return whether an outer source call is still active."""
+
+        with self.lock:
+            return self.root_active
+
+    def is_context_active(self, context_token: object) -> bool:
+        """Return whether one direct parent context is still active."""
+
+        with self.lock:
+            return (
+                self.root_active
+                and self.context_depths.get(context_token, 0) > 0
+            )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class DataSourceContext:
     """Materialization policy supplied by an artifact-aware DataBuilder."""
 
@@ -391,8 +804,39 @@ class DataSourceContext:
     policy: Literal["require", "ensure"]
     verification: Literal["manifest", "full"]
     expected_identity: DataArtifactIdentity | None = None
+    expected_source_name: str | None = None
     verification_observer: ArtifactVerificationObserver | None = None
     verification_workers: int | None = None
+    _selection_session: DataArtifactSelectionObserver | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _request_token: object = field(
+        default_factory=object,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _context_token: object = field(
+        default_factory=object,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _request_state: DataSourceRequestState = field(
+        default_factory=DataSourceRequestState,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _parent_context_token: object | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         policy = cast(object, self.policy)
@@ -414,6 +858,19 @@ class DataSourceContext:
         ):
             raise TypeError(
                 "data source expected_identity must be DataArtifactIdentity or None"
+            )
+        if self.expected_source_name is not None:
+            _non_empty_string(
+                self.expected_source_name,
+                path="data source context.expected_source_name",
+            )
+        if (
+            self.expected_identity is not None
+            and self.expected_source_name is not None
+            and self.expected_identity.source_name != self.expected_source_name
+        ):
+            raise ValueError(
+                "data source expected identity belongs to a different source"
             )
         observer = cast(object, self.verification_observer)
         if observer is not None and not callable(observer):
@@ -440,6 +897,178 @@ class DataSourceContext:
         if self.expected_identity is not None:
             object.__setattr__(self, "verification", "full")
 
+    def __copy__(self) -> DataSourceContext:
+        raise TypeError(
+            "DataSourceContext is a one-shot runtime request and cannot be "
+            "copied; create a new materialization context"
+        )
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> DataSourceContext:
+        del memo
+        raise TypeError(
+            "DataSourceContext is a one-shot runtime request and cannot be "
+            "copied; create a new materialization context"
+        )
+
+    def __reduce__(self) -> NoReturn:
+        raise TypeError(
+            "DataSourceContext is a one-shot runtime request and cannot be "
+            "serialized; persist configuration instead"
+        )
+
+    def __reduce_ex__(self, protocol: int) -> NoReturn:
+        del protocol
+        raise TypeError(
+            "DataSourceContext is a one-shot runtime request and cannot be "
+            "serialized; persist configuration instead"
+        )
+
+    def _accept_artifact[PayloadT](
+        self,
+        artifact: DataArtifact[PayloadT],
+        *,
+        enforce_expectations: bool,
+    ) -> DataArtifact[PayloadT]:
+        """Require a handle issued by this logical materialization request."""
+
+        self._require_active_parent()
+        receipt = data_artifact_store_receipt(artifact)
+        if receipt.request_token is not self._request_token:
+            raise ValueError(
+                "data source returned an artifact issued for a different request"
+            )
+        strength = {"manifest": 0, "full": 1}
+        if strength[receipt.verification] < strength[self.verification]:
+            raise ValueError(
+                "data source returned an artifact with insufficient verification"
+            )
+        if enforce_expectations and (
+            self.expected_identity is not None
+            and artifact.identity != self.expected_identity
+        ):
+            raise ValueError(
+                "data source returned an artifact that does not match the "
+                "expected identity"
+            )
+        if enforce_expectations and (
+            self.expected_source_name is not None
+            and artifact.identity.source_name != self.expected_source_name
+        ):
+            raise ValueError(
+                "data source returned an artifact for a different registered "
+                "source"
+            )
+        return artifact
+
+    def _begin_materialization(self) -> DataSourceRequestLease:
+        return self._request_state.begin(
+            context_token=self._context_token,
+            parent_context_token=self._parent_context_token,
+        )
+
+    def _require_active_parent(self) -> None:
+        if self._parent_context_token is not None and not (
+            self._request_state.is_context_active(self._parent_context_token)
+        ):
+            raise RuntimeError(
+                "nested data source context may be used only during its outer "
+                "source request"
+            )
+
+    def _end_materialization(self, lease: DataSourceRequestLease) -> None:
+        self._request_state.end(lease)
+
+    def _record_accepted_artifact(self, artifact: DataArtifact[Any]) -> None:
+        session = self._selection_session
+        if session is not None:
+            session.record(artifact, self.expected_source_name)
+            return
+        from stochaflow.data.artifact_selection import (  # noqa: PLC0415
+            record_accepted_data_artifact,
+        )
+
+        record_accepted_data_artifact(
+            artifact,
+            source_name=self.expected_source_name,
+        )
+
+    def _selection_request_started(
+        self,
+        *,
+        boundary: Literal["source", "store"],
+    ) -> None:
+        session = self._selection_session
+        if session is not None:
+            session.request_started(boundary=boundary)
+            return
+        from stochaflow.data.artifact_selection import (  # noqa: PLC0415
+            start_data_artifact_request,
+        )
+
+        start_data_artifact_request(boundary=boundary)
+
+    def _selection_request_finished(self) -> None:
+        session = self._selection_session
+        if session is not None:
+            session.request_finished()
+            return
+        from stochaflow.data.artifact_selection import (  # noqa: PLC0415
+            finish_data_artifact_request,
+        )
+
+        finish_data_artifact_request()
+
+    def nested_source_context(
+        self,
+        *,
+        expected_source_name: str | None = None,
+    ) -> DataSourceContext:
+        """Derive an internal context belonging to this logical source request."""
+
+        if not self._request_state.is_context_active(self._context_token):
+            raise RuntimeError(
+                "nested data source context may be derived only during its "
+                "direct parent source request"
+            )
+        nested = DataSourceContext(
+            cache_root=self.cache_root,
+            policy=self.policy,
+            verification=self.verification,
+            expected_source_name=expected_source_name,
+            verification_observer=self.verification_observer,
+            verification_workers=self.verification_workers,
+        )
+        object.__setattr__(nested, "_request_token", self._request_token)
+        object.__setattr__(nested, "_request_state", self._request_state)
+        object.__setattr__(nested, "_parent_context_token", self._context_token)
+        object.__setattr__(nested, "_selection_session", self._selection_session)
+        return nested
+
+
+def materialize_data_source[PayloadT](
+    source: DataSource[PayloadT],
+    context: DataSourceContext,
+) -> DataArtifact[PayloadT]:
+    """Materialize any DataSource and validate this request's Store receipt."""
+
+    if not isinstance(cast(object, source), DataSource):
+        raise TypeError("source must be a DataSource")
+    implementation = getattr(type(source), "materialize", None)
+    lifecycle_wrapper = getattr(
+        type(source),
+        "__stochaflow_data_source_lifecycle_wrapper__",
+        None,
+    )
+    if implementation is not lifecycle_wrapper:
+        raise TypeError(
+            "source must nominally inherit DataSource and use its lifecycle "
+            "wrapper"
+        )
+    return cast(
+        Callable[[DataSource[PayloadT], DataSourceContext], DataArtifact[PayloadT]],
+        implementation,
+    )(source, context)
+
 
 __all__ = [
     "ArtifactVerificationEvent",
@@ -451,4 +1080,5 @@ __all__ = [
     "DataArtifactIdentity",
     "DataSource",
     "DataSourceContext",
+    "materialize_data_source",
 ]

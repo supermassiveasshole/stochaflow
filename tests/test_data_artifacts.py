@@ -79,36 +79,27 @@ def test_identity_rejects_v1_and_malformed_values(
         DataArtifactIdentity.from_dict(value)
 
 
-def test_unified_artifact_has_fixed_manifest_path_and_kind(
+def test_data_artifact_rejects_direct_construction(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "object"
     root.mkdir()
     manifest = root / "manifest.json"
     manifest.write_bytes(b"{}\n")
-    artifact = DataArtifact(
-        root=root,
-        identity=identity(
-            kind="referenced",
-            manifest_sha256=hashlib.sha256(b"{}\n").hexdigest(),
-        ),
-        payload={"value": 1},
-    )
-
-    assert artifact.root == root.resolve()
-    assert artifact.manifest_path == root.resolve() / "manifest.json"
-    assert artifact.kind == "referenced"
+    with pytest.raises(TypeError, match="issued by DataArtifactStore"):
+        DataArtifact(
+            root=root,
+            identity=identity(
+                kind="referenced",
+                manifest_sha256=hashlib.sha256(b"{}\n").hexdigest(),
+            ),
+            payload={"value": 1},
+        )
 
 
-def test_unified_artifact_rejects_manifest_digest_mismatch(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "object"
-    root.mkdir()
-    (root / "manifest.json").write_bytes(b"{}\n")
-
-    with pytest.raises(ValueError, match="manifest SHA-256"):
-        DataArtifact(root=root, identity=identity(), payload=None)
+def test_data_artifact_rejects_subclass_stand_ins() -> None:
+    with pytest.raises(TypeError, match="final and cannot be subclassed"):
+        type("ForeignDataArtifact", (DataArtifact,), {})
 
 
 def test_binding_collection_is_schema_v2_canonical_and_strict() -> None:

@@ -18,9 +18,15 @@ migration：
 - 保存旧 artifact binding 的 checkpoint 不能 strict resume，应启动新 run；
 - `require` 不会将旧 cache 转换为新格式，也不会产生任何修复写入。
 
-这是数据 artifact 格式的断代，不改变 `DataSource → DataArtifact → DataBuilder →
-DataLoaders` 的职责边界。完全 synthetic、没有外部 artifact binding 的 recipe 不受该
-格式迁移影响。
+这是数据 artifact 格式的断代，不改变 `DataSource → DataArtifactStore → sealed
+DataArtifact → DataBuilder → DataLoaders` 的职责边界。`DataArtifact` 只能由 Store
+签发；其临时 runtime receipt 不属于 schema v2，也不会进入 checkpoint。完全 synthetic、
+没有外部 artifact binding 的 recipe 不受该格式迁移影响。
+
+自定义多 source Builder 需要通过 `DataBuilderContext.data_source_context()` 创建每个
+逻辑 source 请求，再调用 `materialize_data_source()`。旧的 identity-only binding、直接在
+Builder 中调用 Store，或把同一个 context 复用于后续/独立并发选择，都不提供当前 build
+的正式 provenance。
 
 ## Canonical ADM topology 是 breaking boundary
 

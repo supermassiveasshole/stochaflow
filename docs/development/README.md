@@ -37,8 +37,7 @@ Sphinx 公开这些页面是为了让路线和未来构想可查阅，不表示�
 
 | 已完成内容 | 文档入口 | 它不代表什么 |
 | --- | --- | --- |
-| Data artifact producer lifecycle | [Lifecycle 记录](data-artifact-producer-lifecycle-refactor.md) | 不表示任意新 producer 都应进入 core。 |
-| DataSource/DataBuilder 分工 | [边界审查](data-layer-composition-boundary-review.md) | 不表示要建设通用 Dataset/YAML graph。 |
+| Data artifact lifecycle 与 DataSource/DataBuilder 分工 | [Data pipeline](../configuration/data-pipeline.md)、[Extension API](../api/extensions.md) | 不表示任意新 producer 都应进入 core，也不表示要建设通用 Dataset/YAML graph。 |
 | Sampling v12 配置归属 | [Sampling 复审记录](sampling-request-config-refactor.md) | 不表示 Hydra 后复审已经开始。 |
 | 正式、offline 和 live Evaluation | [Evaluation 决策记录](post-training-evaluation-support-plan.md) | 不表示所有未来任务自动拥有质量评估。 |
 | Extension activation correctness | [Extension 计划](extension-import-boundary-and-activation-latency-plan.md) | 不表示性能重构已经获批。 |
@@ -70,6 +69,9 @@ Sphinx 公开这些页面是为了让路线和未来构想可查阅，不表示�
 | Distributed training/inference | [Distributed 计划](distributed-training-and-inference-support-plan.md) | 单设备不能满足实际 workload。 |
 | Automated model tuning | [Tuning 计划](automated-model-tuning-plan.md) | objective、budget、Evaluation 规则和库调用稳定。 |
 | Artifact metadata/provenance/capacity | [暂停提案](artifact-metadata-provenance-capacity-model-proposal.md) | 任一子方向满足提案内各自的多产出方或多使用方证据条件。 |
+| Data recipe helper 与注册体验 | [Recipe extension 计划](data-recipe-extension-ergonomics-plan.md) | 至少两个独立 extension 重复同一构造、状态和失败语义。 |
+| Streaming data lifecycle | [Streaming 计划](streaming-data-lifecycle-support-plan.md) | 真实 workload 无法由 project-private iterable 和现有 artifact 边界满足。 |
+| Data storage 与 payload adapter | [Storage/payload 计划](data-storage-and-payload-adapter-support-plan.md) | 多种真实表示重复同一 contract，或出现现有 read boundary 无法拒绝的失败。 |
 | 通用工作流编排器 | [独立暂停计划](general-workflow-orchestrator-plan.md) | 至少两个稳定流程重复相同控制逻辑，手工组合已成为问题。 |
 
 ## 6. 怎样阅读一份专项计划
@@ -111,8 +113,6 @@ Sphinx 公开这些页面是为了让路线和未来构想可查阅，不表示�
 :hidden:
 
 development-priority-roadmap
-data-artifact-producer-lifecycle-refactor
-data-layer-composition-boundary-review
 default-workflow-pipeline-support-plan
 super-resolution-workflow-support-plan
 consistency-distillation-support-plan
@@ -125,5 +125,8 @@ extension-import-boundary-and-activation-latency-plan
 distributed-training-and-inference-support-plan
 automated-model-tuning-plan
 artifact-metadata-provenance-capacity-model-proposal
+data-recipe-extension-ergonomics-plan
+streaming-data-lifecycle-support-plan
+data-storage-and-payload-adapter-support-plan
 general-workflow-orchestrator-plan
 ```

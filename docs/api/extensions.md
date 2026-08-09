@@ -36,13 +36,14 @@ from stochaflow.evaluation import ...
 | --- | --- |
 | `IMAGE_DATA_SOURCES` | 复用内置 image recipe 时注册 `ImageDataSource` 的受限 Registry |
 | `DataSource` | 只负责物化一个带 identity 的 `DataArtifact`，不构造训练数据栈 |
-| `DataSourceContext` | cache root、ensure/require、verification 与 strict-resume expected identity |
+| `DataSourceContext` | 一个逻辑 source 请求的 cache、verification、strict-resume expectation 与内部组合 context |
 | `ArtifactVerificationEvent` | `full` 验证的 producer、phase、completed 与 total 进度值 |
 | `ArtifactVerificationObserver` | 接收有序验证事件的可选窄 callback contract |
 | `ArtifactVerificationPhase` | 当前固定为 `validate` 的内容验证阶段 |
 | `DataSourceMaterializationConfig` | `source.materialization` 的通用 typed config，可构造 `DataSourceContext` |
+| `materialize_data_source` | 显式调用任意 `DataSource[P]`；基类会核对最外层返回 artifact 属于本次 Store 请求 |
 | `ImageDataSource` | 内置 image recipe 可消费的 source-adapter 基类 |
-| `DataArtifact` | managed/referenced 内容共用的已验证 runtime handle |
+| `DataArtifact` | managed/referenced 内容共用、只能由 Store 签发的 return-only runtime handle |
 | `DataArtifactIdentity` | 严格、location-independent 的 schema-v2 identity |
 | `DataArtifactStore` | managed/referenced producer 共用的 framework lifecycle |
 | `ManagedDataArtifactBuild` | managed producer 在 staging 写入完成后返回的 source/materialization/domain facts |
@@ -81,12 +82,50 @@ DataBuilder 选择 source、验证 `DataArtifact` binding 并组装 runtime reci
 Builder 可以直接构造 runtime views，并明确返回没有 artifact bindings 的
 `DataLoaders`。
 
+`DataSource[P]` 和 `DataArtifact[P]` 中的 `P` 是 family 自己拥有的 runtime payload；它
+可以是 dataclass、Path、Tensor 引用或其他 Python 值，不要求图像类型，也不会写入
+manifest。通用支持范围是能够形成 local managed snapshot 或 filesystem-referenced
+artifact 的来源。Remote object store、没有稳定快照的 live stream 和 universal payload
+schema 不由这个 lifecycle 提供。
+
 所有 producer 都必须通过 `DataArtifactStore` 使用同一个 schema-v2 manifest、inventory、
 locator、locking、publication、quarantine 与 strict-resume lifecycle。不要在 extension
 中自行实现 manifest、identity 或 current-pointer 状态机。`managed` 表示 artifact 的
 实际内容由 cache 拥有；`referenced` 表示 cache 只拥有索引/sidecar，represented content
 仍由外部目录拥有。ownership strategy 记录在 `artifact.identity.kind`，不会改变统一
 runtime handle。
+
+`DataArtifact` 不提供公共构造路径，也不能被继承、复制或序列化。Store receipt 与精确
+runtime handle 绑定，不能附到另一个对象上复用；handle 使用对象身份语义，稳定值比较使用
+`DataArtifactIdentity`。source 的实现仍在内部调用
+`DataArtifactStore.materialize_managed()` 或 `materialize_referenced()`；消费 source 的
+factory 或 Builder 应使用 `materialize_data_source(source, context)`。`DataSource` 基类会在
+每层继承/组合调用返回时核对 Store receipt 的请求归属与验证强度，并在每个 context 的最外层
+调用核对所选 source name 和 expected identity。`super().materialize(context)` 表示把父类
+结果作为最终结果委托返回，并保留 strict expected-object lookup；如果父类 artifact 只是
+中间输入，派生 source 必须把 `nested_source_context()` 传给 `super()`，再用 outer context
+发布自己的最终 artifact。直接调用 `source.materialize(context)` 的兼容路径也有相同检查。缓存旧 handle、
+伪对象或只匹配 manifest SHA 的手工对象都会失败。receipt 只存在于 runtime handle，不进入
+identity、manifest、cache key 或 checkpoint。
+
+自定义 source 必须是名义上的 `DataSource` 子类；有效的 `materialize()` 必须来自
+`DataSource` lifecycle wrapper，也可以继承父类已包装的实现。`ABC.register()` 创建的虚拟
+子类、实例级方法替换或复制内部 wrapper 标记都不是受支持的 extension 路径。这个限制
+保证任意 family-local source 都经过同一个 lifecycle 验收。
+
+一个 `DataSourceContext` 表示一个逻辑 source 请求。source 可以在同一 context 内同步调用
+父类实现；并行组合内部 source 时，必须为每个内部调用派生独立的
+`nested_source_context()`。只有最外层结果成为该请求的正式结果。不要把同一个 context
+用于下一次选择，也不要让两个独立选择并发共享它。多 source Builder 应为每个选择调用
+`DataBuilderContext.data_source_context()`；该方法会注入 source name、strict-resume
+expectation、验证 observer/worker 和当前 build recorder，不需要也不应由 extension 手工
+设置这些临时字段。
+
+`DataSourceContext` 是一次性 runtime request，不能 `copy`、`deepcopy`、pickle 或用
+`dataclasses.asdict()` 当配置序列化。新的顶层请求应重新调用
+`DataSourceMaterializationConfig.context()`（正式 Builder 使用
+`DataBuilderContext.data_source_context()`）；只有同一外层 source 内部的 producer 才使用
+`nested_source_context()`。
 
 最小 producer 形状：
 
@@ -107,6 +146,48 @@ class ProjectSource(DataSource[ProjectPayload]):
             load=self._load_payload,
         )
 ```
+
+如果一个 source 要组合另一个 producer，不要把 outer strict-resume identity 直接交给内部
+producer。用 `nested = context.nested_source_context(expected_source_name="...")` 派生内部
+context，再调用内部 source。派生 context 共享同一个逻辑请求和验证强度，但不继承 outer
+expected identity，也不会把内部临时 artifact 当成独立 Builder binding。它只能在外层
+直接父 context 的 `materialize()` 尚未返回时使用；worker 必须在直接父调用返回前完成并
+join，context 也不能保存
+到下一次请求。如果内部 artifact 会改变最终
+payload 或 represented content，外层 producer 必须把内部 stable identity/digest 纳入自己
+最终经过认证的 `source_digest`、`materialization_digest` 或等价 domain facts；框架不会从
+任意 Python payload 自动推断这种依赖。
+
+消费任意 family-local source：
+
+```python
+context = self.context.data_source_context(
+    materialization,
+    binding_id="source",
+    source_name=source_name,
+    path="data.params.source.materialization",
+)
+artifact = materialize_data_source(source, context)
+if not isinstance(artifact.payload, ProjectPayload):
+    raise TypeError("source returned an incompatible payload")
+bindings = DataArtifactBindings.from_artifacts((("source", artifact),))
+self.context.verify_artifacts(bindings)
+```
+
+正式 `build_data_loaders()` 还会核对每个非空 binding 对应的 handle 是本次 Builder
+执行期间经 DataSource 请求接受的，并拒绝绕过 source 直接调用 Store、或接受后没有绑定
+的 artifact。因而直接构造
+`DataArtifactIdentity`、回显 checkpoint 的 `expected_artifacts`，或者复用上一次 build 的
+binding，都不能成为新的 provenance。没有 artifact bindings 只适用于完全由 resolved
+config 与 run seed 决定、没有外部输入的 synthetic recipe。
+
+Binding 使用稳定的 `DataArtifactIdentity` 值语义：只要本次 build 已通过 DataSource 验证
+同一 identity，binding 可以来自等值复制或 schema 序列化往返；没有本次 receipt 的纯回显
+仍会失败。
+
+receipt 证明的是声明 binding 的来源和本次验证强度。它不会检查 project-owned Builder
+是否真的用该 payload 构造 Dataset；payload 使用和 binding role 仍是受信任的 Builder
+语义。同一个已接受 artifact 可以由 Builder 绑定到多个语义 role。
 
 managed `build(data_root)` 把内容写入 framework staging `data/`，返回
 `ManagedDataArtifactBuild`；framework 扫描、哈希并认证所有普通文件。referenced
@@ -159,6 +240,15 @@ class DataBuilderContext:
     expected_artifacts: DataArtifactBindings | None = None
     verification_observer: ArtifactVerificationObserver | None = None
     verification_workers: int | None = None
+
+    def data_source_context(
+        self,
+        materialization: DataSourceMaterializationConfig,
+        *,
+        binding_id: str,
+        source_name: str,
+        path: str,
+    ) -> DataSourceContext: ...
 
 
 @dataclass(frozen=True, slots=True)

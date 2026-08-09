@@ -7,9 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from stochaflow.data.artifacts import (
     DataArtifact,
-    DataArtifactBinding,
     DataArtifactBindings,
-    DataArtifactIdentity,
+    materialize_data_source,
 )
 from stochaflow.data.folder_sources import (
     ImageFolderDataSource,
@@ -69,33 +68,18 @@ class ImageSourceFactory:
         """Materialize one source and enforce any strict-resume identity."""
 
         config.validate(path=path)
-        expected: DataArtifactIdentity | None = None
-        if builder_context.strict_resume:
-            if builder_context.expected_artifacts is None:
-                raise ValueError(
-                    "strict resume checkpoint is missing data artifact identities"
-                )
-            expected = builder_context.expected_artifacts.identity_for(binding_id)
-            if expected.source_name != config.name:
-                raise ValueError(
-                    "strict resume expected a different registered data source"
-                )
         source = self.registry.create(
             config.name,
             config.params,
             config_path=path,
         )
-        context = config.materialization.context(
-            expected_identity=expected,
-            verification_observer=builder_context.verification_observer,
-            verification_workers=builder_context.verification_workers,
+        context = builder_context.data_source_context(
+            config.materialization,
+            binding_id=binding_id,
+            source_name=config.name,
             path=f"{path}.materialization",
         )
-        artifact = source.materialize(context)
-        if not isinstance(artifact, DataArtifact):
-            raise TypeError(
-                f"image data source '{config.name}' must return DataArtifact"
-            )
+        artifact = materialize_data_source(source, context)
         if not isinstance(
             artifact.payload,
             (
@@ -108,15 +92,6 @@ class ImageSourceFactory:
             raise TypeError(
                 f"image data source '{config.name}' returned an incompatible payload"
             )
-        if artifact.identity.source_name != config.name:
-            raise ValueError(
-                f"image source '{config.name}' returned identity for "
-                f"'{artifact.identity.source_name}'"
-            )
-        if expected is not None and artifact.identity != expected:
-            raise ValueError(
-                "strict resume data artifact identity does not match"
-            )
         return artifact
 
 
@@ -125,12 +100,7 @@ def artifact_bindings(
 ) -> DataArtifactBindings:
     """Build the canonical identities selected by an image recipe."""
 
-    return DataArtifactBindings(
-        tuple(
-            DataArtifactBinding(id=binding_id, identity=artifact.identity)
-            for binding_id, artifact in artifacts
-        )
-    )
+    return DataArtifactBindings.from_artifacts(artifacts)
 
 
 __all__ = [

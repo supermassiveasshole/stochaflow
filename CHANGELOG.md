@@ -63,6 +63,20 @@ is unavailable.
 
 ### Changed
 
+- Closed the modality-neutral `DataArtifact` producer lifecycle. Artifacts are
+  now sealed, Store-issued return values; source requests reject stale handles
+  and requests with a selected or expected source reject wrong producer
+  identities, while formal DataBuilder execution rejects
+  direct-Store, fabricated, previous-build, or unbound declarations before
+  checkpoint provenance is published. Runtime
+  verification receipts remain outside manifests and checkpoint schemas, while
+  arbitrary family-owned payloads and family-local source registries remain
+  supported. Receipts are bound to exact non-copyable runtime handles, and
+  nested worker contexts remain in flight even when a parent catches its own
+  lifecycle error. Promoted the durable lifecycle and composition boundary into the
+  specification, architecture, and public Data documentation, then removed the
+  two completed development decision records while preserving future review
+  triggers under their long-term owners.
 - Reorganized the root roadmap and internal development plans around plain
   current-state, user-outcome, action, and verification sections. Detailed
   future designs now remain in linked development notes, opaque milestone IDs

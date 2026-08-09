@@ -7,8 +7,9 @@ Sampler、collate 或 DataLoader，而是一次性接收 builder 已经组装好
 flowchart LR
     A["data.name / data.params"] --> B["data_builders Registry"]
     B --> C["DataBuilder.build()"]
-    C --> D["DataSource.materialize()（source-aware recipe）"]
-    D --> E["DataArtifact[payload]"]
+    C --> D["materialize_data_source(DataSource, context)"]
+    D --> S["DataArtifactStore 验证并签发"]
+    S --> E["sealed DataArtifact[payload]"]
     E --> V["Builder 验证 binding 与 accepted contract"]
     V --> F["recipe-private partition / Dataset / transform / sampler / loader"]
     F --> G["DataLoaders"]
@@ -31,6 +32,13 @@ loader 必须可重复迭代，不能直接返回一次性的 generator/iterator
 `IterableDataset` 没有长度的标准 PyTorch `DataLoader` 可以配合显式步数使用。
 `--limit-batches` 会在最终训练步数上取更小值。validation 和 test 不要求长度，CLI
 limit 仍可限制无限或未知长度的可重复 iterable。
+
+正式 `build_data_loaders()` 会记录本次 Builder 执行期间经 DataSource 请求接受的 Store
+handle。非空 `artifact_bindings` 必须引用这些 identity；绕过 DataSource 直接调用 Store、
+手工构造 identity、回显 strict-resume expectation、绑定旧 build 的 handle，或者接受后漏掉
+binding，都会在 Dataset 进入 Trainer 前失败。runtime receipt 不序列化，checkpoint 仍只
+保存稳定的 schema-v2 identity。本次 build 已验证同一 identity 时，binding 的等值复制或
+schema 序列化往返仍有效；只有值相同但没有本次 DataSource receipt 的回显会失败。
 
 ## `image` recipe
 
@@ -88,6 +96,30 @@ inventory/sidecar，外部数据不复制。两者返回同一个 `DataArtifact`
 ownership strategy 记录在 `artifact.identity.kind`。source 不应自行维护 manifest、
 identity、current pointer、lock 或 publication 状态机。
 
+`DataArtifact` 只能由 Store 在验证、payload load 和加载后 mutation 复查完成后签发；不能
+直接调用构造器、定义替代 subclass、复制或序列化。receipt 绑定精确 runtime handle；稳定
+值比较使用 `DataArtifactIdentity`。消费 source 时使用
+`materialize_data_source(source, context)`，它会拒绝来自另一请求的缓存 handle，并核对
+strict resume 的 expected identity 和 full-verification receipt。
+
+这个边界不依赖图像：任意 family 可以保留自己的窄 Registry 和 payload dataclass，使用
+`DataBuilderContext.data_source_context()` 统一传入 expected identity、验证进度 observer
+和 worker override。每个 context 代表一个逻辑 source 请求，不能复用于后续选择或独立
+并发选择。组合 source 如需物化内部 producer，应使用
+`context.nested_source_context()` 派生属于同一
+请求的内部 context，并在直接父 source 返回前完成所有 nested work；内部结果不会自动成为
+Builder binding，最外层结果仍必须完整治理其
+来源，并把会改变最终 payload/content 的内部 identity 或 digest 纳入最终认证事实。Core
+不解释 payload，也不建立全局 DataSource Registry。
+
+`DataSourceContext` 是不可复制、不可序列化的一次性 runtime 对象；新的顶层请求从
+`DataSourceMaterializationConfig` 重新创建 context，同一外层 source 内部的请求只通过
+`nested_source_context()` 派生。
+
+正式 Builder 会分别记录每个 context 的最外层 source call，包括 worker 中的 nested
+context。即使父 source 捕获自己的 lifecycle error，只要子请求仍未结束，Builder 返回时也会
+失败；迟到结果不能在 selection window 关闭后补写 provenance。
+
 schema-v2 cache 固定在
 `<cache_root>/data-artifacts/v2/<kind>/<artifact-type-digest>/` 下，并包含 immutable
 objects、locators、locks、staging 与 quarantine。`require` 是完全只读的；`ensure`
@@ -116,9 +148,12 @@ source:
     verification: full
 ```
 
-当前内置 image recipes 不支持 Hugging Face streaming。streaming 需要
-`IterableDataset`、shuffle buffer 与 iterator-state resume 的独立生命周期；需要该
-能力的项目应提供自己的 `DataBuilder`，并明确其恢复契约。
+当前内置 image recipes 不支持 Hugging Face streaming。没有稳定 snapshot 或可认证索引的
+live stream 不能提供正式 artifact provenance 或 strict resume。一次性 Python 实验可以
+直接向 `Trainer.fit()` 传入已经组合好的 iterable；配置驱动的正式工作流只有在项目先用
+DataSource 建立 managed snapshot 或 filesystem-referenced artifact，并定义 iterator-state
+恢复契约后，才应注册 streaming DataBuilder。框架会核对 Builder 声明的 bindings，但无法
+判断受信任的项目 Builder 是否另外偷读了未声明输入；遵守该边界仍是 extension 的责任。
 
 partition 是这个 recipe 的私有能力：
 
@@ -371,32 +406,66 @@ DataBuilder 对应可配置、可重建的一份 runtime recipe，不与 dataset
 from torch.utils.data import DataLoader
 
 from stochaflow.extensions import (
+    DataArtifactBindings,
     DataBuilder,
     DataLoaders,
+    DataSourceMaterializationConfig,
     REGISTRIES,
+    materialize_data_source,
 )
 
 
-@REGISTRIES.data_builders.register("my-project.physics-data")
-class PhysicsDataBuilder(DataBuilder):
+@REGISTRIES.data_builders.register("my-project.records")
+class RecordDataBuilder(DataBuilder):
     def build(self) -> DataLoaders:
-        dataset = StreamingPhysicsDataset(**self.context.params)
+        source_name = self.context.params["source_name"]
+        source = RECORD_DATA_SOURCES.create(
+            source_name,
+            self.context.params["source"],
+        )
+        source_context = self.context.data_source_context(
+            DataSourceMaterializationConfig(
+                **self.context.params["materialization"]
+            ),
+            binding_id="source",
+            source_name=source_name,
+            path="data.params.materialization",
+        )
+        artifact = materialize_data_source(source, source_context)
+        if not isinstance(artifact.payload, RecordArtifactPayload):
+            raise TypeError("source returned an incompatible payload")
+        bindings = DataArtifactBindings.from_artifacts((("source", artifact),))
+        self.context.verify_artifacts(bindings)
+        dataset = RecordDataset(artifact.payload)
         loader = DataLoader(
             dataset,
-            sampler=PhysicsSampler(dataset),
-            collate_fn=physics_collate,
+            sampler=RecordSampler(dataset),
+            collate_fn=collate_records,
         )
-        return DataLoaders(train=loader, steps_per_epoch=1000)
+        return DataLoaders(
+            train=loader,
+            steps_per_epoch=1000,
+            artifact_bindings=bindings,
+        )
 ```
 
 ```yaml
 extensions:
   plugins: [my-project]
 data:
-  name: my-project.physics-data
+  name: my-project.records
   params:
-    path: data/simulation.zarr
+    source_name: my-project.record-files
+    source:
+      path: data/records
+    materialization:
+      cache_root: ./.stochaflow-cache
+      policy: ensure
+      verification: full
 ```
+
+如果数据完全由 resolved config 与 experiment seed 生成且没有外部输入，Builder 可以返回
+`artifact_bindings=None`。这不是让外部文件、服务或 stream 绕过 DataSource 的入口。
 
 Trainer 递归迁移 structured batch 中的 Tensor，但不解释 state、target、condition 或
 模型签名。batch 与训练语义的适配属于 TrainingStrategy。完整注册规则见

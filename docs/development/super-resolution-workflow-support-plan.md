@@ -200,5 +200,5 @@ Real-ESRGAN 风格二阶 degradation、perceptual/adversarial training 和 gener
 
 - [原工作流文档中的 SR 详细工程方案和测试矩阵](notes/default-workflow-pipeline-support-plan/design-archive.md)
 - [内置操作与工作流组合计划](default-workflow-pipeline-support-plan.md)
-- [当前 Data 组合边界](data-layer-composition-boundary-review.md)
+- [当前 Data 组合边界](../configuration/data-pipeline.md)
 - [正式 Evaluation 后续计划](post-training-evaluation-support-plan.md)
