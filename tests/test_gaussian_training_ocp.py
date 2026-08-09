@@ -333,13 +333,13 @@ def test_custom_training_builder_config_survives_checkpoint_roundtrip(
     assert restored.training.params == {"scale": 0.25}
 
 
+@pytest.mark.usefixtures("isolated_extension_activation_state")
 def test_installed_custom_strategy_survives_strict_cli_resume(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Exercise YAML, plugin activation, checkpoints, and strict resume."""
 
-    plugins._reset_extension_activation_state_for_testing()
     installed = [InstalledPluginEntryPoint()]
 
     def discover(*, group: str) -> tuple[InstalledPluginEntryPoint, ...]:
@@ -514,4 +514,4 @@ def test_installed_custom_strategy_survives_strict_cli_resume(
             "params": {"scale": 0.25},
         }
     finally:
-        plugins._reset_extension_activation_state_for_testing()
+        monkeypatch.undo()

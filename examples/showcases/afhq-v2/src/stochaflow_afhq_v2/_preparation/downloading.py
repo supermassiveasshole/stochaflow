@@ -27,7 +27,7 @@ from stochaflow.data.artifact_io import (
 )
 
 from .contracts import PreparationError, SourceIntegrityError, SourceLock
-from .safe_file import _write_descriptor
+from .safe_file import write_descriptor
 
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 _DOWNLOAD_PROGRESS_BYTES = 128 * 1024 * 1024
@@ -242,7 +242,7 @@ def _download_with_curl(
         started = time.monotonic()
         next_progress = _DOWNLOAD_PROGRESS_BYTES
         while chunk := process.stdout.read(_DOWNLOAD_CHUNK_BYTES):
-            _write_descriptor(descriptor, chunk)
+            write_descriptor(descriptor, chunk)
             downloaded += len(chunk)
             if downloaded > lock.expected_bytes:
                 process.kill()

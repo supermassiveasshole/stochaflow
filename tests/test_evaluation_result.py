@@ -126,7 +126,6 @@ def test_result_serialization_excludes_local_outcome_paths(tmp_path: Path) -> No
         "output_dir",
         "manifest_path",
         "result_path",
-        "gate_result_path",
     }.isdisjoint(document)
     assert document["artifacts"]["predictions"]["path"] == "predictions.jsonl"
     assert str(outcome.output_dir) not in json.dumps(document)

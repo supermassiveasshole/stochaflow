@@ -18,6 +18,7 @@ from torchmetrics import Metric
 from stochaflow.evaluation import (
     EvaluationBuilder,
     EvaluationPlan,
+    EvaluationProtocolIdentity,
     EvaluationSamplingCapability,
     EvaluationSamplingRequest,
     EvaluationStepOutput,
@@ -766,6 +767,15 @@ class AFHQV2GenerationEvaluationBuilder(EvaluationBuilder):
             expected_examples=self.context.protocol.expected_examples,
         )
         self._validate_metric_bindings(profile)
+        nested_provider_specs = _provider_specs(
+            self.context.metric_specs[0].params["providers"]
+        )
+        nested_provider_names = tuple(
+            name for name, _ in nested_provider_specs
+        )
+        uses_inception = bool(
+            {"fid", "kid"}.intersection(nested_provider_names)
+        )
         split = self.context.data_identity.get("split")
         if split not in {"validation", "test"}:
             raise ValueError(
@@ -776,6 +786,20 @@ class AFHQV2GenerationEvaluationBuilder(EvaluationBuilder):
             self.context.protocol.expected_examples,
             split=cast(str, split),
         )
+        manifest_split = "official-test" if split == "test" else "validation"
+        prediction_preprocess = {
+            "reference": (
+                "authenticated AFHQ-v2 "
+                f"{manifest_split} manifest order"
+            ),
+            "source_range": [-1.0, 1.0],
+            "metric_range": [0.0, 1.0],
+            "pairing": f"same-class {manifest_split} allocation",
+        }
+        prediction_postprocess = {
+            "codec": AFHQ_V2_IMAGE_CODEC,
+            "quantization": "clamp[-1,1]-round-rgb-u8",
+        }
         sink = None
         modules: Mapping[str, nn.Module]
         sampling: EvaluationSamplingCapability | None
@@ -806,25 +830,11 @@ class AFHQV2GenerationEvaluationBuilder(EvaluationBuilder):
             sampling = cast(EvaluationSamplingCapability, sampling_value)
             modules = {"primary": inference}
             if self.context.artifact_root is not None:
-                manifest_split = (
-                    "official-test" if split == "test" else "validation"
-                )
                 sink = JsonlPredictionArtifactSink(
                     self.context.artifact_root,
                     expected_samples=sample_plan,
-                    preprocess={
-                        "reference": (
-                            "authenticated AFHQ-v2 "
-                            f"{manifest_split} manifest order"
-                        ),
-                        "source_range": [-1.0, 1.0],
-                        "metric_range": [0.0, 1.0],
-                        "pairing": f"same-class {manifest_split} allocation",
-                    },
-                    postprocess={
-                        "codec": AFHQ_V2_IMAGE_CODEC,
-                        "quantization": "clamp[-1,1]-round-rgb-u8",
-                    },
+                    preprocess=prediction_preprocess,
+                    postprocess=prediction_postprocess,
                     gallery_count=profile.gallery_count,
                 )
         evaluator = AFHQV2GenerationEvaluator(
@@ -839,6 +849,43 @@ class AFHQV2GenerationEvaluationBuilder(EvaluationBuilder):
             protocol=self.context.protocol,
             subject=self.context.subject,
             data_identity=self.context.data_identity,
+            protocol_identity=EvaluationProtocolIdentity(
+                providers={
+                    "class_aware_distribution": {
+                        "wrapper": self.context.metric_specs[0].name,
+                        "nested": self.context.metric_specs[0].params[
+                            "providers"
+                        ],
+                        "feature_extractors": (
+                            [
+                                {
+                                    "implementation": (
+                                        "torchmetrics.image.fid."
+                                        "NoTrainInceptionV3"
+                                    ),
+                                    "weights": (
+                                        "torch-fidelity-"
+                                        "inception-v3-compat"
+                                    ),
+                                }
+                            ]
+                            if uses_inception
+                            else []
+                        ),
+                    },
+                },
+                metric_providers=nested_provider_names,
+                preprocessing={
+                    "prediction_input": prediction_preprocess,
+                    "prediction_record": prediction_postprocess,
+                },
+                dependencies=(
+                    "numpy",
+                    "pillow",
+                    "torchvision",
+                    *(("torch-fidelity",) if uses_inception else ()),
+                ),
+            ),
             artifact_sink=sink,
             modules=modules,
         )

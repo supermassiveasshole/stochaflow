@@ -1,7 +1,7 @@
 """Random seed helpers."""
 
 import random
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 import numpy as np
@@ -26,7 +26,7 @@ def set_seed(seed: int, *, deterministic: bool = False) -> None:
 @contextmanager
 def preserve_global_rng_state(
     device: torch.device | str | None = None,
-) -> Iterator[None]:
+) -> Generator[None, None, None]:
     """Restore Python, NumPy, and Torch global RNG streams after a callback."""
 
     target = None if device is None else torch.device(device)

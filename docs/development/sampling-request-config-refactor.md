@@ -1,309 +1,142 @@
-# Sampling Request Config Refactor
+# Sampling 调用：Hydra 迁移后的复审
 
-- 文档性质：被取代的历史开发决策记录；不属于公开 API
-- 状态：Superseded by Hydra C1（2026-08-01）
-- 统一排期：
-  [Development Priority Roadmap](development-priority-roadmap.md)；当前 contract 由
-  [Hydra 计划 C1](hydra-configuration-composition-migration-plan.md)拥有
-- Historical scope：本文 checkpoint v10、partial request、Physics/KD 示例只描述
-  当时实现，不描述当前 runtime；C1 不保留兼容性，retained-example cleanup 也不继续
-  维护这些案例
-- 日期：2026-07-28
-- 历史兼容性：当时只支持 checkpoint v10，不迁移旧 sampling config 或 checkpoint
-- 当前结果：checkpoint v12；训练 schema 不含 `sampling`/`use_for_sampling`；sample CLI
-  同时要求 checkpoint 与完整 `sample:` config；无 auto final sample 或 partial merge
+> 工作状态：暂停
+>
+> 规范来源：[`ROADMAP.md`](../../ROADMAP.md)、[`SPEC.md`](../../SPEC.md)、
+> [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
 
-> 以下章节仅保留 v10 设计的决策沿革。当前配置、CLI 与 checkpoint 行为请以 C1 计划和
-> `docs/configuration/` 公开文档为准。
+## 完成后用户能做什么
 
-## 1. 背景与问题
+如果 Hydra 迁移后的证据表明当前完整 sample config 难以编写，或 Python 调用接口不足，用户
+可以获得最窄的配置编写、选项参考或调用能力。sample 配置仍保持独立、完整且可审计。复审也
+可以得出“维持现状”的结论。
 
-旧设计把 `sampling.builder` 暴露在训练配置和独立 sampling config 中。由此产生了两个
-相互竞争的 composition root：
+Hydra 配置迁移完成后不会自动产生这些能力；本复审必须由根路线图另行选择。
 
-- `TrainingBuilder` 决定模型、Process、Objective 和 auxiliary modules 如何共同形成一项
-  可训练任务；
-- 外部 sampling config 又能任意选择 `SamplingBuilder`，并覆盖训练任务才知道的
-  prediction、conditioning、guidance、input adaptation 等语义。
+## 当前仓库已经支持什么
 
-这使 checkpoint 只保存 state、却不能可靠描述如何使用这些 state。一个 YAML overlay
-可以组合出与 checkpoint 拓扑或训练语义不兼容的推理任务，运行时只能在深层构造或
-state loading 阶段失败。`sample` 同时承担“完整外部实验配置”和“局部覆盖”两种含义，
-也导致 config authority、plugin provenance 和输出目录语义含混。
+- `train` 与 `sample` 是两个独立操作，各自使用完整配置。
+- `sample` 显式接收 checkpoint 与完整 sample config；二者不合并，sample seed 不继承
+  training seed。
+- checkpoint 提供可搬迁的只读 inference projection、extension 来源信息和任务专用
+  fixed sampling recipe。
+- sample config 声明 sampler、任务专用 options、shape、count、batch size、seed 和 writers，
+  但不能覆盖 checkpoint 固定的 SamplingBuilder identity/contract。
+- core 校验每批与总 exact count；runtime 绑定 checkpoint identity，在 private staging 运行
+  writers，并只发布完整 bundle。
+- direct transform 可由 SamplingBuilder 直接返回 output，不必伪造 Sampler、Dynamics 或 Process。
 
-本轮将 checkpoint-backed inference 固定为一条单向责任链：
+当前行为以 [`SPEC.md`](../../SPEC.md)、[`ARCHITECTURE.md`](../../ARCHITECTURE.md)、
+[configuration workflows](../configuration/workflows.md) 和
+[compatibility and migration](../configuration/compatibility-and-migration.md) 为准。
 
-```text
-TrainingBuilder
-    -> TrainingPlan.inference_recipe
-    -> checkpoint v10
-    -> optional sample request
-    -> internal SamplingBuilder
-    -> SamplingOutput
-    -> artifact writers
-```
+## 还没有支持什么
 
-`sample` 是 generation、reconstruction 和 prediction 共用的 checkpoint-backed
-inference 入口，不等同于“必须执行一个数值 Sampler”。
+- 没有证据证明 sample 配置需要类似 Hydra 的组合方式。
+- 没有统一的任务专用选项参考或 schema 能力。
+- 没有为未来多资产 inference 结构扩展 recipe envelope。
+- 没有第二个真实使用方证明需要独立的不可变调用对象或不带 writer 的接口。
+- 没有获批的公共 request/checkpoint 兼容性变化。
 
-## 2. 最终决策
+这些问题尚未被证明确实需要解决；它们是复审问题，不是当前待办。
 
-### 2.1 训练配置只保存用户可调默认值
+## 什么时候可以开始或重新审查
 
-最终公开 schema：
+必须同时满足：
 
-```python
-SamplingConfig(
-    run_after_training: bool,
-    sampler: ComponentConfig | None,
-    options: dict[str, object],
-    shape: list[int] | None,
-    num_samples: int,
-    batch_size: int,
-    seed: int | None,
-    writers: list[ComponentConfig],
-)
-```
+- [Hydra 全新训练配置迁移](hydra-configuration-composition-migration-plan.md)已经完成配置组合、
+  单次训练行为对照和易用性验收；
+- [`ROADMAP.md`](../../ROADMAP.md)另行指定本复审、负责人和问题陈述；
+- 当前 sampling 公开文档、测试和实现彼此一致；
+- 至少两个独立使用方提出同一种配置编写、inference 结构或 Python 调用缺口；
+- 提案继续分开 checkpoint、sample、Builder、writer 和 extension 的职责；
+- 公共变化有完整用户结果、版本和迁移方案。
 
-对应 YAML：
+任一条件缺失时继续暂停。Hydra 完成只满足一个前置，不会自动重开。
 
-```yaml
-sampling:
-  run_after_training: true
-  sampler:
-    name: ddim
-    params:
-      num_steps: 50
-      eta: 0.0
-  options:
-    weights: ema
-    trajectory:
-      enabled: false
-  shape: [3, 32, 32]
-  num_samples: 36
-  batch_size: 12
-  seed: 123
-  writers:
-    - name: image
-      params: {}
-```
+## 要完成哪些工作
 
-训练配置不再选择 SamplingBuilder。`run_after_training` 只决定训练结束、恢复 selected
-best checkpoint 后是否调用该 checkpoint 的 recipe；CLI
-`train --skip-final-sample` 可以仅对当前 invocation 禁止这一步。
+### 收集并分类复审证据
 
-### 2.2 TrainingPlan 固化内部 inference recipe
+- 动作：从仓库维护的配置和真实外部项目中收集重复配置、难懂错误、任务选项、inference 结构
+  和 Python 调用问题，同时评估维持现状是否更合适。
+- 原因：文件复制、文档发现性和真正的协议缺口需要不同解法。
+- 影响范围：复审记录、sample configs、外部 extension 反馈和维护测试。
+- 交付物：按问题类型整理的证据，以及修改或不修改的建议。
+- 验证方法：至少两个独立使用方证明同一缺口；单一未来任务不足以改变 core 约定。
+- 完成条件：能够结束没有证据的问题，只为反复出现的问题建立后续工作。
 
-有 checkpoint-backed inference 能力的 `TrainingBuilder` 返回：
+### 评审 sample 配置是否需要组合
 
-```python
-TrainingPlan(
-    ...,
-    inference_recipe=SamplingRecipe(
-        name="standard_denoising",
-        contract={"prediction_type": "epsilon"},
-    ),
-)
-```
+- 动作：若结构性 YAML 重复被证明造成实际问题，评估只组合配置片段、最终仍生成完整基础类型
+  sample config 的方案。
+- 原因：checkpoint 不能参与合并；简化配置编写也不能恢复不完整的 request。
+- 影响范围：sample config 编写、最终配置预览和组合来源审计。
+- 交付物：若获批，交付最小配置组合方案；否则记录继续使用完整普通 YAML 配置的结论。
+- 验证方法：最终 request 完整可审计，不继承 training/checkpoint 的可变默认值，不开放任意
+  Python 对象构造。
+- 完成条件：至少两个使用方的维护成本下降，且运行时 request 不产生两套事实来源。
 
-`SamplingRecipe` 只有：
+### 评审任务专用选项是否容易发现
 
-- `name`：内部 `sampling_builders` Registry 名称；
-- `contract`：该任务不可由 sample request 覆盖的 JSON-safe 固定参数。
+- 动作：若外部 `SamplingBuilder` 的校验信息和选项参考确实不足，评估 recipe 自带 schema 或
+  自动生成选项参考的能力。
+- 原因：文档问题不能通过把模态专用字段提升为通用 core schema 来解决。
+- 影响范围：`SamplingBuilder` 约定、extension 文档、错误路径和配置参考。
+- 交付物：可选的任务专用参考能力，不增加 conditioning/prompt/codec core 字段。
+- 验证方法：独立 extension 可新增选项而不修改 core dispatch；与固定约定冲突时会被明确拒绝。
+- 完成条件：选项更容易发现，且 extension 不需要修改 core dispatch。
 
-Framework validation 对 contract 做递归 snapshot：mapping 变为只读 mapping、list
-变为 tuple，嵌套值也不可再修改；序列化时再显式还原为 JSON list/mapping。外部声明和
-checkpoint reader 只接受严格 JSON value，不把 Python tuple 静默规范化成 list。
+### 评审新的 inference 资产结构
 
-checkpoint v10 始终保存 `inference_recipe` 字段，值为 `null` 或严格 envelope：
+- 动作：只有被选中的完整任务证明现有 asset projection/recipe 不足时，才设计最窄的版本化
+  asset/recipe extension。
+- 原因：不能为未选中的 latent、SR 或多资产任务预建通用字段。
+- 影响范围：checkpoint projection、sampling recipe、Builder、artifact 和正式 Evaluation。
+- 交付物：由真实任务驱动的版本化 envelope，或维持现状的结论。
+- 验证方法：内置实现与真实 extension 同时通过 checkpoint、sampling、artifact 和 Evaluation；
+  shape 等通用字段也重新验证。
+- 完成条件：完整任务可用，core 不按任务或 registry name 分支。
 
-```json
-{
-  "schema_version": 1,
-  "name": "standard_denoising",
-  "contract": {"prediction_type": "epsilon"}
-}
-```
+### 向操作入口 owner 提交 sampling 专用需求
 
-它是 checkpoint 的一部分，而不是另一份通用公开 sampling graph。没有 recipe 的
-checkpoint 明确不支持 `sample`。recipe 能自包含推理的组合描述，但 checkpoint
-不是自包含代码包：相应内置代码或 extension 仍须安装。
+- 动作：若第二个使用方需要 sampling 专用的不可变 request 或不带 writer 的窄能力，记录需求并
+  交给[显式顺序工作流计划](default-workflow-pipeline-support-plan.md)拥有的 operation library
+  入口；本文只复审 sampling-specific request、capability 和兼容性。
+- 原因：公共 Python operation 入口和 train-to-sample 组合只有一个 owner；sampling 复审不能
+  建立第二套入口，也不能把执行、失败处理或输出职责塞回 train。
+- 影响范围：sampling request identity、writer-free capability 建议和 checkpoint/config
+  兼容性；operation request/result 与组合示例仍归工作流计划。
+- 交付物：提交给 operation owner 的 sampling 专用需求，或“当前入口已经足够”的结论。
+- 验证方法：若需求获批，CLI 与 workflow-owned Python API 的身份、失败顺序和 artifact 发布一致；
+  旧输入不会被静默猜测，也不维护两套事实来源。
+- 完成条件：sampling 复审不导出自己的公共 operation entry；显式 train-to-sample 组合只在工作流
+  计划中定义，任何公共变化同步 SPEC/ARCHITECTURE/ROADMAP/CHANGELOG 与公开文档。
 
-### 2.3 Sample request 是严格的 partial request
+## 如何证明已经完成
 
-`sample --config` 的文件顶层只能包含：
+- 证据明确支持修改，或明确支持不修改并结束当次复审。
+- checkpoint mutable defaults、partial request、train/sample merge 和 auto final sample 不回归。
+- public Builder selection、arbitrary `_target_`/class/import path 继续被阻断。
+- 内置实现、真实 extension、checkpoint inference、artifact 和正式 Evaluation 同时通过。
+- compatibility、version、migration 和 provenance 对任何 public change 都完整可审计。
 
-```yaml
-sampling:
-  num_samples: 36
-  batch_size: 12
-  options:
-    weights: raw
-extensions:
-  plugins:
-    - optional-extra-plugin
-```
+## 明确不包含什么
 
-request 中的 `sampling` 只接受：
+- 不把 Hydra fresh-training 配置直接扩展到 sample。
+- 不把当前维护问题包装成新的架构工作项。
+- 不按 registry name、concrete class 或 payload shape 推断任务语义。
+- 不为一个未来任务增加通用 `Process`、`Dynamics`、`Sampler` 或 batch API。
+- 不改动 Evaluation、training、Physics/KD 或未选中的未来任务。
 
-- `sampler`
-- `options`
-- `shape`
-- `num_samples`
-- `batch_size`
-- `seed`
-- `writers`
+## 详细设计和研究资料在哪里
 
-`sampling.run_after_training` 与 `sampling.builder` 非法；训练、模型、Process、Objective、
-optimizer、data 或 trainer 等完整 config 字段同样非法。
+- [Hydra 完成后的 sampling 重审笔记](notes/sampling-request-config-refactor/review-notes.md)
+- [显式顺序工作流与唯一 operation library owner](default-workflow-pipeline-support-plan.md)
+- [Hydra Fresh-Training Composition Migration](hydra-configuration-composition-migration-plan.md)
+- [当前 configuration workflows](../configuration/workflows.md)
+- [当前 compatibility and migration](../configuration/compatibility-and-migration.md)
+- [Sampling 与 inference 架构权威](../../ARCHITECTURE.md)
 
-解析规则固定为：
-
-1. 未提供的字段继承 checkpoint config；
-2. `shape`、`num_samples`、`batch_size` 和 `seed` 按字段替换；
-3. `options` 只按顶层 key 做一层 merge，嵌套 mapping 不递归合并；
-4. 显式 `sampler` 原子替换 checkpoint 默认 sampler，包括显式 `null`；
-5. 显式 `writers` 原子替换 checkpoint 默认 writer 列表；
-6. `options.sampler` 始终非法；
-7. request option 与 recipe fixed contract 同名时 fail closed；
-8. recipe 已固定 `sampler` 时，request 不能再提供 sampler。
-
-运行时先解析 checkpoint recipe，再合并 request。最终交给内部 SamplingBuilder 的参数
-按以下顺序构造：
-
-```text
-checkpoint sampling.options
-    <- shallow sample-request options
-    <- optional top-level sampler declaration
-    <- immutable recipe contract
-```
-
-任一 contract collision 都是配置错误，不允许通过覆盖顺序静默解决。
-
-### 2.4 CLI、plugin 与输出契约
-
-`stochaflow sample` 必须显式提供 `--checkpoint`。`--config` 可省略；省略时完全使用
-checkpoint 中的 sampling defaults。旧的“只给完整 config、把 checkpoint 当成可选
-state”路径已经删除。
-
-sample request 中的 `extensions.plugins` 是 additive activation：
-
-- checkpoint 记录并要求原训练插件身份；
-- request 只能追加 writer、sampler 或其他推理期所需插件；
-- 空列表不清除 checkpoint 要求的插件；
-- 同名 entry point 的身份或版本冲突仍 fail closed。
-
-在处理 additions 之前，runtime 还会检查 checkpoint config 的 plugin selection 与
-checkpoint provenance 一致；config-only、未被 provenance 认证的插件不会因为一次
-additive request 而被导入。
-
-默认 sample 输出在 checkpoint 所属 run 的 `samples/<timestamp>/` 下创建唯一目录。
-显式 `--output-dir` 是这次 invocation 的精确目标目录，不解释为训练 run root，也不
-自动增加时间戳层。run manifest 使用 `recipe` 和
-`selected_components.sampling_recipe`，不再把内部实现称为用户选择的 builder。
-训练 manifest 和 checkpoint metadata 中的 recipe identity 来自已验证
-`TrainingPlan`，而不是从 config 或 registry name 推断。
-
-## 3. 公共与内部边界
-
-| 能力 | 公开配置/请求 | checkpoint | framework internal |
-| --- | --- | --- | --- |
-| 是否训练后执行 | `run_after_training` | resolved default | runner gate |
-| 数值求解器 | `sampler` | default | recipe 接收或固定 |
-| 任务级可调参数 | `options` | defaults | recipe-specific interpretation |
-| shape/count/batch/seed | 独立字段 | defaults | runtime batching/RNG |
-| writer selection | `writers` | defaults | writer registry/lifecycle |
-| 推理任务组合 | 不可选择 | `inference_recipe` | `SamplingBuilder` |
-| prediction/condition 等不变量 | 不可覆盖 | recipe `contract` | Builder validation |
-| 模型/Process state | 不可重声明 | checkpoint state/config | runtime reconstruction |
-
-`SamplingBuilder` Registry 继续存在，但它是训练任务写入 checkpoint 的内部 recipe
-implementation boundary。它不是 sample request 的公开选择面，也不要求所有任务都
-使用数值 `Sampler`。
-
-## 4. Breaking migration
-
-| 旧声明或行为 | v10 替换 |
-| --- | --- |
-| `sampling.builder.name` | `TrainingPlan.inference_recipe.name` |
-| `sampling.builder.params.prediction_type` 等不变量 | `SamplingRecipe.contract` |
-| `sampling.builder.params.sampler` | `sampling.sampler` |
-| 其他 request-time Builder 参数 | `sampling.options` |
-| `sampling.builder: null` 禁止 final sample | `sampling.run_after_training: false` |
-| sampling-only overlay | strict partial sample request |
-| 完整外部 sampling experiment config | 删除 |
-| 不带 checkpoint 的 `sample --config` | 删除；`--checkpoint` 必填 |
-| request 替换插件 selection | additive plugin activation |
-| checkpoint v8/v9 | 不读取；用当前代码新建 v10 run |
-
-不提供 adapter、双格式解析或自动 migration。旧 checkpoint 不能 resume 或 sample。
-
-## 5. Example 与 scaffold 结果
-
-| 使用方 | Recipe 类型 | 可调 request | 固定 contract |
-| --- | --- | --- | --- |
-| built-in Gaussian image generation | `standard_denoising` | sampler、weights、trajectory、数量与 writer | prediction type |
-| AFHQ-v2 | class-conditional denoising recipe | standalone request 只改 sampler 与 guidance | prediction type |
-| Physics reconstruction | reconstruction recipe | sampler 与少量 correction options；real-smoke 另改 count/weights | prediction type |
-| Knowledge Distillation | student-only direct prediction | weights、synthetic input distribution 与输出数量；无 standalone request | model input width |
-| `stochaflow init` scaffold | direct regression predictions | input range、数量与 writer defaults | model input width |
-
-这些 recipe 都由各自 TrainingBuilder 声明。example YAML 只配置用户可调默认值，独立
-sample 文件只表达一次 invocation 的差异。
-
-## 6. 明确拒绝的替代方案
-
-- **保留公开 `sampling.builder`：** 会重新产生与 TrainingBuilder 竞争的 composition
-  root。
-- **将整个 sampling config 固化且不可覆盖：** 无法满足更换 solver、数量、writer 或
-  task input 的正常推理需求。
-- **允许 request 覆盖任意 Builder 参数：** 无法区分训练语义不变量与安全的运行时
-  参数。
-- **递归 merge options：** list、mapping 和 deletion 语义不清晰；一层 merge 更容易
-  预测，嵌套对象由 request 原子替换。
-- **由 registry name 推断 compatibility：** 将 task-specific 矩阵推回 core，违反
-  Builder 边界和 open-closed 原则。
-- **把 `sample` 限定为生成模型：** Physics reconstruction、监督 prediction 和 KD
-  comparison 都是同一 checkpoint-backed inference lifecycle 的合法实例。
-
-## 7. 实施触点
-
-本轮实现同步修改：
-
-- config schema、strict partial request parser 与 field-wise resolver；
-- `SamplingRecipe` validation/serialization 与 `TrainingPlan.inference_recipe`；
-- checkpoint v10 writer、loader、strict resume comparison；
-- sample runtime、explicit checkpoint CLI、plugin activation 与 run manifest；
-- built-in、AFHQ、Physics、KD 和项目 scaffold 的 TrainingBuilder/YAML/request；
-- framework、extension API、workflow、configuration reference、migration、
-  troubleshooting、教程和 example README。
-
-公开文档只描述最终行为，不链接本开发记录。
-
-## 8. 验收
-
-验收条件：
-
-- training config 精确接受最终 `SamplingConfig` 字段；
-- sample request 拒绝完整 experiment config、`run_after_training` 和 `builder`；
-- request inheritance、shallow options merge、atomic sampler/writer replacement 受测试；
-- recipe contract collision 与无 recipe checkpoint fail closed；
-- CLI 强制显式 checkpoint；
-- v10 checkpoint round-trip、resume 与 sampling provenance 受测试；
-- built-in、AFHQ、Physics、KD 和 scaffold 均通过各自 end-to-end smoke；
-- generated configuration reference 与 source metadata 一致；
-- repository search 只在 breaking migration 说明中保留旧 schema 名称。
-
-最终验证命令：
-
-```bash
-uv run python tools/generate_config_reference.py --check
-uv run pytest tests/test_config_reference.py tests/test_project_scaffold.py \
-  tests/test_config.py tests/test_sampling_runtime.py tests/test_cli.py \
-  tests/test_checkpoint.py
-uv run ruff check .
-uv run pyright
-uv run sphinx-build -W --keep-going -b html docs docs/_build/html
-uv build
-uv run pytest
-```
+旧 request 迁移细节保存在公开兼容文档、`CHANGELOG.md` 和 Git 历史。本文保留未来支持构想，
+未经维护者明确审阅不得删除。

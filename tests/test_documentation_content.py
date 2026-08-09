@@ -239,7 +239,8 @@ def test_public_docs_do_not_advertise_retired_p2_support() -> None:
     published_docs = (
         path
         for path in DOCS_ROOT.rglob("*.md")
-        if "development" not in path.relative_to(DOCS_ROOT).parts
+        if path.relative_to(DOCS_ROOT).parts[:2]
+        != ("development", "notes")
     )
     example_surfaces = (
         path

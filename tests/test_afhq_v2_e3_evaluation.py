@@ -811,11 +811,73 @@ def test_afhq_validation_prediction_plan_uses_validation_identity(
         "authenticated AFHQ-v2 validation manifest order"
     )
     assert draft.preprocess["pairing"] == "same-class validation allocation"
+    assert plan.protocol_identity.providers[
+        "class_aware_distribution"
+    ]["nested"] == ({"name": TEST_PROVIDER, "params": {}},)
+    assert plan.protocol_identity.providers[
+        "class_aware_distribution"
+    ]["feature_extractors"] == ()
+    assert plan.protocol_identity.metric_providers == (TEST_PROVIDER,)
+    assert plan.protocol_identity.preprocessing["prediction_input"] == (
+        draft.preprocess
+    )
+    assert plan.protocol_identity.dependencies == (
+        "numpy",
+        "pillow",
+        "torchvision",
+    )
     assert [sample.input_id for sample in draft.samples] == [
         "afhq-v2:validation:000000",
         "afhq-v2:validation:000001",
         "afhq-v2:validation:000002",
     ]
+
+
+def test_afhq_protocol_identity_declares_nested_inception_providers() -> None:
+    production_metric = MetricSpec(
+        id="distribution",
+        name=afhq_evaluation.AFHQ_V2_DISTRIBUTION_METRIC,
+        channel=afhq_evaluation.AFHQ_V2_IMAGE_PAIR_CHANNEL,
+        params={
+            "class_mapping": {"cat": 0, "dog": 1, "wild": 2},
+            "expected_real": {"cat": 1, "dog": 1, "wild": 1},
+            "expected_fake": {"cat": 1, "dog": 1, "wild": 1},
+            "providers": [
+                {"name": "kid", "params": {"feature": 2048}},
+                {"name": "fid", "params": {"feature": 2048}},
+            ],
+        },
+    )
+    model = TinyAFHQModel()
+    plan = build_evaluation_plan(
+        ComponentConfig(
+            name=afhq_evaluation.AFHQ_V2_EVALUATION_BUILDER,
+            params=profile_params(),
+        ),
+        subject=object(),
+        data=[],
+        data_identity={"source": "training", "split": "validation"},
+        inference=model,
+        metric_specs=(production_metric,),
+        protocol=protocol(),
+        sampling=FakeAFHQSamplingCapability(),
+    )
+
+    provider_identity = plan.protocol_identity.providers[
+        "class_aware_distribution"
+    ]
+    assert plan.protocol_identity.metric_providers == ("kid", "fid")
+    assert provider_identity["nested"] == (
+        {"name": "kid", "params": {"feature": 2048}},
+        {"name": "fid", "params": {"feature": 2048}},
+    )
+    assert provider_identity["feature_extractors"] == (
+        {
+            "implementation": "torchmetrics.image.fid.NoTrainInceptionV3",
+            "weights": "torch-fidelity-inception-v3-compat",
+        },
+    )
+    assert "torch-fidelity" in plan.protocol_identity.dependencies
 
 
 def test_afhq_live_training_validation_accepts_opaque_subject_without_artifacts(

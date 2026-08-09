@@ -270,7 +270,7 @@ def test_complete_snapshot_metadata_ignores_only_content_digest() -> None:
         changed_ns=4,
     )
 
-    assert artifact_io._same_complete_snapshot_metadata(
+    assert artifact_io.same_complete_snapshot_metadata(
         (snapshot,),
         (replace(snapshot, sha256="b" * 64),),
     )
@@ -303,7 +303,7 @@ def test_complete_snapshot_metadata_detects_every_metadata_change(
         changed_ns=4,
     )
 
-    assert not artifact_io._same_complete_snapshot_metadata(
+    assert not artifact_io.same_complete_snapshot_metadata(
         (snapshot,),
         (replace(snapshot, **{field: value}),),  # type: ignore[arg-type]
     )
@@ -321,7 +321,7 @@ def test_complete_snapshot_metadata_detects_file_count_change() -> None:
         changed_ns=4,
     )
 
-    assert not artifact_io._same_complete_snapshot_metadata((snapshot,), ())
+    assert not artifact_io.same_complete_snapshot_metadata((snapshot,), ())
 
 
 def test_hash_progress_completes_after_consistency_enumeration(

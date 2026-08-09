@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
@@ -491,7 +491,7 @@ def test_ensure_quarantines_object_while_holding_its_digest_lock(
         path: Path,
         *,
         cache_root: Path,
-    ) -> Iterator[None]:
+    ) -> Generator[None, None, None]:
         with original_lock(path, cache_root=cache_root):
             held_locks.add(path)
             try:

@@ -23,7 +23,6 @@ from stochaflow.data.artifact_store import (
 )
 from stochaflow.data.artifacts import DataArtifact, DataSourceContext
 from stochaflow.data.image_contracts import (
-    IMAGE_DATA_SOURCES,
     ImageDataSource,
     ImageDimensionTable,
     TorchvisionImageArtifactPayload,
@@ -369,7 +368,6 @@ def _load_torchvision(
         raise DataArtifactValidationError(str(exc)) from exc
 
 
-@IMAGE_DATA_SOURCES.register("torchvision")
 class TorchvisionImageDataSource(ImageDataSource):
     """Acquire one allowlisted dataset through the managed artifact store."""
 

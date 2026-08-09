@@ -9,6 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
 
+from packaging.utils import InvalidName, canonicalize_name
 from torch import nn
 
 from stochaflow.evaluation.config import (
@@ -25,6 +26,87 @@ from stochaflow.utils.registry import REGISTRIES, RegistryCatalog
 
 
 @dataclass(frozen=True, slots=True)
+class EvaluationProtocolIdentity:
+    """Task-declared provider and preprocessing facts that affect scores."""
+
+    providers: Mapping[str, Any]
+    preprocessing: Mapping[str, Any]
+    metric_providers: tuple[str, ...] = ()
+    dependencies: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        providers = _freeze_evaluation_mapping(
+            self.providers,
+            path="evaluation protocol identity providers",
+        )
+        if not providers:
+            raise ValueError(
+                "evaluation protocol identity providers must be non-empty"
+            )
+        preprocessing = _freeze_evaluation_mapping(
+            self.preprocessing,
+            path="evaluation protocol identity preprocessing",
+        )
+        if not preprocessing:
+            raise ValueError(
+                "evaluation protocol identity preprocessing must be non-empty"
+            )
+        object.__setattr__(self, "providers", providers)
+        object.__setattr__(self, "preprocessing", preprocessing)
+        declared_metric_providers = cast(object, self.metric_providers)
+        if type(declared_metric_providers) is not tuple:
+            raise TypeError(
+                "evaluation protocol identity metric_providers must be an "
+                "exact tuple"
+            )
+        metric_providers: list[str] = []
+        seen_metric_providers: set[str] = set()
+        for index, declared_name in enumerate(self.metric_providers):
+            name = _non_empty_string(
+                declared_name,
+                path=(
+                    "evaluation protocol identity "
+                    f"metric_providers[{index}]"
+                ),
+            )
+            if name in seen_metric_providers:
+                raise ValueError(
+                    "evaluation protocol identity contains duplicate metric "
+                    f"provider {name!r}"
+                )
+            seen_metric_providers.add(name)
+            metric_providers.append(name)
+        object.__setattr__(self, "metric_providers", tuple(metric_providers))
+        declared_dependencies = cast(object, self.dependencies)
+        if type(declared_dependencies) is not tuple:
+            raise TypeError(
+                "evaluation protocol identity dependencies must be an exact tuple"
+            )
+        dependencies: list[str] = []
+        seen: set[str] = set()
+        for index, declared_name in enumerate(self.dependencies):
+            raw_name = _non_empty_string(
+                declared_name,
+                path=f"evaluation protocol identity dependencies[{index}]",
+            )
+            try:
+                name = canonicalize_name(raw_name, validate=True)
+            except InvalidName as error:
+                raise ValueError(
+                    "evaluation protocol identity dependency must be a valid "
+                    f"distribution name: {raw_name!r}"
+                ) from error
+            if name in seen:
+                raise ValueError(
+                    "evaluation protocol identity contains duplicate dependency "
+                    f"{name!r}"
+                )
+            seen.add(name)
+            dependencies.append(name)
+        object.__setattr__(self, "dependencies", tuple(dependencies))
+
+
+@dataclass(frozen=True, slots=True)
 class EvaluationPlan:
     """Fully composed evaluator and core-managed evaluation dependencies."""
 
@@ -34,6 +116,7 @@ class EvaluationPlan:
     protocol: EvaluationProtocol
     subject: object
     data_identity: Mapping[str, Any]
+    protocol_identity: EvaluationProtocolIdentity
     artifact_sink: EvaluationArtifactSink | None = None
     modules: Mapping[str, nn.Module] = field(default_factory=dict)
 
@@ -179,6 +262,13 @@ def validate_evaluation_plan(value: object) -> EvaluationPlan:
         raise TypeError("EvaluationPlan.subject must be resolved")
     if not isinstance(cast(object, value.protocol), EvaluationProtocol):
         raise TypeError("EvaluationPlan.protocol must be EvaluationProtocol")
+    if not isinstance(
+        cast(object, value.protocol_identity),
+        EvaluationProtocolIdentity,
+    ):
+        raise TypeError(
+            "EvaluationPlan.protocol_identity must be EvaluationProtocolIdentity"
+        )
     metric_specs = _snapshot_metric_specs(
         value.metric_specs,
         path="EvaluationPlan.metric_specs",
@@ -224,6 +314,7 @@ def validate_evaluation_plan(value: object) -> EvaluationPlan:
         protocol=value.protocol,
         subject=value.subject,
         data_identity=data_identity,
+        protocol_identity=value.protocol_identity,
         artifact_sink=value.artifact_sink,
         modules=MappingProxyType(modules),
     )
@@ -269,6 +360,7 @@ __all__ = [
     "EvaluationBuilder",
     "EvaluationBuilderContext",
     "EvaluationPlan",
+    "EvaluationProtocolIdentity",
     "build_evaluation_plan",
     "validate_evaluation_plan",
 ]

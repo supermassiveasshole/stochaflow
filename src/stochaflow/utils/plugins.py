@@ -125,11 +125,11 @@ class ExtensionVersionAcceptance:
     method: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ExtensionActivationPlan:
-    """Side-effect-free metadata preflight ready for explicit activation."""
+    """Side-effect-free metadata preflight with a sealed config snapshot."""
 
-    config: StochaflowConfig
+    _config_snapshot: StochaflowConfig = field(repr=False)
     provenance: tuple[ExtensionPluginProvenance, ...]
     version_mismatches: tuple[ExtensionVersionMismatch, ...]
     selection_policy: ExtensionSelectionPolicy
@@ -140,8 +140,26 @@ class ExtensionActivationPlan:
         compare=False,
     )
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "config", deepcopy(self.config))
+    def __init__(
+        self,
+        config: StochaflowConfig,
+        provenance: tuple[ExtensionPluginProvenance, ...],
+        version_mismatches: tuple[ExtensionVersionMismatch, ...],
+        selection_policy: ExtensionSelectionPolicy,
+    ) -> None:
+        config_snapshot = deepcopy(config)
+        config_snapshot.validate()
+        object.__setattr__(self, "_config_snapshot", config_snapshot)
+        object.__setattr__(self, "provenance", tuple(provenance))
+        object.__setattr__(self, "version_mismatches", tuple(version_mismatches))
+        object.__setattr__(self, "selection_policy", selection_policy)
+        object.__setattr__(self, "_activation_receipt_token", object())
+
+    @property
+    def config(self) -> StochaflowConfig:
+        """Return a detached copy of the sealed preflight snapshot."""
+
+        return deepcopy(self._config_snapshot)
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,7 +611,7 @@ def _accepted_mismatches(
 
 
 def _materialized_config(plan: ExtensionActivationPlan) -> StochaflowConfig:
-    config = deepcopy(plan.config)
+    config = plan.config
     config.extensions.plugins = [item.name for item in plan.provenance]
     return config
 
@@ -698,15 +716,6 @@ def require_resolved_extensions_for_plan(
         raise ValueError(
             "resolved extensions config does not match its activation plan"
         )
-
-
-def _reset_extension_activation_state_for_testing() -> None:
-    """Reset process activation state for isolated tests only."""
-
-    with _activation_lock:
-        _activation_runtime.state = PluginActivationState.UNACTIVATED
-        _activation_runtime.selection = None
-        _activation_runtime.failure = None
 
 
 __all__ = [

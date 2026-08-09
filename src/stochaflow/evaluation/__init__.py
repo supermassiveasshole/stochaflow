@@ -4,6 +4,7 @@ from stochaflow.evaluation.builder import (
     EvaluationBuilder,
     EvaluationBuilderContext,
     EvaluationPlan,
+    EvaluationProtocolIdentity,
     build_evaluation_plan,
     validate_evaluation_plan,
 )
@@ -30,7 +31,6 @@ from stochaflow.evaluation.config import (
 from stochaflow.evaluation.contracts import (
     EvaluationResult,
     EvaluationRunOutcome,
-    EvaluationRunRequest,
     EvaluationStatus,
     EvaluationStepOutput,
     Evaluator,
@@ -99,10 +99,10 @@ __all__ = [
     "EvaluationExtensionsConfig",
     "EvaluationPlan",
     "EvaluationProtocol",
+    "EvaluationProtocolIdentity",
     "EvaluationPurpose",
     "EvaluationResult",
     "EvaluationRunOutcome",
-    "EvaluationRunRequest",
     "EvaluationSamplingCapability",
     "EvaluationSamplingRequest",
     "EvaluationSplit",

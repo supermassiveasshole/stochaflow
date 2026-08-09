@@ -695,8 +695,8 @@ print(outcome.metrics, outcome.result_path)
 ```
 
 需要自行控制插件 activation 的宿主可以先调用 `resolve_evaluation_inputs()`，再把明确
-激活得到的 `ResolvedExtensions` 交给 `run_resolved_evaluation()`。当前
-`EvaluationRunRequest` 是数据 contract，不是 `run_evaluation()` 的参数形式。
+激活得到的 `ResolvedExtensions` 交给 `run_resolved_evaluation()`。公开调用边界只有这两个
+已经被 runtime 消费的 path-first API；不再导出没有消费者的 request 占位类型。
 
 没有 artifact sink 的成功目录包含：
 
@@ -710,7 +710,16 @@ candidate-a/
 `result.json` 保存 protocol digest、checkpoint SHA-256/format/epoch/global step、
 requested/resolved weights、lineage、DataBuilder/split/artifact identity、
 `eval/metrics/*`、`eval/measurements/*`、sample completeness 与 extension/builder/metric
-provenance。manifest 最后发布并记录 result SHA-256；任何加载、评估、完整性或写入失败
+provenance。每个 Builder 还必须在 `EvaluationPlan.protocol_identity` 显式声明非空的
+provider/backbone/weights 与 preprocessing facts，以及额外 provider distribution；core 在
+进入 batch loop 前把这些声明与实际注册类、distribution/Python/runtime 版本和 seed 绑定，
+缺失依赖会在昂贵推理前失败；loop 完成后，绑定的 implementation record 与 observed ordered
+sample-ID digest 共同形成 protocol digest。device 与硬件信息只记录为 execution
+provenance，不改变 protocol compatibility。精确 checkpoint/prediction artifact digest 属于
+subject identity，不进入 protocol compatibility；因此同一 data/sample plan 与
+implementation 下的不同 subjects 可以共享 protocol digest 并保留各自 provenance。
+manifest 最后发布并记录 result
+SHA-256；任何加载、评估、完整性或写入失败
 都会清理未完成目录。`strict_complete: false` 时数量不足可产生显式 `incomplete` result，
 而不是伪装为 complete。
 
@@ -817,7 +826,8 @@ artifact sample plan 完全相同，因此“数量相同但 ID 错误”也会�
 sample-plan digest、producer identity、原 source subject 与 resolved weights、data/split、
 inference/pre/postprocess/gallery 和 extension lineage。producer artifact 按字节保持不变；
 offline run 发布自己的 immutable result bundle，不覆盖 live result 或 producer manifest。
-常规 offline Builder 不声明新 sink，因此 `artifacts` 为空。`gate_result_path` 仍为 `None`。
+常规 offline Builder 不声明新 sink，因此 `artifacts` 为空。Gate 尚不是 runtime contract；
+结果对象不保留投机性的 gate path。
 
 ### AFHQ-v2 formal full-test profile
 
@@ -851,9 +861,9 @@ subject 必须匹配 profile 固定的 prediction/variance recipe。learned-rang
 half。正式 test 始终只在 validation 选出唯一 checkpoint 后运行一次，不能反向改变
 训练 monitor 或 best checkpoint。
 
-早期 AFHQ evaluator 的静态比较结果继续保留在仓库归档的开发记录中；可执行的 legacy
-evaluator 和其私有配置 schema 已退休。maintained benchmark 统一使用 public
-`stochaflow evaluate`。
+早期 AFHQ evaluator 的退休结论保留在根 `ROADMAP.md`、`CHANGELOG.md` 与 Git 历史中；
+可执行的 legacy evaluator、私有配置 schema 和阶段性开发记录均已退出。maintained
+benchmark 统一使用 public `stochaflow evaluate`。
 
 当前 runtime 提供通用 prediction persistence/replay substrate；core FID/KID providers 与上述 AFHQ
 profile 已闭合当前普通像素图像生成的 formal Evaluation vertical slice。SR、consistency、

@@ -4,7 +4,7 @@
 >
 > Applies to: the current source tree
 >
-> Last reviewed: 2026-08-01
+> Last reviewed: 2026-08-09
 
 This document defines the stable ownership, dependency, and composition model
 of Stochaflow. It explains how the product contract in [`SPEC.md`](SPEC.md) is
@@ -244,6 +244,20 @@ and optional records. Core owns inference-mode execution, declared-module mode,
 metric state, global identity and completeness checks, optional prediction-sink
 finalization, and atomic publication of the immutable result bundle.
 
+The Plan also carries task-owned `EvaluationProtocolIdentity`: explicit,
+non-empty provider/backbone/weights and preprocessing facts plus any nested
+Metric Registry providers and distribution dependencies. Core does not infer
+these from task params or Metric internals. Before the data loop it binds the
+declaration to registered module/class identities and distribution, Python, and
+runtime versions and fails closed on missing dependencies. After the loop it
+finalizes protocol identity from that bound implementation record and the
+observed ordered sample-ID digest; the same implementation record also enters
+result provenance. Device and hardware remain execution provenance so the same
+protocol can be compared across supported execution environments.
+Exact checkpoint or prediction-artifact content belongs to subject identity,
+not protocol compatibility; two subjects evaluated with the same governed
+data/sample plan and implementation therefore retain the same protocol digest.
+
 Offline prediction-artifact evaluation has no checkpoint model, original
 DataBuilder, or sampling capability. It joins authenticated records against the
 artifact's exact sample plan and cannot silently rerun inference.
@@ -303,6 +317,14 @@ module target without importing extension code; activation imports only the
 validated selection. Component registry names are a second identity layer and
 should use a project namespace. Provenance detects declared identity/version
 changes but does not freeze source code or the execution environment.
+
+Preflight also deep-copies and validates configuration into a plan-private
+snapshot. The plan exposes only detached copies for inspection; activation
+materializes the resolved configuration from the captured snapshot and returns
+a receipt tied to that exact plan. This prevents callers from changing the
+validated activation input between prepare and activate while preserving valid
+Python configuration values such as tuples and `torch.dtype`. It is an
+activation-boundary guarantee, not a configuration serialization format.
 
 A new extension should normally require:
 

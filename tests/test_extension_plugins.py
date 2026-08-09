@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
+import torch
 
 import stochaflow.utils.plugins as plugin_runtime
 from stochaflow.utils.config import load_config_dict
@@ -50,11 +50,7 @@ class FakeEntryPoint:
         return FakeDistribution(self.distribution, self.version)
 
 
-@pytest.fixture(autouse=True)
-def _isolated_activation_state() -> Generator[None, None, None]:
-    plugin_runtime._reset_extension_activation_state_for_testing()
-    yield
-    plugin_runtime._reset_extension_activation_state_for_testing()
+pytestmark = pytest.mark.usefixtures("isolated_extension_activation_state")
 
 
 def _config(*, plugins: list[str] | None) -> Any:
@@ -572,7 +568,7 @@ def test_provenance_parser_is_strict_stable_and_checkpoint_safe() -> None:
         )
 
 
-def test_prepare_and_resolve_deep_copy_config(
+def test_prepare_and_resolve_use_immutable_config_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_entry_points(
@@ -581,12 +577,26 @@ def test_prepare_and_resolve_deep_copy_config(
     )
     monkeypatch.setattr(plugin_runtime, "import_module", lambda _: None)
     config = _config(plugins=["example"])
+    config.data.params["shape"] = (1, 2)
+    config.model.params["dtype"] = torch.float64
     plan = prepare_extension_plugins(config)
+    different_config = _config(plugins=["example"])
+    different_config.data.params["shape"] = (9, 9)
+    assert plan != prepare_extension_plugins(different_config)
     config.model.params["changed"] = True
+    detached_config = plan.config
+    detached_config.trainer.num_epochs = 0
+    detached_config.extensions.plugins = ["other"]
+    with pytest.raises(ValueError, match=r"trainer\.num_epochs must be positive"):
+        detached_config.validate()
 
     resolved = activate_extension_plugins(plan)
-    plan.config.model.params["changed_after_prepare"] = True
 
+    assert plan.config is not detached_config
+    assert plan.config.trainer.num_epochs == 1
     assert "changed" not in resolved.config.model.params
-    assert "changed_after_prepare" not in resolved.config.model.params
+    assert resolved.config.data.params["shape"] == (1, 2)
+    assert type(resolved.config.data.params["shape"]) is tuple
+    assert resolved.config.model.params["dtype"] is torch.float64
+    assert resolved.config.trainer.num_epochs == 1
     assert resolved.config.extensions.plugins == ["example"]

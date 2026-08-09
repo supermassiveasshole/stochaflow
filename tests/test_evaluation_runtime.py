@@ -23,6 +23,7 @@ from stochaflow.evaluation import (
     PREDICTION_RECORD_FORMAT,
     EvaluationBuilder,
     EvaluationPlan,
+    EvaluationProtocolIdentity,
     EvaluationRunOutcome,
     EvaluationStepOutput,
     PredictionArtifactDraft,
@@ -259,6 +260,15 @@ class TinyEvaluationBuilder(EvaluationBuilder):
             protocol=self.context.protocol,
             subject=self.context.subject,
             data_identity=self.context.data_identity,
+            protocol_identity=EvaluationProtocolIdentity(
+                providers={"mean": {"name": METRIC_NAME}},
+                preprocessing={"scenario": scenario},
+                dependencies=(
+                    ("stochaflow-test-missing-provider",)
+                    if scenario == "missing_dependency"
+                    else ()
+                ),
+            ),
             modules={"primary": model, "lifecycle_probe": probe},
             artifact_sink=sink,
         )
@@ -494,9 +504,29 @@ def test_run_evaluation_resolves_weights_and_publishes_portable_bundle(
         }
     ]
     assert provenance["device"] == "cpu"
+    assert provenance["execution_environment"]["device"] == "cpu"
+    assert provenance["execution_environment"]["system"]
+    assert provenance["execution_environment"]["machine"]
     assert provenance["seed"] == 19
     assert provenance["extension_plugins"] == []
     assert "extension_version_acceptance" in provenance
+    implementation = provenance["protocol_implementation"]
+    assert implementation["schema_version"] == 1
+    assert implementation["declared"] == {
+        "providers": {"mean": {"name": METRIC_NAME}},
+        "preprocessing": {"scenario": "normal"},
+        "metric_providers": [],
+        "dependencies": [],
+    }
+    assert implementation["components"]["evaluation_builder"]["name"] == (
+        EVALUATION_BUILDER_NAME
+    )
+    assert implementation["components"]["metrics"][0]["name"] == METRIC_NAME
+    assert implementation["runtime"]["parameters"] == {"seed": 19}
+    assert "execution_environment" not in implementation
+    assert {
+        item["name"] for item in implementation["runtime"]["distributions"]
+    } == {"stochaflow", "torch", "torchmetrics"}
 
     manifest = yaml.safe_load(
         outcome.manifest_path.read_text(encoding="utf-8")
@@ -556,6 +586,26 @@ def test_invalid_evaluation_fails_closed_without_completion_marker(
     assert not (output_dir / "evaluation_manifest.yaml").exists()
     assert not (output_dir / "result.json").exists()
     _assert_inference_lifecycle_restored()
+
+
+def test_missing_protocol_dependency_fails_before_evaluator_execution(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _write_checkpoint(tmp_path / "subject.pt")
+    config = _write_evaluation_config(
+        tmp_path / "evaluation.yaml",
+        checkpoint,
+        scenario="missing_dependency",
+    )
+    output_dir = tmp_path / "missing-provider"
+
+    with pytest.raises(RuntimeError, match="protocol dependency is not installed"):
+        run_evaluation(config, output_dir=output_dir, device_name="cpu")
+
+    evaluator = TinyEvaluationBuilder.last_evaluator
+    assert evaluator is not None
+    assert evaluator.seen_batches == []
+    assert not output_dir.exists()
 
 
 @pytest.mark.parametrize(

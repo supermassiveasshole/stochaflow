@@ -559,7 +559,7 @@ cli:
   "sample.--device": {description: 覆盖本次采样设备；未提供时由运行时按 auto 选择可用设备。}
   "sample.--output-dir": {description: 覆盖生成 artifact 的目录。}
   "sample.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}
-  "evaluate.--config": {description: 必填的完整 strict evaluation config；其 subject 显式引用 checkpoint，并定义 data、EvaluationBuilder、metrics 与 protocol。}
+  "evaluate.--config": {description: 必填的完整 strict evaluation config；其 subject 显式引用 checkpoint 或 prediction artifact，并定义 data、EvaluationBuilder、metrics 与 protocol。}
   "evaluate.--device": {description: 覆盖本次 evaluation 设备；未提供时由运行时按 auto 选择可用设备。}
   "evaluate.--output-dir": {description: 覆盖 evaluation result bundle 目录；该目录必须不存在。}
   "evaluate.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}

@@ -31,11 +31,18 @@ from stochaflow.utils.registry import Registry
 if TYPE_CHECKING:
     from stochaflow.data.builder import DataBuilderContext
 
-_BUILTIN_IMAGE_DATA_SOURCE_TYPES = (
-    TorchvisionImageDataSource,
-    ImageFolderDataSource,
-    PairedImageFolderDataSource,
-)
+def _register_builtin_image_data_sources() -> None:
+    """Register built-ins at the image-source composition boundary."""
+
+    IMAGE_DATA_SOURCES.add("torchvision", TorchvisionImageDataSource)
+    IMAGE_DATA_SOURCES.add("image_folder", ImageFolderDataSource)
+    IMAGE_DATA_SOURCES.add(
+        "paired_image_folders",
+        PairedImageFolderDataSource,
+    )
+
+
+_register_builtin_image_data_sources()
 
 
 class ImageSourceFactory:

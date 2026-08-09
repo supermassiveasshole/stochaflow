@@ -19,6 +19,7 @@ from ..sampler import (
     SamplingObservation,
     SamplingObserver,
 )
+from ._prediction_validation import validate_gaussian_prediction
 from .dynamics import (
     CleanTargetVarianceReferenceGaussianDenoisingDynamics,
     GaussianDenoisingDynamics,
@@ -26,7 +27,6 @@ from .dynamics import (
     GaussianTransition,
     LearnedVarianceGaussianPrediction,
     TargetAwareGaussianDenoisingDynamics,
-    _validate_gaussian_prediction,
 )
 
 
@@ -117,7 +117,7 @@ class DDPMAncestralSampler(Sampler):
             target_times,
             state=state,
         )
-        prediction = _validate_gaussian_prediction(prediction, state=state)
+        prediction = validate_gaussian_prediction(prediction, state=state)
         adjacent = target_times == source_times - 1
         if isinstance(process, SelectedPairGaussianProcess):
             snapshot = process.marginal_coefficient_snapshot(

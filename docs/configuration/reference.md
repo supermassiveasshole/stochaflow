@@ -1586,7 +1586,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 
 | 参数 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- |
-| `--config` | 是 | `—` | 必填的完整 strict evaluation config；其 subject 显式引用 checkpoint，并定义 data、EvaluationBuilder、metrics 与 protocol。 |
+| `--config` | 是 | `—` | 必填的完整 strict evaluation config；其 subject 显式引用 checkpoint 或 prediction artifact，并定义 data、EvaluationBuilder、metrics 与 protocol。 |
 | `--device` | 否 | `—` | 覆盖本次 evaluation 设备；未提供时由运行时按 auto 选择可用设备。 |
 | `--output-dir` | 否 | `—` | 覆盖 evaluation result bundle 目录；该目录必须不存在。 |
 | `--force-extension-version-mismatch` | 否 | `false` | 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。 |

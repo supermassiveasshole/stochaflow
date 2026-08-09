@@ -1,31 +1,23 @@
-# Framework Capability Proposal: Artifact Metadata, Provenance and Capacity Model
+# Artifact 元数据、来源与容量证据提案
 
-- 文档性质：延期的开发决策记录；不属于公开 API
-- 状态：Deferred
-- 统一排期：
-  [Development Priority Roadmap](development-priority-roadmap.md)；当前 latent codec
-  identity 只记录加载与验证所必需的事实，不重新开启通用 descriptor
-- 更新日期：2026-07-27
-- 延期原因：当前优先完成 data artifact producer lifecycle 与数据组合边界；尚没有足够的
-  跨领域重复模式支持统一 metadata/provenance/capacity API
+> 工作状态：暂停
+>
+> 规范来源：[`ROADMAP.md`](../../ROADMAP.md)、[`SPEC.md`](../../SPEC.md)、
+> [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
 
-## 1. 当前决策
+## 完成后用户能做什么
 
-本提案暂不实施。当前 core 不新增：
+只有当多个产出方、工作流和读取方反复需要同类信息时，才考虑公开一组最小、带类型且可审计的
+artifact 元数据和来源记录。资源证据必须明确区分文件占用、执行前估算和一次实际运行的测量值。
 
-- `ArtifactDescriptor`、`ArtifactReference` 或 `DatasetMetadata`；
-- 通用 provenance graph、transformation history 或 code/environment snapshot；
-- `ExecutionRecord`、resource estimate/observation envelope；
-- `artifact.metadata`、`artifact.provenance` 或 `artifact.capacity`；
-- artifact catalog、descriptor registry、CLI 查询或 runner integration。
+元数据、来源记录和资源证据是三条可独立启动的路径；用户不需要等待三类需求同时出现。
 
-AFHQ capacity/evaluation、sampling capacity 与 extension plugin provenance 继续保留
-各自已有且边界明确的语义。本轮不因名称相似而合并它们。Physics capacity 只作为
-历史重复模式证据；retained-example cleanup 后不再是 maintained capability。
+只有具体读取方证明有必要时，才增加公共查询、序列化、CLI、目录或外部服务接口。没有读取方
+使用的字段不会进入公共模型。
 
-## 2. 已解决的 artifact 基础问题
+## 当前仓库已经支持什么
 
-数据 artifact 的 producer lifecycle 已由独立重构解决，不依赖本提案：
+数据 artifact 的生产链已经完成：
 
 ```text
 DataSource
@@ -35,67 +27,116 @@ DataSource
     -> DataBuilder
 ```
 
-managed 与 referenced producer 共用一个 framework lifecycle，包括：
+当前已有规范化序列化和摘要、不可变对象与位置、锁、私有暂存区、原子发布、隔离区、分层身份
+与验证、严格恢复时的预期身份，以及运行时 `DataArtifactBindings`。
 
-- canonical JSON 与 digest；
-- immutable object、locator、locking、staging、publication 和 quarantine；
-- source/materializer/content/artifact/manifest identity；
-- manifest/full verification；
-- strict-resume expected identity；
-- `DataArtifactBindings`。
+这些是读取、验证和恢复所需的最小事实，不是通用元数据或来源模型。任务自己的资源记录、评估
+记录、采样证据和 extension 来源信息仍由各自领域负责。
 
-这些字段是验证和恢复所需的最小 identity，不是一个通用 metadata 或 provenance model。
-manifest 中的 `domain` 只保存 producer 加载与验证 typed payload 所必需的事实。它不是
-任意 metadata bag，也不承诺描述 lineage、license、citation、runtime recipe 或资源需求。
+## 还没有支持什么
 
-当前 schema v2 是 breaking contract：旧 identity、manifest、locator、cache 与 checkpoint
-binding 不读取、不适配、不迁移。
+- 没有通用 `ArtifactDescriptor`、`ArtifactReference`、`DatasetMetadata` 或 metadata bag。
+- 没有来源关系图、转换历史引擎或自动代码/环境快照。
+- 没有 `ExecutionRecord`、资源描述、artifact 目录、描述符注册表或配套 CLI。
+- 没有至少两个仍在维护的产出方和读取方证明需要同一套元数据与来源约定。
+- 没有至少两个基准或报告使用方证明需要同一套资源证据模型。
 
-## 3. 仍然存在但尚未统一的问题
+缺少统一抽象不等于现有 artifact 身份不完整；本提案不改变 schema-v2 约定。
 
-未来真实案例可能再次证明以下重复：
+## 什么时候可以开始或重新审查
 
-- dataset 的人类可读名称、版本、schema、native partitions 与统计；
-- source citation/license、输入引用与 transformation sequence；
-- code/config/environment snapshot；
-- storage/sample footprint；
-- 某个 workload 的资源 estimate；
-- 某次运行在特定机器上的 resource observation。
+三条能力可以分别重开，不要求元数据、来源记录和资源证据同时出现。无论重开哪一条，都必须先
+满足以下共同条件：
 
-这些概念不能全部塞入 `DataArtifactIdentity` 或 Dataset object：
+- [`ROADMAP.md`](../../ROADMAP.md)指定使用方、负责人、预期结果和成功标准；
+- 提案不改变 schema-v2 身份、`DataSource`/`DataBuilder` 职责或现有 checkpoint/extension 来源信息；
+- API 和 schema 草案来自当时的真实案例，并完成迁移、隐私和失败处理审查。
 
-- runtime derived split、augmentation、sampler、batching 和 packing 属于 resolved data
-  recipe，不属于 materialized artifact；
-- GPU memory/compute 由 model、precision、batch 和 runtime 共同决定，不是 dataset
-  metadata；
-- observation 是一次执行证据，不是静态 capacity guarantee；
-- extension plugin provenance 已有独立 checkpoint 语义，不能被第二套近似模型替换。
+在共同条件之外，只需满足准备重开的那一条触发条件：
 
-## 4. 重新开启本提案的 decision gates
+- **元数据：** 至少两个仍在维护的产出方或工作流反复需要同一组字段，并且至少一个具体读取方
+  证明这些字段需要成为公共约定，而不是任务内部数据。
+- **来源记录：** 至少两个独立工作流需要追踪现有 artifact、checkpoint 或 extension 来源记录
+  无法表达的关系，并且至少一个审计或读取方会实际使用该关系。
+- **资源证据：** 至少两个基准或报告使用方需要同一模型，并能明确区分文件占用、执行前估算
+  和实际测量。
 
-只有满足以下条件才重新设计：
+只重开满足“共同条件 + 自身触发条件”的能力；其他两条继续暂停。重开时必须重新盘点真实案例，
+不能直接恢复历史描述符设计。
 
-1. 至少两个独立 producer 需要同一组可移植 dataset metadata，而不是仅需要私有
-   `domain` payload facts。
-2. 至少两个 workflow 需要共享相同 provenance 或 execution-record consumer。
-3. 至少两个 benchmark/report 需要相同 resource envelope，并能明确区分
-   footprint、estimate 和 observation。
-4. 存在具体读取方，能够证明数据必须进入公共 API、serialization 或 CLI。
-5. 新能力可以作为相邻 immutable evidence，不改变 schema-v2 artifact identity 与
-   DataSource/DataBuilder 责任边界。
+## 要完成哪些工作
 
-重新开启时应先做跨 AFHQ、第二个真实 trajectory/physics producer、
-LLM/streaming 或其他真实案例的 semantic inventory，
-再提出最小 capability。不得从一个 example 反推宇宙级 descriptor。
+每条重开路径都先完成真实案例盘点。资源证据路径再执行“区分文件大小、资源估算和实际测量”；
+元数据或来源记录路径执行“设计最小的元数据和来源记录”；只有真实读取方提出查询需求时，才
+执行最后一项集成工作。
 
-## 5. 保留的设计原则
+### 盘点多个领域真正重复的信息
 
-1. Example 不应重复实现已经稳定、确有多个使用方的 framework concern。
-2. Framework abstraction 必须来源于真实重复模式。
-3. API 优先简单，并允许 family-specific extension。
-4. Identity、metadata、provenance、runtime recipe 和 resource observation 必须保持不同
-   语义。
-5. Capacity 必须至少区分 artifact footprint、workload estimate 与 runtime
-   observation，不能是一个无约束字典。
+- 动作：按真实案例列出产出方、读取方、候选字段、身份关系、更新频率、隐私、序列化和保留
+  规则，并标出应继续留在任务内部的数据。
+- 原因：公共抽象必须来自至少两个真实、独立且仍在维护的使用方。
+- 影响范围：data artifacts、checkpoint/Evaluation 引用、任务 manifest 和可能的读取方。
+- 交付物：带产出方和读取方证据的信息清单，以及明确不进入公共模型的内容。
+- 验证方法：每个公共候选字段至少有两个仍在维护的读取方；没有读取方的字段被删除或留在任务
+  内部。
+- 完成条件：身份、元数据、来源、运行配方、执行前估算和实际测量的含义互不冲突。
 
-在 decision gates 满足前，本文件只记录延期边界，不是 active implementation plan。
+### 区分文件大小、资源估算和实际测量
+
+- 动作：分别定义 artifact 的文件占用、写明全部假设的工作量估算，以及绑定具体硬件、软件和
+  执行过程的实际测量。
+- 原因：GPU 显存和计算量由模型、精度、batch 与运行方式共同决定，不能写成数据集元数据或
+  永久保证。
+- 影响范围：基准和报告的产出方、执行来源记录、序列化与结果比较。
+- 交付物：三种不可混淆的不可变类型记录，以及缺失值、非有限值和不确定性的处理规则。
+- 验证方法：同一 artifact 可关联多次估算和测量；更换硬件不改变 artifact 身份；两个真实报告
+  能读取同一约定。
+- 完成条件：资源证据可审计，但不会被误解为适用于所有运行环境的保证。
+
+### 设计最小的元数据和来源记录
+
+- 动作：真实案例证明可以复用后，定义与现有 artifact 身份相邻的不可变记录和引用，同时保留
+  family 或任务专用扩展。
+- 原因：任意键值字典无法保证身份、兼容性、隐私和错误处理。
+- 影响范围：公共类型、规范化序列化、artifact 引用和兼容规则。
+- 交付物：最小 schema、版本规则、读写约定和脱敏规则。
+- 验证方法：独立产出方/读取方替换、未知版本、证据不完整、规范化序列化、隐私过滤和迁移测试。
+- 完成条件：新证据不会悄悄改变 schema-v2 摘要，也不会替换 checkpoint 或 extension 的来源信息。
+
+### 由真实读取方决定是否增加查询和集成
+
+- 动作：只有具体读取方证明单次运行的 manifest 不够用时，才增加必要的 API、序列化、CLI、
+  目录或外部服务接口。
+- 原因：没有使用方的查询接口会形成第二套事实来源，并带来长期兼容成本。
+- 影响范围：读取 API、可选集成、权限、脱敏和故障隔离。
+- 交付物：只覆盖已证实查询需求的最小读取接口；目录和外部服务保持可选。
+- 验证方法：未安装集成时 core 仍完全可用；外部服务失败不修改本地不可变证据；权限和脱敏
+  行为明确。
+- 完成条件：至少一个真实读取方使用公共接口，未被使用的字段不进入 schema。
+
+## 如何证明已经完成
+
+- 每个公共字段都有两个仍在维护的产出方和读取方，或明确的跨工作流证据。
+- 身份、元数据、来源、运行配方、执行前估算和实际测量可由类型与测试区分。
+- schema-v2 artifact 身份、`DataSource`/`DataBuilder` 职责和现有来源信息保持不变。
+- 独立产出方/读取方、规范化序列化、版本、隐私和失败处理测试通过。
+- 稳定行为和架构同步到 SPEC、ARCHITECTURE、ROADMAP、CHANGELOG 与公开文档。
+
+## 明确不包含什么
+
+- 不新增任意 metadata bag、包罗万象的描述符或只有一个案例需要的公共字段。
+- 不把运行时 split、augmentation、sampler、batching/packing 塞入已经物化的 artifact。
+- 不把 GPU 需求标成数据集元数据，不把一次测量标成静态容量保证。
+- 不自动抓取任意环境信息或 secret，不替换 checkpoint 或 extension 的来源记录。
+- 不为未来 codec、streaming、LLM 或其他未选任务预建 schema。
+
+## 详细设计和研究资料在哪里
+
+- [元数据、来源与容量模型设计笔记](notes/artifact-metadata-provenance-capacity-model-proposal/design-notes.md)
+- [Artifact 与 Data 规范](../../SPEC.md)
+- [DataSource/DataBuilder 架构边界](../../ARCHITECTURE.md)
+- [根路线图中的跨项目元数据与资源证据入口](../../ROADMAP.md)
+- [Data artifact producer lifecycle 记录](data-artifact-producer-lifecycle-refactor.md)
+
+历史案例只可作为重审线索，不能单独成为持续维护公共能力的理由。本文保留未来支持构想，未经
+维护者明确审阅不得删除。

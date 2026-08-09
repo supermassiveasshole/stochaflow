@@ -58,6 +58,15 @@ research-notes/part-2-ddpm
 research-notes/part-3-ddim
 ```
 
+```{toctree}
+:maxdepth: 2
+:caption: 维护与开发
+:hidden:
+
+项目路线图 <roadmap>
+开发计划与执行路线 <development/README>
+```
+
 ## 五分钟快速开始
 
 默认用户路径直接安装已发布的 wheel，不需要 clone Stochaflow 源码，也不需要
@@ -198,3 +207,5 @@ checkpoint：FID **25.7572**。冻结后的一次 full official-test Evaluation 
 - [Sampling artifact 容量](configuration/sampling-capacity.md)：整体物化生命周期、
   内存估算、trajectory 限制和参考主机证据。
 - [DDPM 学习笔记](ddpm-notes.md)：结合代码理解训练与采样实现。
+- [开发计划与执行路线](development/README.md)：查看当前没有排期的工作、候选方向、
+  暂停方向、开始条件和各专项计划；这些内容不代表功能已经实现。

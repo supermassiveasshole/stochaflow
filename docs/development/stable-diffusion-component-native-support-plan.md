@@ -1,863 +1,227 @@
-# Stable Diffusion Component-Native 支持计划
+# Stable Diffusion 1.x Component-Native 支持计划
 
-- 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：Post-A3 roadmap re-decision 的下游候选，尚未进入实现；只有 latent 路线被重新
-  确认且共享 production substrate 稳定后才可排期
-- 统一排期：
-  [Development Priority Roadmap](development-priority-roadmap.md)；本文拥有 Stable
-  Diffusion family contract，统一排期拥有跨计划执行顺序
-- 初始制定日期：2026-07-28
-- 本次排期修订日期：2026-08-02
-- 候选范围：Stable Diffusion 1.x-compatible component import、text
-  conditioning、UNet training/fine-tuning 与 512×512 sampling
-- 共享前置：
-  [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)
-- 首个开放数据候选：冻结的 The Met Open Access curated image-text snapshot
-- 对照数据候选：COCO 2017 captions
-- 暂不等同于：任意 Diffusers Pipeline、SDXL、SD3、LoRA 或 VAE training
+> 工作状态：暂停
+>
+> 规范来源：[`ROADMAP.md`](../../ROADMAP.md)、[`SPEC.md`](../../SPEC.md)、
+> [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
 
-## 1. 结论
+- 文档类型：未来能力计划；不属于公开 API 或用户文档
+- 最近复核：2026-08-09
+- 受众：model、training、sampling、data、Evaluation 与 extension 维护者
+- 必需前置：
+  [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)完成并验收共享的
+  codec、normalized latent、prepared posterior、asset persistence 与 decoded
+  sampling/Evaluation 基础能力
+- 研究资料：
+  [完整设计与研究附录](notes/stable-diffusion-component-native-support-plan/design-and-research-notes.md)
 
-Stable Diffusion 是正式计划内能力，不是 Latent Diffusion 完成后再决定是否支持的
-模糊 future item。
+本文只保存一个尚未获批的 Stable Diffusion 1.x 首个完整功能候选。实现、优先级和
+产品声明只能由根路线图重新选择；附录中的 provider API、模型、数据集、硬件、配置草案
+和任务分解都须在启动时重新核验，当前不构成承诺。
 
-本计划冻结以下路线：
+## 完成后用户能做什么
 
-1. 先复用 Latent Diffusion 计划闭合的 frozen codec、normalized latent、
-   prepared posterior artifact、checkpoint asset 和 Gaussian sampling
-   lifecycle。
-2. 首个 component-native family 聚焦 Stable Diffusion 1.x-compatible
-   composition：
-   - `AutoencoderKL`；
-   - tokenizer；
-   - frozen text encoder；
-   - conditional `UNet2DConditionModel`；
-   - epsilon prediction；
-   - classifier-free guidance；
-   - 512×512 image / 64×64 latent profile。
-3. Stochaflow 拥有 training、resume、sampling、evaluation 和 asset binding；
-   Diffusers 提供 component model implementations、config 和标准权重格式。
-4. 完整 `DiffusionPipeline` black-box inference 是计划内独立 backend；
-   它由 Diffusers 拥有 scheduler/offload/inference loop，不能伪装成
-   Stochaflow native `Sampler`。
-5. component-native interop 不能简单拆出上游 modules 后宣称兼容；必须验证
-   codec transform、tokenization、text hidden states、prediction type、
-   timestep/schedule、CFG、decode 和 safety policy 的 parity。
-6. 首个训练能力是 frozen VAE + frozen text encoder 下的 conditional UNet
-   full-parameter fine-tuning/training。
-7. 预训练 full-parameter fine-tuning 和 random-init training 是两个明确
-   profile；前者先落地，后者在同一 contract 上作为规模验收，不混用结果声明。
-8. Stable Diffusion 不要求 Stochaflow 实现或训练 VAE。外部 VAE training
-   仍服从共享 codec import contract。
-9. SDXL、SD3、Flux-style transformer、LoRA/PEFT 和可训练 text encoder 各自
-   需要新的 family/lifecycle gate，不通过 nullable fields 偷渡。
+若本计划获批并通过全部验收，用户可以：
 
-## 2. 与 Latent Diffusion 计划的边界
+1. 从固定版本的 Hub snapshot、本地 Diffusers 目录或可搬迁的 Stochaflow run bundle 读取一套
+   身份完整的 Stable Diffusion 1.x 组件；
+2. 选择 Diffusers 参考后端，或选择由 Stochaflow 自己组合组件和采样步骤的原生后端；
+3. 冻结图像 codec 与 text encoder，对预训练 conditional UNet 做 512×512 full-parameter
+   fine-tuning，并支持严格恢复、checkpoint 采样和正式 Evaluation；
+4. 用固定的数据、prompt、seed 和协议发布可重放结果，并清楚说明验证到哪一层兼容性。
 
-### 2.1 共享能力
+首个候选范围是与 Stable Diffusion 1.x 兼容的 512×512 UNet 全参数微调。256×256 只用于早期
+调试；Diffusers 参考后端只用于对照，二者都不能单独证明 Stochaflow 原生训练支持。
 
-由 Latent Diffusion 计划先提供：
+## 当前仓库已经支持什么
 
-- `ImageCodec` capability；
-- Diffusers `AutoencoderKL` adapter；
-- image range 与 latent affine transform；
-- posterior sample/mode；
-- codec source pinning 和 digest；
-- prepared posterior moments artifact；
-- model asset checkpoint/bundle；
-- Gaussian Process、Dynamics 和 DDPM/DDIM；
-- step-based training、resume、local logging 和 `--no-progress`；
-- reconstruction ceiling 和 generation evaluation infrastructure。
+当前仓库只有可复用的通用基础，没有 Stable Diffusion 产品支持：
 
-Stable Diffusion 不复制这些实现，也不建立第二套：
-
-- VAE loader；
-- latent normalization；
-- posterior shard format；
-- codec binding；
-- checkpoint asset store；
-- sampling writer。
-
-### 2.2 本计划独有能力
-
-本计划拥有：
-
-- tokenizer/text encoder source resolution；
-- caption/tokenization contract；
-- conditional UNet model provider；
-- text condition dropout；
-- cross-attention condition adapter；
-- Stable Diffusion CFG composition；
-- SD 1.x component parity；
-- text-to-image prompts、negative prompts 和 prompt manifests；
-- image-text training/evaluation protocol；
-- pretrained UNet import 与 full-parameter fine-tuning。
-
-### 2.3 明确不共享的抽象
-
-DiT 和 Stable Diffusion UNet 是两个 model/backbone family，但都不成为新的
-Process 或 Sampler root。
-
-不增加：
-
-- `StableDiffusionProcess`；
-- universal `Condition` base class；
-- universal tokenizer registry；
-- universal pretrained-model graph；
-- model-name compatibility matrix；
-- common YAML field 同时容纳 class、domain、text、ControlNet 和 SDXL
-  micro-conditioning。
-
-兼容性在具体 `TrainingBuilder` / `SamplingBuilder` composition root 验证。
-
-## 3. 支持层级
-
-| 层级 | 能力 | 计划状态 |
+| 已有基础 | 当前保证 | 不代表什么 |
 | --- | --- | --- |
-| SD0 | 独立 pretrained `AutoencoderKL` codec | 共享前置 |
-| SD1 | 完整 Diffusers Pipeline black-box inference | 计划内独立 backend |
-| SD2 | SD 1.x component bundle resolution 和 parity validation | 首个 component milestone |
-| SD3 | Stochaflow native SD 1.x sampling | 首个 component milestone |
-| SD4 | frozen text encoder + full UNet fine-tuning | 首个 training milestone |
-| SD5 | random-init UNet text-conditioned training | 规模验收 |
-| SD6 | prepared text embeddings | production optimization gate |
-| SD7 | trainable text encoder | 新 optimizer/asset lifecycle gate |
-| SD8 | LoRA/PEFT | 独立 parameterization/checkpoint gate |
-| SD9 | SDXL | 双 text encoder/micro-conditioning family gate |
-| SD10 | SD3 | transformer/flow family gate |
+| Gaussian Process、Dynamics 与 DDPM/DDIM Sampler | 对任务 tensor state 执行现有数学和数值流程 | 没有 Stable Diffusion Process，也未验证 SD 1.x schedule 或 CFG 一致性 |
+| TrainingBuilder、managed auxiliaries 与 inference-asset projection | task Builder 可声明冻结资产并投影到 sampling/Evaluation | 没有 `AutoencoderKL`、text encoder、tokenizer 或 SD component bundle provider |
+| checkpoint v12 与完整 sampling invocation | checkpoint 固定训练语义，sample config 提供单次 request policy | checkpoint 尚不包含 SD component、prompt 或 text-conditioning contract |
+| `SamplingBuilder` 与 standalone/live Evaluation 基础能力 | task 可拥有 conditioning、guidance、writer-ready output 和正式 protocol | 没有 SD SamplingBuilder、fixed prompt suite 或 text-image Evaluation profile |
+| schema-v2 `DataArtifact` 与 DataSource/DataBuilder 边界 | 可物化和严格绑定有身份的数据 | 没有 curated image-text、caption、prepared posterior 或 prepared text-embedding artifact |
+| extension activation 与注册构造路径 | 外部 task 可在不改 core dispatch 的前提下接入 | 没有 Stable Diffusion extension project、registered model 或独立 provider contract test |
 
-每个层级分别声明；实现 SD1 不能声称支持 SD4，实现 SD4 不能声称支持 SDXL。
+Latent Diffusion 计划本身也仍是候选。它列出的 codec/provider、prepared
+posterior 与 decoded generation 不能被当作当前实现，更不能据此宣称 Stable Diffusion
+sampling、fine-tuning 或质量支持已经存在。
 
-## 4. Component ownership
+## 还没有支持什么
 
-### 4.1 Training composition
-
-```text
-StableDiffusionTrainingBuilder
-  ├── primary model
-  │     └── conditional UNet
-  ├── frozen auxiliaries
-  │     ├── image codec
-  │     └── text encoder
-  ├── non-module assets
-  │     └── tokenizer
-  ├── Gaussian Process
-  ├── epsilon Objective
-  ├── StableDiffusionTrainingStrategy
-  └── optimizer / scheduler
-```
-
-责任约束：
-
-- Builder 解析并验证 component bundle；
-- Builder 加载、冻结和声明 codec/text encoder；
-- registered model provider 在进入 Builder 前构造 primary UNet；Builder 验证注入的
-  primary 与 bundle、condition、prediction 和 geometry contract，不替换它；
-- Strategy 只解释 batch、执行 encode/text conditioning/model/objective；
-- Strategy 不下载或构造模型资产；
-- core 只管理声明的 modules、optimizer、EMA、checkpoint 和 device/mode；
-- tokenizer 是 immutable preprocessing asset，不伪装成 `nn.Module`；
-- Process 不解释 prompt 或 cross-attention states。
-
-component source 只在 `model` declaration 中出现一次。registered SD 1.x model
-provider 解析 source、构造 UNet，并让注入的 primary 暴露一个 family-private、
-immutable bundle descriptor capability；TrainingBuilder 从该 capability 取得同一
-resolved identity，再加载 codec/text encoder/tokenizer roles。这样既保持
-“primary 在 Builder 前构造”的 framework invariant，也不要求用户在 model/training
-两个 section 重复 Hub repo/revision。该 capability 不提升为通用 pretrained asset
-registry。
-
-### 4.2 Sampling composition
-
-```text
-checkpoint / component bundle
-  -> tokenizer
-  -> text encoder
-  -> positive/negative hidden states
-  -> StableDiffusionSamplingBuilder
-  -> conditional/unconditional UNet dynamics
-  -> CFG
-  -> Gaussian Sampler
-  -> normalized latent
-  -> shared codec decode
-  -> writer
-```
-
-SamplingBuilder 拥有：
-
-- prompt batching；
-- negative prompt policy；
-- tokenizer truncation/reporting；
-- condition/uncondition concatenation policy；
-- CFG scale；
-- latent shape；
-- generator/seed plan；
-- decode；
-- writer-ready image。
-
-Sampler 不知道 text、UNet、VAE 或 Stable Diffusion。
-
-### 4.3 Black-box pipeline backend
-
-black-box `DiffusionPipeline` 路径用于：
-
-- 运行已存在的上游 pipeline；
-- 对 component-native sampling 做 parity/reference；
-- 统一 request、seed、writer 和 Evaluation；
-- 测试 offline bundle 和 pinned revision。
-
-该路径中：
-
-- Diffusers 拥有 scheduler 和 inference loop；
-- Stochaflow 不注入自己的 Process/Sampler；
-- 不创建 dummy checkpoint、Process 或 Dynamics；
-- result manifest 必须记录 backend ownership；
-- black-box 输出不能证明 native training/sampling compatibility。
-
-## 5. Component bundle 与 pretrained support
-
-### 5.1 首版 source
-
-支持：
-
-1. pinned Hugging Face Hub snapshot；
-2. local Diffusers-format model directory；
-3. Stochaflow run asset bundle。
-
-production profile 必须解析为：
-
-- immutable revision；
-- component config digests；
-- weight file digests；
-- tokenizer file digests；
-- component class/provider；
-- expected subfolder layout；
-- safety/license decision record。
-
-不允许：
-
-- production 中使用 floating `main`；
-- VAE、UNet、text encoder 来自未经声明的混合 revision；
-- sampling overlay 静默替换 checkpoint-owned component；
-- 仅用 repo name 代表完整 component identity；
-- 把 credentials 写入 manifest。
-
-### 5.2 Bundle roles
-
-首版固定角色：
-
-```text
-codec
-tokenizer
-text_encoder
-denoiser
-```
-
-这些 role 是 SD 1.x family 的私有 composition schema，不提升为 universal
-framework model graph。
-
-native component path 的 noise schedule 由 Stochaflow Gaussian Process 配置和
-checkpoint state 拥有，不作为与 codec/text encoder 相同的 module asset。
-black-box Pipeline path 的 scheduler 则由 Diffusers Pipeline 自己拥有。两者不能在
-同一个 bundle role 中形成双重 authority。
-
-### 5.3 Pretrained 和 random-init profile
-
-必须区分：
-
-| profile | denoiser init | 用途 |
+| 缺口 | 所有者 | 必须避免的错误边界 |
 | --- | --- | --- |
-| `sd1_full_finetune` | pinned pretrained UNet | 首个可见质量和 resume 验收 |
-| `sd1_random_init` | config-pinned random initialization | 从零训练和 framework ownership 验收 |
-
-两者共享 codec/text encoder/tokenizer contract，但：
-
-- checkpoint/result identity 不同；
-- optimizer/learning-rate protocol 不同；
-- 质量预期不同；
-- 不能把 fine-tuning 结果描述为 from-scratch training。
-
-## 6. Text condition contract
-
-### 6.1 Caption facts
-
-正式 training batch 至少提供：
-
-```python
-{
-    "image" | "posterior_moments": ...,
-    "caption": str,
-    "sample_key": str,
-}
-```
-
-这是具体 Stable Diffusion recipe 的 batch contract，不进入 core universal schema。
-
-resolved recipe 固定：
-
-- tokenizer identity；
-- text encoder identity；
-- maximum token length；
-- truncation policy；
-- empty-caption probability；
-- caption normalization；
-- Unicode/language policy；
-- attention-mask policy；
-- hidden-state selection；
-- dtype/device policy。
-
-### 6.2 Classifier-free condition dropout
-
-training dropout 属于 Strategy policy，必须：
-
-- 使用 checkpointed run RNG 语义；
-- 与 dataset 中真实空 caption 区分；
-- 记录 probability；
-- 在 resume 后保持 batch-level replay contract；
-- 不通过 DataBuilder 永久改写 caption。
-
-### 6.3 Prepared text embeddings
-
-首版先 on-the-fly tokenize/encode。只有 profiling 证明 text encoder 成为显著
-bottleneck 后，才引入 prepared embeddings artifact。
-
-若引入，identity 必须包含：
-
-- caption artifact digest；
-- tokenizer digest/config；
-- text encoder weights/config digest；
-- max length；
-- normalization/truncation；
-- hidden-state selection；
-- output dtype/shape；
-- shard inventory。
-
-它是一个 recipe-specific DataArtifact，不是 universal embedding cache。
-
-## 7. Dataset 路线
-
-### 7.1 The Met Open Access
-
-首个开放正式候选是共享计划中的 `met-open-curated-v1`：
-
-- public-domain image；
-- CC0 metadata；
-- native-resolution filtering；
-- deterministic snapshot；
-- 150k–300k 目标范围，而非预先强制数量；
-- metadata-derived captions；
-- department/medium/period/culture/object-type 可用于诊断和分层评估。
-
-第一版 caption 使用确定性模板，示意：
-
-```text
-{title}. A {object_name} from {culture_or_country},
-dated {object_date}, made of {medium}.
-```
-
-模板只是 materialization recipe，不进入 framework 公共 API。
-
-VLM recaption 是后续独立 artifact：
-
-- 固定 model/revision；
-- 固定 generation parameters；
-- 保存 raw output 和 normalized caption；
-- 进行 hallucination、文字、人物和敏感内容审计；
-- 不覆盖 deterministic captions。
-
-### 7.2 COCO 2017
-
-COCO 作为多对象自然语言 reference profile：
-
-- 约 118k train images；
-- 每图多条人工 caption；
-- 验证 prompt/caption variation；
-- 验证 text-conditioned evaluation；
-- 不把多对象图片压成单 class condition。
-
-COCO 的 image license/provenance 仍需按具体 snapshot 记录，不因 annotation
-开放而假定所有 pixel 具有统一许可。
-
-### 7.3 Research inventory
-
-以下候选保留在 research inventory，不作为首个官方 source：
-
-- LHQ：高质量 landscape，但 text 缺失且 mirror/license 需审计；
-- WikiArt：style/genre/caption 很有趣，但版权和镜像一致性不足；
-- Danbooru/SFW derivatives：tag 丰富，但版权、NSFW、重复和质量过滤成本高；
-- `photo-concept-bucket`：高分辨率/caption 有吸引力，但 provenance 不清；
-- PD12M：公开领域路线有价值，但 12M 规模和质量筛选超出首轮；
-- Smithsonian Open Access：适合未来 250k–500k thematic snapshot。
-
-研究 inventory 中的存在不构成 framework compatibility 或 license endorsement。
-
-## 8. Stable Diffusion parity
-
-component-native 路径晋升前，必须与一个 pinned Diffusers SD 1.x pipeline 做
-受控 parity：
-
-- 同一 component weights；
-- 同一 prompt/negative prompt；
-- 同一 tokenizer output；
-- 同一 text hidden states；
-- 同一 initial latent 和 generator state；
-- 同一 timesteps；
-- 同一 prediction type；
-- 同一 CFG algebra；
-- 同一 scheduler coefficients；
-- 同一 VAE transform/decode；
-- 明确允许的 floating-point tolerance。
-
-若 Stochaflow sampler 与上游 scheduler 数学不同，只能声明“同一 model
-components 上的受支持 Stochaflow sampler”，不能声明 step-by-step parity。
-
-parity manifest 必须区分：
-
-```text
-component parity
-schedule parity
-trajectory parity
-decoded-output tolerance
-distribution-level compatibility
-```
-
-## 9. Training profiles
-
-### 9.1 256 bring-up
-
-256×256 只用于：
-
-- contract smoke；
-- memory/throughput profiling；
-- tiny overfit；
-- checkpoint/resume；
-- caption dropout；
-- prepared latent parity。
-
-它不能被描述为预训练 SD 1.x 的 native-resolution parity。
-
-### 9.2 512 formal profile
-
-正式 SD 1.x-compatible profile：
-
-- 512×512 image；
-- f8d4 codec -> 64×64×4 latent；
-- frozen text encoder；
-- epsilon prediction；
-- fixed noise schedule；
-- full UNet fine-tuning；
-- EMA policy 明确；
-- prepared posterior production path；
-- step-based training；
-- fixed prompt suite；
-- reconstruction/generation evaluation。
-
-硬件决策：
-
-- RTX 4090 用于 single-device baseline 和短期 fine-tuning；
-- DGX Spark 是否用于 production 取决于实测吞吐，不由 unified memory 决定；
-- 两端各跑固定 1k optimizer steps；
-- 比较 samples/s、data wait、activation memory、checkpoint time 和 sample time。
-
-### 9.3 Random-init profile
-
-只有 full fine-tuning 路径稳定后才进入：
-
-- 同一 curated dataset；
-- 同一 codec/text encoder；
-- random-init conditional UNet；
-- 固定 training-step budget；
-- 不承诺达到通用 Stable Diffusion 能力；
-- 报告 dataset-domain quality，而不是与 web-scale foundation model 做虚假等价。
-
-## 10. Sampling 与 Evaluation
-
-### 10.1 Fixed prompt suites
-
-至少包含：
-
-- in-distribution metadata prompts；
-- held-out composition prompts；
-- empty prompt；
-- negative prompt；
-- long/truncated prompt；
-- rare metadata combinations；
-- seed replay；
-- CFG scale sweep。
-
-prompt suite 必须版本化，不能只展示人工挑选图片。
-
-### 10.2 Metrics
-
-第一版至少报告：
-
-- codec reconstruction ceiling；
-- KID/FID 或适合数据规模的 distribution metric；
-- CLIP-style prompt-image alignment；
-- condition bucket coverage；
-- nearest-neighbor/memorization audit；
-- duplicate-aware train/reference split；
-- generation throughput、VRAM 和 NFE；
-- safety/manual review report。
-
-指标不能单独决定 promotion。必须同时保留固定样本和 failure taxonomy。
-
-### 10.3 Writer artifacts
-
-每个正式 generation result 绑定：
-
-- checkpoint/component bundle identity；
-- dataset/caption artifact identity；
-- prompt suite identity；
-- sampler/schedule；
-- CFG；
-- seed plan；
-- codec；
-- generated-file inventory；
-- evaluation protocol。
-
-## 11. Configuration sketch
-
-以下仅表示 concrete recipe 私有参数，不是最终公共 schema：
-
-```yaml
-model:
-  name: stable_diffusion_1x_unet
-  params:
-    components:
-      provider: diffusers
-      source: <pinned-hub-or-local-bundle>
-      revision: <immutable-revision>
-    initialization: pretrained
-
-training:
-  name: stable_diffusion_text_to_image
-  params:
-    text:
-      max_length: 77
-      empty_probability: 0.1
-      truncation: report
-    latent:
-      source: prepared_posterior
-    prediction:
-      type: epsilon
-```
-
-sampling config 不重复 component source：
-
-```yaml
-sample:
-  sampler:
-    name: ddpm
-    params: {}
-  options:
-    weights: ema
-    prompts: prompts.yaml
-    negative_prompt: ""
-    guidance_scale: 7.5
-    height: 512
-    width: 512
-  num_samples: 16
-  batch_size: 4
-  seed: 42
-  writers:
-    - name: image
-      params:
-        grid_nrow: 4
-        denormalize: true
-```
-
-sampling 从 checkpoint/run bundle 恢复 component identity；用户 overlay 只能修改
-明确允许的 request policy。
-
-## 12. 实施阶段
-
-### Phase SD0：共享前置验收
-
-- Latent Diffusion 计划 Phase 1–4C 完成；
-- frozen codec 可以 checkpoint/sample 恢复；
-- prepared posterior artifact 已验证；
-- step-based resume 和本地日志可用；
-- run-level codec asset bundle 已通过 relocation/offline 验收；
-- 512 codec reconstruction profile 通过。
-
-退出条件：Stable Diffusion 不需要复制 latent lifecycle。
-
-SD1 black-box reference backend 可以在上述工作后半段做隔离 prototype，但它不是
-latent DiT 的前置，也不能提前触发 native support 声明。
-
-### Phase SD1：black-box reference backend
-
-- pinned Diffusers pipeline load；
-- offline snapshot；
-- request/seed/writer；
-- fixed prompt suite；
-- result manifest；
-- backend ownership 明确。
-
-退出条件：可作为 component-native parity oracle，但不声称 native support。
-
-### Phase SD2：text assets
-
-- tokenizer provider；
-- frozen text encoder provider；
-- digest/pinning；
-- tokenization/truncation；
-- empty-caption dropout；
-- checkpoint/run-bundle projection；
-- independent fake provider contract test。
-
-退出条件：training/sampling 不依赖 floating Hub state。
-
-### Phase SD3：component-native sampling parity
-
-- conditional UNet adapter；
-- text-conditioned Dynamics；
-- CFG composition；
-- SD 1.x schedule/prediction validation；
-- shared codec decode；
-- black-box/component-native parity report。
-
-退出条件：支持级别只能声明到实际通过的 parity 层。
-
-### Phase SD4：image-text DataSource/DataBuilder
-
-- Met Open profiling；
-- curated snapshot；
-- deterministic caption artifact；
-- image-backed/prepared-posterior batch recipes；
-- strict binding before Dataset construction；
-- COCO reference profile。
-
-退出条件：caption/data recipe 不污染 core batch schema。
-
-### Phase SD5：256 full fine-tuning bring-up
-
-- pretrained UNet full-parameter fine-tuning；
-- frozen codec/text encoder；
-- checkpoint/resume；
-- local logger/no-progress；
-- tiny overfit；
-- fixed prompts；
-- online/prepared parity。
-
-退出条件：完整训练和独立 sampling 可重放。
-
-### Phase SD6：512 formal fine-tuning
-
-- 4090/Spark 1k-step benchmark；
-- batch/accumulation/activation-checkpointing 决策；
-- fixed optimizer-step budget；
-- EMA；
-- evaluation cadence；
-- offline run bundle；
-- Met curated formal report。
-
-退出条件：达到正式 profile 的 reproducibility、quality 和 operational gates。
-
-### Phase SD7：random-init UNet gate
-
-- fixed random initialization；
-- same dataset/codec/text assets；
-- from-scratch training report；
-- 与 full fine-tuning 严格区分；
-- dataset-domain capability statement。
-
-退出条件：证明 Stochaflow 拥有训练 lifecycle，不声称复现 web-scale foundation
-model。
-
-### Phase SD8：production optimizations
-
-按 profiling 选择：
-
-- prepared text embeddings；
-- attention implementation；
-- `torch.compile`；
-- gradient checkpointing；
-- sharded data access；
-- distributed training；
-- component bundle deduplication。
-
-优化不得改变 caption、latent、schedule 或 resume contract。
-
-## 13. 测试矩阵
-
-### 13.1 Component source
-
-- pinned Hub/local/bundle；
-- moving revision；
-- missing/wrong component；
-- mixed revision；
-- digest mismatch；
-- offline load；
-- tokenizer files；
-- config/weights collision；
-- corrupt asset；
-- sampling overlay replacement rejected。
-
-### 13.2 Text
-
-- Unicode；
-- empty caption；
-- real empty vs dropout empty；
-- truncation；
-- maximum length；
-- attention mask；
-- deterministic tokenization；
-- hidden-state shape/dtype；
-- frozen text encoder；
-- resume RNG；
-- fake tokenizer/text encoder provider。
-
-### 13.3 UNet/training
-
-- input/output channels；
-- cross-attention dimension；
-- prediction type；
-- timestep dtype；
-- optimizer excludes frozen modules；
-- EMA primary-only；
-- image-backed/prepared-backed parity；
-- full fine-tuning checkpoint；
-- random-init identity；
-- strict resume。
-
-### 13.4 Sampling/parity
-
-- prompt/negative prompt batching；
-- CFG 1.0 and greater-than-1；
-- initial latent replay；
-- timestep equality；
-- trajectory checkpoints；
-- decode range；
-- black-box ownership；
-- component/schedule/trajectory parity declarations；
-- 256 vs 512 profile identity。
-
-### 13.5 Data
-
-- Met API snapshot；
-- public-domain/image filter；
-- download retry/content mutation；
-- metadata caption template；
-- taxonomy freeze；
-- duplicate views；
-- extreme aspect ratio；
-- caption/image mismatch；
-- VLM recaption distinct identity；
-- COCO multi-caption selection。
-
-## 14. 完成标准
-
-Stable Diffusion 首个正式 milestone 只有同时满足以下条件才完成：
-
-- Stable Diffusion 仍复用共享 codec/latent lifecycle；
-- black-box 和 component-native ownership 不混淆；
-- pinned SD 1.x bundle 可离线 sampling；
-- component-native sampling parity 有明确报告；
-- 512 full UNet fine-tuning 可 pause/resume；
-- sampling config 不重复 component identity；
-- Met curated image-text artifact 可重建并严格绑定；
-- fixed prompt suite 和非挑选式 metrics 完整；
-- 4090/Spark profile 有实测数据；
-- 文档只声明实际达到的 SD support level。
-
-## 15. Future gates
-
-### 15.1 Trainable text encoder
-
-需要决定：
-
-- 单/多 optimizer；
-- learning-rate groups；
-- EMA；
-- checkpoint role；
-- condition embedding artifact invalidation；
-- pretrained bundle export。
-
-不能通过 `train_text_encoder: true` 偷渡。
-
-### 15.2 LoRA/PEFT
-
-需要独立定义：
-
-- target module selection；
-- base-weight identity；
-- adapter checkpoint；
-- merge/unmerge；
-- optimizer parameter ownership；
-- sampling bundle；
-- compatibility validation。
-
-它是后续正式能力，不用来替代 full-module lifecycle 的首轮验证。
-
-### 15.3 SDXL
-
-SDXL 至少引入：
-
-- two text encoders/tokenizers；
-- pooled embeddings；
-- time IDs/micro-conditioning；
-- different codec/UNet configs；
-- 1024/bucketed data；
-- larger asset/compute profile。
-
-因此它是新的 concrete family plan，不给 SD 1.x Builder 堆 nullable fields。
-
-### 15.4 SD3
-
-SD3 的 transformer、multiple text encoders 和 flow-style formulation 不满足
-SD 1.x conditional UNet family；需要独立 TrainingBuilder、Dynamics/Sampler
-兼容评审。
-
-### 15.5 Other conditions
-
-ControlNet、image-to-image、inpainting、IP-Adapter 等分别需要窄 condition
-capability 和 asset role。没有第二个真实组合前不抽象 universal condition graph。
-
-## 16. 风险与缓解
-
-| 风险 | 后果 | 缓解 |
+| 已验收的 frozen codec、latent transform、prepared posterior 与 asset persistence | Latent Diffusion 前置计划 | 在本计划复制 VAE loader、normalization、posterior schema、writer 或 checkpoint store |
+| pinned component source、role、digest、license/safety 与离线恢复 | family-private provider + asset publication | 用 repo name 或 floating `main` 代替完整身份，或混合 revision |
+| tokenizer、frozen text encoder、caption/tokenization 与 condition-dropout contract | task Builder/Strategy | 建立 universal tokenizer/condition registry，或让 DataBuilder 永久改写 caption |
+| conditional UNet provider 与 pretrained/random-init identity | model provider + TrainingBuilder | Builder 替换注入的 primary，或把 fine-tuning 冒充 from-scratch training |
+| black-box reference backend | 独立 inference backend | 把 `DiffusionPipeline` 包装成 native Sampler 或建立 dummy Process/checkpoint |
+| component-native text conditioning、CFG、decode 与分层对照 | `SamplingBuilder` + family adapter | 让 `Sampler` 理解 text、UNet、VAE 或 Stable Diffusion |
+| image-text source、caption artifact、runtime recipes 与 sample identity | DataSource/DataBuilder | 向 core batch schema 增加 nullable prompt 或 task-specific 字段 |
+| 512 fine-tuning、strict resume、observability 与 checkpoint-only sampling | task TrainingBuilder/Strategy | 用 256 smoke、显存容量或短跑吞吐冒充正式能力 |
+| fixed prompt suite、text-image metrics 与 immutable result identity | task EvaluationBuilder | 用人工挑选图片或单一指标替代正式证据 |
+| 当前 provider、数据许可、安全策略和硬件证据 | 本计划负责人 | 沿用附录中的旧版本、估算或设备假设而不重测 |
+
+## 什么时候可以开始或重新审查
+
+只有同时满足以下条件，根路线图才能把本记录从暂停改为候选；真正实施还需要再
+选为进行中：
+
+1. 产品决策先选择并验收 Latent Diffusion 的首个完整功能；其 codec 约定、prepared
+   posterior、run-level asset bundle、checkpoint-only decode 与正式 Evaluation 可由独立
+   denoiser 复用；
+2. 根路线图再明确选择 Stable Diffusion 1.x 的首个用户结果、支持声明和预算；
+3. 维护者重新核验 optional Diffusers 版本、`AutoencoderKL`/conditional UNet/text
+   encoder/tokenizer 来源、immutable revision、标准权重格式、许可、安全和离线获取策略；
+4. 首个 image-text snapshot、caption materialization、数据许可、去重规则、sample plan、
+   fixed prompt suite 与正式 Evaluation protocol 均有可执行草案；
+5. component-native 路径所需 schedule、prediction、CFG 与 codec 一致性有明确对照和
+   容差定义；数学不同时预先限制声明范围；
+6. 单设备 profiling 先给出 batch、吞吐、activation memory、data wait、checkpoint 和
+   sample-time 瓶颈；不得因预计模型规模预先启动 distributed；
+7. 若需要改变公开 extension 约定、checkpoint schema、training loop 或配置解释规则，同一
+   变更先更新对应根级规范；
+8. black-box prototype 即使可运行，也只可作为参考后端证据，不能提前触发
+   component-native 或 training 支持声明。
+
+## 要完成哪些工作
+
+### 任务卡：确定共享前置和首个完整功能
+
+- **动作：** 引用 Latent Diffusion 已验收 contract，冻结 1.x-compatible 512×512
+  full-UNet fine-tuning 结果及 black-box/native/fine-tuning/random-init 声明层级。
+- **原因：** 防止复制 codec、latent、artifact、Sampler 或 writer，并避免模糊“支持”。
+- **影响范围：** 两份计划的依赖、支持矩阵、数据与 Evaluation scope。
+- **交付物：** 依赖清单、固定版本的参考 bundle、正式数据候选和对照 profile。
+- **验证方法：** 复核 revision、许可、safety、离线恢复和每个声明的独立证据要求。
+- **完成条件：** 共享前置只由 Latent Diffusion 计划负责，Stable Diffusion 独有结果可单独验收。
+
+### 任务卡：建立隔离的参考后端
+
+- **动作：** 加载 pinned、可离线的 Diffusers pipeline snapshot，统一 request、seed、
+  writer、prompt suite 和 result manifest。
+- **原因：** 需要隔离的对照基准，而不是伪装成 native `Sampler`。
+- **影响范围：** reference backend、artifact manifest 和对照测试。
+- **交付物：** Diffusers-owned scheduler/offload/inference loop 的独立 backend。
+- **验证方法：** 离线重放相同 request/seed，并核对完整 result identity。
+- **完成条件：** 不注入 `Process`/`Sampler`、不创建虚假状态，只作为后端对照证据。
+
+### 任务卡：绑定组件与文本资产
+
+- **动作：** 由 family-private provider 解析 bundle，构造 conditional UNet，并让 Builder
+  验证 codec、tokenizer、text encoder、prediction 与 geometry identity。
+- **原因：** component 与 text preprocessing 必须作为一个可恢复、可审计协作冻结。
+- **影响范围：** provider、TrainingBuilder、checkpoint/run bundle 与 inference projection。
+- **交付物：** immutable tokenizer、冻结 auxiliary assets 及 token/dropout/RNG contract。
+- **验证方法：** 独立 fake provider、错误 identity、dtype/device 与 strict-resume tests。
+- **完成条件：** sampling/Evaluation 从 bundle 恢复资产，用户不重复声明或拼装组件。
+
+### 任务卡：完成 component-native sampling 并与参考后端对照
+
+- **动作：** 由 task SamplingBuilder 组合 prompt、negative prompt、CFG、initialization、
+  seed、decode 与 output，并复用 Gaussian Sampler。
+- **原因：** 任务组合与数值算法必须继续由各自组件负责。
+- **影响范围：** SamplingBuilder、family adapter、sample config 与 writer artifacts。
+- **交付物：** 由 checkpoint 恢复的 component-native sampling 和分层对照报告。
+- **验证方法：** 对 pinned oracle 比较 component、schedule、trajectory、decoded output 与分布。
+- **完成条件：** Sampler 不解释 text/UNet/VAE；数学不同时只声明已证明的兼容层级。
+
+### 任务卡：交付可审计的 image-text data
+
+- **动作：** profiling The Met 候选并物化 versioned caption artifact；COCO 仅作多 caption
+  reference，VLM recaption 必须形成新 artifact。
+- **原因：** image-text 训练需要许可、来源、过滤、模板和 sample identity 可重放。
+- **影响范围：** DataSource、DataArtifact、两条 DataBuilder recipe 与数据文档。
+- **交付物：** snapshot/filter/template identity、stable sample key 和 frozen inventory。
+- **验证方法：** 下载重放、去重、metadata、分辨率、caption 与 strict binding tests。
+- **完成条件：** image-backed/prepared-backed 在 Dataset 前绑定，旧 captions 不被覆盖。
+
+### 任务卡：完成 full-parameter fine-tuning
+
+- **动作：** 先做 256 tiny overfit/短跑，再执行 512、64×64×4 latent 的预训练 UNet
+  full fine-tuning。
+- **原因：** 先验证冻结资产、dropout、resume 和 sampling，再承担正式训练成本。
+- **影响范围：** TrainingBuilder/Strategy、optimizer-step lifecycle、EMA 与 bundle。
+- **交付物：** bounded config、正式 config、Evaluation cadence、stop/resume contract。
+- **验证方法：** online/prepared 数据路径一致性、raw/EMA sampling 和目标设备当前 1k-step 实测。
+- **完成条件：** batch/accumulation/checkpointing 来自实测，256 路径不冒充 native result。
+
+### 任务卡：发布正式 Evaluation 与支持声明
+
+- **动作：** 版本化 prompt suite，并分离 reconstruction、distribution、alignment、coverage、
+  memorization、performance 与 safety evidence。
+- **原因：** 单一质量数值不能证明 component-native 语义或完整支持层级。
+- **影响范围：** EvaluationBuilder、protocol、result bundle、报告与公开支持声明。
+- **交付物：** immutable results 和完整 subject/component/data/prompt/sampler/seed identity。
+- **验证方法：** 分布内、held-out、空/负/长 prompt、稀有组合、seed replay 与 CFG sweep。
+- **完成条件：** 首个完整功能通过验收后，才评审 random-init、prepared text 或性能改进。
+
+## 如何证明已经完成
+
+首个正式能力必须同时满足：
+
+- Latent Diffusion 的共享能力已由独立 denoiser 验收，本计划没有第二套 codec/latent
+  lifecycle；
+- pinned Hub/local/run-bundle 三种允许来源按已声明范围工作，混合 revision、digest mismatch、
+  missing/corrupt asset、floating source 和 sampling overlay replacement 都会被明确拒绝；
+- black-box 与 component-native backend ownership 在配置、执行和 manifest 中不混淆；
+- tokenizer/text encoder/provider 有独立 fake implementation contract test，training 与
+  sampling 不依赖未固定的远程状态；
+- component-native sampling 的对照层级、基准、输入、timesteps、RNG 与容差可复核；
+- 512 full-parameter UNet fine-tuning 可 strict pause/resume，并从 checkpoint-only raw/EMA
+  subject 离线重放 sampling；
+- sampling config 不重复或替换 checkpoint-owned component identity；
+- curated image-text/caption artifact 可重建、严格绑定并拒绝身份或内容漂移；
+- prompt suite 与正式 Evaluation 具备 exact counts、stable IDs、完整 protocol/provider/
+  preprocessing identity、atomic publication 和非挑选式结果；
+- 性能、容量和质量声明具有当前 hardware、software、data、protocol 和 artifact evidence；
+- focused tests、independent-extension tests、ruff、pyright、配置 reference 检查和严格文档
+  构建通过，SPEC/ARCHITECTURE/ROADMAP/CHANGELOG 与公开文档按实际行为同步；
+- 支持声明严格区分 black-box inference、native sampling、pretrained full fine-tuning、
+  random-init training 和后续 family，不用较窄能力暗示较宽能力。
+
+## 明确不包含什么
+
+- Stochaflow-native VAE、VAE training、joint VAE+UNet training 或任意 external VAE trainer；
+- trainable text encoder、LoRA/PEFT、ControlNet、IP-Adapter、image-to-image 或 inpainting；
+- SDXL、SD3、Flux-style transformer 或 arbitrary Diffusers Pipeline component graph；
+- arbitrary `.ckpt` conversion、floating Hub revision、未声明的混合 component source；
+- universal tokenizer、condition、pretrained-model graph、model-name compatibility matrix 或
+  task-specific core batch schema；
+- undocumented scraped dataset、未经审计的 community mirror 或数据许可背书；
+- 1024 from-scratch production 或 web-scale foundation-model quality claim；
+- 在 profiling 前承诺 prepared text embeddings、特定 attention、`torch.compile`、gradient
+  checkpointing、sharded access、distributed training 或 bundle deduplication。
+
+这些项目不是被删除的构想。可训练 text encoder、LoRA/PEFT、SDXL、SD3、Flux-style
+transformer、其他 condition、prepared embeddings、VLM recaption、random-init 与 production
+optimization 的重审触发和负责人见下表；首个完整功能不通过 nullable fields 提前实现它们。
+
+## 详细设计和研究资料在哪里
+
+| 未来方向 | 重审触发 | Owner |
 | --- | --- | --- |
-| 用“Diffusers 可加载”代替 parity | 输出漂移且难定位 | 分层 parity manifest |
-| 把 black-box pipeline 包成 Sampler | 双重 scheduler/lifecycle | backend ownership 分离 |
-| 混合 component revision | codec/text/UNet 不匹配 | bundle role + digest |
-| sampling 重复填写 components | checkpoint 被 overlay 漂移 | checkpoint-owned bundle |
-| caption 现场生成 | run 不可重放 | versioned caption artifact |
-| class batch schema 加 nullable prompt | core 被 modality 污染 | concrete recipe contract |
-| 256 smoke 冒充 SD 1.x parity | 质量和分辨率声明失真 | 512 formal profile |
-| fine-tuning 冒充 from scratch | 结果误导 | initialization profile identity |
-| scraped community mirror 直接发布 | 许可/NSFW/重复风险 | research inventory + audit gate |
-| 先实现 SDXL/LoRA | 首个 lifecycle 永远不闭合 | SD 1.x full-module vertical slice |
-| Spark 容量被当作吞吐 | production 计划失真 | 1k-step cross-device benchmark |
+| 可训练 text encoder | 冻结 text encoder 的首版已经验收，正式消融证明它限制目标质量，并且额外训练状态、恢复和 Evaluation 规则已明确 | Stable Diffusion task `TrainingBuilder` 与 training runtime 负责人 |
+| LoRA/PEFT | 全参数微调基线已验收，真实使用方需要更低显存或可搬迁 adapter，并能定义 base/adapter 身份与合并规则 | Stable Diffusion extension、checkpoint 与 adapter provider 负责人 |
+| ControlNet、IP-Adapter、image-to-image、inpainting | 其中一个具体任务被路线图选择，输入 artifact、conditioning、数据和正式 Evaluation 已确定 | 对应任务的 `SamplingBuilder`/`TrainingBuilder`/`EvaluationBuilder` 负责人 |
+| Prepared text embeddings | profiling 证明 tokenizer/text encoder 重复计算是主要成本，caption、provider 和 embedding 身份可以版本化 | Stable Diffusion DataSource/DataBuilder 与 text-asset provider 负责人 |
+| SDXL | Stable Diffusion 1.x 原生路径已经验收，SDXL 被单独选择，双 text encoder、codec、UNet 和分辨率约定已重新核验 | 独立 SDXL task extension 负责人 |
+| SD3 或 Flux-style transformer | 一个完整用例证明现有 Gaussian/UNet family 约定不能表达其数学与模型调用，并已冻结 provider、数据和 Evaluation | 新算法 family 与对应 text-to-image task 负责人 |
+| 任意 Diffusers Pipeline component graph | 至少两个真实 Pipeline 重复同一稳定组件图语义，现有 component-native Builder 组合不足 | extension 架构维护者与两个消费任务负责人 |
+| Random-init training | 预训练微调首版已验收，并有足够数据、计算预算、停止规则和正式质量目标 | Stable Diffusion training task 负责人 |
+| VLM recaption | 选中的数据集确实需要重新生成 caption，并能固定 VLM、prompt、许可与新 artifact 身份 | image-text `DataSource` 与数据治理负责人 |
+| 性能和生产优化 | 当前 profiling 指向明确瓶颈，且每项收益能独立验收 | 对应 attention/compile/checkpoint/distributed/bundle 负责人；不得打包启动 |
 
-## 17. 明确不进入首个 Stable Diffusion milestone
+### 相关资料
 
-- VAE training；
-- joint VAE + UNet training；
-- trainable text encoder；
-- LoRA/PEFT；
-- ControlNet/IP-Adapter/inpainting；
-- SDXL；
-- SD3；
-- arbitrary Diffusers Pipeline component graph；
-- floating Hub revision；
-- arbitrary `.ckpt` conversion；
-- universal tokenizer/condition/model registry；
-- undocumented scraped dataset；
-- 1024 from-scratch production；
-- web-scale foundation-model quality claim。
-
-## 18. 调研与实现参考
-
-- [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)
-- [High-Resolution Image Synthesis with Latent Diffusion Models](https://openaccess.thecvf.com/content/CVPR2022/html/Rombach_High-Resolution_Image_Synthesis_With_Latent_Diffusion_Models_CVPR_2022_paper.html)
-- [Diffusers Stable Diffusion pipeline](https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/text2img)
-- [Diffusers training overview](https://huggingface.co/docs/diffusers/training/overview)
-- [Diffusers text-to-image training](https://github.com/huggingface/diffusers/tree/main/examples/text_to_image)
-- [Diffusers AutoencoderKL](https://huggingface.co/docs/diffusers/api/models/autoencoderkl)
-- [The Met Open Access](https://www.metmuseum.org/hubs/open-access)
-- [The Met Collection API](https://metmuseum.github.io/)
-- [COCO](https://cocodataset.org/)
-- [LHQ](https://arxiv.org/abs/2104.06954)
-- [Public Domain 12M](https://huggingface.co/datasets/Spawning/PD12M)
+- [完整设计与研究附录](notes/stable-diffusion-component-native-support-plan/design-and-research-notes.md)：
+  保存组件职责、provider/bundle API、文本约定、数据集、caption、对照方法、training profile、
+  硬件测量、配置草案、详细测试矩阵、风险和外部参考。附录用于未来重查，不是当前实现、排期
+  或兼容性依据；重审触发与 Owner 以上表为准。
+- [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)：唯一负责共享 codec/latent 能力；
+  未通过其验收前不得启动 component-native Stable Diffusion。
+- [Evaluation 后续决策记录](post-training-evaluation-support-plan.md)：通用 Evaluation 基础能力
+  已经实现；Stable Diffusion 的任务专用协议与证据仍由本计划交付。

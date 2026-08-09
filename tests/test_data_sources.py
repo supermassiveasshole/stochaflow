@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import sys
 import unicodedata
 from collections.abc import Sized
 from concurrent.futures import ThreadPoolExecutor
@@ -33,6 +34,7 @@ from stochaflow.data.folder_sources import (
     PairedImageFolderDataSource,
 )
 from stochaflow.data.image_contracts import (
+    IMAGE_DATA_SOURCES,
     PairedImageFolderArtifactPayload,
 )
 from stochaflow.data.recipe_config import (
@@ -47,6 +49,36 @@ TEST_IMAGE_SOURCES: Registry[type[ImageDataSource]] = Registry(
     "test image data source",
     expected_type=ImageDataSource,
 )
+
+
+def test_source_factory_registers_builtin_image_sources() -> None:
+    """Keep built-in registration explicit at the factory composition boundary."""
+
+    assert IMAGE_DATA_SOURCES.resolve("torchvision") is TorchvisionImageDataSource
+    assert IMAGE_DATA_SOURCES.resolve("image_folder") is ImageFolderDataSource
+    assert (
+        IMAGE_DATA_SOURCES.resolve("paired_image_folders")
+        is PairedImageFolderDataSource
+    )
+
+
+def test_builtin_image_sources_exist_in_a_fresh_process() -> None:
+    """Prove built-in registration does not depend on prior test imports."""
+
+    script = (
+        "from stochaflow.data import IMAGE_DATA_SOURCES; "
+        "assert IMAGE_DATA_SOURCES.names() == "
+        "('image_folder', 'paired_image_folders', 'torchvision')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def create_directory_link(path: Path, target: Path) -> None:

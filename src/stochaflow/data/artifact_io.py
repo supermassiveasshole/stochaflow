@@ -1071,7 +1071,7 @@ def _same_snapshot_metadata(
     )
 
 
-def _same_complete_snapshot_metadata(
+def same_complete_snapshot_metadata(
     before: tuple[ArtifactFileSnapshot, ...],
     after: tuple[ArtifactFileSnapshot, ...],
 ) -> bool:

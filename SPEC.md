@@ -4,7 +4,7 @@
 >
 > Applies to: the current source tree
 >
-> Last reviewed: 2026-08-08
+> Last reviewed: 2026-08-09
 
 This document defines the product-level contract of Stochaflow: what the
 framework is responsible for, which observable guarantees supported workflows
@@ -164,6 +164,19 @@ The canonical configuration reference is
 - A successful evaluation MUST publish an immutable result bundle with subject,
   data, protocol, metric, provider, and artifact identity sufficient for later
   verification.
+- Every EvaluationPlan MUST explicitly declare non-empty, JSON-shaped provider
+  and preprocessing identity. Nested registered metric providers and additional
+  distributions that affect results MUST be named by the Builder; core MUST
+  bind those declarations to selected implementation and runtime versions and
+  fail closed before executing the data loop. At publication, the protocol
+  digest MUST include that bound implementation record and the observed ordered
+  sample-ID digest. Device and hardware facts MUST remain execution provenance
+  rather than task schema.
+- The protocol digest MUST identify the evaluation method, governed data/sample
+  plan, and implementation compatibility independently of the exact subject
+  content. Exact checkpoint or prediction-artifact digests MUST remain in the
+  result subject identity so compatible results from different subjects can be
+  compared without losing provenance.
 - An epoch-end training Evaluation MAY reuse the same EvaluationPlan/runtime on
   a live raw or EMA snapshot without publishing a formal result bundle. Its
   metrics are validation observations for checkpoint selection, not benchmark
@@ -210,9 +223,17 @@ state semantics, and errors. Important substitutability claims SHOULD be tested
 with an independent extension implementation rather than only built-in
 subclasses.
 
-Extension activation MUST be explicit and auditable. Project-private batch,
-condition, artifact, or model semantics MUST remain within the project unless a
-second demonstrated consumer justifies a shared public contract.
+Extension activation MUST be explicit and auditable. Preparing an activation
+MUST validate and capture a private configuration snapshot before importing
+extension code. Public access to the prepared configuration MUST return a
+detached value, and activation MUST materialize its resolved configuration from
+the same captured snapshot rather than from caller-mutable state. This boundary
+MUST preserve valid programmatic configuration value and container types. An
+activation receipt MUST remain bound to the plan that produced it.
+
+Project-private batch, condition, artifact, or model semantics MUST remain
+within the project unless a second demonstrated consumer justifies a shared
+public contract.
 
 ## 11. Observability Contract
 

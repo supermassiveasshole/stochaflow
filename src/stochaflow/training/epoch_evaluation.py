@@ -11,12 +11,14 @@ from torch import nn
 
 from stochaflow.evaluation import (
     CheckpointWeightVariant,
+    EvaluationPlan,
     EvaluationProtocol,
     LiveEvaluationSamplingCapability,
     build_evaluation_plan,
     execute_evaluation_plan,
 )
 from stochaflow.evaluation.artifacts import canonical_sha256
+from stochaflow.evaluation.identity import build_protocol_implementation_identity
 from stochaflow.inference import InferenceAssetProvider
 from stochaflow.metrics import MetricSpec
 from stochaflow.training.trainer import Trainer
@@ -35,6 +37,7 @@ from stochaflow.utils.config import (
 )
 from stochaflow.utils.registry import REGISTRIES, RegistryCatalog
 from stochaflow.utils.sampling_recipe import sampling_recipe_to_dict
+from stochaflow.utils.seed import preserve_global_rng_state
 
 ModelFactory = Callable[[ComponentConfig], nn.Module]
 
@@ -142,9 +145,48 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
             include_final=config.include_final,
         )
         data_identity_snapshot = deepcopy(dict(data_identity))
+
+        self._trainer = trainer
+        self._plan = plan
+        self._recipe = recipe
+        self._declaration = declaration
+        self._metric_specs = metric_specs
+        self._protocol = protocol
+        self._validation_data = validation_data
+        self._data_identity = data_identity_snapshot
+        self._weights: CheckpointWeightVariant = weights
+        self._model_factory = model_factory
+        self._registries = registries
+
+        identity_subject = LiveEpochEvaluationSubject(
+            profile_digest="0" * 64,
+            epoch=0,
+            global_step=0,
+            weights=weights,
+        )
+        with preserve_global_rng_state(trainer.device):
+            primary_was_training = bool(plan.primary_model.training)
+            try:
+                plan.primary_model.eval()
+                identity_plan = self._build_evaluation_plan(
+                    subject=identity_subject,
+                    sampling=self._sampling_capability(
+                        inference_assets=self._inference_assets()
+                    ),
+                )
+            finally:
+                plan.primary_model.train(primary_was_training)
+        protocol_implementation = build_protocol_implementation_identity(
+            evaluation_builder_name=declaration.name,
+            metric_specs=metric_specs,
+            declared=identity_plan.protocol_identity,
+            evaluation_builder_registry=registries.evaluation_builders,
+            metric_registry=registries.metrics,
+            runtime_parameters={},
+        )
         profile_digest = canonical_sha256(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "weights": weights,
                 "evaluation": _component_document(declaration),
                 "metrics": [
@@ -164,20 +206,10 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
                         plan.inference_assets
                     )
                 ),
+                "protocol_implementation": protocol_implementation,
             }
         )
-
-        self._trainer = trainer
-        self._plan = plan
-        self._recipe = recipe
-        self._declaration = declaration
-        self._metric_specs = metric_specs
-        self._protocol = protocol
-        self._validation_data = validation_data
-        self._data_identity = data_identity_snapshot
-        self._weights: CheckpointWeightVariant = weights
-        self._model_factory = model_factory
-        self._registries = registries
+        self._protocol_identity = identity_plan.protocol_identity
         self._identity = EpochValidationIdentity(
             profile_digest=profile_digest,
             metric_keys=tuple(config.metric_keys),
@@ -212,6 +244,39 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
             model_factory=self._model_factory,
         )
 
+    def _sampling_capability(
+        self,
+        *,
+        inference_assets: InferenceAssetProvider,
+    ) -> LiveEvaluationSamplingCapability:
+        return LiveEvaluationSamplingCapability(
+            recipe=self._recipe,
+            process=self._plan.process,
+            model=self._plan.primary_model,
+            resolved_weights=self._weights,
+            device=self._trainer.device,
+            inference_assets=inference_assets,
+            sampling_builder_registry=self._registries.sampling_builders,
+        )
+
+    def _build_evaluation_plan(
+        self,
+        *,
+        subject: LiveEpochEvaluationSubject,
+        sampling: LiveEvaluationSamplingCapability,
+    ) -> EvaluationPlan:
+        return build_evaluation_plan(
+            self._declaration,
+            subject=subject,
+            data=self._validation_data,
+            data_identity=self._data_identity,
+            inference=self._plan.primary_model,
+            metric_specs=self._metric_specs,
+            protocol=self._protocol,
+            sampling=sampling,
+            registries=self._registries,
+        )
+
     def evaluate(
         self,
         *,
@@ -241,14 +306,8 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
             for module in modules:
                 module.eval()
 
-            sampling = LiveEvaluationSamplingCapability(
-                recipe=self._recipe,
-                process=self._plan.process,
-                model=self._plan.primary_model,
-                resolved_weights=self._weights,
-                device=self._trainer.device,
+            sampling = self._sampling_capability(
                 inference_assets=self._inference_assets(),
-                sampling_builder_registry=self._registries.sampling_builders,
             )
             subject = LiveEpochEvaluationSubject(
                 profile_digest=self.identity.profile_digest,
@@ -256,17 +315,14 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
                 global_step=global_step,
                 weights=self._weights,
             )
-            evaluation_plan = build_evaluation_plan(
-                self._declaration,
+            evaluation_plan = self._build_evaluation_plan(
                 subject=subject,
-                data=self._validation_data,
-                data_identity=self._data_identity,
-                inference=self._plan.primary_model,
-                metric_specs=self._metric_specs,
-                protocol=self._protocol,
                 sampling=sampling,
-                registries=self._registries,
             )
+            if evaluation_plan.protocol_identity != self._protocol_identity:
+                raise ValueError(
+                    "epoch Evaluation protocol identity changed after preflight"
+                )
             facts = execute_evaluation_plan(
                 evaluation_plan,
                 device=self._trainer.device,

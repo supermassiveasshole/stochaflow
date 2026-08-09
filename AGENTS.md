@@ -89,12 +89,56 @@ Keep documentation and research notes in `docs/` or `notebooks/`, and reserve
 and runs belong under ignored data/cache/output locations and must not be
 committed.
 
-Published documentation must describe current framework behavior and user
-workflows, not implementation-stage history. Active plans and review notes may
-live under `docs/development/`, which is excluded from the Sphinx site. Before a
-feature branch merges, move stable architecture, feature, configuration, and
-usage content into the normal documentation tree, then delete or archive the
-intermediate plan without linking it from the public docs index.
+Published user documentation must describe current framework behavior and user
+workflows, not implementation-stage history. Sphinx also exposes the canonical
+root roadmap plus the reader-facing development index and main plans in a
+clearly labeled maintenance area. Their visibility does not make a candidate
+feature implemented, scheduled, or part of the public API. Detailed research
+and historical notes under `docs/development/notes/` remain outside the Sphinx
+site. Before a feature branch merges, move stable architecture, feature,
+configuration, and usage content into the normal documentation tree. Close or
+archive implementation-only material, while preserving any still-unimplemented
+future direction in its owning plan.
+
+### Development Documentation Style
+
+`ROADMAP.md` is the only scheduling authority. Use only `Done`, `In progress`,
+`Next`, `Candidate`, and `Parked` for work status; at most one item may be
+`In progress` and at most one item may be `Next`; either may explicitly be
+`None`. A development plan must not create a second priority vocabulary or
+present an unselected candidate as committed work. The development index and
+execution roadmap are derived navigation views and must match the root roadmap.
+
+Write root governance documents in English. Write development plans in Chinese
+while preserving exact API, type, and configuration identifiers in English.
+Lead with the user outcome and current repository truth. A main plan must make
+clear, in this order: what users can do when it is complete; what works now;
+what is missing; when work may begin or be reviewed again; the required work;
+completion evidence; exclusions; and the location of detailed design or
+research. Each work item must state its action, reason, affected surface,
+deliverable, verification method, and completion condition. Name actions by
+their result; opaque stage identifiers belong only in a linked history note.
+
+Aim to keep a main plan below 300 lines and never exceed 400. Keep every main
+plan reachable from `docs/development/README.md` and its Sphinx toctree. A
+preserved future direction must have an owning main plan and a concrete start or
+review condition; split directions with different statuses or triggers into
+separate owners.
+
+Keep readable main plans separate from detailed research. Preserve the main
+plan path, and move version-sensitive provider research, candidate API drafts,
+mathematical derivations, long test matrices, and historical implementation
+logs under `docs/development/notes/`. Do not remove a unique future-support idea
+until its new owner and destination are recorded. Do not attach time estimates
+to unselected work; estimate again only after it becomes `Next`. Mark external
+library, hardware, and dataset research with its last review date and require
+fresh verification before implementation.
+
+Use ordinary language instead of unexplained planning jargon. In particular,
+replace terms such as “vertical slice”, “substrate”, “seam”, “closeout”,
+“promotion gate”, “decision-gated”, “rebase”, and “task-owned” with a concrete
+description of the result, existing ability, interface, completed decision,
+entry condition, current status, required review, or responsible component.
 
 ## Build, Test, and Development Commands
 

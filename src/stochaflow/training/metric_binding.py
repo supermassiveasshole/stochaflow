@@ -11,11 +11,11 @@ from stochaflow.metrics import (
     MetricEngine,
     MetricUpdate,
 )
+from stochaflow.metrics._prepared_updates import commit_prepared_metric_updates
 from stochaflow.metrics.contracts import (
     PreparedMetricUpdates,
     prepare_metric_updates,
 )
-from stochaflow.metrics.runtime import _commit_prepared_metric_updates
 from stochaflow.training.strategy import (
     MetricChannelProvider,
     TrainingStrategy,
@@ -145,7 +145,7 @@ class TrainingMetricRuntime:
 
         engine = self._engines.get(phase)
         if engine is not None:
-            _commit_prepared_metric_updates(engine, updates)
+            commit_prepared_metric_updates(engine, updates)
 
     def compute_phase(
         self,

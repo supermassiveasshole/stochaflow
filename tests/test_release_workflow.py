@@ -294,7 +294,8 @@ def test_public_release_references_match_project_version() -> None:
         *(
             path
             for path in (PROJECT_ROOT / "docs").rglob("*.md")
-            if "development" not in path.relative_to(PROJECT_ROOT / "docs").parts
+            if path.relative_to(PROJECT_ROOT / "docs").parts[:2]
+            != ("development", "notes")
         ),
         *REFERENCE_PROJECT_METADATA_PATHS,
     )

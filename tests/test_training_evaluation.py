@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+import random
+from typing import Any, ClassVar, cast
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -13,6 +15,7 @@ from torchmetrics.regression import MeanSquaredError
 from stochaflow.evaluation import (
     EvaluationBuilder,
     EvaluationPlan,
+    EvaluationProtocolIdentity,
     EvaluationSamplingCapability,
     EvaluationSamplingRequest,
     EvaluationStepOutput,
@@ -131,6 +134,7 @@ class LiveModelEvaluationBuilder(EvaluationBuilder):
     """Compose the tiny live model evaluator from injected dependencies."""
 
     last_subject: LiveEpochEvaluationSubject | None = None
+    provider_revision: ClassVar[int] = 1
 
     def build(self) -> EvaluationPlan:
         model = cast(object, self.context.inference)
@@ -150,8 +154,31 @@ class LiveModelEvaluationBuilder(EvaluationBuilder):
             protocol=self.context.protocol,
             subject=self.context.subject,
             data_identity=self.context.data_identity,
+            protocol_identity=EvaluationProtocolIdentity(
+                providers={
+                    "mean": {
+                        "name": LIVE_MEAN_METRIC,
+                        "revision": type(self).provider_revision,
+                    }
+                },
+                preprocessing={"kind": "identity"},
+            ),
             modules={"primary": model},
         )
+
+
+class AlternateLiveModelEvaluationBuilder(LiveModelEvaluationBuilder):
+    """Behavior-compatible provider with a distinct implementation identity."""
+
+
+class RNGConsumingEvaluationBuilder(LiveModelEvaluationBuilder):
+    """Exercise task-owned construction without perturbing training RNG."""
+
+    def build(self) -> EvaluationPlan:
+        random.random()
+        np.random.random()
+        torch.rand(())
+        return super().build()
 
 
 class SamplePairEvaluator:
@@ -215,6 +242,10 @@ class SamplingEvaluationBuilder(EvaluationBuilder):
             protocol=self.context.protocol,
             subject=self.context.subject,
             data_identity=self.context.data_identity,
+            protocol_identity=EvaluationProtocolIdentity(
+                providers={"mse": {"name": LIVE_MSE_METRIC}},
+                preprocessing={"kind": "paired-samples"},
+            ),
             modules={"primary": model},
         )
 
@@ -259,7 +290,11 @@ def _trainer(
     )
 
 
-def _config(*, weights: str = "ema", fail: bool = False) -> ValidationEvaluationConfig:
+def _config(
+    *,
+    weights: str = "ema",
+    fail: bool = False,
+) -> ValidationEvaluationConfig:
     return ValidationEvaluationConfig(
         enabled=True,
         start_epoch=2,
@@ -400,6 +435,105 @@ def test_live_evaluation_profile_digest_covers_weight_authority() -> None:
     )
 
     assert raw.identity.profile_digest != ema.identity.profile_digest
+
+
+def test_live_profile_digest_covers_registered_provider_implementation() -> None:
+    standard_registries = _registries()
+    alternate_registries = RegistryCatalog()
+    alternate_registries.metrics.add(LIVE_MEAN_METRIC, LiveEpochMeanMetric)
+    alternate_registries.metrics.add(LIVE_MSE_METRIC, LiveEpochMSEMetric)
+    alternate_registries.sampling_builders.add(
+        LIVE_SAMPLING_BUILDER,
+        LiveModelSamplingBuilder,
+    )
+    alternate_registries.evaluation_builders.add(
+        "tests.live-model",
+        AlternateLiveModelEvaluationBuilder,
+    )
+    common = {
+        "trainer": _trainer(),
+        "config": _config(weights="raw"),
+        "validation_data": _data(),
+        "data_identity": {"source": "training", "split": "validation"},
+    }
+
+    standard = EvaluationBackedEpochValidator(
+        registries=standard_registries,
+        **common,
+    )
+    alternate = EvaluationBackedEpochValidator(
+        registries=alternate_registries,
+        **common,
+    )
+
+    assert standard.identity.profile_digest != alternate.identity.profile_digest
+
+
+def test_live_profile_digest_covers_builder_declared_provider_identity() -> None:
+    common = {
+        "trainer": _trainer(),
+        "validation_data": _data(),
+        "data_identity": {"source": "training", "split": "validation"},
+    }
+
+    try:
+        LiveModelEvaluationBuilder.provider_revision = 1
+        first = EvaluationBackedEpochValidator(
+            config=_config(weights="raw"),
+            registries=_registries(),
+            **common,
+        )
+        LiveModelEvaluationBuilder.provider_revision = 2
+        second = EvaluationBackedEpochValidator(
+            config=_config(weights="raw"),
+            registries=_registries(),
+            **common,
+        )
+    finally:
+        LiveModelEvaluationBuilder.provider_revision = 1
+
+    assert first.identity.profile_digest != second.identity.profile_digest
+
+
+def test_live_evaluation_identity_preflight_preserves_global_rng_state() -> None:
+    registries = _registries()
+    registries.evaluation_builders.add(
+        "tests.rng-consuming",
+        RNGConsumingEvaluationBuilder,
+    )
+    config = _config(weights="raw")
+    config.evaluation = ComponentConfig(
+        name="tests.rng-consuming",
+        params={},
+    )
+    trainer = _trainer()
+
+    random.seed(881)
+    np.random.seed(881)
+    torch.manual_seed(881)
+    expected = (
+        random.random(),
+        float(np.random.random()),
+        float(torch.rand(())),
+    )
+    random.seed(881)
+    np.random.seed(881)
+    torch.manual_seed(881)
+
+    EvaluationBackedEpochValidator(
+        trainer=trainer,
+        config=config,
+        validation_data=_data(),
+        data_identity={"source": "training", "split": "validation"},
+        registries=registries,
+    )
+    actual = (
+        random.random(),
+        float(np.random.random()),
+        float(torch.rand(())),
+    )
+
+    assert actual == expected
 
 
 def test_training_evaluation_samples_scores_and_saves_best_checkpoint(

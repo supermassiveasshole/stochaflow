@@ -21,6 +21,7 @@ from stochaflow.data.dataloaders import DataLoaders
 from stochaflow.evaluation import (
     EvaluationBuilder,
     EvaluationPlan,
+    EvaluationProtocolIdentity,
     EvaluationStepOutput,
     JsonlPredictionArtifactSink,
     PredictionArtifactDraft,
@@ -242,6 +243,10 @@ class OfflineReplayEvaluationBuilder(EvaluationBuilder):
             protocol=self.context.protocol,
             subject=self.context.subject,
             data_identity=self.context.data_identity,
+            protocol_identity=EvaluationProtocolIdentity(
+                providers={"mean": {"name": METRIC_NAME}},
+                preprocessing={"record_format": "typed-scalar-v1"},
+            ),
             artifact_sink=sink,
             modules=modules,
         )
@@ -364,8 +369,10 @@ def snapshot_tree(root: Path) -> dict[str, tuple[bytes, int]]:
     }
 
 
-def prediction_record(sample_id: str, value: float) -> PredictionRecord:
-    sample = next(item for item in SAMPLE_PLAN if item.sample_id == sample_id)
+def prediction_record(
+    sample: PredictionSampleIdentity,
+    value: float,
+) -> PredictionRecord:
     return PredictionRecord(
         sample_id=sample.sample_id,
         input_id=sample.input_id,
@@ -395,22 +402,34 @@ def write_prediction_shard(
     )
 
 
-def publish_shuffled_prediction_artifact(root: Path) -> Path:
+def publish_shuffled_prediction_artifact(
+    root: Path,
+    *,
+    values: tuple[float, float, float] = (3.0, 5.0, 7.0),
+    samples: tuple[
+        PredictionSampleIdentity,
+        PredictionSampleIdentity,
+        PredictionSampleIdentity,
+    ] = SAMPLE_PLAN,
+) -> Path:
     """Publish records whose shard, filename, and sample orders all differ."""
 
     root.mkdir()
     z_shard = write_prediction_shard(
         root,
         "z-first-in-manifest.jsonl",
-        (prediction_record("sample-c", 7.0), prediction_record("sample-a", 3.0)),
+        (
+            prediction_record(samples[2], values[2]),
+            prediction_record(samples[0], values[0]),
+        ),
     )
     a_shard = write_prediction_shard(
         root,
         "a-second-in-manifest.jsonl",
-        (prediction_record("sample-b", 5.0),),
+        (prediction_record(samples[1], values[1]),),
     )
     draft = PredictionArtifactDraft(
-        samples=SAMPLE_PLAN,
+        samples=samples,
         shards=(z_shard, a_shard),
     )
     published = materialize_prediction_manifest(
@@ -542,18 +561,87 @@ def test_live_predictions_replay_offline_without_inference_or_mutation(
         "identity": live_result["data"],
         "split": "validation",
     }
-    assert offline_result["data"] == {
-        "source": "prediction_artifact",
-        "split": "validation",
-        "artifact_digest": producer_manifest["artifact_digest"],
-        "sample_plan_digest": producer_manifest["sample_plan"]["digest"],
-        "producer_data": live_result["data"],
-    }
+    assert offline_result["data"] == live_result["data"]
+    assert offline_result["protocol_digest"] == live_result["protocol_digest"]
     assert offline_result["artifacts"] == {}
     evaluator = OfflineReplayEvaluationBuilder.last_evaluator
     assert evaluator is not None
     assert evaluator.model is None
     assert evaluator.seen_sample_ids == ["sample-a", "sample-b", "sample-c"]
+
+
+def test_offline_protocol_digest_is_compatible_across_subject_artifacts(
+    tmp_path: Path,
+) -> None:
+    first_manifest = publish_shuffled_prediction_artifact(
+        tmp_path / "first-artifact",
+        values=(1.0, 2.0, 3.0),
+    )
+    second_manifest = publish_shuffled_prediction_artifact(
+        tmp_path / "second-artifact",
+        values=(10.0, 20.0, 30.0),
+    )
+    third_manifest = publish_shuffled_prediction_artifact(
+        tmp_path / "third-artifact",
+        values=(1.0, 2.0, 3.0),
+        samples=(
+            PredictionSampleIdentity("sample-x", "input-a", 0),
+            PredictionSampleIdentity("sample-y", "input-b", 0),
+            PredictionSampleIdentity("sample-z", "input-c", 0),
+        ),
+    )
+    first_config = write_config(
+        tmp_path / "first-offline.yaml",
+        evaluation_document(
+            name="first-offline-subject",
+            subject={"kind": "prediction_artifact", "path": str(first_manifest)},
+            source="prediction_artifact",
+        ),
+    )
+    second_config = write_config(
+        tmp_path / "second-offline.yaml",
+        evaluation_document(
+            name="second-offline-subject",
+            subject={"kind": "prediction_artifact", "path": str(second_manifest)},
+            source="prediction_artifact",
+        ),
+    )
+    third_config = write_config(
+        tmp_path / "third-offline.yaml",
+        evaluation_document(
+            name="third-offline-sample-plan",
+            subject={"kind": "prediction_artifact", "path": str(third_manifest)},
+            source="prediction_artifact",
+        ),
+    )
+
+    first = run_evaluation(
+        first_config,
+        output_dir=tmp_path / "first-result",
+        device_name="cpu",
+    )
+    second = run_evaluation(
+        second_config,
+        output_dir=tmp_path / "second-result",
+        device_name="cpu",
+    )
+    third = run_evaluation(
+        third_config,
+        output_dir=tmp_path / "third-result",
+        device_name="cpu",
+    )
+    first_result = read_result(first.result_path)
+    second_result = read_result(second.result_path)
+    third_result = read_result(third.result_path)
+
+    assert first.metrics != second.metrics
+    assert first_result["subject"]["artifact_digest"] != second_result["subject"][
+        "artifact_digest"
+    ]
+    assert first_result["data"] == second_result["data"]
+    assert first_result["protocol_digest"] == second_result["protocol_digest"]
+    assert first_result["data"] == third_result["data"]
+    assert first_result["protocol_digest"] != third_result["protocol_digest"]
 
 
 def test_offline_runtime_joins_shuffled_shards_by_sample_plan(

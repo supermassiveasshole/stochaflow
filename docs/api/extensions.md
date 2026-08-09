@@ -279,7 +279,8 @@ Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trai
 | --- | --- |
 | `EvaluationBuilder` | 独立 task evaluation 的唯一注册组合入口 |
 | `EvaluationBuilderContext` | 只读 params、resolved subject、selected data/data identity、可选 pinned inference model/sampling capability、artifact staging root、MetricSpecs 与 protocol |
-| `EvaluationPlan` | Evaluator、data、metric declarations、protocol、subject/data identity、可选 artifact sink 与 core-managed modules |
+| `EvaluationPlan` | Evaluator、data、metric declarations、protocol、subject/data identity、`EvaluationProtocolIdentity`、可选 artifact sink 与 core-managed modules |
+| `EvaluationProtocolIdentity` | Builder 必填的非空 provider/backbone/weights 与 preprocessing identity；可声明 nested Metric Registry providers 和额外 distribution dependencies |
 | `Evaluator` | structural batch evaluation contract；声明 `metric_channels` 并返回 `EvaluationStepOutput` |
 | `EvaluationStepOutput` | 显式 example count、稳定 sample IDs、metric update groups、不透明 records 与 measurements |
 | `EvaluationProtocol` | protocol id、positive expected count 与 strict completeness policy |
@@ -296,7 +297,14 @@ Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trai
 Builder 通过 `REGISTRIES.evaluation_builders.register(name)` 注册。它必须保留 context 注入
 的 subject、data、data identity、MetricSpecs 与 protocol。checkpoint 路径会在 extension
 激活后才构造 model，把配置中的 `raw` 或 `ema` 解析为 concrete variant，并要求 Builder
-把该 model 列入 `EvaluationPlan.modules`。同一路径还提供绑定这一个 model/variant 的
+把该 model 列入 `EvaluationPlan.modules`。Builder 还必须用
+`EvaluationProtocolIdentity` 声明 task-owned、JSON-safe 且非空的 provider/backbone/weights
+与 preprocessing facts；若一个 composite Metric 再解析 nested Registry provider，或结果
+依赖额外 distribution，也必须显式列出。core 不检查 task params 或 Metric internals，而是
+在 batch loop 前把这些声明与实际 module/class/distribution/runtime version 绑定。device 与
+hardware 只作为 execution provenance 保存，不改变 protocol compatibility。
+
+同一路径还提供绑定这一个 model/variant 的
 `EvaluationSamplingCapability`：它从 checkpoint 恢复 Process 与 inference assets，使用
 `PinnedInferenceModelProvider` 并调用 shared SamplingBuilder execution seam，返回 validated
 in-memory batches 而不运行 writers。Builder 不接收可再次选择权重的 provider。
@@ -506,7 +514,10 @@ Gaussian quality pipeline 的 provider-level extension surface 也从
 `DiagnosticProviderCatalog` 是这五个局部 Registry 的 typed catalog；
 `ProviderSpec`、`ProviderPipelineConfig`、`ReferencePipelineConfig`、
 `DiagnosticCadenceConfig`、`DiagnosticSamplingConfig`、`SamplerProfileConfig` 和
-`TrajectoryProviderConfig` 是 Gaussian diagnostic 的公开配置值。
+`TrajectoryProviderConfig` 是 pipeline 的公开配置值，`DiffusionQualityConfig` 是完成解析后
+交给 orchestrator 的顶层配置。所有 provider 的 `validate()` 接收只读的
+`ProviderValidationContext`；artifact provider 的 `render()` 返回 `ArtifactRecord` 序列，
+由 diagnostic manifest 与可选 image logger fan-out 消费。
 
 这些 Registry 只扩展 Gaussian diagnostic 内部 pipeline，不是 framework-global Metric
 Registry，也不让 provider 直接选择 checkpoint。reference provider 的 `compute()` 结果
@@ -730,7 +741,7 @@ stochaflow sample --checkpoint outputs/run/checkpoints/best.pt \
 | 符号 | 用途 |
 | --- | --- |
 | `ExtensionPluginProvenance` | entry-point name、canonical distribution、version 与 module target |
-| `ExtensionActivationPlan` | 无导入副作用的 discovery/provenance 预检结果 |
+| `ExtensionActivationPlan` | 无导入副作用的 discovery/provenance 预检结果；私有封存经过验证的 config snapshot，并通过 `config` 返回隔离深拷贝 |
 | `ResolvedExtensions` | 成功激活后的 resolved config、provenance 与 version-acceptance audit |
 | `ExtensionSelectionPolicy` | expected provenance 的 `EXACT`/`INTERSECTION` 比较策略 |
 | `ExtensionVersionPolicy` | version mismatch 的 `REJECT`/`ALLOW` 策略 |
@@ -748,9 +759,15 @@ stochaflow sample --checkpoint outputs/run/checkpoints/best.pt \
 | `ExtensionActivationStateError` | 进程级 activation 状态冲突、重入或先前失败 |
 
 插件 discovery 与 activation 有意分离。一次进程成功激活后 selection 固定；导入失败或
-partial decorator registration 后应重启进程。
+partial decorator registration 后应重启进程。配置修改必须发生在 prepare 之前；修改
+`ExtensionActivationPlan.config` 返回的副本不会改变 activation 或 receipt 校验使用的
+私有 snapshot。snapshot 使用深拷贝而不是 YAML round-trip，因此保留合法 programmatic
+config 中 tuple、`torch.dtype` 等 Python 值的原有类型。
 
 ## 完整性约束
 
-本页列出的名称与当前 `stochaflow.extensions.__all__` 一一对应。新增公共契约时应先
-更新该 `__all__`，再同步本页；仅存在于内部 package 的名称不应被 extension 依赖。
+`stochaflow.extensions.__all__` 的每个导出都必须由本页覆盖；新增 facade 公共契约时应先
+更新该 `__all__`，再同步本页。Evaluation 专属契约由
+`stochaflow.evaluation.__all__` 管理，本页也会说明其中与 extension authoring 相关的名称，
+因此页面名称集合不要求与 facade 一一相等；仅存在于内部 package 的名称不应被 extension
+依赖。

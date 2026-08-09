@@ -63,6 +63,22 @@ is unavailable.
 
 ### Changed
 
+- Reorganized the root roadmap and internal development plans around plain
+  current-state, user-outcome, action, and verification sections. Detailed
+  future designs now remain in linked development notes, opaque milestone IDs
+  are historical aliases only, and unselected work no longer carries stale
+  schedule estimates.
+- Added a Sphinx maintenance entry for the canonical root roadmap, development
+  execution route, and every reader-facing main plan. Research archives remain
+  outside site search, and the published pages state explicitly that visibility
+  does not make candidate work implemented or scheduled.
+- Made Evaluation protocol identity fail closed: Builders now declare explicit
+  provider/preprocessing facts and nested provider dependencies, while formal
+  and epoch-validation runtimes bind registered implementations and runtime
+  versions before execution. Offline protocol compatibility no longer changes
+  with exact prediction-subject bytes, while the ordered sample-ID digest keeps
+  different sample plans distinct. Removed unused speculative request and
+  Gate-path placeholders from the public contracts.
 - Raised extension-project Torch declarations to the package-wide 2.11 minimum
   and migrated FP16 scaling/checkpoint identity to `torch.amp.GradScaler`.
 - Moved checkpoint inference-asset reconstruction into the shared `inference`
@@ -118,11 +134,12 @@ is unavailable.
   macOS x86_64 is no longer a supported or best-effort target.
 - Removed the legacy AFHQ-v2 evaluator executable, its private configuration and
   result runtime, and the superseded 900-sample profile. Maintained AFHQ
-  benchmarks now use only the public formal Evaluation operation; static
-  historical comparisons remain development records.
+  benchmarks now use only the public formal Evaluation operation; historical
+  removal facts remain in this changelog and Git history.
 - Removed the experimental P2 TrainingBuilder/Strategy recipes and their AFHQ
-  smoke, profiling, production, selection, and official-test profiles. Their
-  completed runs remain documented only as historical development evidence.
+  smoke, profiling, production, selection, and official-test profiles. The
+  retirement rationale remains in `ROADMAP.md`, this changelog, and Git history;
+  no runnable profile or intermediate development record remains authoritative.
 - Removed automatic post-training final sampling and its skip flag.
 - Removed the retired single-class AFHQ reproduction lane from the maintained
   example surface.
@@ -133,6 +150,18 @@ is unavailable.
 
 ### Fixed
 
+- Aligned Pylance and repository Pyright diagnostics for deprecated overloads
+  and unused declarations. Context-manager generators now use precise return
+  types, cross-module helpers no longer masquerade as module-private dead code,
+  built-in image-source registration is explicit, and extension activation test
+  resets live in pytest support instead of the production plugin runtime.
+- Documented the sealed extension preflight snapshot as a normative activation
+  guarantee in `SPEC.md` and `ARCHITECTURE.md`.
+- Sealed each extension activation preflight behind a private deep-copy
+  configuration snapshot. `ExtensionActivationPlan.config` now returns a
+  detached value, so callers cannot change the validated activation input
+  between prepare and activate, while programmatic tuple and `torch.dtype`
+  values retain their types.
 - Excluded checkpoint metadata, including training-loop validation and monitor
   state, from the read-only inference projection.
 - Preserved the Process-owned high-precision alpha-bar authority across strict

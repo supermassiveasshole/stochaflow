@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -152,6 +153,24 @@ class InstalledExtensionEntryPoint:
             name=self.distribution,
             version=self.version,
         )
+
+
+def test_public_extension_documentation_covers_every_export() -> None:
+    documentation_path = (
+        Path(__file__).parents[1] / "docs" / "api" / "extensions.md"
+    )
+    documentation = documentation_path.read_text(encoding="utf-8")
+    inline_code = re.findall(r"`([^`\n]+)`", documentation)
+    documented_names = {
+        name
+        for code_span in inline_code
+        for name in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", code_span)
+    }
+    exported_names = tuple(public.__all__)
+    missing_names = sorted(set(exported_names) - documented_names)
+
+    assert len(exported_names) == len(set(exported_names))
+    assert not missing_names
 
 
 def test_public_extension_contracts_reexport_runtime_types() -> None:
@@ -453,13 +472,12 @@ def test_plugin_strategy_drives_registered_metric() -> None:
 
 
 
+@pytest.mark.usefixtures("isolated_extension_activation_state")
 def test_selected_plugin_metric_runs_and_persists_installed_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Exercise discovery, activation, factory construction, and checkpointing."""
-
-    plugins._reset_extension_activation_state_for_testing()
 
     entry_point = InstalledExtensionEntryPoint(
         name=VERTICAL_PLUGIN_NAME,
@@ -648,7 +666,7 @@ def test_selected_plugin_metric_runs_and_persists_installed_provenance(
         )
         assert "valid/metrics/relative_l2" in checkpoint["metrics"]
     finally:
-        plugins._reset_extension_activation_state_for_testing()
+        monkeypatch.undo()
 
 
 @pytest.mark.parametrize(

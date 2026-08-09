@@ -131,6 +131,13 @@ distribution metadata、解析 selection，并在任何插件代码运行前检�
 插件 identity/version；接受 version policy 后才导入聚合模块并构建 Registry 组件。配置
 mapping 和传入的 config 对象不会被原地修改。
 
+`prepare_extension_plugins()` 会把已验证配置深拷贝到 plan 内部且不公开的 sealed
+snapshot。`ExtensionActivationPlan.config` 是安全读取接口：每次访问都再深拷贝一份独立
+配置，修改返回值不会改变后续 activation 的输入。这里不使用 YAML round-trip，因此合法
+programmatic config 中的 tuple、`torch.dtype` 等值不会丢失类型。调用方若要修改配置，
+必须在 prepare 之前完成，或用新配置重新 prepare；`activate_extension_plugins()` 始终从
+原 plan 的同一 snapshot 物化 resolved config，并以预检 provenance 写入确定的插件列表。
+
 插件按 entry-point name、canonical distribution name 和 target 确定性排序。同名 entry
 point、缺失插件、非 module target、非法 distribution metadata 或导入失败都会给出包含
 插件 provenance 的明确错误。注册名仍必须非空且唯一；错误基类、重复名称和未知名称会
@@ -844,6 +851,7 @@ from torch import nn
 from stochaflow.evaluation import (
     EvaluationBuilder,
     EvaluationPlan,
+    EvaluationProtocolIdentity,
     EvaluationStepOutput,
 )
 from stochaflow.extensions import MetricUpdate, REGISTRIES
@@ -884,12 +892,30 @@ class PairedEvaluationBuilder(EvaluationBuilder):
             protocol=self.context.protocol,
             subject=self.context.subject,
             data_identity=self.context.data_identity,
+            protocol_identity=EvaluationProtocolIdentity(
+                providers={
+                    "paired_metric": {
+                        "name": "my-project.paired-metric",
+                        "weights": "none",
+                    }
+                },
+                preprocessing={
+                    "inputs": "task-normalized-v1",
+                    "targets": "task-normalized-v1",
+                },
+                metric_providers=("my-project.paired-metric",),
+                dependencies=("my-project",),
+            ),
             modules={"primary": model},
         )
 ```
 
 `EvaluationBuilderContext.params`、subject、data identity、MetricSpec 和 protocol 都是
 只读 snapshot。Builder 必须原样保留注入的 subject/data/data identity/specs/protocol。
+Builder 还必须返回非空 `EvaluationProtocolIdentity`：`providers` 与 `preprocessing` 是
+task-owned JSON-safe facts，`metric_providers` 显式列出顶层 Metric 内部再次解析的 Registry
+provider，`dependencies` 列出影响结果的额外 distribution。core 在 batch loop 前解析并
+版本化它们；不得通过检查 task params 或 Metric 内部字段猜测身份。
 checkpoint 路径的 `EvaluationPlan.modules` 必须声明已注入 model，core 才能统一管理
 device/mode 与 `torch.inference_mode()` 生命周期；offline 路径不提供 model，modules 可以
 为空。Evaluator 自己解释 live batch 或 `PredictionRecord.payload`、模型签名、channel

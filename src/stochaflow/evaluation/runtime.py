@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import platform
 import shutil
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -32,6 +33,7 @@ from stochaflow.evaluation.contracts import (
     EvaluationRunOutcome,
     EvaluationStatus,
 )
+from stochaflow.evaluation.identity import build_protocol_implementation_identity
 from stochaflow.evaluation.predictions import (
     PREDICTION_MANIFEST_FILENAME,
     PredictionArtifactDraft,
@@ -254,6 +256,12 @@ def run_resolved_evaluation(
             raise ValueError(
                 "EvaluationPlan.modules must declare the injected checkpoint model"
             )
+        protocol_implementation = _protocol_implementation_identity(
+            config,
+            plan,
+            extensions,
+            seed=seed,
+        )
         facts = execute_evaluation_plan(plan, device=device)
         if isinstance(subject, ResolvedPredictionArtifactSubject):
             expected_ids = tuple(
@@ -270,10 +278,13 @@ def run_resolved_evaluation(
             extensions,
             device=device,
             seed=seed,
+            protocol_implementation=protocol_implementation,
         )
         protocol_digest = _protocol_digest(
             config,
             data_identity=data_identity,
+            protocol_implementation=protocol_implementation,
+            sample_ids_sha256=canonical_sha256(facts.sample_ids),
         )
         prediction_artifact = _materialize_live_predictions(
             artifact_root,
@@ -363,7 +374,6 @@ def run_resolved_evaluation(
             artifacts=outcome_artifacts,
             manifest_path=published.manifest_path,
             result_path=published.result_path,
-            gate_result_path=None,
         )
     finally:
         shutil.rmtree(artifact_root, ignore_errors=True)
@@ -394,13 +404,7 @@ def _create_artifact_staging(target_dir: Path) -> Path:
 def _offline_data_identity(
     subject: ResolvedPredictionArtifactSubject,
 ) -> Mapping[str, Any]:
-    return {
-        "source": "prediction_artifact",
-        "split": subject.split,
-        "artifact_digest": subject.inputs.artifact_digest,
-        "sample_plan_digest": subject.inputs.sample_plan_digest,
-        "producer_data": subject.data_identity,
-    }
+    return subject.data_identity
 
 
 def _materialize_live_predictions(
@@ -636,6 +640,7 @@ def _evaluation_provenance(
     *,
     device: torch.device,
     seed: int,
+    protocol_implementation: Mapping[str, Any],
 ) -> dict[str, Any]:
     encoded = evaluation_config_to_dict(config)
     extension_metadata = extension_runtime_metadata(extensions)
@@ -643,25 +648,80 @@ def _evaluation_provenance(
         "evaluation_builder": encoded["evaluation"],
         "metrics": encoded["metrics"],
         "device": str(device),
+        "execution_environment": _execution_environment(device),
         "seed": seed,
+        "protocol_implementation": protocol_implementation,
         **extension_metadata,
     }
+
+
+def _protocol_implementation_identity(
+    config: EvaluationConfig,
+    plan: EvaluationPlan,
+    extensions: ResolvedExtensions,
+    *,
+    seed: int,
+    evaluation_builder_registry: Registry[type[Any]] = (
+        REGISTRIES.evaluation_builders
+    ),
+    metric_registry: Registry[type[Metric]] = REGISTRIES.metrics,
+) -> dict[str, Any]:
+    """Bind task declarations to the exact registered and runtime providers."""
+
+    return build_protocol_implementation_identity(
+        evaluation_builder_name=config.evaluation.name,
+        metric_specs=config.metrics,
+        declared=plan.protocol_identity,
+        evaluation_builder_registry=evaluation_builder_registry,
+        metric_registry=metric_registry,
+        runtime_parameters={"seed": seed},
+        extension_provenance=extensions.provenance,
+    )
+
+
+def _execution_environment(device: torch.device) -> dict[str, Any]:
+    """Record hardware facts without making hardware protocol compatibility."""
+
+    result: dict[str, Any] = {
+        "device": str(device),
+        "system": platform.system(),
+        "machine": platform.machine(),
+    }
+    if device.type == "cuda":
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        result.update(
+            {
+                "device_name": torch.cuda.get_device_name(index),
+                "compute_capability": list(
+                    torch.cuda.get_device_capability(index)
+                ),
+                "cuda_runtime": torch.version.cuda,
+                "cudnn": torch.backends.cudnn.version(),
+            }
+        )
+    elif device.type == "mps":
+        result["mps_built"] = torch.backends.mps.is_built()
+    return result
 
 
 def _protocol_digest(
     config: EvaluationConfig,
     *,
     data_identity: Mapping[str, Any],
+    protocol_implementation: Mapping[str, Any],
+    sample_ids_sha256: str,
 ) -> str:
     encoded = evaluation_config_to_dict(config)
     return canonical_sha256(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "purpose": config.purpose,
             "data": data_identity,
+            "sample_ids_sha256": sample_ids_sha256,
             "evaluation": encoded["evaluation"],
             "metrics": encoded["metrics"],
             "protocol": encoded["protocol"],
+            "implementation": protocol_implementation,
         }
     )
 

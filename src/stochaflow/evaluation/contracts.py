@@ -13,7 +13,6 @@ from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from stochaflow.evaluation.config import (
     EVALUATION_SPLITS,
-    EvaluationConfig,
     EvaluationSplit,
     _freeze_evaluation_mapping,
 )
@@ -186,31 +185,6 @@ class EvaluationStepOutput:
 
 
 @dataclass(frozen=True, slots=True)
-class EvaluationRunRequest:
-    """Resolved invocation request accepted by a future evaluation runtime."""
-
-    config: EvaluationConfig
-    extensions: object
-    source: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(cast(object, self.config), EvaluationConfig):
-            raise TypeError("evaluation request config must be EvaluationConfig")
-        if self.extensions is None:
-            raise TypeError("evaluation request extensions must be resolved")
-        if isinstance(self.extensions, Mapping):
-            object.__setattr__(
-                self,
-                "extensions",
-                _freeze_evaluation_mapping(
-                    self.extensions,
-                    path="evaluation request extensions",
-                ),
-            )
-        _non_empty_string(self.source, path="evaluation request source")
-
-
-@dataclass(frozen=True, slots=True)
 class EvaluationResult:
     """Portable immutable facts published by one evaluation run."""
 
@@ -326,7 +300,6 @@ class EvaluationRunOutcome:
     artifacts: Mapping[str, Path]
     manifest_path: Path
     result_path: Path
-    gate_result_path: Path | None = None
 
     def __post_init__(self) -> None:
         _non_empty_string(self.evaluation_id, path="evaluation outcome evaluation_id")
@@ -342,10 +315,9 @@ class EvaluationRunOutcome:
             "output_dir",
             "manifest_path",
             "result_path",
-            "gate_result_path",
         ):
             path_value = cast(object, getattr(self, path_name))
-            if path_value is not None and not isinstance(path_value, Path):
+            if not isinstance(path_value, Path):
                 raise TypeError(f"evaluation outcome {path_name} must be a Path")
         object.__setattr__(
             self,
@@ -396,7 +368,6 @@ class EvaluationRunOutcome:
 __all__ = [
     "EvaluationResult",
     "EvaluationRunOutcome",
-    "EvaluationRunRequest",
     "EvaluationStatus",
     "EvaluationStepOutput",
     "Evaluator",

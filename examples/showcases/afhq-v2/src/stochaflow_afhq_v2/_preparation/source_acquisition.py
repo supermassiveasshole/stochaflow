@@ -33,7 +33,7 @@ from .safe_file import (
     _regular_file_state,
     _require_open_file_path_identity,
     _sha256_stream,
-    _write_descriptor,
+    write_descriptor,
 )
 
 _HASH_CHUNK_BYTES = 8 * 1024 * 1024
@@ -113,7 +113,7 @@ def _stage_verified_source_file(
         with os.fdopen(source_descriptor, "rb", closefd=False) as source_stream:
             while chunk := source_stream.read(_HASH_CHUNK_BYTES):
                 digest.update(chunk)
-                _write_descriptor(staging_descriptor, chunk)
+                write_descriptor(staging_descriptor, chunk)
                 copied += len(chunk)
         source_after = os.fstat(source_descriptor)
         if (

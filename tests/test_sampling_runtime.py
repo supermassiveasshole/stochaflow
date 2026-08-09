@@ -10,6 +10,7 @@ import torch
 import yaml
 from torch import nn
 
+from stochaflow.inference.extensions import merge_checkpoint_extension_config
 from stochaflow.processes import DiscreteGaussianProcess, Process
 from stochaflow.sampling import (
     DDPMAncestralSampler,
@@ -1240,7 +1241,7 @@ def test_sample_plugins_are_additive_to_checkpoint_requirements() -> None:
     raw["extensions"] = {"plugins": None}
     checkpoint_config = load_config_dict(raw)
 
-    resolved, added = sampling_runtime._prepare_sample_extensions(
+    resolved, added = merge_checkpoint_extension_config(
         checkpoint_config,
         additions=("extra", "required", "extra"),
         expected_plugin_names=("required",),
@@ -1261,7 +1262,7 @@ def test_sample_config_rejects_unproven_checkpoint_config_plugins() -> None:
         ExtensionIdentityError,
         match=r"unproven config-only plugin.*config-only",
     ):
-        sampling_runtime._prepare_sample_extensions(
+        merge_checkpoint_extension_config(
             checkpoint_config,
             additions=("request-added",),
             expected_plugin_names=("provenance-required",),
@@ -1275,7 +1276,7 @@ def test_sample_plugin_additions_do_not_mutate_checkpoint_config() -> None:
     checkpoint_config = load_config_dict(raw)
     before = checkpoint_config.to_dict()
 
-    resolved, added = sampling_runtime._prepare_sample_extensions(
+    resolved, added = merge_checkpoint_extension_config(
         checkpoint_config,
         additions=("extra",),
         expected_plugin_names=(),

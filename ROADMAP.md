@@ -1,176 +1,132 @@
 # Stochaflow Roadmap
 
-> Status: Active
+> Document status: Maintained
 >
-> Horizon: pre-1.0 product development
+> Product horizon: pre-1.0
 >
-> Last reviewed: 2026-08-02
+> In progress: None
+>
+> Next: None
+>
+> Last reviewed: 2026-08-09
 
-This is the canonical high-level product roadmap. It communicates direction,
-priority, dependencies, and promotion evidence. It is not a statement that a
-feature is implemented; current behavior is defined by [`SPEC.md`](SPEC.md),
-[`README.md`](README.md), public documentation, and tests.
+This is the canonical product roadmap. It records what is finished, what may be
+chosen next, and what is intentionally waiting. It does not define current
+behavior. Current contracts live in [`SPEC.md`](SPEC.md),
+[`ARCHITECTURE.md`](ARCHITECTURE.md), the public documentation, and tests. The
+subordinate [development roadmap](docs/development/development-priority-roadmap.md)
+explains dependencies and links to design plans, but cannot select work.
 
-The detailed maintainer schedule, estimates, and cross-plan decisions live in
-[`docs/development/development-priority-roadmap.md`](docs/development/development-priority-roadmap.md).
-That document must remain consistent with this roadmap, but implementation-stage
-plans do not override this high-level ordering.
-
-## Status Vocabulary
+## Status model
 
 | Status | Meaning |
 | --- | --- |
-| Done | Contract, implementation, tests, and stable documentation are closed. |
-| Active | Currently receiving implementation or experiment effort. |
-| Next | Directly follows the active milestone when its entry gate is satisfied. |
-| Planned | Direction is accepted, but it is not on the immediate critical path. |
-| Decision-gated | Work starts only after named evidence demonstrates the need. |
-| Deferred | Intentionally outside the current execution horizon. |
+| Done | Implemented, tested, documented, and maintained. |
+| In progress | The one selected item being implemented now. |
+| Next | The approved item that directly follows the work in progress. |
+| Candidate | A realistic choice for the next product decision, with no schedule yet. |
+| Parked | A preserved longer-term idea whose start condition has not been met. |
 
-Roadmap status is evidence-based. A design document or partial implementation
-does not make a milestone Done.
+Every item has one status. A detailed plan, experiment, estimate, example, or
+reusable building block does not make a complete user workflow Done.
 
-## Product Direction
+## Product direction
 
-Stochaflow is building a trustworthy composition layer for generative-model
-research workflows. The product sequence is:
+Stochaflow is a trustworthy composition and execution layer for generative-model
+research. It develops one small but complete user path at a time. A new task
+must include the monitoring, checkpoint-backed inference, and formal Evaluation
+needed to validate that task. Core does not add task branches or broad public
+abstractions before a real use case needs them.
+
+## Done: maintained capabilities
+
+| Capability | What is available now |
+| --- | --- |
+| Operations | Independent `init`, `train`, `sample`, and `evaluate` commands with separate configuration ownership. |
+| Pixel Gaussian | Training and sampling with fixed or learned-range variance, DDPM/DDIM, CFG, and maintained MNIST/AFHQ paths. |
+| Training | Builder/Plan/Strategy composition, one automatic optimizer lifecycle, EMA, checkpoints, diagnostics, structured outcomes, and validation-only selection. |
+| Sampling | Checkpoint-v12 inference loading, a complete sample configuration for each run, and atomic output publication. |
+| Evaluation | Checkpoint and prediction-file subjects, live/offline execution, exact completeness, immutable results, FID/KID, and epoch-end checkpoint selection. |
+| Data and extensions | Verified data artifacts, task-level DataBuilders, explicit extension activation, and stable public extension contracts. |
+
+Some useful pieces are narrower than a complete workflow. The repository has a
+super-resolution data recipe and example, but not a maintained built-in
+super-resolution workflow. Frozen-teacher distillation can be expressed through
+extension contracts, but there is no built-in path that trains a teacher and
+hands its output to a distillation run. Structured training outcomes exist, but
+a public library call and multi-step workflow description do not.
+
+## Selected work
+
+The header records the only scheduling values: no work is currently in progress
+and no next item has been selected. The completed pixel-space work is waiting
+for a maintainer product decision.
+Maintenance, bug fixes, and documentation cleanup may continue without choosing
+a new product direction.
+
+## Candidate: realistic next choices
+
+| Direction | First complete user result | Start when | Detail |
+| --- | --- | --- | --- |
+| Built-in recipes and explicit multi-step workflows | Discoverable task recipes plus one selected typed sequence; both `train -> export -> distill -> evaluate` and `generate -> super-resolution -> evaluate` remain preserved outcomes | One concrete task is selected | [Plan](docs/development/default-workflow-pipeline-support-plan.md) |
+| Super-resolution | A tested deterministic restoration workflow before a conditional Gaussian version | Data, metrics, output files, and Evaluation rules are agreed | [Plan](docs/development/super-resolution-workflow-support-plan.md) |
+| Consistency and distillation | One teacher/student task with correct target updates and formal results | A research case and Evaluation rules are selected | [Plan](docs/development/consistency-distillation-support-plan.md) |
+| Codec and latent diffusion | A frozen codec followed by AFHQ latent training, sampling, and Evaluation | The latent route is selected and codec assumptions are checked again | [Plan](docs/development/latent-diffusion-support-plan.md) |
+| Hydra training configuration | Readable reusable fresh-training configuration that still uses Stochaflow validation and execution | A selected product task needs composition beyond plain YAML and the shared single-run training call exists | [Plan](docs/development/hydra-configuration-composition-migration-plan.md) |
+
+## Parked: longer-term directions
+
+| Direction | Start when | Detail |
+| --- | --- | --- |
+| Stable Diffusion | Shared codec and latent production behavior is Done, then this direction is selected | [Plan](docs/development/stable-diffusion-component-native-support-plan.md) |
+| Sampling configuration review | Hydra training composition is Done and real sampling-call problems are observed | [Review](docs/development/sampling-request-config-refactor.md) |
+| Evaluation cache, speed, or comparison policy | Measurements show repeated reference cost, slow execution, or a real policy owner | [Decision record](docs/development/post-training-evaluation-support-plan.md) |
+| Extension import performance | Independent measurements show a user-visible import or activation problem | [Plan](docs/development/extension-import-boundary-and-activation-latency-plan.md) |
+| Distributed execution | A validated single-device workload misses measured capacity or time requirements | [Plan](docs/development/distributed-training-and-inference-support-plan.md) |
+| Automated model tuning | A stable objective, budget, Evaluation protocol, and reusable single-run library call exist | [Plan](docs/development/automated-model-tuning-plan.md) |
+| Broader artifact metadata, provenance, or capacity models | The metadata, provenance, or resource-evidence direction independently meets its own multi-producer or multi-consumer evidence requirement | [Proposal](docs/development/artifact-metadata-provenance-capacity-model-proposal.md) |
+| Broader data abstractions | Multiple data sources or task recipes need the same new extension behavior | [Done boundary record with reopen conditions](docs/development/data-layer-composition-boundary-review.md) |
+| New algorithm families | A complete use case proves that current family contracts cannot express it | [Specification](SPEC.md#16-future-compatible-directions) |
+| General workflow orchestrator | At least two stable multi-step workflows share the same control behavior and manual composition is a maintenance problem | [Plan](docs/development/general-workflow-orchestrator-plan.md) |
+
+## History
+
+The completed main path was:
 
 ```text
 pixel-space Gaussian foundation
-    -> formal evaluation foundation
-    -> epoch-end validation Evaluation and metric-selected checkpoints
-    -> pixel-space AFHQ learned-range-v quality closeout
-    -> roadmap re-decision
+    -> standalone Evaluation
+    -> epoch-end Evaluation and metric-selected checkpoints
+    -> AFHQ learned-range-v quality validation
+    -> current product decision
 ```
 
-The project deliberately develops one validated vertical slice before widening
-the platform surface.
+Detailed experiment numbers belong in the AFHQ public documentation and
+`CHANGELOG.md`, not in scheduling text. The retired **AFHQ-v2 Gaussian SNR
+loss-weighting experiment (gamma 1 versus gamma 0)** showed no verified benefit
+and is not a supported recipe. Any renewed SNR-weighting proposal needs a new
+product decision, a namespaced task recipe, and matched formal validation. Old
+plan identifiers are explained only in the
+[historical plan map](docs/development/notes/history/milestone-id-map.md).
 
-## Completed Foundation
+## When work becomes Done
 
-The following foundations are considered closed and should receive maintenance,
-not competing redesign:
+A major item becomes Done only when it has:
 
-- corrected canonical ADM topology and explicit checkpoint incompatibility;
-- independent train and sample configuration authority with strict checkpoint
-  semantics;
-- discrete Gaussian fixed and learned-range variance, hybrid VB, respaced
-  ancestral DDPM, DDIM, and learned-variance CFG handling;
-- task-neutral Metrics with Strategy channels and validation-only selection;
-- structured training outcomes and completed-run manifests;
-- standalone checkpoint Evaluation with explicit raw/EMA selection;
-- versioned prediction artifacts, exact sample completeness, streaming records,
-  and offline metric replay;
-- core FID/KID providers and a public class-aware AFHQ-v2 full-test profile;
-- a maintained real-AFHQ class-conditional training, sampling, and formal
-  Evaluation surface;
-- schema-v3 RTX 4090 capacity evidence for the default five-level,
-  105,197,187-parameter ADM and its measured production batch of 8 with
-  accumulation 4;
-- a maintained MNIST workflow and a class-aware AFHQ-v2 showcase contract.
-
-The former P2 experiment surface was retired after its controlled runs showed
-no verified benefit. It remains only as a development record and is not a
-supported training recipe or active product gate.
-
-## Completed Pixel-Space Closeout
-
-### AFHQ learned-range quality evidence
-
-The active branch closes ordinary pixel-space image generation with a coherent
-training, validation, and final-test workflow. The production quality candidate
-keeps the canonical ADM input/output-block graph, cosine Process, v-prediction, and
-data/optimizer budget, but jointly changes the default five-level
-`[1,1,2,3,4]` / 8x8 model to `[1,2,3,4]` / 16x16 and changes the variance head
-to learned range. It is therefore a topology-and-variance candidate, not an
-isolated learned-variance ablation or an exact epsilon-prediction IDDPM
-reproduction. P2 is intentionally absent.
-
-Repository merge evidence:
-
-- canonical FID/KID provider, preprocessing, reference, and protocol identity;
-- aggregate and class-aware AFHQ profiles with immutable result bundles;
-- deterministic live/offline parity and completeness failure tests;
-- target-device capacity evidence for the corrected ADM configuration;
-- epoch-end live Evaluation with immutable profile identity, exact completeness,
-  canonical validation metric keys, strict-resume state, and existing
-  `best.pt` monitor integration.
-
-Completed experiment evidence:
-
-- the maintained learned-range-v AFHQ recipe completed 200 epochs from random
-  initialization with zero skipped optimizer updates;
-- all 11 scheduled 900-example EMA validation Evaluations from epochs 100
-  through 200 completed with aggregate/per-class FID and KID, strict
-  completeness, and a preserved interval/final observation history;
-- validation aggregate FID selected epoch 190 (`best.pt`) at 25.757212, while
-  KID and per-class observations remained evidence without independent
-  selection authority;
-- the frozen EMA/DDPM-100/CFG-2 official-test Evaluation ran exactly once on
-  the selected checkpoint and all 1,467 official-test images, publishing
-  aggregate FID 20.247791 and KID mean 0.002929 with zero missing sample IDs;
-- the learned-range, fixed-variance current-ADM, and legacy-ADM results are
-  recorded with their protocol differences. They establish disclosed
-  end-to-end quality but not an isolated topology or variance effect.
-
-The candidate has its own bounded RTX 4090 evidence: 100,351,366 parameters,
-micro batch 8 / accumulation 4, 45.17 images/s, 10.455 GiB peak reserved memory,
-and zero non-finite observations across 25 measured optimizer updates. It
-retains 420 optimizer updates per epoch and 84,000 total updates. Training
-diagnostics run every 10 epochs with DDPM-100 and DDIM-50, while periodic
-checkpoints are retained every 50 epochs; those diagnostics remain observations
-and have no selection authority.
-
-## Current Decision Gate
-
-No implementation milestone is currently selected after the completed
-learned-range pixel-space evidence. Codec/latent diffusion, consistency methods,
-super-resolution, distillation, Stable Diffusion integration, and new algorithm
-families are neither `Next` nor `Planned`; they require a fresh roadmap decision
-after the published result is reviewed.
-
-If one of those tasks is later accepted, its first vertical slice must deliver
-training observability, checkpoint-backed inference, and task-appropriate
-formal Evaluation together. Core will not pre-implement task fields, branches,
-profiles, or public abstractions in anticipation of that decision. Detailed
-documents under `docs/development/` are parked design records, not active work
-or evidence of commitment.
-
-## Decision-Gated Work
-
-The following areas are valuable but must not displace the current vertical
-slice without their trigger evidence:
-
-| Area | Trigger |
-| --- | --- |
-| Distributed training or inference | A validated single-device workload cannot meet measured capacity or wall-clock requirements. |
-| Hyperparameter optimization | A stable objective, budget, and formal evaluation protocol exist. |
-| General workflow orchestration | At least two real workflows require the same lifecycle beyond explicit operation composition. |
-| Organization-wide provenance or capacity services | A second external consumer requires a shared contract beyond run-local evidence. |
-| New algorithm families | A concrete end-to-end use case demonstrates the required narrow contracts. |
-
-## Promotion Gates
-
-A major milestone is not Done until it has:
-
-1. a stable contract reflected in [`SPEC.md`](SPEC.md) when user-visible;
-2. architecture ownership reflected in
-   [`ARCHITECTURE.md`](ARCHITECTURE.md) when boundaries change;
-3. implementation through public built-in and extension paths;
-4. focused contract, failure, and independent-extension tests;
+1. a stable user-visible contract in `SPEC.md`;
+2. clear ownership in `ARCHITECTURE.md` when responsibilities change;
+3. implementation through the same public construction paths used by built-ins
+   and extensions;
+4. focused success, failure, and extension tests where relevant;
 5. stable user documentation and a maintained example where appropriate;
-6. an entry under [`CHANGELOG.md`](CHANGELOG.md) `Unreleased`;
-7. measured evidence for claims about quality, performance, or capacity.
+6. a `CHANGELOG.md` `Unreleased` entry; and
+7. measured evidence for quality, performance, or capacity claims.
 
-Hardware runs and long training are operational evidence. They must not be used
-to justify architecture shortcuts, but architecture completion must not be
-misrepresented as experimental proof.
+## Updating this roadmap
 
-## Updating This Roadmap
-
-- Update this file when product ordering, milestone state, or promotion evidence
-  changes.
-- Keep implementation details, engineering estimates, and active decision logs
-  in `docs/development/`.
-- Move stable behavior into public docs when a milestone closes.
+- Change this file only when product selection, ordering, status, or completion
+  evidence changes.
+- Keep implementation details in the owning development plan.
+- Keep exactly one In progress item and one Next item, or write `None`.
+- Preserve Candidate and Parked ideas until a maintainer reviews them.
 - Never use roadmap status as the sole evidence that code exists or works.

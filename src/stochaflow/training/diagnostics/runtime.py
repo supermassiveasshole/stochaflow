@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import random
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Any, cast
@@ -139,7 +139,12 @@ class SeedPolicy:
         ).to(device)
 
     @contextmanager
-    def fork_rng(self, device: torch.device, *, offset: int = 0):
+    def fork_rng(
+        self,
+        device: torch.device,
+        *,
+        offset: int = 0,
+    ) -> Generator[None, None, None]:
         """Run with a fixed seed and restore global RNG state on exit."""
 
         with preserve_global_rng_state(device):

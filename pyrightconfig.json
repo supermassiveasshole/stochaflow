@@ -71,6 +71,11 @@
   "useLibraryCodeForTypes": true,
   "reportMissingTypeStubs": "none",
   "reportPrivateImportUsage": "none",
+  "reportDeprecated": "error",
+  "reportUnusedClass": "error",
+  "reportUnusedFunction": "error",
+  "reportUnusedImport": "error",
+  "reportUnusedVariable": "error",
   "reportUnnecessaryIsInstance": "error",
   "reportUnsupportedDunderAll": "none"
 }

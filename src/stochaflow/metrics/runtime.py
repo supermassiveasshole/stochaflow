@@ -199,13 +199,4 @@ class MetricEngine:
         return self
 
 
-def _commit_prepared_metric_updates(
-    engine: MetricEngine,
-    updates: PreparedMetricUpdates,
-) -> None:
-    """Commit prepared payloads through the internal trusted runtime path."""
-
-    engine._update_prepared(updates)
-
-
 __all__ = ["MetricEngine", "MetricRuntimeError"]

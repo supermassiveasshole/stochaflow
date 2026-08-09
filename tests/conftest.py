@@ -4,11 +4,32 @@ from __future__ import annotations
 
 import multiprocessing
 import time
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, cast
 
 import pytest
+
+import stochaflow.utils.plugins as plugin_runtime
+
+
+@pytest.fixture
+def isolated_extension_activation_state() -> Generator[None, None, None]:
+    """Isolate one test from process-wide extension activation state."""
+
+    def reset() -> None:
+        with plugin_runtime._activation_lock:
+            plugin_runtime._activation_runtime.state = (
+                plugin_runtime.PluginActivationState.UNACTIVATED
+            )
+            plugin_runtime._activation_runtime.selection = None
+            plugin_runtime._activation_runtime.failure = None
+
+    reset()
+    try:
+        yield
+    finally:
+        reset()
 
 
 class MultiprocessingChild(Protocol):

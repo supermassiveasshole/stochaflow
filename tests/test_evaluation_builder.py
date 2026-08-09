@@ -11,18 +11,18 @@ import pytest
 import torch
 from torch import nn
 
+import stochaflow.evaluation as evaluation_api
 from stochaflow.evaluation import (
     EvaluationBuilder,
     EvaluationBuilderContext,
     EvaluationPlan,
     EvaluationProtocol,
+    EvaluationProtocolIdentity,
     EvaluationResult,
     EvaluationRunOutcome,
-    EvaluationRunRequest,
     EvaluationStepOutput,
     Evaluator,
     build_evaluation_plan,
-    load_evaluation_config_dict,
     validate_evaluation_plan,
 )
 from stochaflow.metrics import MetricSpec, MetricUpdate
@@ -76,6 +76,10 @@ class RecordingEvaluationBuilder(EvaluationBuilder):
             protocol=self.context.protocol,
             subject=self.context.subject,
             data_identity=self.context.data_identity,
+            protocol_identity=EvaluationProtocolIdentity(
+                providers={"opaque": {"name": "recording"}},
+                preprocessing={"axes": [0, 1]},
+            ),
         )
 
 
@@ -107,6 +111,11 @@ def protocol() -> EvaluationProtocol:
         expected_examples=2,
         strict_complete=True,
     )
+
+
+def test_evaluation_public_api_exports_protocol_identity() -> None:
+    assert "EvaluationProtocolIdentity" in evaluation_api.__all__
+    assert evaluation_api.EvaluationProtocolIdentity is EvaluationProtocolIdentity
 
 
 def build_recording_plan() -> tuple[
@@ -199,6 +208,31 @@ def test_builder_context_and_plan_mappings_are_deeply_read_only() -> None:
         nested_metric["other"] = 1
     with pytest.raises(TypeError):
         cast(dict[str, nn.Module], plan.modules)["other"] = nn.Linear(1, 1)
+    with pytest.raises(TypeError):
+        cast(dict[str, Any], plan.protocol_identity.providers)["other"] = {}
+    with pytest.raises(TypeError):
+        cast(dict[str, Any], plan.protocol_identity.preprocessing)["other"] = 1
+
+
+def test_protocol_identity_requires_explicit_nonempty_facts() -> None:
+    with pytest.raises(ValueError, match="providers must be non-empty"):
+        EvaluationProtocolIdentity(providers={}, preprocessing={"kind": "identity"})
+    with pytest.raises(ValueError, match="preprocessing must be non-empty"):
+        EvaluationProtocolIdentity(providers={"test": {}}, preprocessing={})
+    with pytest.raises(ValueError, match="duplicate metric provider"):
+        EvaluationProtocolIdentity(
+            providers={"test": {}},
+            preprocessing={"kind": "identity"},
+            metric_providers=("mean", "mean"),
+        )
+
+    identity = EvaluationProtocolIdentity(
+        providers={"test": {"revision": 1}},
+        preprocessing={"kind": "identity"},
+        dependencies=("Torch-Fidelity",),
+    )
+
+    assert identity.dependencies == ("torch-fidelity",)
 
 
 def test_builder_registry_and_return_contract_are_checked() -> None:
@@ -233,6 +267,10 @@ def test_builder_must_preserve_injected_composition_boundaries() -> None:
                 protocol=self.context.protocol,
                 subject=self.context.subject,
                 data_identity=self.context.data_identity,
+                protocol_identity=EvaluationProtocolIdentity(
+                    providers={"test": {"kind": "wrong-data"}},
+                    preprocessing={"kind": "identity"},
+                ),
             )
 
     catalog = RegistryCatalog()
@@ -260,6 +298,10 @@ def test_plan_validation_checks_evaluator_channels_and_reiterable_data() -> None
                 protocol=protocol(),
                 subject=object(),
                 data_identity={"dataset": "opaque"},
+                protocol_identity=EvaluationProtocolIdentity(
+                    providers={"test": {"kind": "missing-channel"}},
+                    preprocessing={"kind": "identity"},
+                ),
             )
         )
 
@@ -272,6 +314,10 @@ def test_plan_validation_checks_evaluator_channels_and_reiterable_data() -> None
                 protocol=protocol(),
                 subject=object(),
                 data_identity={"dataset": "opaque"},
+                protocol_identity=EvaluationProtocolIdentity(
+                    providers={"test": {"kind": "one-shot"}},
+                    preprocessing={"kind": "identity"},
+                ),
             )
         )
 
@@ -299,20 +345,7 @@ def test_step_output_validates_and_freezes_metric_groups() -> None:
         EvaluationStepOutput(1, ("sample",), (), measurements={"latency": float("nan")})
 
 
-def test_request_result_and_outcome_snapshot_portable_mappings(tmp_path: Path) -> None:
-    config = load_evaluation_config_dict(
-        {
-            "version": 1,
-            "name": "opaque-evaluation",
-            "purpose": "benchmark",
-            "subject": {"kind": "checkpoint", "path": "model.pt", "weights": "raw"},
-            "data": {"source": "checkpoint", "split": "validation"},
-            "evaluation": {"name": "opaque", "params": {}},
-            "metrics": [],
-            "protocol": {"id": "opaque-v1", "expected_examples": 1},
-        }
-    )
-    request = EvaluationRunRequest(config=config, extensions=object(), source="memory")
+def test_result_and_outcome_snapshot_portable_mappings(tmp_path: Path) -> None:
     subject = {"kind": "checkpoint", "weights": {"requested": "raw"}}
     result = EvaluationResult(
         schema_version=1,
@@ -340,11 +373,9 @@ def test_request_result_and_outcome_snapshot_portable_mappings(tmp_path: Path) -
         artifacts={"predictions": tmp_path / "predictions.jsonl"},
         manifest_path=tmp_path / "manifest.yaml",
         result_path=tmp_path / "result.json",
-        gate_result_path=None,
     )
     subject["weights"]["requested"] = "ema"
 
-    assert request.config is config
     assert result.subject["weights"]["requested"] == "raw"
     assert outcome.subject["weights"]["requested"] == "raw"
     with pytest.raises(TypeError):

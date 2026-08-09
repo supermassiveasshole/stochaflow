@@ -205,7 +205,9 @@ def _require_open_file_path_identity(
         raise PreparationError(f"{label} changed while it was in use: {canonical_path}")
 
 
-def _write_descriptor(descriptor: int, payload: bytes | memoryview) -> None:
+def write_descriptor(descriptor: int, payload: bytes | memoryview) -> None:
+    """Write an entire payload to an already validated file descriptor."""
+
     remaining = memoryview(payload)
     while remaining:
         written = os.write(descriptor, remaining)

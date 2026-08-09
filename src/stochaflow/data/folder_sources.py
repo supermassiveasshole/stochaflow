@@ -18,7 +18,6 @@ from stochaflow.data.artifacts import (
     DataSourceContext,
 )
 from stochaflow.data.image_contracts import (
-    IMAGE_DATA_SOURCES,
     ImageDataSource,
     ImageFilePair,
     ImageFileRecord,
@@ -154,7 +153,6 @@ def records_by_tree(
     }
 
 
-@IMAGE_DATA_SOURCES.register("image_folder")
 class ImageFolderDataSource(ImageDataSource):
     """Index an external image directory without copying its content."""
 
@@ -283,7 +281,6 @@ def pair_records(
     )
 
 
-@IMAGE_DATA_SOURCES.register("paired_image_folders")
 class PairedImageFolderDataSource(ImageDataSource):
     """Index aligned external HR/LR directories without copying content."""
 

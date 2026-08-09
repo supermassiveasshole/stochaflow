@@ -19,11 +19,11 @@ from ..sampler import (
     SamplingObservation,
     SamplingObserver,
 )
+from ._prediction_validation import validate_gaussian_prediction
 from .dynamics import (
     GaussianDenoisingDynamics,
     GaussianPrediction,
     GaussianTransition,
-    _validate_gaussian_prediction,
 )
 
 
@@ -118,7 +118,7 @@ class DDIMSampler(Sampler):
             raise ValueError("DDIM target times must lie in the process time range")
         if torch.any(target_times >= source_times):
             raise ValueError("DDIM target times must be smaller than source times")
-        prediction = _validate_gaussian_prediction(prediction, state=state)
+        prediction = validate_gaussian_prediction(prediction, state=state)
 
         if isinstance(process, SelectedPairGaussianProcess):
             snapshot = process.marginal_coefficient_snapshot(

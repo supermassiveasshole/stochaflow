@@ -553,9 +553,9 @@ data:
 sample plan 重放同一 AFHQ Metric，不加载 checkpoint、不构造模型、不再次执行
 SamplingBuilder 或原 DataBuilder，也不修改 producer artifact。
 
-早期 evaluator 的静态比较结果继续保留在仓库归档的开发记录中；可执行的 legacy
-evaluator 和其私有配置 schema 已退休。新的 benchmark 与报告都必须来自 public
-`stochaflow evaluate`。
+早期 evaluator 的退休结论保留在根 `ROADMAP.md`、`CHANGELOG.md` 与 Git 历史中；
+可执行的 legacy evaluator、私有配置 schema 和阶段性开发记录均已退出。新的 benchmark
+与报告都必须来自 public `stochaflow evaluate`。
 
 public runtime 在评估开始前认证稳定 checkpoint snapshot、execution device、quality
 provider 和严格 `DataArtifactBindings`。只有采样、metrics、prediction manifest、result

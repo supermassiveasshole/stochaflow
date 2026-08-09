@@ -37,10 +37,7 @@ from stochaflow.inference.checkpoint import (
 from stochaflow.inference.checkpoint import (
     resolve_checkpoint_path as _resolve_checkpoint_path,
 )
-from stochaflow.inference.extensions import (
-    merge_checkpoint_extension_config,
-    prepare_checkpoint_extension_plan,
-)
+from stochaflow.inference.extensions import prepare_checkpoint_extension_plan
 from stochaflow.inference.model import InferenceModelProvider
 from stochaflow.sampling.builder import (
     SamplingBuilderContext,
@@ -263,19 +260,6 @@ def resolve_sampling_inputs(
         recipe,
         sample_config_path,
         extension_plan,
-    )
-
-
-def _prepare_sample_extensions(
-    checkpoint: StochaflowConfig,
-    *,
-    additions: tuple[str, ...],
-    expected_plugin_names: tuple[str, ...],
-) -> tuple[StochaflowConfig, bool]:
-    return merge_checkpoint_extension_config(
-        checkpoint,
-        additions=additions,
-        expected_plugin_names=expected_plugin_names,
     )
 
 

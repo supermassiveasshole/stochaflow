@@ -20,7 +20,6 @@ from uuid import uuid4
 
 from stochaflow.data.artifact_io import (
     ArtifactFileSnapshot,
-    _same_complete_snapshot_metadata,
     cache_entry_exists,
     canonical_directory,
     create_cache_directory,
@@ -31,6 +30,7 @@ from stochaflow.data.artifact_io import (
     publish_cache_file,
     read_regular_file,
     remove_cache_directory,
+    same_complete_snapshot_metadata,
     scan_regular_files,
     write_cache_file,
 )
@@ -1832,7 +1832,7 @@ class DataArtifactStore:
             raise RuntimeError(
                 "data artifact load callback mutated its artifact"
             ) from exc
-        if not _same_complete_snapshot_metadata(
+        if not same_complete_snapshot_metadata(
             validated.snapshot,
             after_load,
         ):
