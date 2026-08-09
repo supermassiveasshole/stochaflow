@@ -13,6 +13,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = Path(__file__).resolve().parent
 ROOT_ROADMAP = PROJECT_ROOT / "ROADMAP.md"
 DEVELOPMENT_NOTES_ROOT = DOCS_ROOT / "development" / "notes"
+DEVELOPMENT_REVIEW_CANDIDATES_PATH = (
+    DOCS_ROOT / "development" / "historical-review-candidates.txt"
+)
+DEVELOPMENT_REVIEW_CANDIDATE_NAMES = tuple(
+    line.strip()
+    for line in DEVELOPMENT_REVIEW_CANDIDATES_PATH.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    if line.strip() and not line.startswith("#")
+)
+DEVELOPMENT_REVIEW_CANDIDATES = tuple(
+    f"development/{name}" for name in DEVELOPMENT_REVIEW_CANDIDATE_NAMES
+)
 REPOSITORY_BLOB_BASE = (
     "https://github.com/supermassiveasshole/stochaflow/blob/main/"
 )
@@ -50,6 +63,7 @@ html_search_language = "zh"
 exclude_patterns = [
     "_build",
     "development/notes/**",
+    *DEVELOPMENT_REVIEW_CANDIDATES,
     "Thumbs.db",
     ".DS_Store",
 ]

@@ -14,6 +14,9 @@ ROADMAP = PROJECT_ROOT / "ROADMAP.md"
 DEVELOPMENT_ROADMAP = DEVELOPMENT_ROOT / "development-priority-roadmap.md"
 DEVELOPMENT_INDEX = DEVELOPMENT_ROOT / "README.md"
 CONTENT_MAP = NOTES_ROOT / "document-restructure-content-map.md"
+HISTORICAL_REVIEW_CANDIDATES_PATH = (
+    DEVELOPMENT_ROOT / "historical-review-candidates.txt"
+)
 
 STATUS_TRANSLATIONS = {
     "已完成": "Done",
@@ -123,6 +126,18 @@ DEVELOPMENT_SELECTION_PATTERNS = {
 }
 
 
+def _historical_review_candidate_names() -> frozenset[str]:
+    """Return historical files awaiting a separate deletion decision."""
+
+    return frozenset(
+        line.strip()
+        for line in HISTORICAL_REVIEW_CANDIDATES_PATH.read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip() and not line.startswith("#")
+    )
+
+
 def _main_development_documents() -> tuple[Path, ...]:
     """Return reader-facing development documents, excluding the index."""
 
@@ -130,6 +145,7 @@ def _main_development_documents() -> tuple[Path, ...]:
         path
         for path in sorted(DEVELOPMENT_ROOT.glob("*.md"))
         if path.name != "README.md"
+        and path.name not in _historical_review_candidate_names()
     )
 
 
@@ -336,6 +352,27 @@ def test_development_index_links_and_classifies_every_main_document() -> None:
                 assert path in category_targets, (
                     f"{path}: missing from index category {status}"
                 )
+
+
+def test_historical_review_candidates_are_not_treated_as_main_plans() -> None:
+    """Keep unapproved historical deletions outside the reader-facing plan set."""
+
+    existing_names = {
+        path.name for path in DEVELOPMENT_ROOT.glob("*.md")
+    }
+    main_names = {path.name for path in _main_development_documents()}
+    assert existing_names <= {
+        "README.md",
+        *main_names,
+        *_historical_review_candidate_names(),
+    }
+
+    deletion_boundary = CONTENT_MAP.read_text(encoding="utf-8").split(
+        "## 删除边界",
+        1,
+    )[1]
+    for name in _historical_review_candidate_names():
+        assert f"`{name}`" in deletion_boundary
 
 
 def test_sphinx_navigation_reaches_roadmap_and_every_main_plan() -> None:

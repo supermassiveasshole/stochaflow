@@ -150,6 +150,9 @@ is unavailable.
 
 ### Fixed
 
+- Kept the four historical-document deletion review candidates out of Sphinx
+  publication and main-plan structural discovery until their separate deletion
+  batch is explicitly approved.
 - Aligned Pylance and repository Pyright diagnostics for deprecated overloads
   and unused declarations. Context-manager generators now use precise return
   types, cross-module helpers no longer masquerade as module-private dead code,

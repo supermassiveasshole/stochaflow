@@ -45,6 +45,15 @@ def test_sphinx_publishes_roadmap_and_reader_facing_development_plans() -> None:
     assert isinstance(exclude_patterns, list)
     assert "development/**" not in exclude_patterns
     assert "development/notes/**" in exclude_patterns
+    review_candidates = configuration["DEVELOPMENT_REVIEW_CANDIDATES"]
+    assert isinstance(review_candidates, tuple)
+    assert set(review_candidates) == {
+        "development/afhq-v2-checkpoint-cleanup-20260806.md",
+        "development/afhq-v2-learned-range-v-closeout.md",
+        "development/legacy-intel-macos-pytorch-test-lifecycle.md",
+        "development/p2-experiment-closeout.md",
+    }
+    assert set(review_candidates) <= set(exclude_patterns)
 
     rewrite_links = cast(
         Callable[..., str],

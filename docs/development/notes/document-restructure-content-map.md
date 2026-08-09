@@ -49,4 +49,12 @@
 ## 删除边界
 
 本轮不新增整份文档删除。工作树中已有的四份历史删除候选保持独立审阅；
-它们不属于本清单，也不得被当成 future-support 转移的目标。
+它们不属于主计划，也不得被当成 future-support 转移的目标：
+
+- `afhq-v2-checkpoint-cleanup-20260806.md`
+- `afhq-v2-learned-range-v-closeout.md`
+- `legacy-intel-macos-pytorch-test-lifecycle.md`
+- `p2-experiment-closeout.md`
+
+在维护者逐文件批准删除前，Sphinx 和主计划结构检查必须忽略这些文件；忽略不表示
+删除已经获批。

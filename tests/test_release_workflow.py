@@ -19,6 +19,16 @@ PUBLIC_TUTORIAL_PATHS = (
     PROJECT_ROOT / "docs" / "tutorials" / "custom-generation-family.md",
     PROJECT_ROOT / "docs" / "tutorials" / "reuse-gaussian-components.md",
 )
+HISTORICAL_REVIEW_CANDIDATES = frozenset(
+    PROJECT_ROOT / "docs" / "development" / line.strip()
+    for line in (
+        PROJECT_ROOT
+        / "docs"
+        / "development"
+        / "historical-review-candidates.txt"
+    ).read_text(encoding="utf-8").splitlines()
+    if line.strip() and not line.startswith("#")
+)
 REFERENCE_PROJECT_METADATA_PATHS = (
     PROJECT_ROOT
     / "examples"
@@ -296,6 +306,7 @@ def test_public_release_references_match_project_version() -> None:
             for path in (PROJECT_ROOT / "docs").rglob("*.md")
             if path.relative_to(PROJECT_ROOT / "docs").parts[:2]
             != ("development", "notes")
+            and path not in HISTORICAL_REVIEW_CANDIDATES
         ),
         *REFERENCE_PROJECT_METADATA_PATHS,
     )
