@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from stochaflow._builtin_activation import activate_sampling_component_builtins
 from stochaflow.families.gaussian.prediction import PredictionType
 from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
@@ -348,6 +349,7 @@ class SamplerPool:
         device: torch.device,
     ) -> None:
         del device
+        activate_sampling_component_builtins()
         self._samplers: dict[str, BoundSampler] = {}
         process = training_runtime.process
         dynamics = GaussianModelDynamics(
@@ -421,6 +423,7 @@ class ClassConditionalSamplerPool:
         device: torch.device,
     ) -> None:
         del device
+        activate_sampling_component_builtins()
         self._samplers: dict[str, ClassConditionalBoundSampler] = {}
         for profile in profiles:
             sampler_value = cast(

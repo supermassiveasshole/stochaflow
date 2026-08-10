@@ -12,8 +12,6 @@ import torch
 from torch import nn
 from torchmetrics import Metric
 
-from stochaflow.utils.registry import REGISTRIES
-
 _INCEPTION_FEATURES = frozenset({64, 192, 768, 2048})
 
 
@@ -295,7 +293,6 @@ class ReferenceImageDistributionMetric(Metric):
             super().reset()
 
 
-@REGISTRIES.metrics.register("fid")
 class FrechetInceptionDistanceMetric(ReferenceImageDistributionMetric):
     """Compute scalar Frechet inception distance from real/fake image updates."""
 
@@ -332,7 +329,6 @@ class FrechetInceptionDistanceMetric(ReferenceImageDistributionMetric):
         return _scalar_tensor(self.metric.compute(), metric_name="FID")
 
 
-@REGISTRIES.metrics.register("kid")
 class KernelInceptionDistanceMetric(ReferenceImageDistributionMetric):
     """Compute KID mean and standard deviation from real/fake image updates."""
 

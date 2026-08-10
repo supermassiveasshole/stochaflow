@@ -3936,6 +3936,39 @@ def test_resolve_training_inputs_uses_checkpoint_config_for_strict_resume(
     assert inputs.config_overlays == []
 
 
+def test_training_preflight_activates_builtins_before_external_extensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    original_builtins = experiment_runner.activate_training_builtins
+    original_extensions = experiment_runner.activate_extensions_for_cli
+
+    def record_builtins() -> None:
+        events.append("builtins")
+        original_builtins()
+
+    def record_extensions(*args: Any, **kwargs: Any) -> Any:
+        events.append("extensions")
+        return original_extensions(*args, **kwargs)
+
+    monkeypatch.setattr(
+        experiment_runner,
+        "activate_training_builtins",
+        record_builtins,
+    )
+    monkeypatch.setattr(
+        experiment_runner,
+        "activate_extensions_for_cli",
+        record_extensions,
+    )
+
+    args = _args()
+    args.config = MNIST_TRAIN_CONFIG
+    experiment_runner._resolve_training_inputs(args)
+
+    assert events[:2] == ["builtins", "extensions"]
+
+
 def test_strict_resume_rejects_old_source_schema_before_runtime_side_effects(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

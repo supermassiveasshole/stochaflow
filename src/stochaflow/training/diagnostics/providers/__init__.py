@@ -1,4 +1,4 @@
-"""Built-in diagnostic providers registered on import."""
+"""Built-in Diagnostic provider classes activated by the training operation."""
 
 from .artifacts import (
     ReconstructionPanelProvider,

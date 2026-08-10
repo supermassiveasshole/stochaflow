@@ -13,7 +13,6 @@ from stochaflow.utils.registry import REGISTRIES
 REGISTRIES.metrics.require_base(Metric)
 
 
-@REGISTRIES.metrics.register("mean")
 class ErrorOnNanMeanMetric(TorchMeanMetric):
     """Aggregate a mean while failing immediately on NaN inputs."""
 
@@ -27,7 +26,6 @@ class ErrorOnNanMeanMetric(TorchMeanMetric):
         super().__init__(nan_strategy="error", **kwargs)
 
 
-@REGISTRIES.metrics.register("mse")
 class SingleOutputMeanSquaredError(MeanSquaredError):
     """Compute scalar MSE with fixed single-output semantics."""
 
@@ -49,7 +47,6 @@ class SingleOutputMeanSquaredError(MeanSquaredError):
         )
 
 
-@REGISTRIES.metrics.register("mae")
 class SingleOutputMeanAbsoluteError(MeanAbsoluteError):
     """Compute scalar MAE with fixed single-output semantics."""
 

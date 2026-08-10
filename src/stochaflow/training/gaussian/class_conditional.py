@@ -18,7 +18,6 @@ from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
 )
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
-from stochaflow.utils.registry import REGISTRIES
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
 from .strategy import GaussianTrainingStrategyBase
@@ -137,7 +136,6 @@ class ClassConditionalGaussianDenoisingTrainingStrategy(
         return _class_conditional_batch(batch, num_classes=self.num_classes)[0]
 
 
-@REGISTRIES.training_builders.register("class_conditional_gaussian_denoising")
 class ClassConditionalGaussianDenoisingTrainingBuilder(TrainingBuilder):
     """Assemble standard class-conditional Gaussian training."""
 

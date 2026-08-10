@@ -11,6 +11,7 @@ import torch
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
+from stochaflow._builtin_activation import activate_training_component_builtins
 from stochaflow.utils.config import ComponentConfig, LRSchedulerConfig
 from stochaflow.utils.registry import REGISTRIES, RegistryError
 
@@ -24,7 +25,6 @@ def _validate_positive_int(value: object, *, name: str) -> int:
     return value
 
 
-@REGISTRIES.lr_schedulers.register("warmup_cosine")
 class WarmupCosineLR(LRScheduler):
     """Linearly warm up before decaying with a half cosine."""
 
@@ -152,6 +152,7 @@ def _validate_zero_argument_step(component: object, *, kind: str, name: str) -> 
 def build_optimizer(config: ComponentConfig, parameters: Any) -> Optimizer:
     """Build an optimizer while injecting the selected trainable parameters."""
 
+    activate_training_component_builtins()
     constructor_params = deepcopy(config.params)
     if "params" in constructor_params:
         raise RegistryError("optimizer.params cannot override runtime parameter 'params'")
@@ -173,6 +174,7 @@ def build_lr_scheduler(
 ) -> LRScheduler | None:
     """Build a zero-argument-step scheduler while injecting its optimizer."""
 
+    activate_training_component_builtins()
     if config is None:
         return None
     constructor_params = deepcopy(config.params)

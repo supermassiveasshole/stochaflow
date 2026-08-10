@@ -29,12 +29,13 @@ from stochaflow.utils.config import (
 )
 from stochaflow.utils.factory import (
     build_diagnostics,
+    build_logger,
     build_lr_scheduler,
     build_optimizer,
     build_training_components,
     resolve_device,
 )
-from stochaflow.utils.logging import ExperimentLogger, NullLogger
+from stochaflow.utils.logging import ExperimentLogger, LocalLogger, NullLogger
 from stochaflow.utils.registry import REGISTRIES, RegistryError
 
 BUILTIN_MNIST_TRAIN_CONFIG = Path(
@@ -220,6 +221,27 @@ def test_build_training_components_from_mnist_config() -> None:
         is components.precision.grad_scaler
     )
     assert isinstance(components.trainer, Trainer)
+
+
+def test_logger_runtime_identity_overrides_backend_params(tmp_path: Path) -> None:
+    config = load_config(BUILTIN_MNIST_TRAIN_CONFIG)
+    config.experiment.name = "runtime-name"
+    config.experiment.output_dir = str(tmp_path / "runtime-output")
+    backend = config.logging.backends[0]
+    config.logging.backends[:] = [backend]
+    backend.params["output_dir"] = str(tmp_path / "configured-output")
+    backend.params["run_name"] = "configured-name"
+
+    logger = build_logger(
+        config.logging,
+        experiment=config.experiment,
+        resolved_config=config,
+    )
+
+    assert isinstance(logger, LocalLogger)
+    assert logger.run_dir == tmp_path / "runtime-output"
+    assert "runtime-name" in logger.text_logger.name
+    logger.close()
 
 
 def test_factory_injects_bf16_runtime_into_trainer_and_checkpoint_manager() -> None:

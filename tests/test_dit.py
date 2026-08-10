@@ -6,6 +6,7 @@ import pytest
 import torch
 from torch import nn
 
+from stochaflow._builtin_activation import activate_model_builtins
 from stochaflow.models import (
     ClassConditionalDenoiser,
     DiT,
@@ -38,6 +39,7 @@ def _release_final_zero_initialization(model: DiT) -> None:
 
 
 def test_dit_is_registered_and_implements_class_conditioning() -> None:
+    activate_model_builtins()
     model = _tiny_dit()
 
     assert REGISTRIES.models.resolve("dit") is DiT

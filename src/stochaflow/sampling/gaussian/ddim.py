@@ -10,7 +10,6 @@ from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
     SelectedPairGaussianProcess,
 )
-from stochaflow.utils.registry import REGISTRIES
 
 from ..dynamics import GenerativeDynamics
 from ..sampler import (
@@ -27,7 +26,6 @@ from .dynamics import (
 )
 
 
-@REGISTRIES.samplers.register("ddim")
 class DDIMSampler(Sampler):
     """Run arbitrary descending discrete Gaussian state schedules."""
 

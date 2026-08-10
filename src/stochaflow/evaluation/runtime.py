@@ -15,6 +15,10 @@ from typing import Any, cast
 import torch
 from torchmetrics import Metric
 
+from stochaflow._builtin_activation import (
+    activate_evaluation_builtins,
+    require_evaluation_builtins,
+)
 from stochaflow.data import DataArtifactBindings, DataLoaders, build_data_loaders
 from stochaflow.evaluation._cleanup import (
     CleanupAction,
@@ -148,6 +152,7 @@ def resolve_evaluation_inputs(
         expected_provenance=subject_inputs.extension_provenance,
         plan_factory=prepare_extension_plugins,
     )
+    activate_evaluation_builtins()
     return ResolvedEvaluationInputs(
         config=config,
         config_path=source,
@@ -199,6 +204,7 @@ def run_resolved_evaluation(
         raise TypeError("evaluation inputs must be ResolvedEvaluationInputs")
     if not isinstance(cast(object, extensions), ResolvedExtensions):
         raise TypeError("evaluation extensions must be ResolvedExtensions")
+    require_evaluation_builtins()
     require_resolved_extensions_for_plan(inputs.extension_plan, extensions)
     config = inputs.config
     training_config = extensions.config

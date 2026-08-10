@@ -15,7 +15,6 @@ from stochaflow.models.adm_blocks import (
     zero_adm_module,
 )
 from stochaflow.models.embeddings import sinusoidal_timestep_embedding
-from stochaflow.utils.registry import REGISTRIES
 
 
 def _validate_integer_sequence(
@@ -64,7 +63,6 @@ class ADMConditionedSequential(nn.Module):
         return hidden
 
 
-@REGISTRIES.models.register("adm_unet")
 class ADMUNet(nn.Module):
     """Predict denoising targets with the canonical ADM input/output graph."""
 

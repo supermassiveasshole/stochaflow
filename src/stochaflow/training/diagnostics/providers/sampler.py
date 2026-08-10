@@ -8,10 +8,8 @@ from stochaflow.training.diagnostics.contracts import (
     SamplerMetricContext,
     SamplerMetricProvider,
 )
-from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 
 
-@DIAGNOSTIC_PROVIDERS.sampler_metrics.register("sample_statistics")
 class SampleStatisticsProvider(SamplerMetricProvider):
     """Measure value distribution, saturation, and batch diversity."""
 
@@ -32,7 +30,6 @@ class SampleStatisticsProvider(SamplerMetricProvider):
         }
 
 
-@DIAGNOSTIC_PROVIDERS.sampler_metrics.register("sampling_performance")
 class SamplingPerformanceProvider(SamplerMetricProvider):
     """Report wall-clock sampling duration and throughput."""
 

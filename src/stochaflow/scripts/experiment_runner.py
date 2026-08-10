@@ -14,6 +14,8 @@ from typing import Any, cast
 
 import yaml
 
+from stochaflow._builtin_activation import activate_training_builtins
+from stochaflow._component_factory import build_model
 from stochaflow.data import (
     DataArtifactBindings,
     DataLoaders,
@@ -25,6 +27,11 @@ from stochaflow.scripts.artifact_reporting import (
     RichArtifactVerificationReporter,
 )
 from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
+from stochaflow.scripts.training_arguments import add_training_arguments
+from stochaflow.training.composition import (
+    TrainingComponents,
+    build_training_components,
+)
 from stochaflow.training.epoch_evaluation import (
     EvaluationBackedEpochValidator,
 )
@@ -52,15 +59,9 @@ from stochaflow.utils.config import (
     load_config,
     load_config_dict,
 )
-from stochaflow.utils.device import validate_execution_device
-from stochaflow.utils.factory import (
-    TrainingComponents,
-    build_model,
-    build_training_components,
-    resolve_device,
-)
+from stochaflow.utils.device import resolve_device, validate_execution_device
 from stochaflow.utils.iterables import try_length
-from stochaflow.utils.logging import resolve_local_log_path
+from stochaflow.utils.logging_paths import resolve_local_log_path
 from stochaflow.utils.plugins import (
     ExtensionPluginProvenance,
     ExtensionSelectionPolicy,
@@ -193,114 +194,6 @@ class ResolvedTrainingInputs:
     checkpoint: CheckpointState | None
     startup_cwd: Path
     config_overlays: list[dict[str, Any]]
-
-
-def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    """Add common config-driven experiment options to a parser."""
-
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Path to the experiment config file.",
-    )
-    input_group.add_argument(
-        "--resume",
-        type=Path,
-        default=None,
-        metavar="CHECKPOINT",
-        help=(
-            "Strictly resume from a checkpoint file or run directory using its "
-            "saved training config and state."
-        ),
-    )
-    parser.add_argument(
-        "--observability-config",
-        type=Path,
-        default=None,
-        help=(
-            "Apply a diagnostics/logging-only YAML overlay while strictly "
-            "resuming from --resume."
-        ),
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        help="Override trainer.device for this run.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
-        help="Override experiment.output_dir for this run.",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=None,
-        help="Override trainer.num_epochs from the config.",
-    )
-    parser.add_argument(
-        "--limit-batches",
-        type=int,
-        default=None,
-        help="Maximum number of training batches per epoch.",
-    )
-    parser.add_argument(
-        "--limit-validation-batches",
-        type=int,
-        default=None,
-        help="Maximum number of validation batches per epoch.",
-    )
-    parser.add_argument(
-        "--limit-test-batches",
-        type=int,
-        default=None,
-        help="Maximum number of test batches for the final evaluation.",
-    )
-    parser.add_argument(
-        "--deterministic",
-        action="store_true",
-        help="Enable deterministic Torch behavior where supported.",
-    )
-    progress_group = parser.add_mutually_exclusive_group()
-    progress_group.add_argument(
-        "--progress",
-        action="store_true",
-        help=(
-            "Enable Rich progress bars, overriding the saved config when "
-            "resuming."
-        ),
-    )
-    progress_group.add_argument(
-        "--no-progress",
-        action="store_true",
-        help=(
-            "Disable Rich progress bars, overriding the saved config when "
-            "resuming."
-        ),
-    )
-    parser.add_argument(
-        "--artifact-verification-workers",
-        type=int,
-        default=None,
-        metavar="N",
-        help=(
-            "Override source.materialization.verification_workers for artifact "
-            "hashing (1-8); defaults to the config or min(8, logical CPUs)."
-        ),
-    )
-    parser.add_argument(
-        "--force-extension-version-mismatch",
-        action="store_true",
-        help=(
-            "Accept extension version differences after identity validation; "
-            "does not bypass checkpoint state compatibility."
-        ),
-    )
-    return parser
 
 
 def _make_timestamped_output_dir(base_output_dir: str) -> tuple[str, Path]:
@@ -1126,6 +1019,7 @@ def _resolve_training_inputs(args: argparse.Namespace) -> ResolvedTrainingInputs
         )
         config_source = "checkpoint"
 
+    activate_training_builtins()
     extensions = activate_extensions_for_cli(
         plan,
         force_version_mismatch=getattr(
@@ -2256,3 +2150,6 @@ def run_experiment_from_args(args: argparse.Namespace) -> TrainingRunOutcome:
         data_artifacts=data_artifacts,
         config_overlays=inputs.config_overlays,
     )
+
+
+__all__ = ["add_training_arguments", "run_experiment_from_args"]

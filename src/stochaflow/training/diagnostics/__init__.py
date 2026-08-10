@@ -1,6 +1,6 @@
 """Composable training diagnostics and provider extension interfaces."""
 
-# Import built-ins before the orchestrator can resolve its default provider set.
+# Expose provider implementations for the explicit built-in activation owner.
 from . import providers as providers
 from .class_conditional_quality import (
     ClassConditionalDiffusionQualityDiagnostic,

@@ -34,8 +34,7 @@ from stochaflow.training.diagnostics.runtime import (
     gaussian_training_runtime,
 )
 from stochaflow.training.strategy import ReferenceImageBatchSemantics
-from stochaflow.utils.logging import ExperimentLogger
-from stochaflow.utils.registry import REGISTRIES
+from stochaflow.utils.logging_contracts import ExperimentLogger
 
 
 class UnconditionalGaussianQualityFamily:
@@ -116,7 +115,6 @@ class UnconditionalGaussianQualityFamily:
         return {}
 
 
-@REGISTRIES.diagnostics.register("diffusion_quality")
 class DiffusionQualityDiagnostic(TrainingDiagnostic):
     """Coordinate unconditional Gaussian quality providers."""
 

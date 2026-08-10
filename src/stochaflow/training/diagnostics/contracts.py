@@ -11,7 +11,7 @@ from typing import Any, Protocol
 import torch
 
 from stochaflow.sampling.sampler import SamplingObservation
-from stochaflow.utils.logging import ExperimentLogger
+from stochaflow.utils.logging_contracts import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
 
 

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
-from importlib import import_module
 
 from torchmetrics import Metric
 
+from stochaflow._builtin_activation import activate_metric_builtins
 from stochaflow.metrics.config import MetricSpec, validate_metric_spec
 from stochaflow.utils.registry import REGISTRIES, Registry
 
@@ -23,13 +23,13 @@ def build_metric(
     """Construct one metric under an explicit or inherited registry authority."""
 
     validate_metric_spec(spec)
-    import_module("stochaflow.metrics.builtin")
-    import_module("stochaflow.metrics.reference")
     selected_registry = registry
     if selected_registry is None:
         selected_registry = _METRIC_REGISTRY_AUTHORITY.get()
     if selected_registry is None:
         selected_registry = REGISTRIES.metrics
+    if selected_registry is REGISTRIES.metrics:
+        activate_metric_builtins()
     token = _METRIC_REGISTRY_AUTHORITY.set(selected_registry)
     try:
         metric = selected_registry.create(spec.name, **spec.params)

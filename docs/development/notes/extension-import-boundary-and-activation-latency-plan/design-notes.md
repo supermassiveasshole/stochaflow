@@ -5,7 +5,7 @@
 > [`extension-import-boundary-and-activation-latency-plan.md`](../../extension-import-boundary-and-activation-latency-plan.md)
 > 为准。
 >
-> 最后核对：2026-08-09。以下旧测量只能作为重新测量的起点。
+> 最后核对：2026-08-10。以下旧测量只能作为重新测量的起点。
 
 ## 已完成的正确性边界
 
@@ -39,13 +39,13 @@ Rich、Trainer 和 diagnostics，约 2.37 秒/2737 modules；`utils.plugins` 约
 如果测量证明当前模块把这四件事绑在一起，才考虑按实际依赖拆开。拆分后 built-in 仍必须
 经过与外部 extension 相同的 Registry 校验，不能获得隐藏捷径。
 
-### Public facade import closure
+### 公开入口会连带导入什么
 
 检查稳定导出是否能延迟重型 implementation import，同时保持 object identity、`__all__`、
 typing、文档和异常行为。只有测量证明用户可见收益时才考虑 `__getattr__` 或模块拆分。
 
 旧计划还保留了两种更具体的候选做法：按 training、sampling、evaluation 等能力提供较小的
-public facade；或者使用明确的 lazy-export map 延迟导入实现。两者都必须保证同一个 public
+公开入口；或者使用明确的 lazy-export map 延迟导入实现。两者都必须保证同一个 public
 对象无论从哪个支持入口导入，Python object identity 不变，类型检查和 Sphinx 也能看到同一
 API。proxy class 或隐式兜底查找不能替代真实对象。
 
@@ -60,20 +60,24 @@ Trainer 或 task code，可以把 contract 移到窄模块，具体实现留在�
 区分读取 entry-point metadata、导入选中 extension、注册 built-ins 和构造具体组件。Built-in
 不能获得绕过公开 Registry contract 的隐藏路径；排序必须确定。
 
-旧计划提出的“显式 first-party bootstrap”是指：由一个明确函数按固定顺序注册 Stochaflow
-built-ins，外部 aggregate activation 仍只导入用户选择的 entry points。它不表示把注册推迟
-到第一次 lookup，也不允许插件 discovery 自动导入所有已安装 package。
+旧计划提出的“显式 first-party bootstrap”已经作为架构维护完成：一个进程级的唯一负责位置按
+Training、Sampling、Evaluation 的固定范围和顺序注册 Stochaflow built-ins，重复和重叠调用
+幂等，重入、导入失败、类型错误或名称冲突会把当前进程标记为不能继续初始化。外部 Extension 激活
+仍只导入用户选择的 entry points，并且必须发生在对应 built-in 范围成功之后。Sampling 和
+Evaluation 的新进程导入闭包不再包含 Trainer、Diagnostics 或 Logger；CLI 只在用户真正选择
+`train` 后导入训练 runner。
 
-注册入口是否应从当前跨领域组装代码中移出，是[运行组装与 Diagnostic 边界备忘](../runtime-composition-and-diagnostic-boundary-refactor-plan.md)
-记录的架构问题。那份备忘只要求入口可定位、顺序确定、幂等且失败行为明确。本附录只在真实
-启动时间测量指向这里时，判断 facade、catalog、CLI operation 或注册动作是否需要延迟；显式
-初始化不自动等于 lazy initialization，也不自动证明启动更快。
+这些结果完成了[运行组装与 Diagnostic 边界备忘](../runtime-composition-and-diagnostic-boundary-refactor-plan.md)
+中的初始化责任，但没有把注册推迟到第一次 lookup，也没有允许 plugin discovery 自动导入
+所有已安装 package。本附录仍只在真实启动时间测量指向这里时，判断公开入口、单个
+符号、Registry 总清单、CLI 子命令或注册动作是否需要延迟；显式初始化不自动等于 lazy
+initialization，也不自动证明启动更快。
 
 旧计划还提出过一个更窄的 Registry 拆分候选。当前 `Registry` 已支持
 `expected_type_resolver`：某个 Registry 可以在第一次真正注册组件时解析并缓存自己需要的
 基类，同时仍在注册边界立即拒绝错误类型。这不是延迟加载组件，也不能把错误拖到运行期。
 
-如果重新测量证明创建全局 Registry catalog 会因为 Torch、optimizer 或其他不相关 contract
+如果重新测量证明创建全局 Registry 总清单会因为 Torch、optimizer 或其他不相关 contract
 产生明显导入成本，才继续评审下面的拆分：
 
 - 把通用 `Registry` / `RegistryError` primitive 放进不依赖 Torch 的窄模块；

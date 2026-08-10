@@ -7,6 +7,7 @@ from typing import cast
 
 import torch
 
+from stochaflow._builtin_activation import activate_process_builtins
 from stochaflow.utils.config import ComponentConfig
 from stochaflow.utils.registry import REGISTRIES
 
@@ -19,7 +20,6 @@ from .noise_schedules.base import GaussianScales
 from .noise_schedules.discrete_vp import DiscreteVPSchedule
 
 
-@REGISTRIES.processes.register("discrete_gaussian")
 class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
     r"""Model-free discrete VP Gaussian process with fixed coefficients."""
 
@@ -34,6 +34,7 @@ class DiscreteGaussianProcess(DiscreteGaussianDenoisingProcess):
 
     def __init__(self, schedule: ComponentConfig | dict[str, object]) -> None:
         super().__init__()
+        activate_process_builtins()
         declaration = self._coerce_schedule(schedule)
         instance = REGISTRIES.noise_schedules.create(
             declaration.name, **declaration.params

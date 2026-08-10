@@ -33,6 +33,7 @@ from stochaflow.evaluation import (
     run_evaluation,
     run_resolved_evaluation,
 )
+from stochaflow.evaluation import runtime as evaluation_runtime
 from stochaflow.metrics import MetricUpdate
 from stochaflow.scripts.cli import main
 from stochaflow.training.ema import ExponentialMovingAverage
@@ -706,6 +707,44 @@ def test_resolved_evaluation_rejects_swapped_activation_receipt(
         )
 
     assert not output_dir.exists()
+
+
+def test_evaluation_activates_builtins_before_external_extensions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    checkpoint = _write_checkpoint(tmp_path / "subject.pt")
+    config = _write_evaluation_config(tmp_path / "evaluation.yaml", checkpoint)
+    events: list[str] = []
+    original_builtins = evaluation_runtime.activate_evaluation_builtins
+    original_extensions = evaluation_runtime.activate_extension_plugins
+
+    def record_builtins() -> None:
+        events.append("builtins")
+        original_builtins()
+
+    def record_extensions(*args: Any, **kwargs: Any) -> Any:
+        events.append("extensions")
+        return original_extensions(*args, **kwargs)
+
+    monkeypatch.setattr(
+        evaluation_runtime,
+        "activate_evaluation_builtins",
+        record_builtins,
+    )
+    monkeypatch.setattr(
+        evaluation_runtime,
+        "activate_extension_plugins",
+        record_extensions,
+    )
+
+    evaluation_runtime.run_evaluation(
+        config,
+        output_dir=tmp_path / "ordered-evaluation",
+        device_name="cpu",
+    )
+
+    assert events[:2] == ["builtins", "extensions"]
 
 
 def test_strict_evaluation_requires_actual_data_artifact_bindings(

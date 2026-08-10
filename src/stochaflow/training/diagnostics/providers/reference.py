@@ -13,7 +13,6 @@ import torch
 
 from stochaflow.training.diagnostics.config import ReferencePipelineConfig
 from stochaflow.training.diagnostics.contracts import ReferenceMetricProvider
-from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 from stochaflow.training.diagnostics.runtime import (
     BoundSampler,
     SeedPolicy,
@@ -28,7 +27,6 @@ def _quality_dependency_error(metric: str) -> RuntimeError:
     )
 
 
-@DIAGNOSTIC_PROVIDERS.reference_metrics.register("fid")
 class FIDReferenceMetricProvider(ReferenceMetricProvider):
     """TorchMetrics Fréchet inception distance adapter."""
 
@@ -80,7 +78,6 @@ class FIDReferenceMetricProvider(ReferenceMetricProvider):
         self.metric.reset()
 
 
-@DIAGNOSTIC_PROVIDERS.reference_metrics.register("kid")
 class KIDReferenceMetricProvider(ReferenceMetricProvider):
     """TorchMetrics kernel inception distance adapter."""
 

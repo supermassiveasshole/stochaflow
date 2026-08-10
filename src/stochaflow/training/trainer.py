@@ -63,7 +63,7 @@ from stochaflow.utils.checkpoint import (
 from stochaflow.utils.config import validate_training_monitor_key
 from stochaflow.utils.device import move_module_to_device
 from stochaflow.utils.iterables import try_length
-from stochaflow.utils.logging import ExperimentLogger, NullLogger
+from stochaflow.utils.logging_contracts import ExperimentLogger, NullLogger
 from stochaflow.utils.seed import preserve_global_rng_state
 
 

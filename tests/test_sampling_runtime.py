@@ -10,6 +10,7 @@ import torch
 import yaml
 from torch import nn
 
+from stochaflow._builtin_activation import activate_process_builtins
 from stochaflow.inference.extensions import merge_checkpoint_extension_config
 from stochaflow.processes import DiscreteGaussianProcess, Process
 from stochaflow.sampling import (
@@ -561,6 +562,7 @@ def _checkpoint(
     process_config = raw.get("process")
     if process_config is not None:
         assert isinstance(process_config, dict)
+        activate_process_builtins()
         process = cast(
             Process,
             REGISTRIES.processes.create(
@@ -676,6 +678,47 @@ def test_resolved_sampling_rejects_swapped_activation_receipt(
         )
 
     assert not output_dir.exists()
+
+
+def test_sampling_activates_builtins_before_external_extensions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    checkpoint = _checkpoint(
+        tmp_path / "checkpoint.pt",
+        _raw_config(recipe_name="stage3_no_shape"),
+    )
+    events: list[str] = []
+    original_builtins = sampling_runtime.activate_sampling_builtins
+    original_extensions = sampling_runtime.activate_extension_plugins
+
+    def record_builtins() -> None:
+        events.append("builtins")
+        original_builtins()
+
+    def record_extensions(*args: Any, **kwargs: Any) -> Any:
+        events.append("extensions")
+        return original_extensions(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sampling_runtime,
+        "activate_sampling_builtins",
+        record_builtins,
+    )
+    monkeypatch.setattr(
+        sampling_runtime,
+        "activate_extension_plugins",
+        record_extensions,
+    )
+
+    run_sampling(
+        checkpoint=checkpoint,
+        config_path=checkpoint.with_suffix(".sample.yaml"),
+        output_dir=tmp_path / "ordered-sampling",
+        device_name="cpu",
+    )
+
+    assert events[:2] == ["builtins", "extensions"]
 
 
 def test_custom_builder_runs_once_without_shape(tmp_path: Path) -> None:

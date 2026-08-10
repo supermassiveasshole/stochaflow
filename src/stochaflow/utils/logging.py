@@ -3,40 +3,20 @@
 import importlib
 import json
 import logging
-from abc import ABC, abstractmethod
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image
 from torch.utils.tensorboard import SummaryWriter
 
-from stochaflow.utils.registry import REGISTRIES
-
-
-def resolve_local_log_path(
-    output_dir: str | Path,
-    filename: object,
-    *,
-    field: str,
-) -> Path:
-    """Resolve one local logger filename without permitting path escape."""
-
-    if not isinstance(filename, str) or not filename:
-        raise ValueError(f"local logger {field} must be a non-empty string")
-    posix = PurePosixPath(filename)
-    windows = PureWindowsPath(filename)
-    if (
-        posix.is_absolute()
-        or windows.is_absolute()
-        or len(posix.parts) != 1
-        or len(windows.parts) != 1
-        or filename in {".", ".."}
-    ):
-        raise ValueError(
-            f"local logger {field} must be a filename within the run directory"
-        )
-    return Path(output_dir) / filename
+from stochaflow.utils.logging_contracts import (
+    CompositeLogger,
+    ExperimentLogger,
+    NullLogger,
+)
+from stochaflow.utils.logging_paths import resolve_local_log_path
+from stochaflow.utils.torch_logging import configure_torch_logging
 
 
 def _normalize_scalar(value: Any) -> int | float | str | bool:
@@ -78,105 +58,6 @@ def _sanitize_wandb_key(name: str) -> str:
     return key
 
 
-class ExperimentLogger(ABC):
-    """Observation-only interface for experiment metric and artifact logging.
-
-    Logger instances, open files, and backend writers are runtime resources, not
-    checkpoint state. Every training invocation constructs and closes its own
-    logger resources in that invocation's output directory.
-    """
-
-    @abstractmethod
-    def log_config(self, config: dict[str, Any]) -> None:
-        """Record a resolved experiment configuration."""
-
-    @abstractmethod
-    def log_metrics(self, metrics: dict[str, Any], *, step: int) -> None:
-        """Record a flat metrics payload at a given global step."""
-
-    def log_text(self, tag: str, text: str, *, step: int | None = None) -> None:
-        """Record textual information when the backend supports it."""
-
-        del tag, text, step
-
-    def log_image(
-        self,
-        tag: str,
-        path: str | Path,
-        *,
-        step: int,
-        caption: str | None = None,
-    ) -> None:
-        """Record an image artifact when the backend supports it."""
-
-        del tag, path, step, caption
-
-    @abstractmethod
-    def close(self) -> None:
-        """Flush and close backend resources."""
-
-
-REGISTRIES.loggers.require_base(ExperimentLogger)
-
-
-class NullLogger(ExperimentLogger):
-    """No-op logger used when logging is intentionally disabled."""
-
-    def log_config(self, config: dict[str, Any]) -> None:
-        del config
-
-    def log_metrics(self, metrics: dict[str, Any], *, step: int) -> None:
-        del metrics, step
-
-    def log_image(
-        self,
-        tag: str,
-        path: str | Path,
-        *,
-        step: int,
-        caption: str | None = None,
-    ) -> None:
-        del tag, path, step, caption
-
-    def close(self) -> None:
-        return None
-
-
-class CompositeLogger(ExperimentLogger):
-    """Fan-out logger that forwards events to multiple backends."""
-
-    def __init__(self, backends: list[ExperimentLogger]) -> None:
-        self.backends = backends
-
-    def log_config(self, config: dict[str, Any]) -> None:
-        for backend in self.backends:
-            backend.log_config(config)
-
-    def log_metrics(self, metrics: dict[str, Any], *, step: int) -> None:
-        for backend in self.backends:
-            backend.log_metrics(metrics, step=step)
-
-    def log_text(self, tag: str, text: str, *, step: int | None = None) -> None:
-        for backend in self.backends:
-            backend.log_text(tag, text, step=step)
-
-    def log_image(
-        self,
-        tag: str,
-        path: str | Path,
-        *,
-        step: int,
-        caption: str | None = None,
-    ) -> None:
-        for backend in self.backends:
-            backend.log_image(tag, path, step=step, caption=caption)
-
-    def close(self) -> None:
-        for backend in self.backends:
-            backend.close()
-
-
-@REGISTRIES.loggers.register("local")
 class LocalLogger(ExperimentLogger):
     """Structured local logger with human-readable text logs and JSONL metrics."""
 
@@ -265,7 +146,6 @@ class LocalLogger(ExperimentLogger):
             self.text_logger.removeHandler(handler)
 
 
-@REGISTRIES.loggers.register("tensorboard")
 class TensorBoardLogger(ExperimentLogger):
     """TensorBoard backend for scalar and text summaries."""
 
@@ -314,7 +194,6 @@ class TensorBoardLogger(ExperimentLogger):
         self.writer.close()
 
 
-@REGISTRIES.loggers.register("wandb")
 class WandbLogger(ExperimentLogger):
     """Weights & Biases backend for experiment tracking."""
 
@@ -381,31 +260,13 @@ class WandbLogger(ExperimentLogger):
             self.run.finish()
 
 
-def configure_torch_logging(settings: dict[str, Any] | None) -> None:
-    """Apply optional ``torch._logging`` runtime diagnostics configuration."""
-
-    if not settings:
-        return
-
-    try:
-        torch_logging = importlib.import_module("torch._logging")
-    except ImportError as exc:
-        raise RuntimeError("torch._logging is not available in this PyTorch build") from exc
-
-    set_logs = getattr(torch_logging, "set_logs", None)
-    if set_logs is None:
-        raise RuntimeError(
-            "torch._logging.set_logs is not available in this PyTorch build"
-        )
-    if not callable(set_logs):
-        raise TypeError("torch._logging.set_logs must be callable")
-
-    converted: dict[str, Any] = {}
-    for name, value in settings.items():
-        if isinstance(value, str):
-            upper = value.upper()
-            if hasattr(logging, upper):
-                converted[name] = getattr(logging, upper)
-                continue
-        converted[name] = value
-    set_logs(**converted)
+__all__ = [
+    "CompositeLogger",
+    "ExperimentLogger",
+    "LocalLogger",
+    "NullLogger",
+    "TensorBoardLogger",
+    "WandbLogger",
+    "configure_torch_logging",
+    "resolve_local_log_path",
+]

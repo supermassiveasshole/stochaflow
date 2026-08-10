@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import torch
 
+from stochaflow._builtin_activation import activate_sampling_component_builtins
 from stochaflow.families.gaussian import split_gaussian_model_output
 from stochaflow.models.conditioning import (
     ClassConditionalDenoiser,
@@ -70,13 +71,13 @@ class ClassConditionalEvaluationCounts:
     unconditional_branches: int = 0
 
 
-@REGISTRIES.sampling_builders.register("class_conditional_denoising")
 class ClassConditionalDenoisingBuilder(SamplingBuilder):
     """Generate ordered class allocations with DDPM/DDIM-compatible CFG."""
 
     def run(self) -> SamplingOutput:
         """Compose conditional model adaptation with existing Gaussian solvers."""
 
+        activate_sampling_component_builtins()
         process = self.context.process
         if not isinstance(process, DiscreteGaussianDenoisingProcess):
             raise TypeError(

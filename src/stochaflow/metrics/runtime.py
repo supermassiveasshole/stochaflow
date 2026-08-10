@@ -9,6 +9,7 @@ from typing import cast
 import torch
 from torchmetrics import Metric
 
+from stochaflow._builtin_activation import activate_metric_builtins
 from stochaflow.metrics.config import (
     METRIC_TAG_SEGMENT_PATTERN,
     MetricSpec,
@@ -91,6 +92,8 @@ class MetricEngine:
             raise TypeError("metric engine specs must be a sequence")
         if not isinstance(cast(object, registry), Registry):
             raise TypeError("metric engine registry must be a Registry")
+        if registry is REGISTRIES.metrics:
+            activate_metric_builtins()
         metrics: dict[str, Metric] = {}
         channels: dict[str, list[str]] = {}
         for index, spec in enumerate(specs):

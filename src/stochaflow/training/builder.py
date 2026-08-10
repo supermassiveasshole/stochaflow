@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 
 from torch import nn
 
+from stochaflow._builtin_activation import activate_training_component_builtins
 from stochaflow.processes.base import Process
 from stochaflow.training.strategy import TrainingStrategy
 from stochaflow.utils.config import ComponentConfig
@@ -109,6 +110,8 @@ def build_training_plan(
 ) -> TrainingPlan:
     """Construct and validate one registered TrainingBuilder result."""
 
+    if registries is REGISTRIES:
+        activate_training_component_builtins()
     context = TrainingBuilderContext(
         params=declaration.params,
         primary_model=primary_model,

@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import torch
 
+from stochaflow._builtin_activation import activate_sampling_component_builtins
 from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
     LearnedRangeGaussianVarianceProcess,
@@ -165,13 +166,13 @@ class StandardDenoisingObserver:
         )
 
 
-@REGISTRIES.sampling_builders.register("standard_denoising")
 class StandardDenoisingBuilder(SamplingBuilder):
     """Fixed-shape unconditional denoising with a registered sampler."""
 
     def run(self) -> SamplingOutput:
         """Build the prior, dynamics, sampler, observer, and generated batches."""
 
+        activate_sampling_component_builtins()
         config = self._parse_params(self.context.params)
         process = self.context.process
         if not isinstance(process, DiscreteGaussianDenoisingProcess):

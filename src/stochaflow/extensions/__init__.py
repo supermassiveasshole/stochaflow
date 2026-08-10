@@ -123,7 +123,7 @@ from stochaflow.utils.config import (
     ComponentConfig,
     ConfigError,
 )
-from stochaflow.utils.logging import ExperimentLogger
+from stochaflow.utils.logging_contracts import ExperimentLogger
 from stochaflow.utils.plugins import (
     ExtensionActivationError,
     ExtensionActivationPlan,

@@ -6,8 +6,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from stochaflow.utils.registry import REGISTRIES
-
 
 @runtime_checkable
 class PerSampleObjective(Protocol):
@@ -47,7 +45,6 @@ def validate_per_sample_loss(
     return value
 
 
-@REGISTRIES.objectives.register("mse")
 class MSEObjective(nn.Module):
     """Task-neutral mean-squared-error objective."""
 

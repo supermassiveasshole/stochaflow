@@ -2,12 +2,9 @@
 
 import torch
 
-from stochaflow.utils.registry import REGISTRIES
-
 from .discrete_vp import TabulatedDiscreteVPSchedule
 
 
-@REGISTRIES.noise_schedules.register("linear_beta")
 class LinearBetaSchedule(TabulatedDiscreteVPSchedule):
     """Build a discrete VP path from linearly interpolated betas."""
 

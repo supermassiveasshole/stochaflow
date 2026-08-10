@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Sequence
+from importlib import import_module
 from pathlib import Path
 
 from stochaflow.evaluation import run_evaluation
@@ -11,11 +12,8 @@ from stochaflow.sampling.runtime import (
     run_resolved_sampling,
 )
 from stochaflow.scripts.branding import print_ascii_art_logo
-from stochaflow.scripts.experiment_runner import (
-    add_training_arguments,
-    run_experiment_from_args,
-)
 from stochaflow.scripts.extensions_cli import activate_extensions_for_cli
+from stochaflow.scripts.training_arguments import add_training_arguments
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -120,7 +118,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
     if args.command == "train":
-        run_experiment_from_args(args)
+        experiment_runner = import_module(
+            "stochaflow.scripts.experiment_runner"
+        )
+        experiment_runner.run_experiment_from_args(args)
         return
     if args.command == "init":
         try:

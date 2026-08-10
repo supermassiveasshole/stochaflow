@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional
 
+from stochaflow._builtin_activation import activate_model_builtins
 from stochaflow.models.adm_blocks import (
     ADMAttentionBlock,
     ADMResidualBlock,
@@ -221,6 +222,7 @@ def test_adm_tiny_forward_and_input_gradient_match_pinned_upstream_fixture() -> 
 
 
 def test_adm_unet_is_registered_and_exposes_conditional_capabilities() -> None:
+    activate_model_builtins()
     model = _tiny_adm_unet()
 
     assert REGISTRIES.models.resolve("adm_unet") is ADMUNet

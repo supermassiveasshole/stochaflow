@@ -8,6 +8,18 @@ from torch import nn
 _MPS_UNSUPPORTED_DTYPES = frozenset({torch.float64, torch.complex128})
 
 
+def resolve_device(device_name: str) -> torch.device:
+    """Resolve a configured device name into one concrete Torch device."""
+
+    if device_name == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    return torch.device(device_name)
+
+
 def move_module_to_device[ModuleT: nn.Module](
     module: ModuleT,
     device: torch.device | str,
@@ -60,4 +72,4 @@ def validate_execution_device(device: torch.device | str) -> None:
             raise ValueError("MPS execution supports only device index 0")
 
 
-__all__ = ["move_module_to_device", "validate_execution_device"]
+__all__ = ["move_module_to_device", "resolve_device", "validate_execution_device"]

@@ -4,7 +4,7 @@
 >
 > Applies to: the current source tree
 >
-> Last reviewed: 2026-08-09
+> Last reviewed: 2026-08-10
 
 This document defines the stable ownership, dependency, and composition model
 of Stochaflow. It explains how the product contract in [`SPEC.md`](SPEC.md) is
@@ -358,6 +358,33 @@ Registries provide stable selection points, not a universal service locator.
 Each registry has a documented construction and lifecycle contract. Extension
 distributions activate explicitly through entry points before configuration
 resolution.
+
+Stochaflow-owned built-ins have one process-wide activation owner in
+`stochaflow._builtin_activation`. Importing a component facade defines classes
+but does not write built-in names into registries. After an operation has
+successfully prepared its inputs, it activates a fixed scope before importing
+any selected Extension code: training activates Data, Metrics, Models,
+Processes, Sampling, Training, Diagnostics, and Logger components; sampling
+activates only Models, Processes, and Sampling; evaluation activates Data,
+Metrics, Models, Processes, and Sampling. Evaluation does not invent a built-in
+`EvaluationBuilder`.
+
+Activation uses one reentrant process lock, a completed-module set, and a
+terminal failure state. Repeated, overlapping, and concurrent scope requests
+are idempotent. Reentry, import failure, wrong-base registration, or a name
+conflict poisons activation for the process: the first cause is retained and
+later calls require a process restart. Registry writes that occurred before a
+failure are not rolled back, so no operation may continue from partial state.
+Resolved execution checks the completed scope without importing modules.
+
+Shared checkpoint reconstruction depends on the narrow internal
+`stochaflow._component_factory`, which constructs only registered Model,
+Process, and Objective declarations. Complete training runtime assembly belongs
+to `stochaflow.training.composition`. The old `stochaflow.utils.factory`
+functions remain compatibility forwards, but framework operation code does not
+depend on them. The CLI also keeps training runtime imports inside training
+dispatch, so parsing or running sampling and evaluation does not import Trainer
+or training Diagnostics.
 
 Extension discovery and provenance preflight are separate from activation.
 Preflight resolves entry-point name, canonical distribution, version, and pure

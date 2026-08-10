@@ -9,7 +9,6 @@ from stochaflow.metrics import MetricUpdate
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
 from stochaflow.training.objectives import compute_objective
 from stochaflow.training.strategy import TrainingStrategy, TrainStepOutput
-from stochaflow.utils.registry import REGISTRIES
 
 
 class SupervisedTrainingStrategy(TrainingStrategy):
@@ -53,7 +52,6 @@ class SupervisedTrainingStrategy(TrainingStrategy):
         )
 
 
-@REGISTRIES.training_builders.register("supervised")
 class SupervisedTrainingBuilder(TrainingBuilder):
     """Assemble the built-in supervised strategy."""
 

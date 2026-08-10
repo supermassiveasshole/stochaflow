@@ -33,8 +33,7 @@ from stochaflow.training.diagnostics.runtime import (
     SeedPolicy,
     class_conditional_gaussian_training_runtime,
 )
-from stochaflow.utils.logging import ExperimentLogger
-from stochaflow.utils.registry import REGISTRIES
+from stochaflow.utils.logging_contracts import ExperimentLogger
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,7 +256,6 @@ class ClassConditionalGaussianQualityFamily:
         }
 
 
-@REGISTRIES.diagnostics.register("class_conditional_diffusion_quality")
 class ClassConditionalDiffusionQualityDiagnostic(TrainingDiagnostic):
     """Run label-aligned reconstruction and CFG sampler diagnostics."""
 

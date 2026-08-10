@@ -1,7 +1,7 @@
 """Utility primitives.
 
-Heavy runtime builders live in ``stochaflow.utils.factory`` and should be
-imported from that module directly to avoid package-level import cycles.
+Operation-owned runtime composition lives outside this package. The historical
+``stochaflow.utils.factory`` module remains only as a compatibility forward.
 """
 
 from .checkpoint import CheckpointManager, CheckpointState, LoadedCheckpoint
@@ -20,7 +20,7 @@ from .config import (
     load_config_dict,
     load_sample_config,
 )
-from .logging import ExperimentLogger
+from .logging_contracts import ExperimentLogger
 from .plugins import (
     EXTENSION_ENTRY_POINT_GROUP,
     ExtensionActivationError,

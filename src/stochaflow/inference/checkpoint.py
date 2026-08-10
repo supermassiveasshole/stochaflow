@@ -12,6 +12,11 @@ from typing import Any, Required, TypedDict, cast
 import torch
 from torch import nn
 
+from stochaflow._builtin_activation import (
+    activate_model_builtins,
+    activate_process_builtins,
+)
+from stochaflow._component_factory import build_model, build_process
 from stochaflow.processes.base import Process
 from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
@@ -27,7 +32,6 @@ from stochaflow.utils.config import (
     load_config_dict,
 )
 from stochaflow.utils.device import move_module_to_device
-from stochaflow.utils.factory import build_model, build_process
 from stochaflow.utils.sampling_recipe import (
     SamplingRecipe,
     sampling_recipe_from_dict,
@@ -229,6 +233,7 @@ def build_checkpointed_process(
     state = payload.get("process_state_dict")
     if not isinstance(state, dict):
         raise TypeError("checkpoint process_state_dict must be a mapping")
+    activate_process_builtins()
     process = build_process(config.process)
     validate_module_state_dict_compatibility(
         process,
@@ -259,6 +264,8 @@ def build_inference_model_provider(
     ema = cast(object, payload.get("ema_model_state_dict"))
     if ema is not None and not isinstance(ema, dict):
         raise TypeError("checkpoint ema_model_state_dict must be a mapping")
+    if model_factory is build_model:
+        activate_model_builtins()
     return InferenceModelProvider(
         model_factory=lambda: model_factory(config.model),
         raw_state_dict=raw,
@@ -282,12 +289,15 @@ def build_inference_asset_provider(
         Mapping[str, Mapping[str, object]],
         payload.get("inference_asset_state_dicts", {}),
     )
-    return InferenceAssetProvider(
+    provider = InferenceAssetProvider(
         descriptors=descriptors,
         state_dicts=state_dicts,
         device=device,
         model_factory=build_model,
     )
+    if descriptors:
+        activate_model_builtins()
+    return provider
 
 
 __all__ = [

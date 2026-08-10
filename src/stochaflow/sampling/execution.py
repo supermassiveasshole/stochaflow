@@ -8,6 +8,7 @@ from typing import cast
 
 import torch
 
+from stochaflow._builtin_activation import activate_sampling_component_builtins
 from stochaflow.sampling.builder import (
     SamplingBuilder,
     SamplingBuilderContext,
@@ -28,6 +29,8 @@ def execute_sampling_builder(
 
     if not isinstance(cast(object, registry), Registry):
         raise TypeError("sampling builder registry must be a Registry")
+    if registry is REGISTRIES.sampling_builders:
+        activate_sampling_component_builtins()
     builder_value = cast(object, registry.create(builder_name, context))
     if not isinstance(builder_value, SamplingBuilder):
         raise TypeError(

@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from torch.utils.data import DataLoader, Dataset
 
+from stochaflow._builtin_activation import activate_data_builtins
 from stochaflow.data.artifact_io import MAX_ARTIFACT_VERIFICATION_WORKERS
 from stochaflow.data.artifact_selection import (
     DataArtifactSelectionSession,
@@ -203,6 +204,8 @@ def build_data_loaders(
 ) -> DataLoaders:
     """Construct and validate one registered DataBuilder."""
 
+    if registries is REGISTRIES:
+        activate_data_builtins()
     registries.data_builders.require_base(DataBuilder)
     with capture_data_artifact_selections() as artifact_selection:
         builder_context = DataBuilderContext(
@@ -299,7 +302,6 @@ def _wrap_image_partitions(
     return train, validation, test
 
 
-@REGISTRIES.data_builders.register("image")
 class ImageDataBuilder(DataBuilder):
     """Standard single-source image training recipe."""
 
@@ -371,7 +373,6 @@ class ImageDataBuilder(DataBuilder):
         )
 
 
-@REGISTRIES.data_builders.register("class_labeled_image")
 class ClassLabeledImageDataBuilder(DataBuilder):
     """Class-conditioned recipe with a derived per-class holdout.
 
@@ -484,7 +485,6 @@ class ClassLabeledImageDataBuilder(DataBuilder):
         )
 
 
-@REGISTRIES.data_builders.register("super_resolution")
 class SuperResolutionDataBuilder(DataBuilder):
     """Paired or on-the-fly bicubic image super-resolution recipe."""
 
@@ -626,7 +626,6 @@ def _wrap_multi_resolution(
     )
 
 
-@REGISTRIES.data_builders.register("multi_resolution_image")
 class MultiResolutionImageDataBuilder(DataBuilder):
     """Multi-source image recipe with bucket-homogeneous dynamic batches."""
 

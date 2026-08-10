@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import torch
 
+from stochaflow._builtin_activation import activate_sampling_component_builtins
 from stochaflow.sampling.grid import (
     save_image_grid,
     save_trajectory_gif,
@@ -135,7 +136,6 @@ def _tensor_trajectory(
         raise ValueError("trajectory batches must share compatible shapes") from exc
 
 
-@REGISTRIES.sampling_artifact_writers.register("tensor")
 class TensorSamplingArtifactWriter(SamplingArtifactWriter):
     """Save generated tensors and optional trajectories with ``torch.save``."""
 
@@ -151,7 +151,6 @@ class TensorSamplingArtifactWriter(SamplingArtifactWriter):
         return artifacts
 
 
-@REGISTRIES.sampling_artifact_writers.register("image")
 class ImageSamplingArtifactWriter(SamplingArtifactWriter):
     """Validate NCHW samples and write image grids and trajectory animation."""
 
@@ -222,6 +221,8 @@ def write_sampling_artifacts(
 ) -> dict[str, Path]:
     """Run declared writers and enforce their artifact-result contract."""
 
+    if registries is REGISTRIES:
+        activate_sampling_component_builtins()
     registries.sampling_artifact_writers.require_base(SamplingArtifactWriter)
     context.output_dir.mkdir(parents=True, exist_ok=True)
     output_root = context.output_dir.resolve(strict=True)

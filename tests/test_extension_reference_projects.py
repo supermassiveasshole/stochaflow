@@ -579,6 +579,96 @@ def test_reference_project_wheels_have_isolated_entry_points(
         }
 
 
+def test_installed_core_wheel_preserves_runtime_composition_boundaries(
+    installed_reference_environment: FixtureInstalledReferenceEnvironment,
+) -> None:
+    """Exercise each built-in scope from the installed core wheel."""
+
+    installed = installed_reference_environment
+    with zipfile.ZipFile(installed.wheels["stochaflow"]) as archive:
+        members = set(archive.namelist())
+    assert {
+        "stochaflow/_builtin_activation.py",
+        "stochaflow/_component_factory.py",
+        "stochaflow/training/composition.py",
+        "stochaflow/scripts/training_arguments.py",
+        "stochaflow/utils/logging_contracts.py",
+        "stochaflow/utils/logging_paths.py",
+        "stochaflow/utils/torch_logging.py",
+    } <= members
+    script = r"""
+from pathlib import Path
+import sys
+
+mode = sys.argv[1]
+environment_root = Path(sys.argv[2]).resolve()
+
+import stochaflow
+from stochaflow import _builtin_activation as activation
+from stochaflow.utils.registry import REGISTRIES
+
+assert Path(stochaflow.__file__).resolve().is_relative_to(environment_root)
+
+if mode == "parser":
+    from stochaflow.scripts.cli import build_argument_parser
+    build_argument_parser()
+    assert activation._activation_runtime.completed_modules == set()
+elif mode == "sampling":
+    activation.activate_sampling_builtins()
+    assert activation._activation_runtime.completed_modules == set(
+        activation.SAMPLING_BUILTIN_MODULES
+    )
+    assert REGISTRIES.models.names() == ("adm_unet", "dit", "unet")
+    assert REGISTRIES.processes.names() == ("discrete_gaussian",)
+    assert REGISTRIES.samplers.names() == ("ddim", "ddpm")
+    assert REGISTRIES.training_builders.names() == ()
+    assert REGISTRIES.loggers.names() == ()
+elif mode == "evaluation":
+    activation.activate_evaluation_builtins()
+    assert activation._activation_runtime.completed_modules == set(
+        activation.EVALUATION_BUILTIN_MODULES
+    )
+    assert REGISTRIES.data_builders.names() == (
+        "class_labeled_image", "image", "multi_resolution_image",
+        "super_resolution",
+    )
+    assert REGISTRIES.metrics.names() == ("fid", "kid", "mae", "mean", "mse")
+    assert REGISTRIES.training_builders.names() == ()
+    assert REGISTRIES.evaluation_builders.names() == ()
+    assert REGISTRIES.loggers.names() == ()
+elif mode == "training":
+    activation.activate_training_builtins()
+    assert activation._activation_runtime.completed_modules == set(
+        activation.TRAINING_BUILTIN_MODULES
+    )
+    assert REGISTRIES.training_builders.names() == (
+        "class_conditional_gaussian_denoising", "gaussian_denoising",
+        "supervised",
+    )
+    assert REGISTRIES.diagnostics.names() == (
+        "class_conditional_diffusion_quality", "diffusion_quality",
+    )
+    assert REGISTRIES.loggers.names() == ("local", "tensorboard", "wandb")
+else:
+    raise AssertionError(f"unknown mode: {mode}")
+
+if mode != "training":
+    assert "stochaflow.training.trainer" not in sys.modules
+    assert not any(
+        name == "stochaflow.training.diagnostics"
+        or name.startswith("stochaflow.training.diagnostics.")
+        for name in sys.modules
+    )
+"""
+    environment_root = installed.root / "harness/.venv"
+    for mode in ("parser", "sampling", "evaluation", "training"):
+        _run(
+            [installed.python, "-I", "-c", script, mode, environment_root],
+            cwd=installed.root / "harness",
+            environment=installed.environment,
+        )
+
+
 def test_afhq_formal_evaluation_activates_with_current_core_wheel(
     installed_reference_environment: FixtureInstalledReferenceEnvironment,
 ) -> None:

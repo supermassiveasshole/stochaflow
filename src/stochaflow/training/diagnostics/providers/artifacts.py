@@ -23,7 +23,6 @@ from stochaflow.training.diagnostics.providers.denoiser import (
     parse_timesteps,
     validate_timesteps,
 )
-from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 
 
 def _positive_int(value: object, *, path: str) -> int:
@@ -32,7 +31,6 @@ def _positive_int(value: object, *, path: str) -> int:
     return value
 
 
-@DIAGNOSTIC_PROVIDERS.denoiser_artifacts.register("reconstruction_panel")
 class ReconstructionPanelProvider(DenoiserArtifactProvider):
     """Write clean/noisy/predicted reconstruction tensors and a PNG panel."""
 
@@ -99,7 +97,6 @@ class ReconstructionPanelProvider(DenoiserArtifactProvider):
         )
 
 
-@DIAGNOSTIC_PROVIDERS.sampler_artifacts.register("sample_grid")
 class SampleGridProvider(SamplerArtifactProvider):
     """Write final sampler tensors and a fixed-noise image grid."""
 
@@ -133,7 +130,6 @@ class SampleGridProvider(SamplerArtifactProvider):
         )
 
 
-@DIAGNOSTIC_PROVIDERS.sampler_artifacts.register("trajectory")
 class TrajectoryArtifactProvider(SamplerArtifactProvider):
     """Write trajectory tensor, static grid, and GIF when enabled."""
 

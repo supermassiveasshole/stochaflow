@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 from PIL import Image
 
+from stochaflow._builtin_activation import activate_data_builtins
 from stochaflow.data import (
     DataArtifact,
     DataArtifactBindings,
@@ -52,8 +53,9 @@ TEST_IMAGE_SOURCES: Registry[type[ImageDataSource]] = Registry(
 
 
 def test_source_factory_registers_builtin_image_sources() -> None:
-    """Keep built-in registration explicit at the factory composition boundary."""
+    """Keep image sources in the explicit operation activation lifecycle."""
 
+    activate_data_builtins()
     assert IMAGE_DATA_SOURCES.resolve("torchvision") is TorchvisionImageDataSource
     assert IMAGE_DATA_SOURCES.resolve("image_folder") is ImageFolderDataSource
     assert (
@@ -63,9 +65,11 @@ def test_source_factory_registers_builtin_image_sources() -> None:
 
 
 def test_builtin_image_sources_exist_in_a_fresh_process() -> None:
-    """Prove built-in registration does not depend on prior test imports."""
+    """Prove explicit Data activation works without prior test imports."""
 
     script = (
+        "from stochaflow._builtin_activation import activate_data_builtins; "
+        "activate_data_builtins(); "
         "from stochaflow.data import IMAGE_DATA_SOURCES; "
         "assert IMAGE_DATA_SOURCES.names() == "
         "('image_folder', 'paired_image_folders', 'torchvision')"

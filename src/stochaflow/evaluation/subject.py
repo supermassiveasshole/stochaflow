@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 import torch
 from torch import nn
 
+from stochaflow._component_factory import build_model
 from stochaflow.data.artifacts import DataArtifactBindings
 from stochaflow.evaluation.config import (
     CheckpointSubjectConfig,
@@ -28,7 +29,6 @@ from stochaflow.inference.checkpoint import (
 )
 from stochaflow.utils.checkpoint import CHECKPOINT_FORMAT_VERSION, CheckpointState
 from stochaflow.utils.config import ComponentConfig, StochaflowConfig, load_config_dict
-from stochaflow.utils.factory import build_model
 from stochaflow.utils.plugins import (
     ExtensionPluginProvenance,
     extension_plugin_provenance_to_dicts,

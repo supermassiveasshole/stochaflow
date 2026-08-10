@@ -63,6 +63,12 @@ is unavailable.
 
 ### Changed
 
+- Made runtime composition explicit: each operation now activates one fixed
+  built-in scope before selected Extensions, built-in registration is
+  deterministic and terminal on partial failure, sampling and Evaluation no
+  longer import the training runtime, and complete training assembly is owned
+  by `stochaflow.training.composition`. Existing `utils.factory` calls remain
+  compatibility forwards.
 - Hardened standalone and epoch-end Evaluation failure cleanup so the original
   failure remains primary while every Metric, module-mode, EMA, and unpublished
   prediction-sink restoration is still attempted. Prediction sinks now finalize

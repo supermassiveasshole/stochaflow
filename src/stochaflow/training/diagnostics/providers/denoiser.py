@@ -15,7 +15,6 @@ from stochaflow.training.diagnostics.contracts import (
     StepMetricContext,
     StepMetricProvider,
 )
-from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 
 
 def parse_timesteps(raw: object, *, provider: str) -> tuple[int, ...]:
@@ -61,7 +60,6 @@ def validate_timesteps(
         )
 
 
-@DIAGNOSTIC_PROVIDERS.step_metrics.register("timestep_bucket_loss")
 class TimestepBucketLossProvider(StepMetricProvider):
     """Aggregate per-sample denoising loss into timestep buckets."""
 
@@ -106,7 +104,6 @@ class TimestepBucketLossProvider(StepMetricProvider):
         return metrics
 
 
-@DIAGNOSTIC_PROVIDERS.step_metrics.register("noise_alignment")
 class NoiseAlignmentProvider(StepMetricProvider):
     """Measure predicted and target noise distribution alignment."""
 
@@ -146,7 +143,6 @@ class NoiseAlignmentProvider(StepMetricProvider):
         }
 
 
-@DIAGNOSTIC_PROVIDERS.step_metrics.register("x0_reconstruction")
 class X0ReconstructionMetricProvider(StepMetricProvider):
     """Measure fixed-timestep clean-sample reconstruction quality."""
 

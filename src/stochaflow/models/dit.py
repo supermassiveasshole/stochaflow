@@ -10,7 +10,6 @@ from torch import nn
 from torch.nn import functional
 
 from stochaflow.models.embeddings import sinusoidal_timestep_embedding
-from stochaflow.utils.registry import REGISTRIES
 
 _LABEL_DTYPES = frozenset((torch.int32, torch.int64))
 _TIME_DTYPES = frozenset(
@@ -261,7 +260,6 @@ class DiTFinalLayer(nn.Module):
         return self.output_projection(tokens)
 
 
-@REGISTRIES.models.register("dit")
 class DiT(nn.Module):
     """Fixed-variance class-conditional Diffusion Transformer denoiser."""
 

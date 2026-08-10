@@ -9,6 +9,7 @@ from typing import Any, Protocol, TypeVar
 
 import torch
 
+from stochaflow._builtin_activation import activate_diagnostic_builtins
 from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
 )
@@ -41,7 +42,7 @@ from stochaflow.training.diagnostics.runtime import (
     SeedPolicy,
     clean_samples_from_event,
 )
-from stochaflow.utils.logging import ExperimentLogger
+from stochaflow.utils.logging_contracts import ExperimentLogger
 
 
 class DiagnosticTrainingRuntime(Protocol):
@@ -183,6 +184,7 @@ class GaussianQualityEngine[
         diagnostic_name: str,
         family: GaussianQualityFamily[RuntimeT, BoundSamplerT],
     ) -> None:
+        activate_diagnostic_builtins()
         self.config = parse_diffusion_quality_config(
             modules=modules,
             cadence=cadence,

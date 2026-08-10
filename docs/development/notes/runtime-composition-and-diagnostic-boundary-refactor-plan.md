@@ -4,7 +4,7 @@
 >
 > 排期状态：不参与排期
 >
-> 当前可用性：`train`、`sample`、`evaluate` 和 Extension 现在都能使用；本提案不补产品功能
+> 当前可用性：运行组装边界已经收口；Training Diagnostic 的窄能力改造仍是架构维护工作
 
 2026-07-31 的一份 Clean Architecture 草案提出了很多方向。它后来只提交在未合入主线的
 远端审查分支 `codex/metrics-system`（提交 `af13619`），没有进入 `main` 或当前排期。按当前
@@ -12,14 +12,15 @@
 划分的 package 也比重新建立 `foundation/contracts/application/builtins` 等通用目录更容易理解。
 
 不过，草案里有一个判断仍然重要：**一段代码应当明确说明自己依赖什么，而不是因为拿到了
-一个大对象或导入了一个工具模块，就能碰到整个运行时。** 当前仓库有两处具体事实说明这件事
-还没有完全做到。
+一个大对象或导入了一个工具模块，就能碰到整个运行时。** 2026-08-10 开始这轮维护时，仓库有
+两处具体事实说明这件事还没有完全做到。
 
-第一处是运行组件的组装。`stochaflow.utils.factory` 直接导入 Process、TrainingBuilder、
+第一处曾是运行组件的组装。`stochaflow.utils.factory` 直接导入 Process、TrainingBuilder、
 Trainer、Diagnostics、checkpoint 和 logging，并在模块导入时调用
 `load_builtin_components()`。它实际承担的是应用启动和依赖组装，而不只是一个普通工具。
 训练、采样、推理和 Evaluation 又从不同位置调用这里的函数，因此很难从 package 名称判断
-一次操作真正会加载和构造什么。
+一次操作真正会加载和构造什么。下面“把对象组装放回具体操作的入口”一节保留了当时的推导，
+随后的小节记录实际采用的结果。
 
 第二处是训练诊断。`FitStartEvent`、`TrainBatchEndEvent` 和 `TrainEpochEndEvent` 仍把完整的
 `trainer: Any` 交给 Diagnostic；Gaussian 诊断还会从 `Mapping[str, Any]` 中读取约定好的
@@ -62,7 +63,7 @@ Extension 的启动耗时另有条件性性能复查负责。本提案不承诺�
 这里记录的是“加载了哪些 Stochaflow package、Registry 是否发生变化”，不是性能排名。结果
 会成为迁移前的行为基线，也会暴露哪些调用仍依赖偶然的 import 顺序。
 
-随后把 `utils.factory` 中的组装代码按使用它的操作归还给明确 owner。训练入口负责创建完整的
+随后把 `utils.factory` 中的组装代码交还给实际使用它的操作。训练入口负责创建完整的
 训练协作，采样和 Evaluation 只构造各自需要的只读推理对象。具体模块名可以在实施时选择，
 但必须满足两条简单规则：
 
@@ -77,6 +78,26 @@ Extension 的启动耗时另有条件性性能复查负责。本提案不承诺�
 迁移期间可以保留 `stochaflow.utils.factory` 的薄转发函数，避免一次改动所有内部调用。新的
 内部代码不得再增加对它的依赖；所有调用迁走并通过安装包测试后，再决定是在 pre-1.0 阶段
 删除转发，还是把它保留为明确记录的兼容入口。
+
+## 运行组装最后落在什么位置
+
+2026-08-10 完成的实现没有增加新的用户命令，也没有用 lazy import 追求启动耗时数字。它只把
+已有责任放回可定位的位置。`stochaflow._builtin_activation` 现在是唯一负责内置组件注册的
+位置；导入普通公开入口时只定义类，不再顺手改写 Registry。训练、采样和 Evaluation 分别声明自己的
+固定加载范围，并且都在外部 Extension 激活前完成内置注册。采样和 Evaluation 因而不会为了
+构造只读推理对象而加载 Trainer 或 Training Diagnostics，也不会加载 Logger。
+
+初始化由进程级锁保护。重复调用、两个范围重叠以及并发首次调用都只注册一次。如果模块导入、
+基类检查或名称冲突失败，当前进程会保留第一次错误并拒绝继续初始化，提示调用者重启；已经发生
+的 Registry 写入不假装能够安全回滚。进入已经核对输入的执行阶段后，只检查对应范围已经完成，不再
+临时补导入。这使“内置组件先注册，随后才允许用户选中的 Extension 注册”成为可测试的顺序，
+而不是依赖某个文件碰巧先被 import。
+
+对象构造也分开了。`stochaflow._component_factory` 只负责 Model、Process 和 Objective 三种共享
+声明；完整训练运行时只由 `stochaflow.training.composition` 组装。旧的
+`stochaflow.utils.factory` 仍保留原有调用方式作为薄转发，但框架内部不再依赖它。CLI 解析
+`sample` 或 `evaluate` 时也不会先加载训练 runner；只有真正选择 `train` 才导入训练运行时。
+这些变化不改变配置、checkpoint、命令参数或 Extension 使用的 Registry。
 
 ## Diagnostic 不再得到整台 Trainer
 
@@ -146,15 +167,16 @@ Gaussian Strategy 与 Diagnostic 之间约定的字符串键也要收窄，但�
 或扩展 built-in 注册范围，应先完成与那项工作直接相关的边界修正，避免继续复制隐藏依赖。
 与这些边界无关的小型维护和算法实现不必等待本文全部完成。
 
-真正动手前仍需重新核对当前 import 图、Diagnostic 调用者和 Extension 激活实现，因为这些
-细节可能已经变化。维护可以缩小到证据支持的部分；它不会因为被记录在这里就自动获得大范围
-重构授权。
+继续改造 Diagnostic 前仍需重新核对它的当前调用者和所需能力，因为这些细节可能已经变化。
+维护可以缩小到证据支持的部分；它不会因为被记录在这里就自动获得大范围重构授权。
 
 当前规范与实现证据见：
 
 - [`SPEC.md`](../../../SPEC.md) 的 Training、Evaluation 与 Extension contracts；
-- [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) 的 package ownership 与 composition roots；
-- [`utils.factory`](../../../src/stochaflow/utils/factory.py) 的当前组装和 built-in 注册；
+- [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) 的 package 责任归属与各操作组装入口；
+- [`_builtin_activation`](../../../src/stochaflow/_builtin_activation.py) 的 built-in 注册生命周期；
+- [Training composition](../../../src/stochaflow/training/composition.py) 的完整训练运行时组装；
+- [`utils.factory`](../../../src/stochaflow/utils/factory.py) 的旧调用兼容转发；
 - [Diagnostic contracts](../../../src/stochaflow/training/diagnostics/contracts.py)；
 - [Training Strategy output](../../../src/stochaflow/training/strategy.py)；
 - [Evaluation 已完成说明](../post-training-evaluation-support-plan.md)；

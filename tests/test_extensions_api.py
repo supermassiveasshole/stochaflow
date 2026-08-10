@@ -26,6 +26,7 @@ from stochaflow import (
     training,
 )
 from stochaflow import extensions as public
+from stochaflow._builtin_activation import activate_training_builtins
 from stochaflow.scripts import experiment_runner
 from stochaflow.training import diagnostics
 from stochaflow.utils import config, logging, plugins, registry
@@ -557,6 +558,7 @@ def test_selected_plugin_metric_runs_and_persists_installed_provenance(
             ),
         )
 
+        activate_training_builtins()
         resolved = public.activate_extension_plugins(activation_plan)
         assert VERTICAL_PLUGIN_TARGET in sys.modules
         assert resolved.config.extensions.plugins == [VERTICAL_PLUGIN_NAME]

@@ -7,6 +7,11 @@ from typing import Any, cast
 
 import torch
 
+from stochaflow._builtin_activation import (
+    activate_sampling_builtins,
+    require_sampling_builtins,
+)
+from stochaflow._component_factory import build_model
 from stochaflow.inference.checkpoint import (
     InferenceCheckpointView,
 )
@@ -67,7 +72,7 @@ from stochaflow.utils.config import (
     StochaflowConfig,
     load_sample_config,
 )
-from stochaflow.utils.factory import build_model, resolve_device
+from stochaflow.utils.device import resolve_device
 from stochaflow.utils.plugins import (
     ExtensionActivationPlan,
     ExtensionVersionPolicy,
@@ -252,6 +257,7 @@ def resolve_sampling_inputs(
         epoch=checkpoint_epoch,
         global_step=checkpoint_global_step,
     )
+    activate_sampling_builtins()
     return ResolvedSamplingInputs(
         checkpoint_config,
         sample_config,
@@ -302,6 +308,7 @@ def run_resolved_sampling(
         raise TypeError("sampling inputs must be ResolvedSamplingInputs")
     if not isinstance(cast(object, extensions), ResolvedExtensions):
         raise TypeError("sampling extensions must be ResolvedExtensions")
+    require_sampling_builtins()
     require_resolved_extensions_for_plan(inputs.extension_plan, extensions)
     checkpoint_config = inputs.checkpoint_config
     sample = inputs.sample_config.sample

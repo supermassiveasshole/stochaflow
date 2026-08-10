@@ -10,7 +10,6 @@ from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
     SelectedPairGaussianProcess,
 )
-from stochaflow.utils.registry import REGISTRIES
 
 from ..dynamics import GenerativeDynamics
 from ..sampler import (
@@ -30,7 +29,6 @@ from .dynamics import (
 )
 
 
-@REGISTRIES.samplers.register("ddpm")
 class DDPMAncestralSampler(Sampler):
     """Run full or uniformly respaced ancestral Gaussian transitions."""
 
