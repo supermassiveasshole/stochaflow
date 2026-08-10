@@ -184,12 +184,14 @@ is unavailable.
   that violated task and layer ownership.
 - Removed the duplicate `docs/design/scope.md` authority after consolidating its
   effective requirements into [`SPEC.md`](SPEC.md).
+- Removed four retired development records covering AFHQ-v2 checkpoint cleanup,
+  learned-range-v closeout, Intel macOS test retirement, and P2 experiment
+  closeout after preserving their durable conclusions in current documentation.
+  The temporary Sphinx and documentation-test exclusion list was removed with
+  them.
 
 ### Fixed
 
-- Kept the four historical-document deletion review candidates out of Sphinx
-  publication and main-plan structural discovery until their separate deletion
-  batch is explicitly approved.
 - Aligned Pylance and repository Pyright diagnostics for deprecated overloads
   and unused declarations. Context-manager generators now use precise return
   types, cross-module helpers no longer masquerade as module-private dead code,

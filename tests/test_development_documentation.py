@@ -16,9 +16,6 @@ ROADMAP = PROJECT_ROOT / "ROADMAP.md"
 DEVELOPMENT_ROADMAP = DEVELOPMENT_ROOT / "development-priority-roadmap.md"
 DEVELOPMENT_INDEX = DEVELOPMENT_ROOT / "README.md"
 CONTENT_MAP = NOTES_ROOT / "document-restructure-content-map.md"
-HISTORICAL_REVIEW_CANDIDATES_PATH = (
-    DEVELOPMENT_ROOT / "historical-review-candidates.txt"
-)
 
 FULLWIDTH_COLON = "\N{FULLWIDTH COLON}"
 FULLWIDTH_LEFT_PARENTHESIS = "\N{FULLWIDTH LEFT PARENTHESIS}"
@@ -100,20 +97,11 @@ def _content(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _historical_review_candidate_names() -> frozenset[str]:
-    return frozenset(
-        line.strip()
-        for line in _content(HISTORICAL_REVIEW_CANDIDATES_PATH).splitlines()
-        if line.strip() and not line.startswith("#")
-    )
-
-
 def _reader_documents() -> tuple[Path, ...]:
     return tuple(
         path
         for path in sorted(DEVELOPMENT_ROOT.glob("*.md"))
         if path.name != "README.md"
-        and path.name not in _historical_review_candidate_names()
     )
 
 
@@ -459,21 +447,6 @@ def test_historical_baseline_has_a_current_location_map() -> None:
         mapped_rows.append(name)
 
     assert set(mapped_rows) == _historical_baseline_document_names()
-
-
-def test_historical_review_candidates_remain_a_separate_decision() -> None:
-    """Keep the four historical deletions outside the documentation rewrite."""
-
-    candidates = _historical_review_candidate_names()
-    assert candidates == {
-        "afhq-v2-checkpoint-cleanup-20260806.md",
-        "afhq-v2-learned-range-v-closeout.md",
-        "legacy-intel-macos-pytorch-test-lifecycle.md",
-        "p2-experiment-closeout.md",
-    }
-    content_map = _content(CONTENT_MAP)
-    for name in candidates:
-        assert f"`{name}`" in content_map
 
 
 def test_reader_openings_and_headings_avoid_old_planning_shorthand() -> None:

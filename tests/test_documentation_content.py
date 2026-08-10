@@ -16,13 +16,6 @@ AFHQ_README = (
     PROJECT_ROOT / "examples" / "showcases" / "afhq-v2" / "README.md"
 )
 AFHQ_TUTORIAL = DOCS_ROOT / "tutorials" / "afhq-v2.md"
-HISTORICAL_REVIEW_CANDIDATES = frozenset(
-    DOCS_ROOT / "development" / line.strip()
-    for line in (
-        DOCS_ROOT / "development" / "historical-review-candidates.txt"
-    ).read_text(encoding="utf-8").splitlines()
-    if line.strip() and not line.startswith("#")
-)
 
 
 def test_homepage_quick_start_installs_the_release_wheel() -> None:
@@ -248,7 +241,6 @@ def test_public_docs_do_not_advertise_retired_p2_support() -> None:
         for path in DOCS_ROOT.rglob("*.md")
         if path.relative_to(DOCS_ROOT).parts[:2]
         != ("development", "notes")
-        and path not in HISTORICAL_REVIEW_CANDIDATES
     )
     example_surfaces = (
         path

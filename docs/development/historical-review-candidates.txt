@@ -1,5 +1,0 @@
-# Historical documents awaiting a separate maintainer deletion decision.
-afhq-v2-checkpoint-cleanup-20260806.md
-afhq-v2-learned-range-v-closeout.md
-legacy-intel-macos-pytorch-test-lifecycle.md
-p2-experiment-closeout.md

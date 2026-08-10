@@ -31,7 +31,7 @@
 | `extension-import-boundary-and-activation-latency-plan.md` | 先测公共导入、Registry、plugin activation 和 CLI；保持对象身份、激活顺序和安装 wheel 行为；保留 capability-scoped expected-type resolver 与轻量 Registry/应用级 catalog 拆分候选 | [Extension 性能计划](../extension-import-boundary-and-activation-latency-plan.md)只保留测量驱动的性能功能；[设计附录](extension-import-boundary-and-activation-latency-plan/design-notes.md)保留导入和 Registry 拆分；当前暂停，正确性已闭合 |
 | `hydra-configuration-composition-migration-plan.md` | 用 Hydra 组合全新训练配置，但仍由 Stochaflow 校验和执行；preview、受信任配置根、普通 YAML 对照；不接管 resume/sample | [Hydra 功能计划](../hydra-configuration-composition-migration-plan.md)保留用户流程；[设计附录](hydra-configuration-composition-migration-plan/design-notes.md)保留配置组、override、失败和 multirun 问题；当前候选 |
 | `latent-diffusion-support-plan.md` | 冻结 codec、在线编码与 prepared posterior 两条数据路、AFHQ bring-up、生产资产、开放数据 DiT、独立非 DiT 替换、未来 codec/VAE | [Latent 功能计划](../latent-diffusion-support-plan.md)解释训练和生成流程；[设计与研究附录](latent-diffusion-support-plan/design-and-research-notes.md)保留 codec/provider、The Met、ImageNet-100、DomainNet、硬件和未来算法；当前候选 |
-| `legacy-intel-macos-pytorch-test-lifecycle.md` | Intel macOS 退休决定和不再维护专用依赖/CI 的理由 | 当前支持矩阵在[平台支持](../../platform-support.md)、根 README 和 `CHANGELOG.md`；历史实施记录仍作为独立删除候选，不含 future 功能 |
+| `legacy-intel-macos-pytorch-test-lifecycle.md` | Intel macOS 退休决定和不再维护专用依赖/CI 的理由 | 当前支持矩阵在[平台支持](../../platform-support.md)、根 README 和 `CHANGELOG.md`；历史实施记录已获维护者批准删除，不含 future 功能 |
 | `metrics-support-plan.md` | task-neutral `MetricSpec`/`MetricUpdate`/`MetricEngine`，training 与 Evaluation 分离，selection 只使用 validation | 已闭合到 [`SPEC.md`](../../../SPEC.md)、[`ARCHITECTURE.md`](../../../ARCHITECTURE.md)、[公开工作流](../../configuration/workflows.md)和测试；不再有 Metrics 开放计划 |
 | `p2-weighting-and-adm-topology-refactor-plan.md` | canonical ADM 拓扑、learned-range variance、hybrid loss、respaced sampling、CFG 2C、AFHQ 对照；拓扑与 weighting 分开归因、论文复刻与产品实验分线、谨慎命名复刻结果、Gaussian-local weighting 边界；SNR weighting 实验结论 | ADM/learned-range 能力和证据在 [`CHANGELOG.md`](../../../CHANGELOG.md)、[AFHQ 教程](../../tutorials/afhq-v2.md)、规范和测试；[SNR weighting 历史决策](history/afhq-snr-weighting-decision.md)保留研究理由、gamma 0/1 对照、色彩噪声、联合候选边界和重新讨论条件；P2 支持已退休 |
 | `post-training-evaluation-support-plan.md` | checkpoint Evaluation、prediction artifact offline replay、完整性、结果发布；reference cache、性能、比较、任务 profile、外部报告、benchmark extension、人工评价 artifact、distributed Evaluation、inference-bundle subject 和置信区间设想 | 基础功能已闭合到规范和[公开工作流](../../configuration/workflows.md)；[已完成说明](../post-training-evaluation-support-plan.md)解释当前用法；[设计备忘](post-training-evaluation-support-plan/design-notes.md)保存未排期想法，并说明旧 Selection runtime 已被 training/HPO/调用方各自决策替代；不再把 Evaluation 列为开放工作 |
@@ -90,13 +90,17 @@ Data lifecycle 和 Data composition 的当前行为、future 构想与研究材�
 - `data-artifact-producer-lifecycle-refactor.md`
 - `data-layer-composition-boundary-review.md`
 
-工作树中已有的四份历史删除候选仍保持独立审阅；它们不属于本次批准范围，也不得被
-当成 future-support 转移的目标：
+维护者已经逐份批准删除以下四份历史实施记录：
 
 - `afhq-v2-checkpoint-cleanup-20260806.md`
 - `afhq-v2-learned-range-v-closeout.md`
 - `legacy-intel-macos-pytorch-test-lifecycle.md`
 - `p2-experiment-closeout.md`
 
-在维护者逐文件批准删除前，Sphinx 和主计划结构检查必须忽略这些文件；忽略不表示
-删除已经获批。
+删除不丢失 future-support 构想：checkpoint 清理文件只记录一次已完成的本机存储操作，
+精确路径和容量数字随该实施日志一起退休；learned-range-v 的最终配方、validation 选择和
+official-test 结果保存在 `CHANGELOG.md`、[AFHQ 教程](../../tutorials/afhq-v2.md)和示例
+README；Intel macOS 的退休边界保存在[平台支持](../../platform-support.md)；P2 weighting 的
+实验结论、重新讨论条件和独有研究想法保存在
+[SNR weighting 历史决策](history/afhq-snr-weighting-decision.md)。因此四份原记录可以从当前
+文档树删除，不再需要 Sphinx 或测试的临时排除名单。
