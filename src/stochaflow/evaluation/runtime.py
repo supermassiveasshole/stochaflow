@@ -16,6 +16,13 @@ import torch
 from torchmetrics import Metric
 
 from stochaflow.data import DataArtifactBindings, DataLoaders, build_data_loaders
+from stochaflow.evaluation._cleanup import (
+    CleanupAction,
+    add_cleanup_failure_notes,
+    first_cleanup_failure,
+    restore_module_mode,
+    run_cleanup_actions,
+)
 from stochaflow.evaluation.artifacts import (
     canonical_sha256,
     publish_evaluation_bundle,
@@ -36,6 +43,7 @@ from stochaflow.evaluation.contracts import (
 from stochaflow.evaluation.identity import build_protocol_implementation_identity
 from stochaflow.evaluation.predictions import (
     PREDICTION_MANIFEST_FILENAME,
+    EvaluationArtifactSink,
     PredictionArtifactDraft,
     PredictionArtifactSubjectInputs,
     PublishedPredictionArtifact,
@@ -99,6 +107,20 @@ class EvaluationFacts:
     completeness: Mapping[str, Any]
     sample_ids: tuple[str, ...]
     prediction_artifact: PredictionArtifactDraft | None = None
+
+
+def _abort_evaluation_sink(
+    sink: EvaluationArtifactSink | None,
+    primary: BaseException,
+) -> None:
+    """Abort an unpublished sink without replacing ``primary``."""
+
+    if sink is None:
+        return
+    failures = run_cleanup_actions(
+        (("prediction artifact abort failed", sink.abort),)
+    )
+    add_cleanup_failure_notes(primary, failures)
 
 
 def resolve_evaluation_inputs(
@@ -250,18 +272,23 @@ def run_resolved_evaluation(
             artifact_root=artifact_root,
             sampling=sampling,
         )
-        if isinstance(subject, ResolvedCheckpointSubject) and all(
-            module is not subject.model for module in plan.modules.values()
-        ):
-            raise ValueError(
-                "EvaluationPlan.modules must declare the injected checkpoint model"
+        try:
+            if isinstance(subject, ResolvedCheckpointSubject) and all(
+                module is not subject.model for module in plan.modules.values()
+            ):
+                raise ValueError(
+                    "EvaluationPlan.modules must declare the injected "
+                    "checkpoint model"
+                )
+            protocol_implementation = _protocol_implementation_identity(
+                config,
+                plan,
+                extensions,
+                seed=seed,
             )
-        protocol_implementation = _protocol_implementation_identity(
-            config,
-            plan,
-            extensions,
-            seed=seed,
-        )
+        except BaseException as error:
+            _abort_evaluation_sink(plan.artifact_sink, error)
+            raise
         facts = execute_evaluation_plan(plan, device=device)
         if isinstance(subject, ResolvedPredictionArtifactSubject):
             expected_ids = tuple(
@@ -466,30 +493,51 @@ def execute_evaluation_plan(
 ) -> EvaluationFacts:
     """Execute one already-composed EvaluationPlan without publishing a bundle."""
 
-    runtime_specs = tuple(
-        MetricSpec(
-            id=spec.id,
-            name=spec.name,
-            channel=spec.channel,
-            params=cast(dict[str, Any], _thaw_evaluation_value(spec.params)),
-        )
-        for spec in plan.metric_specs
-    )
-    engine = MetricEngine(runtime_specs, registry=metric_registry).to(device)
-    engine.reset()
-    previous_modes = {
-        name: module.training for name, module in plan.modules.items()
-    }
-    for module in plan.modules.values():
-        module.eval()
+    sink = plan.artifact_sink
+    engine: MetricEngine | None = None
+    transitioned_modes: list[tuple[str, torch.nn.Module, bool]] = []
     sample_ids: list[str] = []
     observed_ids: set[str] = set()
     observed_examples = 0
     measurement_names: frozenset[str] | None = None
     measurement_totals: dict[str, float] = {}
-    sink = plan.artifact_sink
-    sink_finalized = False
+
+    def cleanup_actions() -> tuple[CleanupAction, ...]:
+        actions: list[CleanupAction] = [
+            (
+                f"evaluation module {name!r} mode restoration failed",
+                lambda module=module, was_training=was_training: restore_module_mode(
+                    module,
+                    was_training,
+                ),
+            )
+            for name, module, was_training in reversed(transitioned_modes)
+        ]
+        if engine is not None:
+            actions.append(("evaluation metric reset failed", engine.reset))
+        return tuple(actions)
+
+    def abort_sink(primary: BaseException) -> None:
+        _abort_evaluation_sink(sink, primary)
+
     try:
+        runtime_specs = tuple(
+            MetricSpec(
+                id=spec.id,
+                name=spec.name,
+                channel=spec.channel,
+                params=cast(
+                    dict[str, Any],
+                    _thaw_evaluation_value(spec.params),
+                ),
+            )
+            for spec in plan.metric_specs
+        )
+        engine = MetricEngine(runtime_specs, registry=metric_registry)
+        engine.to(device)
+        for name, module in plan.modules.items():
+            transitioned_modes.append((name, module, bool(module.training)))
+            module.eval()
         with torch.inference_mode():
             for batch in plan.data:
                 output = plan.evaluator.evaluate_batch(batch)
@@ -527,7 +575,7 @@ def execute_evaluation_plan(
                 "strict evaluation is incomplete: expected "
                 f"{plan.protocol.expected_examples}, observed {observed_examples}"
             )
-        computed_metrics = engine.compute(reset=True)
+        computed_metrics = engine.compute(reset=False)
         metrics = {
             f"eval/metrics/{name}": value
             for name, value in computed_metrics.items()
@@ -550,44 +598,52 @@ def execute_evaluation_plan(
             "complete": complete,
             "sample_ids_sha256": canonical_sha256(sample_ids),
         }
-        prediction_artifact: PredictionArtifactDraft | None = None
-        if sink is not None:
-            draft_value = cast(object, sink.finalize())
-            if not isinstance(draft_value, PredictionArtifactDraft):
-                raise TypeError(
-                    "EvaluationArtifactSink.finalize() must return "
-                    "PredictionArtifactDraft"
-                )
-            prediction_artifact = draft_value
-        if prediction_artifact is not None and tuple(
-            sample.sample_id for sample in prediction_artifact.samples
-        ) != tuple(sample_ids):
-            raise ValueError(
-                "prediction artifact sample plan must match evaluation order"
-            )
-        if prediction_artifact is not None:
-            sink_finalized = True
-        return EvaluationFacts(
+        facts = EvaluationFacts(
             status="complete" if complete else "incomplete",
             metrics=metrics,
             measurements=measurements,
             completeness=completeness,
             sample_ids=tuple(sample_ids),
-            prediction_artifact=prediction_artifact,
         )
     except BaseException as error:
-        if sink is not None and not sink_finalized:
-            try:
-                sink.abort()
-            except Exception as cleanup_error:  # noqa: BLE001
-                error.add_note(
-                    f"prediction artifact cleanup failure: {cleanup_error}"
-                )
+        failures = run_cleanup_actions(cleanup_actions())
+        add_cleanup_failure_notes(error, failures)
+        abort_sink(error)
         raise
-    finally:
-        engine.reset()
-        for name, module in plan.modules.items():
-            module.train(previous_modes[name])
+
+    cleanup_failure = first_cleanup_failure(
+        run_cleanup_actions(cleanup_actions())
+    )
+    if cleanup_failure is not None:
+        abort_sink(cleanup_failure)
+        raise cleanup_failure
+
+    if sink is None:
+        return facts
+    try:
+        draft_value = cast(object, sink.finalize())
+        if not isinstance(draft_value, PredictionArtifactDraft):
+            raise TypeError(
+                "EvaluationArtifactSink.finalize() must return "
+                "PredictionArtifactDraft"
+            )
+        if tuple(sample.sample_id for sample in draft_value.samples) != tuple(
+            sample_ids
+        ):
+            raise ValueError(
+                "prediction artifact sample plan must match evaluation order"
+            )
+        return EvaluationFacts(
+            status=facts.status,
+            metrics=facts.metrics,
+            measurements=facts.measurements,
+            completeness=facts.completeness,
+            sample_ids=facts.sample_ids,
+            prediction_artifact=draft_value,
+        )
+    except BaseException as error:
+        abort_sink(error)
+        raise
 
 
 def _selected_split(

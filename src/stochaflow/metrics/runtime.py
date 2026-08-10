@@ -152,11 +152,23 @@ class MetricEngine:
                             **update.kwargs,
                         )
                     except Exception as error:
-                        self.reset()
-                        raise MetricRuntimeError(
+                        runtime_error = MetricRuntimeError(
                             f"metric {metric_id!r} update failed for "
                             f"channel {channel!r}"
-                        ) from error
+                        )
+                        try:
+                            self.reset()
+                        except BaseException as cleanup_error:  # noqa: BLE001
+                            try:
+                                cleanup_detail = str(cleanup_error)
+                            except BaseException:  # noqa: BLE001
+                                cleanup_detail = "<exception text unavailable>"
+                            BaseException.add_note(
+                                runtime_error,
+                                "metric state cleanup after update failure failed: "
+                                f"{type(cleanup_error).__name__}: {cleanup_detail}",
+                            )
+                        raise runtime_error from error
         self._successful_updates += 1
 
     def compute(self, *, reset: bool = False) -> dict[str, float]:

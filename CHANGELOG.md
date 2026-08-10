@@ -63,6 +63,10 @@ is unavailable.
 
 ### Changed
 
+- Hardened standalone and epoch-end Evaluation failure cleanup so the original
+  failure remains primary while every Metric, module-mode, EMA, and unpublished
+  prediction-sink restoration is still attempted. Prediction sinks now finalize
+  only after framework-owned state has been restored successfully.
 - Added a parked development plan for processing and training on datasets larger
   than RAM through bounded storage, host-memory, pinned-memory, and device
   stages. The incoming eight-H200 node is only the first validation environment;

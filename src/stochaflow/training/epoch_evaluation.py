@@ -17,6 +17,13 @@ from stochaflow.evaluation import (
     build_evaluation_plan,
     execute_evaluation_plan,
 )
+from stochaflow.evaluation._cleanup import (
+    CleanupAction,
+    add_cleanup_failure_notes,
+    first_cleanup_failure,
+    restore_module_mode,
+    run_cleanup_actions,
+)
 from stochaflow.evaluation.artifacts import canonical_sha256
 from stochaflow.evaluation.identity import build_protocol_implementation_identity
 from stochaflow.inference import InferenceAssetProvider
@@ -164,8 +171,11 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
             global_step=0,
             weights=weights,
         )
+        identity_plan: EvaluationPlan | None = None
         with preserve_global_rng_state(trainer.device):
-            primary_was_training = bool(plan.primary_model.training)
+            transitioned_modes = [
+                (plan.primary_model, bool(plan.primary_model.training))
+            ]
             try:
                 plan.primary_model.eval()
                 identity_plan = self._build_evaluation_plan(
@@ -174,8 +184,41 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
                         inference_assets=self._inference_assets()
                     ),
                 )
-            finally:
-                plan.primary_model.train(primary_was_training)
+            except BaseException as error:
+                failures = run_cleanup_actions(
+                    (
+                        (
+                            "epoch Evaluation identity module mode restoration failed",
+                            lambda: restore_module_mode(
+                                plan.primary_model,
+                                transitioned_modes[0][1],
+                            ),
+                        ),
+                    )
+                )
+                add_cleanup_failure_notes(error, failures)
+                raise
+            identity_cleanup_actions: list[CleanupAction] = [
+                (
+                    "epoch Evaluation identity module mode restoration failed",
+                    lambda: restore_module_mode(
+                        plan.primary_model,
+                        transitioned_modes[0][1],
+                    ),
+                )
+            ]
+            if identity_plan.artifact_sink is not None:
+                identity_cleanup_actions.append(
+                    (
+                        "epoch Evaluation identity sink abort failed",
+                        identity_plan.artifact_sink.abort,
+                    )
+                )
+            cleanup_failure = first_cleanup_failure(
+                run_cleanup_actions(identity_cleanup_actions)
+            )
+            if cleanup_failure is not None:
+                raise cleanup_failure
         protocol_implementation = build_protocol_implementation_identity(
             evaluation_builder_name=declaration.name,
             metric_specs=metric_specs,
@@ -285,25 +328,52 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
     ) -> EpochValidationResult:
         """Generate validation samples, compute metrics, and restore training."""
 
-        modules: list[nn.Module] = []
-        modes: list[tuple[nn.Module, bool]] = []
+        modules: list[tuple[str, nn.Module]] = []
         seen: set[int] = set()
-        for asset in self._trainer.managed_modules.values():
+        for name, asset in self._trainer.managed_modules.items():
             module = asset.module
             if id(module) in seen:
                 continue
             seen.add(id(module))
-            modules.append(module)
-            modes.append((module, bool(module.training)))
+            modules.append((name, module))
+        transitioned_modes: list[tuple[str, nn.Module, bool]] = []
+        ema_restore_required = False
+        evaluation_plan: EvaluationPlan | None = None
+        execution_started = False
 
-        ema_stored = False
+        def cleanup_actions() -> tuple[CleanupAction, ...]:
+            actions: list[CleanupAction] = []
+            if ema_restore_required:
+                ema = self._trainer.ema
+                assert ema is not None
+                actions.append(
+                    (
+                        "epoch Evaluation EMA restoration failed",
+                        lambda: ema.restore(self._trainer.ema_model),
+                    )
+                )
+            actions.extend(
+                (
+                    f"epoch Evaluation module {name!r} mode restoration failed",
+                    lambda module=module, was_training=was_training: restore_module_mode(
+                        module,
+                        was_training,
+                    ),
+                )
+                for name, module, was_training in reversed(transitioned_modes)
+            )
+            return tuple(actions)
+
         try:
             if self._weights == "ema":
                 assert self._trainer.ema is not None
                 self._trainer.ema.store(self._trainer.ema_model)
-                ema_stored = True
+                ema_restore_required = True
                 self._trainer.ema.copy_to(self._trainer.ema_model)
-            for module in modules:
+            for name, module in modules:
+                transitioned_modes.append(
+                    (name, module, bool(module.training))
+                )
                 module.eval()
 
             sampling = self._sampling_capability(
@@ -323,6 +393,7 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
                 raise ValueError(
                     "epoch Evaluation protocol identity changed after preflight"
                 )
+            execution_started = True
             facts = execute_evaluation_plan(
                 evaluation_plan,
                 device=self._trainer.device,
@@ -342,19 +413,36 @@ class EvaluationBackedEpochValidator(EpochValidationEvaluator):
                         f"metric key {name!r}"
                     )
                 metrics[f"valid/metrics/{name.removeprefix(prefix)}"] = value
-            return EpochValidationResult(
+            result = EpochValidationResult(
                 epoch=epoch,
                 global_step=global_step,
                 metrics=metrics,
             )
-        finally:
-            try:
-                if ema_stored:
-                    assert self._trainer.ema is not None
-                    self._trainer.ema.restore(self._trainer.ema_model)
-            finally:
-                for module, was_training in modes:
-                    module.train(was_training)
+        except BaseException as error:
+            failures = run_cleanup_actions(cleanup_actions())
+            add_cleanup_failure_notes(error, failures)
+            if (
+                evaluation_plan is not None
+                and evaluation_plan.artifact_sink is not None
+                and not execution_started
+            ):
+                sink_failures = run_cleanup_actions(
+                    (
+                        (
+                            "epoch Evaluation sink abort failed",
+                            evaluation_plan.artifact_sink.abort,
+                        ),
+                    )
+                )
+                add_cleanup_failure_notes(error, sink_failures)
+            raise
+
+        cleanup_failure = first_cleanup_failure(
+            run_cleanup_actions(cleanup_actions())
+        )
+        if cleanup_failure is not None:
+            raise cleanup_failure
+        return result
 
 
 __all__ = [

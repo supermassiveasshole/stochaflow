@@ -242,7 +242,11 @@ class TinyEvaluationBuilder(EvaluationBuilder):
         probe = LifecycleProbeModule()
         evaluator = TinyEvaluator(model, probe, scenario=scenario)
         sink = None
-        if scenario in {"sink_failure", "sink_wrong_plan"}:
+        if scenario in {
+            "protocol_sink_failure",
+            "sink_failure",
+            "sink_wrong_plan",
+        }:
             if self.context.artifact_root is None:
                 raise ValueError("sink fixture requires an artifact staging root")
             sink = ProbeEvaluationArtifactSink(
@@ -265,7 +269,10 @@ class TinyEvaluationBuilder(EvaluationBuilder):
                 preprocessing={"scenario": scenario},
                 dependencies=(
                     ("stochaflow-test-missing-provider",)
-                    if scenario == "missing_dependency"
+                    if scenario in {
+                        "missing_dependency",
+                        "protocol_sink_failure",
+                    }
                     else ()
                 ),
             ),
@@ -605,6 +612,29 @@ def test_missing_protocol_dependency_fails_before_evaluator_execution(
     evaluator = TinyEvaluationBuilder.last_evaluator
     assert evaluator is not None
     assert evaluator.seen_batches == []
+    assert not output_dir.exists()
+
+
+def test_protocol_identity_failure_aborts_sink_before_execution(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _write_checkpoint(tmp_path / "subject.pt")
+    config = _write_evaluation_config(
+        tmp_path / "evaluation.yaml",
+        checkpoint,
+        scenario="protocol_sink_failure",
+    )
+    output_dir = tmp_path / "missing-provider-with-sink"
+
+    with pytest.raises(RuntimeError, match="protocol dependency is not installed"):
+        run_evaluation(config, output_dir=output_dir, device_name="cpu")
+
+    evaluator = TinyEvaluationBuilder.last_evaluator
+    assert evaluator is not None
+    assert evaluator.seen_batches == []
+    sink = TinyEvaluationBuilder.last_sink
+    assert sink is not None
+    assert sink.aborted
     assert not output_dir.exists()
 
 

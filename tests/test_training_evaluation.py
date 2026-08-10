@@ -13,12 +13,14 @@ from torchmetrics.aggregation import MeanMetric
 from torchmetrics.regression import MeanSquaredError
 
 from stochaflow.evaluation import (
+    EvaluationArtifactSink,
     EvaluationBuilder,
     EvaluationPlan,
     EvaluationProtocolIdentity,
     EvaluationSamplingCapability,
     EvaluationSamplingRequest,
     EvaluationStepOutput,
+    PredictionArtifactDraft,
 )
 from stochaflow.metrics import MetricSpec, MetricUpdate
 from stochaflow.sampling import (
@@ -169,6 +171,44 @@ class LiveModelEvaluationBuilder(EvaluationBuilder):
 
 class AlternateLiveModelEvaluationBuilder(LiveModelEvaluationBuilder):
     """Behavior-compatible provider with a distinct implementation identity."""
+
+
+class LiveCleanupSink(EvaluationArtifactSink):
+    """Observe cleanup of a temporary identity-preflight sink."""
+
+    def __init__(self) -> None:
+        self.aborted = False
+
+    def consume(self, output: EvaluationStepOutput) -> None:
+        raise AssertionError("identity preflight must not consume its sink")
+
+    def finalize(self) -> PredictionArtifactDraft:
+        raise AssertionError("identity preflight must not finalize its sink")
+
+    def abort(self) -> None:
+        self.aborted = True
+
+
+class SinkDeclaringLiveEvaluationBuilder(LiveModelEvaluationBuilder):
+    """Declare a temporary sink to exercise identity-preflight cleanup."""
+
+    last_sink: ClassVar[LiveCleanupSink | None] = None
+
+    def build(self) -> EvaluationPlan:
+        plan = super().build()
+        sink = LiveCleanupSink()
+        type(self).last_sink = sink
+        return EvaluationPlan(
+            evaluator=plan.evaluator,
+            data=plan.data,
+            metric_specs=plan.metric_specs,
+            protocol=plan.protocol,
+            subject=plan.subject,
+            data_identity=plan.data_identity,
+            protocol_identity=plan.protocol_identity,
+            modules=plan.modules,
+            artifact_sink=sink,
+        )
 
 
 class RNGConsumingEvaluationBuilder(LiveModelEvaluationBuilder):
@@ -413,6 +453,257 @@ def test_live_evaluation_restores_ema_weights_after_failure() -> None:
 
     assert torch.equal(model.weight, raw_weight)
     assert model.training
+
+
+def test_live_evaluation_restores_raw_weights_when_ema_copy_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer = _trainer()
+    validator = EvaluationBackedEpochValidator(
+        trainer=trainer,
+        config=_config(),
+        validation_data=_data(),
+        data_identity={"source": "training", "split": "validation"},
+        registries=_registries(),
+    )
+    model = cast(ScalarEvaluationModel, trainer.model)
+    raw_weight = model.weight.detach().clone()
+    ema = trainer.ema
+    assert ema is not None
+    original_copy_to = ema.copy_to
+    copy_error = RuntimeError("injected EMA copy failure")
+
+    def copy_to_and_fail(module: nn.Module) -> None:
+        original_copy_to(module)
+        raise copy_error
+
+    monkeypatch.setattr(ema, "copy_to", copy_to_and_fail)
+
+    with pytest.raises(RuntimeError) as caught:
+        validator.evaluate(epoch=2, global_step=7)
+
+    assert caught.value is copy_error
+    assert torch.equal(model.weight, raw_weight)
+    assert model.training
+
+
+def test_live_mode_entry_failure_restores_raw_weights_and_changed_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer = _trainer()
+    validator = EvaluationBackedEpochValidator(
+        trainer=trainer,
+        config=_config(),
+        validation_data=_data(),
+        data_identity={"source": "training", "split": "validation"},
+        registries=_registries(),
+    )
+    model = cast(ScalarEvaluationModel, trainer.model)
+    objective = trainer.objective
+    assert objective is not None
+    raw_weight = model.weight.detach().clone()
+    original_train = objective.train
+    entry_error = RuntimeError("injected live mode entry failure")
+
+    def enter_eval_and_fail(mode: bool = True) -> nn.Module:
+        result = original_train(mode)
+        if not mode:
+            raise entry_error
+        return result
+
+    monkeypatch.setattr(objective, "train", enter_eval_and_fail)
+
+    with pytest.raises(RuntimeError) as caught:
+        validator.evaluate(epoch=2, global_step=7)
+
+    assert caught.value is entry_error
+    assert torch.equal(model.weight, raw_weight)
+    assert model.training
+    assert objective.training
+
+
+def test_live_evaluation_attempts_every_module_restore_after_body_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer = _trainer()
+    validator = EvaluationBackedEpochValidator(
+        trainer=trainer,
+        config=_config(fail=True),
+        validation_data=_data(),
+        data_identity={"source": "training", "split": "validation"},
+        registries=_registries(),
+    )
+    model = cast(ScalarEvaluationModel, trainer.model)
+    objective = trainer.objective
+    assert objective is not None
+    raw_weight = model.weight.detach().clone()
+    model_train = model.train
+    objective_train = objective.train
+
+    def failing_model_train(mode: bool = True) -> nn.Module:
+        result = model_train(mode)
+        if mode:
+            raise RuntimeError("model mode restore failed")
+        return result
+
+    def failing_objective_train(mode: bool = True) -> nn.Module:
+        result = objective_train(mode)
+        if mode:
+            raise RuntimeError("objective mode restore failed")
+        return result
+
+    monkeypatch.setattr(model, "train", failing_model_train)
+    monkeypatch.setattr(objective, "train", failing_objective_train)
+
+    with pytest.raises(
+        RuntimeError,
+        match="injected live Evaluation failure",
+    ) as caught:
+        validator.evaluate(epoch=2, global_step=7)
+
+    assert torch.equal(model.weight, raw_weight)
+    assert model.training
+    assert objective.training
+    notes = "\n".join(caught.value.__notes__)
+    assert "model mode restore failed" in notes
+    assert "objective mode restore failed" in notes
+
+
+def test_live_ema_restore_failure_does_not_block_module_mode_restoration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer = _trainer()
+    validator = EvaluationBackedEpochValidator(
+        trainer=trainer,
+        config=_config(fail=True),
+        validation_data=_data(),
+        data_identity={"source": "training", "split": "validation"},
+        registries=_registries(),
+    )
+    model = cast(ScalarEvaluationModel, trainer.model)
+    objective = trainer.objective
+    ema = trainer.ema
+    assert objective is not None
+    assert ema is not None
+    raw_weight = model.weight.detach().clone()
+    restored_modes: list[str] = []
+    model_train = model.train
+    objective_train = objective.train
+    original_restore = ema.restore
+
+    def recording_model_train(mode: bool = True) -> nn.Module:
+        result = model_train(mode)
+        if mode:
+            restored_modes.append("model")
+        return result
+
+    def recording_objective_train(mode: bool = True) -> nn.Module:
+        result = objective_train(mode)
+        if mode:
+            restored_modes.append("objective")
+        return result
+
+    def restore_and_fail(module: nn.Module) -> None:
+        original_restore(module)
+        raise RuntimeError("EMA restore failed")
+
+    monkeypatch.setattr(model, "train", recording_model_train)
+    monkeypatch.setattr(objective, "train", recording_objective_train)
+    monkeypatch.setattr(ema, "restore", restore_and_fail)
+
+    with pytest.raises(
+        RuntimeError,
+        match="injected live Evaluation failure",
+    ) as caught:
+        validator.evaluate(epoch=2, global_step=7)
+
+    assert torch.equal(model.weight, raw_weight)
+    assert model.training
+    assert objective.training
+    assert restored_modes == ["objective", "model"]
+    assert "EMA restore failed" in "\n".join(caught.value.__notes__)
+
+
+def test_live_identity_preflight_restore_failure_is_reported_after_restoring_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer = _trainer()
+    model = cast(ScalarEvaluationModel, trainer.model)
+    original_train = model.train
+    restore_error = RuntimeError("identity mode restore failed")
+
+    def failing_train(mode: bool = True) -> nn.Module:
+        result = original_train(mode)
+        if mode:
+            raise restore_error
+        return result
+
+    monkeypatch.setattr(model, "train", failing_train)
+
+    with pytest.raises(RuntimeError) as caught:
+        EvaluationBackedEpochValidator(
+            trainer=trainer,
+            config=_config(weights="raw"),
+            validation_data=_data(),
+            data_identity={"source": "training", "split": "validation"},
+            registries=_registries(),
+        )
+
+    assert caught.value is restore_error
+    assert model.training
+
+
+def test_live_identity_preflight_eval_failure_restores_changed_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trainer = _trainer()
+    model = cast(ScalarEvaluationModel, trainer.model)
+    original_train = model.train
+    eval_error = RuntimeError("identity eval failed")
+
+    def failing_eval(mode: bool = True) -> nn.Module:
+        result = original_train(mode)
+        if not mode:
+            raise eval_error
+        return result
+
+    monkeypatch.setattr(model, "train", failing_eval)
+
+    with pytest.raises(RuntimeError) as caught:
+        EvaluationBackedEpochValidator(
+            trainer=trainer,
+            config=_config(weights="raw"),
+            validation_data=_data(),
+            data_identity={"source": "training", "split": "validation"},
+            registries=_registries(),
+        )
+
+    assert caught.value is eval_error
+    assert model.training
+
+
+def test_live_identity_preflight_aborts_temporary_artifact_sink() -> None:
+    registries = _registries()
+    registries.evaluation_builders.add(
+        "tests.live-sink",
+        SinkDeclaringLiveEvaluationBuilder,
+    )
+    config = _config(weights="raw")
+    config.evaluation = ComponentConfig(name="tests.live-sink", params={})
+    trainer = _trainer()
+
+    EvaluationBackedEpochValidator(
+        trainer=trainer,
+        config=config,
+        validation_data=_data(),
+        data_identity={"source": "training", "split": "validation"},
+        registries=registries,
+    )
+
+    sink = SinkDeclaringLiveEvaluationBuilder.last_sink
+    assert sink is not None
+    assert sink.aborted
+    assert trainer.model.training
 
 
 def test_live_evaluation_profile_digest_covers_weight_authority() -> None:
