@@ -1,122 +1,93 @@
-# Extension 导入边界与激活延迟记录
+# Extension 启动速度：只有测出问题才优化
 
-> 工作状态：暂停
+> 文档类型：条件性性能复查，不是新功能计划
 >
-> 规范来源：[`ROADMAP.md`](../../ROADMAP.md)、[`SPEC.md`](../../SPEC.md)、
-> [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
+> 工作状态：暂停（Parked）
+>
+> 当前可用性：Extension 功能已经可用；目前没有确认过的启动速度缺陷。
 
-## 完成后用户能做什么
+Extension 的正确性工作已经完成。用户可以照常查看命令帮助、导入公共类、选择已安装的
+extension，并用现有配置运行训练。现在没有一项缺失功能需要等待这份文档完成。
 
-只有测量证明“启动一个新的 Python 进程”确实过慢，而且主要时间花在 Stochaflow 自己的导入
-路径上，才开始性能改进。改进可能只针对公共导入、Registry 启动、plugin 激活或 CLI 启动中的
-一项，同时保持当前 extension 行为、公共对象身份和固定激活顺序不变。
+这份复查只处理一种情况：某个真实调用在某个平台上反复启动过慢，而且等待已经影响使用。
+到那时先测量时间花在哪里，再决定是否值得改。复查完全可以得出“不修改”的结论；未经
+测量的“感觉慢”不值得让导入和激活代码变复杂。
 
-本记录不承诺全面延迟导入，也不承诺重写整个模块依赖关系。
+## Extension 本身没有待补的功能
 
-## 当前仓库已经支持什么
+以下调用现在就能使用，未来即使做了性能优化，调用方式也不会改变：
 
-- 读取配置时只解析和验证内容，不导入 extension 代码。
-- 准备阶段只读取已安装包的 metadata，验证选择与来源，并保存不可被调用方改写的配置副本。
-- 激活计划每次返回隔离的配置副本；调用方不能在准备和激活之间改写已验证事实。
-- 只有真正激活时才按预检顺序导入选中的聚合模块，并从同一份配置副本构造对象。
-- 身份、版本、验收记录或回执不合法时会被明确拒绝；首次成功激活后，进程内选择固定。
-- `stochaflow.extensions` 导出的对象身份、`__all__` 和 API 文档由测试约束。
+```text
+python -c "from stochaflow.extensions import DataSource; print(DataSource)"
+stochaflow --help
+stochaflow train --config <现有训练配置.yaml>
+```
 
-正确性由当前实现、`tests/test_extension_plugins.py`、`tests/test_extensions_api.py`、
-`tests/test_extensions_cli.py` 和公开文档保证；本文没有剩余正确性待办。
+当前实现会先读取安装信息并核对用户选择，但不会在检查阶段运行 extension 代码。真正
+激活时只导入明确选中的项目，版本、来源和加载顺序都经过检查。准备激活时保存的配置副本
+不会被调用方在加载前悄悄修改；第一次成功激活后，本进程中的选择固定，需要换项目就启动
+新进程。选择冲突、版本不符、加载失败和重复激活也都有确定错误。
 
-## 还没有支持什么
+公共导入返回真实的类对象，内置组件和外部组件使用同一条登记与构造路径。这些行为已有
+测试，不是本次复查的待办，也不能为了缩短启动时间而放宽。
 
-- 没有基于当前 wheel 和 lockfile 的新进程导入时间、内存与模块数量基线。
-- 没有用户场景预算或测量证明主要成本来自 Stochaflow 自身导入。
-- 没有按能力拆分的公共导入面、延迟导入方案或明确的第一方启动入口。
-- 没有分别约束公共导入、Registry 启动、plugin 激活和 CLI 的结构检查。
-- 没有已审阅的最小改动、wheel 安装验收和回退方案。
+## 什么证据才值得重新打开复查
 
-这些是暂停的性能问题，不是已确认的产品缺陷或 SLA。
+复查不能从旧开发机上的秒数开始，而要从一个具体的慢调用开始。报告至少要说明运行的是
+哪个命令或导入、使用什么平台和安装包、多个全新进程分别耗时多少，以及多长等待才算已经
+影响使用。
 
-## 什么时候可以开始或重新审查
+有了这个场景，维护者再按当前 `uv.lock` 安装 wheel（Python 安装包），把完整等待拆开测量：
 
-只有以下条件全部成立才重开：
+- 空 Python 进程本身需要多久；
+- `import stochaflow`、`import stochaflow.extensions` 和只访问一个公共类各需要多久；
+- 读取配置、准备激活和真正激活一个选中 extension 各需要多久；
+- CLI 根帮助、子命令帮助和真正执行操作各需要多久。
 
-- [`ROADMAP.md`](../../ROADMAP.md)指定性能负责人、要改善的用户场景、目标和预算；
-- 使用当前已安装 wheel、lockfile 和多个新进程建立可复现基线；
-- 测量区分 Python 解释器/原生依赖、公共导入、契约访问、内置注册、选中 extension 激活和 CLI，
-  并定位由 Stochaflow 负责的瓶颈；
-- 提案明确保护公共对象身份、`__all__`/文档一致性、Registry 即时校验、来源记录、固定聚合激活
-  和失败终止语义；
-- 结构检查、同平台 benchmark、wheel 安装测试和回退方案在实现前获得审阅。
+每项都要运行多个全新进程，同时记录耗时分布、峰值内存和已加载模块。这样才能区分 Python、
+PyTorch 等依赖本身的成本与 Stochaflow 可以控制的成本。旧测量只能提示“可以重新测”，不能
+直接证明当前版本有缺陷，也不能变成跨平台承诺。
 
-任一条件缺失时保持暂停。warm process、测试顺序或宽松 wall-clock threshold 不构成证据。
+## 测量之后可能不改任何代码
 
-## 要完成哪些工作
+如果主要等待来自 Python、PyTorch 或操作系统，Stochaflow 改动无法明显改善用户体验，就把
+测量方法、瓶颈归属和收益判断记录下来，然后关闭复查。如果能够节省的时间很少，而代价是
+新增两套导入路径或让错误推迟出现，也应选择“不修改”。这不是失败，而是一次完整的性能
+结论。
 
-### 建立新进程启动基线
+只有证据明确指向 Stochaflow 的一条路径时，才提出一个可以单独撤回的最小改动。例如，只有
+CLI 帮助确实因为提前加载训练执行代码而变慢时，才考虑把那段代码延后到用户真正选择
+`train` 之后。
 
-- 动作：分别测量公共导入、契约访问、内置注册、选中 extension 激活，以及 CLI root/help/
-  subcommand 的新进程启动时间、峰值内存和模块数量。
-- 原因：必须先区分 Python/原生依赖成本与 Stochaflow 自己负责的导入成本。
-- 影响范围：benchmark 工具、已安装 wheel、lockfile 和目标平台。
-- 交付物：可复现的时间分布、导入时间分析、内存/模块清单和用户场景预算。
-- 验证方法：在同一平台用多个新进程重复测量，记录测试工具自身成本与环境；用隔离 prototype
-  验证瓶颈原因。
-- 完成条件：能把主要成本定位到具体负责人；否则结束复审，不重构。
+延迟公共导入或为性能拆分模块都只是可能的办法，不是已经批准的设计。另一个架构问题是让
+内置组件的注册入口可定位、顺序确定、重复调用安全，并在失败后不留下半套状态；这并不等于
+延迟注册，也不能被写成性能收益。是否改变导入或注册发生的时间，仍要由本页要求的测量决定。
+更细地只激活一个 extension 中的部分组件则是更晚的独立问题：最小改动完成后仍有明确瓶颈，
+而且至少两个真实 extension 都需要它时，才值得讨论。
 
-### 确定每段导入成本由谁负责
+## 性能改动不能破坏什么
 
-- 动作：把模块依赖分为 metadata、公共契约、注册和真正执行四类，列出每个公共使用方实际必须
-  导入的模块。
-- 原因：公共导入、Registry 启动、激活和 CLI 的成本与正确性约束不同。
-- 影响范围：模块依赖、公共 imports、注册时机和 extension 激活。
-- 交付物：责任关系图、候选接口、必须保护的规则和逐项回退点。
-- 验证方法：时间测量和结构分析能解释同一项成本；不能只按模块数量或名称猜瓶颈。
-- 完成条件：只保留有测量收益且不破坏正确性的候选改动。
+维护者评估方案时必须守住这些实现约束：
 
-### 只实施测量指向的最小改动
+- 读取安装包信息（metadata）不能导入 extension 代码；
+- 组件名录（`Registry`）登记组件时仍要立即检查类型，内置和外部组件走同一公开路径；
+- 准备激活时保存隔离的配置副本，激活确认记录（receipt）必须对应同一次准备结果；
+- `prepare` 不导入目标代码，`activate` 仍按固定顺序一次性验证选中的聚合模块；
+- 公共导入返回真实对象，不能使用破坏 `isinstance` 或 `issubclass` 的代理类；
+- public `__all__`、静态类型导出和 API 文档保持一致；
+- 源码环境和已安装 wheel 都通过相同的激活测试。
 
-- 动作：只实现基线测量指向且通过架构审查的最小接口，并同步结构检查、benchmark、wheel 安装
-  验收和文档一致性检查。
-- 原因：一次重写整个 import graph 会混淆收益、责任和回退。
-- 影响范围：被选中模块、公共导入或 CLI dispatch；其他部分保持不变。
-- 交付物：独立可回退实现、新进程测量证据和迁移/兼容性结论。
-- 验证方法：public identity、`__all__`、Registry immediate validation、provenance、deterministic
-  activation 与 failure behavior 回归；真实场景达到预算。
-- 完成条件：收益可复现，正确性基线和 external extension substitution 全部保持。
+这份复查不设计“快速模式”，不增加新命令，不改变 entry-point 格式、extension 选择、来源
+记录或版本检查，也不要求 extension 作者维护第二套入口。它不会用隐式发现、代理类或延迟
+错误换取未经证明的速度，也不会把 Physics/KD 变成前置条件。
 
-## 如何证明已经完成
+## 怎样结束一次确实需要的改动
 
-- 同一 wheel 和平台的新进程测量达到预先定义的预算。
-- 测量证明收益来自被修改的 Stochaflow 导入路径。
-- 公共对象身份、`__all__`/文档一致性、Registry 校验和来源记录不变。
-- plugin selection、receipt、activation ordering、partial failure 和 new-process requirement 不变。
-- 结构检查、功能测试、wheel 安装验收与回退演练通过。
+如果测量最终支持修改代码，改动前要写明目标平台、安装包、依赖版本和等待时间预算。改动后
+用相同条件重复新进程测量，证明收益来自修改过的路径而不是缓存或噪声；同时通过公共对象、
+组件登记、来源核对、配置副本、并发、冲突、失败、重新启动和安装包测试。撤回改动后，配置
+和运行产物（artifact）的含义必须完全不变。
 
-## 明确不包含什么
-
-- 当前不实现 lazy/capability facade、`__getattr__` map 或 component-level deferred registration。
-- 当前不移动 owner modules、不拆 Registry/bootstrap、不改变 built-in registration timing。
-- 当前不改变 entry-point schema、selection、provenance、version/receipt 或 aggregate activation。
-- 当前不重构 CLI imports/help dispatch，也不把本记录链接进公开文档导航。
-- 不用 proxy class、implicit discovery 或 deferred validation 换取未经测量的速度。
-
-## 详细设计和研究资料在哪里
-
-### 更细粒度的延迟激活
-
-- 触发证据：首个最小改动完成后，仍有测量明确的 extension 激活瓶颈，且收益足以承担额外
-  并发和失败恢复复杂度。
-- 负责人：extension activation 与被延迟执行模块的共同维护者。
-- 保留范围：延迟导入真正执行代码；不引入按组件隐式发现、proxy class 或宽松校验。
-- 验证要求：覆盖并发激活、部分导入、重复进入、对象身份、失败终止和外部 extension 替换；
-  如果证据不足，继续使用当前固定顺序的聚合激活。
-
-### 相关资料
-
-- [Extension 导入边界与性能设计笔记](notes/extension-import-boundary-and-activation-latency-plan/design-notes.md)
-- [扩展与 Registry 公开说明](../configuration/extensions.md)
-- [扩展公共 API](../api/extensions.md)
-- [Extension 架构边界](../../ARCHITECTURE.md)
-- [根路线图](../../ROADMAP.md)
-
-旧性能阶段、阈值和模块布局只存在于 Git 历史。本文作为未来性能构想保留，未经维护者明确审阅
-不得删除。
+旧测量、导入层次、公共导入入口、组件初始化、CLI 拆分和更细粒度激活的候选方案保存在
+[Extension 启动性能设计附录](notes/extension-import-boundary-and-activation-latency-plan/design-notes.md)。
+这些方案没有获得实施许可；重新开始时必须用当前代码和依赖重新测量。

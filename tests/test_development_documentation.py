@@ -1,8 +1,10 @@
-"""Readability and integrity contracts for internal development documents."""
+"""Semantic integrity checks for internal development documentation."""
 
 from __future__ import annotations
 
 import re
+import subprocess
+from collections import deque
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -18,6 +20,11 @@ HISTORICAL_REVIEW_CANDIDATES_PATH = (
     DEVELOPMENT_ROOT / "historical-review-candidates.txt"
 )
 
+FULLWIDTH_COLON = "\N{FULLWIDTH COLON}"
+FULLWIDTH_LEFT_PARENTHESIS = "\N{FULLWIDTH LEFT PARENTHESIS}"
+FULLWIDTH_RIGHT_PARENTHESIS = "\N{FULLWIDTH RIGHT PARENTHESIS}"
+EM_DASH = "\N{EM DASH}"
+
 STATUS_TRANSLATIONS = {
     "已完成": "Done",
     "进行中": "In progress",
@@ -25,93 +32,23 @@ STATUS_TRANSLATIONS = {
     "候选": "Candidate",
     "暂停": "Parked",
 }
-ALLOWED_STATUSES = frozenset(STATUS_TRANSLATIONS)
-FUTURE_STATUSES = frozenset({"进行中", "下一步", "候选", "暂停"})
-FULLWIDTH_COLON = "\N{FULLWIDTH COLON}"
-FULLWIDTH_LEFT_PARENTHESIS = "\N{FULLWIDTH LEFT PARENTHESIS}"
-FULLWIDTH_RIGHT_PARENTHESIS = "\N{FULLWIDTH RIGHT PARENTHESIS}"
+
+TYPE_PATTERN = re.compile(
+    rf"^> 文档类型{FULLWIDTH_COLON}\s*(?P<value>.+?)\s*$", re.MULTILINE
+)
 STATUS_PATTERN = re.compile(
-    rf"^> 工作状态{FULLWIDTH_COLON}(.+)$", re.MULTILINE
-)
-FENCED_CODE_PATTERN = re.compile(
-    r"^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)[ \t]*$",
-    re.MULTILINE | re.DOTALL,
-)
-HTML_COMMENT_PATTERN = re.compile(r"<!--.*?-->", re.DOTALL)
-INLINE_CODE_PATTERN = re.compile(r"`[^`\n]+`")
-MARKDOWN_LINK_PATTERN = re.compile(
-    r"!?\[[^\]\n]*\]\(\s*(?P<target><[^>\n]+>|[^)\s]+)"
-    r"(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)"
-)
-VISIBLE_LINK_PATTERN = re.compile(r"!?\[([^\]\n]*)\]\([^)\n]+\)")
-H2_PATTERN = re.compile(r"^## (?P<title>.+?)\s*$", re.MULTILINE)
-H3_PATTERN = re.compile(r"^### (?P<title>.+?)\s*$", re.MULTILINE)
-TOCTREE_PATTERN = re.compile(
-    r"^```\{toctree\}\s*$\n(?P<body>.*?)^```\s*$",
-    re.MULTILINE | re.DOTALL,
-)
-LEGACY_STAGE_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])(?:"
-    r"A[0-3]|B[01]|C[01]|H[0-4]|R[0-2]|SR[0-2]|LG0|"
-    r"CM[01]|W0[AB]|T[0-5]|D[0-7]|E[0-5]|L[0-3]|"
-    r"LD(?:[23]|4[ABC])|Q0|S[01]|SD(?:10|[0-24-9])|X0|P2"
-    r")(?![A-Za-z0-9])"
-)
-# SD3 is deliberately absent: it is also the maintained Stable Diffusion 3 name.
-BANNED_JARGON = (
-    "vertical slice",
-    "substrate",
-    "seam",
-    "closeout",
-    "promotion gate",
-    "decision-gated",
-    "rebase",
-    "task-owned",
-    "milestone",
-)
-FUTURE_REQUIRED_HEADINGS = (
-    "完成后用户能做什么",
-    "当前仓库已经支持什么",
-    "还没有支持什么",
-    "要完成哪些工作",
-    "如何证明已经完成",
-    "明确不包含什么",
-    "详细设计和研究资料在哪里",
-)
-COMPLETED_REQUIRED_HEADINGS = (
-    "完成后用户能做什么",
-    "当前仓库已经支持什么",
-    "还没有支持什么",
-    "什么时候需要重新讨论",
-    "如何证明当前决策仍然成立",
-    "明确不包含什么",
-    "详细设计和研究资料在哪里",
-)
-START_OR_REVIEW_HEADINGS = frozenset(
-    {
-        "什么时候可以开始",
-        "什么时候重新审查",
-        "什么时候可以开始或重新审查",
-    }
-)
-TASK_CARD_FIELDS = (
-    "动作",
-    "原因",
-    "影响范围",
-    "交付物",
-    "验证方法",
-    "完成条件",
-)
-TASK_CARD_FIELD_PATTERN = re.compile(
-    rf"^\s*[-*]\s+(?:\*\*)?(?P<label>{'|'.join(TASK_CARD_FIELDS)})"
-    rf"[:{FULLWIDTH_COLON}](?:\*\*)?\s*(?P<value>\S.*)$",
+    rf"^> 工作状态{FULLWIDTH_COLON}\s*(?P<value>已完成|进行中|下一步|候选|暂停)"
+    rf"(?:{FULLWIDTH_LEFT_PARENTHESIS}"
+    rf"(?P<english>Done|In progress|Next|Candidate|Parked)"
+    rf"{FULLWIDTH_RIGHT_PARENTHESIS})?\s*$",
     re.MULTILINE,
 )
-INDEX_STATUS_MARKERS = {
-    "已完成": f"已完成{FULLWIDTH_COLON}",
-    "候选": f"候选{FULLWIDTH_COLON}",
-    "暂停": f"暂停{FULLWIDTH_COLON}",
-}
+AVAILABILITY_PATTERN = re.compile(
+    rf"^> 当前可用性{FULLWIDTH_COLON}\s*(?P<value>\S.*?)\s*$", re.MULTILINE
+)
+RESEARCH_SCHEDULE_PATTERN = re.compile(
+    rf"^> 排期状态{FULLWIDTH_COLON}\s*不参与排期\s*$", re.MULTILINE
+)
 ROOT_SELECTION_PATTERNS = {
     "进行中": re.compile(r"^> In progress: (?P<value>.+?)\s*$", re.MULTILINE),
     "下一步": re.compile(r"^> Next: (?P<value>.+?)\s*$", re.MULTILINE),
@@ -125,22 +62,53 @@ DEVELOPMENT_SELECTION_PATTERNS = {
     ),
 }
 
+FENCED_CODE_PATTERN = re.compile(
+    r"^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)[ \t]*$",
+    re.MULTILINE | re.DOTALL,
+)
+HTML_COMMENT_PATTERN = re.compile(r"<!--.*?-->", re.DOTALL)
+INLINE_CODE_PATTERN = re.compile(r"`[^`\n]+`")
+MARKDOWN_LINK_PATTERN = re.compile(
+    r"!?\[[^\]\n]*\]\(\s*(?P<target><[^>\n]+>|[^)\s]+)"
+    r"(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)"
+)
+H2_PATTERN = re.compile(r"^## (?P<title>.+?)\s*$", re.MULTILINE)
+
+LEGACY_STAGE_HEADING_PATTERN = re.compile(
+    r"^(?:(?:阶段|里程碑|Phase|Stage)\s*)?(?:"
+    r"A[0-3]|B[01]|C[01]|H[0-4]|R[0-2]|SR[0-2]|LG0|"
+    r"CM[01]|W0[AB]|T[0-5]|D[0-7]|E[0-5]|L[0-3]|"
+    r"LD(?:[23]|4[ABC])|Q0|S[01]|X0"
+    rf")(?:\s*[:{FULLWIDTH_COLON}{EM_DASH}-]|\s*$)",
+    re.IGNORECASE,
+)
+# SD3 is deliberately absent because it is also a maintained model name.
+BANNED_PLANNING_JARGON = (
+    "vertical slice",
+    "substrate",
+    "seam",
+    "closeout",
+    "promotion gate",
+    "decision-gated",
+    "rebase",
+    "task-owned",
+)
+HISTORICAL_BASELINE = "5c75a76de3d696a5b734ae4eefe88a30532bd2de"
+
+
+def _content(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
 
 def _historical_review_candidate_names() -> frozenset[str]:
-    """Return historical files awaiting a separate deletion decision."""
-
     return frozenset(
         line.strip()
-        for line in HISTORICAL_REVIEW_CANDIDATES_PATH.read_text(
-            encoding="utf-8"
-        ).splitlines()
+        for line in _content(HISTORICAL_REVIEW_CANDIDATES_PATH).splitlines()
         if line.strip() and not line.startswith("#")
     )
 
 
-def _main_development_documents() -> tuple[Path, ...]:
-    """Return reader-facing development documents, excluding the index."""
-
+def _reader_documents() -> tuple[Path, ...]:
     return tuple(
         path
         for path in sorted(DEVELOPMENT_ROOT.glob("*.md"))
@@ -149,61 +117,71 @@ def _main_development_documents() -> tuple[Path, ...]:
     )
 
 
-def _main_plans() -> tuple[Path, ...]:
-    """Return status-bearing plans, excluding the portfolio roadmap."""
+def _typed_reader_documents() -> tuple[Path, ...]:
+    return tuple(path for path in _reader_documents() if path != DEVELOPMENT_ROADMAP)
 
+
+def _single_match(path: Path, pattern: re.Pattern[str], label: str) -> str:
+    matches = tuple(pattern.finditer(_content(path)))
+    assert len(matches) == 1, f"{path}: expected one {label} declaration"
+    return matches[0].group("value").strip()
+
+
+def _document_type(path: Path) -> str:
+    return _single_match(path, TYPE_PATTERN, "document type")
+
+
+def _status_or_none(path: Path) -> str | None:
+    matches = tuple(STATUS_PATTERN.finditer(_content(path)))
+    assert len(matches) <= 1, f"{path}: expected at most one work status"
+    if not matches:
+        return None
+    status = matches[0].group("value").strip()
+    english = matches[0].group("english")
+    if english is not None:
+        assert english == STATUS_TRANSLATIONS[status], (
+            f"{path}: {status!r} does not match {english!r}"
+        )
+    return status
+
+
+def _status(path: Path) -> str:
+    status = _status_or_none(path)
+    assert status is not None, f"{path}: expected one work status"
+    return status
+
+
+def _scheduled_documents() -> tuple[Path, ...]:
     return tuple(
         path
-        for path in _main_development_documents()
-        if path != DEVELOPMENT_ROADMAP
+        for path in _typed_reader_documents()
+        if _status_or_none(path) in {"进行中", "下一步", "候选", "暂停"}
     )
 
 
-def _toctree_targets(content: str) -> frozenset[str]:
-    """Return document targets from every MyST toctree block."""
+def _research_documents() -> tuple[Path, ...]:
+    return tuple(
+        path
+        for path in _typed_reader_documents()
+        if RESEARCH_SCHEDULE_PATTERN.search(_content(path))
+    )
 
-    targets: set[str] = set()
-    for match in TOCTREE_PATTERN.finditer(content):
-        for raw_line in match.group("body").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith(":"):
-                continue
-            explicit_target = re.search(r"<([^<>]+)>$", line)
-            targets.add(explicit_target.group(1) if explicit_target else line)
-    return frozenset(targets)
+
+def _closed_documents() -> tuple[Path, ...]:
+    return tuple(
+        path
+        for path in _typed_reader_documents()
+        if _status_or_none(path) == "已完成"
+    )
 
 
 def _without_code_or_comments(content: str) -> str:
-    """Remove text that Markdown does not present as document navigation."""
-
     content = FENCED_CODE_PATTERN.sub("", content)
     content = HTML_COMMENT_PATTERN.sub("", content)
     return INLINE_CODE_PATTERN.sub("", content)
 
 
-def _reader_text(content: str) -> str:
-    """Return narrative text while retaining inline-code identifiers."""
-
-    content = FENCED_CODE_PATTERN.sub("", content)
-    content = HTML_COMMENT_PATTERN.sub("", content)
-    return VISIBLE_LINK_PATTERN.sub(r"\1", content)
-
-
-def _status(path: Path, content: str) -> str:
-    """Read the one required work-status declaration."""
-
-    matches = STATUS_PATTERN.findall(content)
-    assert len(matches) == 1, (
-        f"{path}: expected one '> 工作状态{FULLWIDTH_COLON}…' line"
-    )
-    status = matches[0].strip()
-    assert status in ALLOWED_STATUSES, f"{path}: unsupported status {status!r}"
-    return status
-
-
 def _local_link_targets(path: Path, content: str) -> tuple[Path, ...]:
-    """Resolve inline local Markdown links relative to their document."""
-
     content = _without_code_or_comments(content)
     resolved: list[Path] = []
     for match in MARKDOWN_LINK_PATTERN.finditer(content):
@@ -218,12 +196,9 @@ def _local_link_targets(path: Path, content: str) -> tuple[Path, ...]:
     return tuple(resolved)
 
 
-def _heading_sections(content: str, level: int) -> tuple[tuple[str, str], ...]:
-    """Return exact ATX headings and the content up to the next peer heading."""
-
+def _heading_sections(content: str) -> tuple[tuple[str, str], ...]:
     content = FENCED_CODE_PATTERN.sub("", content)
-    pattern = H2_PATTERN if level == 2 else H3_PATTERN
-    matches = tuple(pattern.finditer(content))
+    matches = tuple(H2_PATTERN.finditer(content))
     return tuple(
         (
             match.group("title").strip(),
@@ -237,299 +212,287 @@ def _heading_sections(content: str, level: int) -> tuple[tuple[str, str], ...]:
     )
 
 
-def _one_section(
-    path: Path, sections: tuple[tuple[str, str], ...], title: str
-) -> str:
-    """Return one required section body."""
-
-    bodies = [body for heading, body in sections if heading == title]
-    assert len(bodies) == 1, f"{path}: expected one H2 {title!r}"
-    return bodies[0]
+def _section_containing(content: str, phrase: str) -> str:
+    matches = [body for title, body in _heading_sections(content) if phrase in title]
+    assert len(matches) == 1, f"expected one H2 containing {phrase!r}"
+    return matches[0]
 
 
-def _roadmap_preamble(content: str) -> str:
-    """Exclude repeated explanatory status text below the first H2."""
-
+def _preamble(content: str) -> str:
     first_h2 = H2_PATTERN.search(content)
     return content[: first_h2.start()] if first_h2 else content
 
 
-def _roadmap_selection(
-    path: Path,
-    content: str,
-    pattern: re.Pattern[str],
-    none_value: str,
-) -> frozenset[Path]:
-    """Parse one roadmap selection as no item or one linked main plan."""
-
-    matches = tuple(pattern.finditer(_roadmap_preamble(content)))
-    assert len(matches) == 1, f"{path}: expected one {pattern.pattern!r} declaration"
-    value = matches[0].group("value").strip()
-    if value == none_value:
-        return frozenset()
-    targets = _local_link_targets(path, value)
-    assert len(targets) == 1, f"{path}: selected work must be one Markdown link"
-    assert targets[0] in _main_plans(), f"{path}: selection is not a main plan"
-    return frozenset(targets)
+def _selection_value(content: str, pattern: re.Pattern[str]) -> str:
+    matches = tuple(pattern.finditer(_preamble(content)))
+    assert len(matches) == 1, f"expected one {pattern.pattern!r} declaration"
+    return matches[0].group("value").strip()
 
 
-def _status_table_values(content: str, marker: str) -> frozenset[str]:
-    """Read the first cells from the uniquely identified status-model section."""
+def _selection_target(
+    *, value: str, source: Path, empty_value: str
+) -> Path | None:
+    if value == empty_value:
+        return None
+    targets = _local_link_targets(source, value)
+    assert len(targets) == 1, (
+        f"{source}: a selected item must link exactly one development plan"
+    )
+    return targets[0]
 
-    sections = _heading_sections(content, 2)
-    matching = [body for title, body in sections if marker in title]
-    assert len(matching) == 1, f"expected one status section containing {marker!r}"
-    cells = re.findall(r"^\|\s*([^|]+?)\s*\|", matching[0], re.MULTILINE)
-    return frozenset(
+
+def _historical_baseline_document_names() -> set[str]:
+    result = subprocess.run(
+        [
+            "git",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            HISTORICAL_BASELINE,
+            "docs/development",
+        ],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return {
+        Path(line).name
+        for line in result.stdout.splitlines()
+        if line.endswith(".md")
+    }
+
+
+def test_reader_documents_use_only_the_shared_header_contract() -> None:
+    """Share status metadata without imposing one visible prose template."""
+
+    for path in _typed_reader_documents():
+        document_type = _document_type(path)
+        assert document_type
+        availability = _single_match(
+            path, AVAILABILITY_PATTERN, "current availability"
+        )
+        assert availability
+        content = _content(path)
+        assert "## 先看结论" not in content
+
+        status = _status_or_none(path)
+        unscheduled = RESEARCH_SCHEDULE_PATTERN.search(content)
+        assert (status is None) != (unscheduled is None), (
+            f"{path}: declare either one work status or '不参与排期'"
+        )
+
+
+def test_status_vocabulary_and_current_queue_are_consistent() -> None:
+    """Keep one scheduling authority and the derived execution queue in sync."""
+
+    root = _content(ROADMAP)
+    development = _content(DEVELOPMENT_ROADMAP)
+    root_statuses = {
         cell.strip()
-        for cell in cells
-        if cell.strip() not in {"Status", "状态"}
-        and re.fullmatch(r"-+", cell.strip()) is None
-    )
-
-
-def test_status_vocabulary_and_roadmap_selections_are_consistent() -> None:
-    """Keep the five-state model and the two scheduling authorities aligned."""
-
-    root = ROADMAP.read_text(encoding="utf-8")
-    development = DEVELOPMENT_ROADMAP.read_text(encoding="utf-8")
-    index = DEVELOPMENT_INDEX.read_text(encoding="utf-8")
-
-    root_cells = _status_table_values(root, "Status model")
-    assert root_cells == frozenset(STATUS_TRANSLATIONS.values())
-    expected_chinese_cells = frozenset(
-        f"{status}{FULLWIDTH_LEFT_PARENTHESIS}{english}"
-        f"{FULLWIDTH_RIGHT_PARENTHESIS}"
-        for status, english in STATUS_TRANSLATIONS.items()
-    )
-    for content in (development, index):
-        cells = _status_table_values(content, "五种状态")
-        assert cells == expected_chinese_cells
-
-    plan_statuses = {
-        path: _status(path, path.read_text(encoding="utf-8"))
-        for path in _main_plans()
+        for cell in re.findall(
+            r"^\|\s*(Done|In progress|Next|Candidate|Parked)\s*\|",
+            root,
+            re.MULTILINE,
+        )
     }
+    assert root_statuses == set(STATUS_TRANSLATIONS.values())
+
     for status in ("进行中", "下一步"):
-        root_selected = _roadmap_selection(
-            ROADMAP, root, ROOT_SELECTION_PATTERNS[status], "None"
+        root_value = _selection_value(root, ROOT_SELECTION_PATTERNS[status])
+        development_value = _selection_value(
+            development, DEVELOPMENT_SELECTION_PATTERNS[status]
         )
-        development_selected = _roadmap_selection(
-            DEVELOPMENT_ROADMAP,
-            development,
-            DEVELOPMENT_SELECTION_PATTERNS[status],
-            "无",
+        root_target = _selection_target(
+            value=root_value, source=ROADMAP, empty_value="None"
         )
-        marked = frozenset(
-            path for path, plan_status in plan_statuses.items() if plan_status == status
+        development_target = _selection_target(
+            value=development_value,
+            source=DEVELOPMENT_ROADMAP,
+            empty_value="无",
         )
-        assert len(marked) <= 1, f"at most one plan may be {status}"
-        assert root_selected == development_selected == marked
-
-    assert len(root.splitlines()) <= 160
-    assert len(development.splitlines()) <= 250
-
-
-def test_development_index_links_and_classifies_every_main_document() -> None:
-    """Require exact index links and the expected primary status membership."""
-
-    index = DEVELOPMENT_INDEX.read_text(encoding="utf-8")
-    index_targets = frozenset(_local_link_targets(DEVELOPMENT_INDEX, index))
-    for path in _main_development_documents():
-        assert path in index_targets, f"development index does not link {path.name}"
-
-    sections = _heading_sections(index, 2)
-    for status, marker in INDEX_STATUS_MARKERS.items():
-        matches = [body for title, body in sections if marker in title]
-        assert len(matches) == 1, f"index must have one {status} section"
-        category_targets = frozenset(
-            _local_link_targets(DEVELOPMENT_INDEX, matches[0])
-        )
-        # A plan may also document a completed foundation or a differently parked
-        # subgoal, so require primary membership without forbidding extra links.
-        for path in _main_plans():
-            if _status(path, path.read_text(encoding="utf-8")) == status:
-                assert path in category_targets, (
-                    f"{path}: missing from index category {status}"
-                )
-
-
-def test_historical_review_candidates_are_not_treated_as_main_plans() -> None:
-    """Keep unapproved historical deletions outside the reader-facing plan set."""
-
-    existing_names = {
-        path.name for path in DEVELOPMENT_ROOT.glob("*.md")
-    }
-    main_names = {path.name for path in _main_development_documents()}
-    assert existing_names <= {
-        "README.md",
-        *main_names,
-        *_historical_review_candidate_names(),
-    }
-
-    deletion_boundary = CONTENT_MAP.read_text(encoding="utf-8").split(
-        "## 删除边界",
-        1,
-    )[1]
-    for name in _historical_review_candidate_names():
-        assert f"`{name}`" in deletion_boundary
-
-
-def test_sphinx_navigation_reaches_roadmap_and_every_main_plan() -> None:
-    """Keep the published maintenance entry complete and directly navigable."""
-
-    homepage_targets = _toctree_targets(
-        DOCS_INDEX.read_text(encoding="utf-8")
-    )
-    assert "roadmap" in homepage_targets
-    assert "development/README" in homepage_targets
-
-    development_targets = _toctree_targets(
-        DEVELOPMENT_INDEX.read_text(encoding="utf-8")
-    )
-    expected_targets = frozenset(
-        path.stem for path in _main_development_documents()
-    )
-    assert development_targets == expected_targets
-
-
-def test_main_plans_use_ordered_nonempty_sections_and_task_cards() -> None:
-    """Make every plan and every task card answer its operational questions."""
-
-    for path in _main_plans():
-        content = path.read_text(encoding="utf-8")
-        status = _status(path, content)
-        sections = _heading_sections(content, 2)
-        titles = [title for title, _ in sections]
-
-        assert len(content.splitlines()) <= 400, f"{path}: main plan exceeds 400 lines"
-        assert len(titles) == len(set(titles)), f"{path}: duplicate H2 heading"
-        for title, body in sections:
-            assert _reader_text(body).strip(), f"{path}: empty H2 section {title!r}"
-
-        source_lines = [
-            line
-            for line in content.splitlines()
-            if line.startswith(f"> 规范来源{FULLWIDTH_COLON}")
-        ]
-        assert len(source_lines) == 1, f"{path}: expected one normative-source line"
-        assert _local_link_targets(path, source_lines[0]), (
-            f"{path}: normative sources must be Markdown links"
-        )
-
-        if status in FUTURE_STATUSES:
-            start_titles = [title for title in titles if title in START_OR_REVIEW_HEADINGS]
-            assert len(start_titles) == 1, f"{path}: expected one start/review H2"
-            required = (
-                *FUTURE_REQUIRED_HEADINGS[:3],
-                start_titles[0],
-                *FUTURE_REQUIRED_HEADINGS[3:],
-            )
-            work = _one_section(path, sections, "要完成哪些工作")
-            cards = _heading_sections(work, 3)
-            assert cards, f"{path}: work section must contain task cards"
-            for card_title, card_body in cards:
-                fields = tuple(TASK_CARD_FIELD_PATTERN.finditer(card_body))
-                labels = tuple(field.group("label") for field in fields)
-                assert labels == TASK_CARD_FIELDS, (
-                    f"{path}: task card {card_title!r} has fields {labels!r}"
-                )
-                assert all(
-                    _reader_text(field.group("value")).strip() for field in fields
-                ), (
-                    f"{path}: task card {card_title!r} has an empty field"
-                )
-        else:
-            required = COMPLETED_REQUIRED_HEADINGS
-
-        assert tuple(titles) == required, (
-            f"{path}: H2 headings must exactly match the required ordered template; "
-            f"got {titles!r}"
-        )
-
-
-def test_main_documents_avoid_legacy_ids_and_planning_jargon() -> None:
-    """Keep retired shorthand in archives rather than reader-facing plans."""
-
-    for path in (DEVELOPMENT_INDEX, *_main_development_documents()):
-        visible = _reader_text(path.read_text(encoding="utf-8"))
-        legacy_match = LEGACY_STAGE_PATTERN.search(visible)
-        assert legacy_match is None, (
-            f"{path}: legacy stage ID {legacy_match.group(0)!r} belongs in the "
-            "history mapping"
-        )
-        for term in BANNED_JARGON:
-            pattern = rf"(?<![A-Za-z]){re.escape(term)}(?![A-Za-z])"
-            assert re.search(pattern, visible, re.IGNORECASE) is None, (
-                f"{path}: replace planning jargon {term!r}"
-            )
-        for line in visible.splitlines():
-            if line.startswith("#"):
-                assert re.search(
-                    r"\b(?:stage|phase|milestone)\b", line, re.IGNORECASE
-                ) is None, f"{path}: heading must name an action or result: {line!r}"
-
-
-def test_development_notes_are_owned_and_reachable_from_the_index() -> None:
-    """Keep the index-to-plan-to-notes ownership graph navigable."""
-
-    main_documents = _main_development_documents()
-    notes = tuple(sorted(NOTES_ROOT.rglob("*.md")))
-    nodes = frozenset((DEVELOPMENT_INDEX, *main_documents, *notes))
-    edges = {
-        path: frozenset(
-            target
-            for target in _local_link_targets(
-                path, path.read_text(encoding="utf-8")
-            )
-            if target in nodes
-        )
-        for path in nodes
-    }
-
-    reachable = {DEVELOPMENT_INDEX}
-    pending = [DEVELOPMENT_INDEX]
-    while pending:
-        source = pending.pop()
-        for target in edges[source] - reachable:
-            reachable.add(target)
-            pending.append(target)
-
-    assert set(main_documents) <= reachable
-    assert set(notes) <= reachable
-    for note in notes:
-        incoming = {source for source, targets in edges.items() if note in targets}
-        assert incoming, f"{note}: note has no inbound Markdown link"
-
-    ownership = CONTENT_MAP.read_text(encoding="utf-8").split("## 删除边界", 1)[0]
-    ownership_targets = frozenset(
-        target
-        for line in ownership.splitlines()
-        if line.startswith("|")
-        for target in _local_link_targets(CONTENT_MAP, line.split("|", 2)[1])
-    )
-    for path in _main_plans():
-        content = path.read_text(encoding="utf-8")
-        if _status(path, content) not in FUTURE_STATUSES:
-            continue
-        assert path in ownership_targets, (
-            f"{path}: future plan has no owner record in the content map"
-        )
-        sections = _heading_sections(content, 2)
-        start_titles = [
-            title for title, _ in sections if title in START_OR_REVIEW_HEADINGS
-        ]
-        assert len(start_titles) == 1, f"{path}: expected one start/review H2"
-        assert _reader_text(_one_section(path, sections, start_titles[0])).strip(), (
-            f"{path}: start/review condition is empty"
-        )
-        detail = _one_section(path, sections, "详细设计和研究资料在哪里")
-        note_targets = {
-            target
-            for target in _local_link_targets(path, detail)
-            if target.suffix == ".md" and target.is_relative_to(NOTES_ROOT)
+        selected_documents = {
+            path for path in _scheduled_documents() if _status(path) == status
         }
-        assert note_targets, f"{path}: detail section does not link owned notes"
+        assert len(selected_documents) <= 1
+        expected_targets = selected_documents or {None}
+        assert {root_target, development_target} == expected_targets
+
+
+def test_roadmap_schedules_only_concrete_directions() -> None:
+    """Research notes and closed records must not become roadmap work."""
+
+    root = _content(ROADMAP)
+    candidate_links = set(
+        _local_link_targets(
+            ROADMAP, _section_containing(root, "Candidate")
+        )
+    )
+    parked_links = set(
+        _local_link_targets(
+            ROADMAP, _section_containing(root, "Parked")
+        )
+    )
+    backlog = {
+        path
+        for path in _scheduled_documents()
+        if _status(path) in {"候选", "暂停"}
+    }
+    candidate_targets = candidate_links & backlog
+    parked_targets = parked_links & backlog
+    assert candidate_targets | parked_targets == backlog
+    assert candidate_targets.isdisjoint(parked_targets)
+    reader_documents = set(_typed_reader_documents())
+    assert all(
+        _status(path) == "候选"
+        for path in candidate_links & reader_documents
+    )
+    assert all(
+        _status(path) == "暂停" for path in parked_links & reader_documents
+    )
+    assert (candidate_links | parked_links).isdisjoint(
+        {*_research_documents(), *_closed_documents()}
+    )
+
+
+def test_key_product_meanings_survive_editorial_rewrites() -> None:
+    """Protect the few product ideas whose loss would change the roadmap."""
+
+    workflow = _content(
+        DEVELOPMENT_ROOT / "default-workflow-pipeline-support-plan.md"
+    )
+    for phrase in ("训练后蒸馏", "生图后超分"):
+        assert phrase in workflow
+
+    artifact = _content(
+        DEVELOPMENT_ROOT / "artifact-metadata-provenance-capacity-model-proposal.md"
+    )
+    for idea_words in (("看懂", "说明"), ("追查", "来源"), ("资源",)):
+        assert any(word in artifact for word in idea_words)
+    assert any(word in artifact for word in ("独立", "分开", "不要求一起"))
+
+    extension = _content(
+        DEVELOPMENT_ROOT / "extension-import-boundary-and-activation-latency-plan.md"
+    )
+    assert "不修改" in extension
+    assert "性能" in extension
+
+    evaluation = DEVELOPMENT_ROOT / "post-training-evaluation-support-plan.md"
+    assert _status(evaluation) == "已完成"
+
+    sampling = _content(DEVELOPMENT_ROOT / "sampling-request-config-refactor.md")
+    assert "Hydra" in sampling
+    assert any(
+        conclusion in sampling
+        for conclusion in ("保持现状", "无需改变", "不修改")
+    )
+
+    assert "| Data |" in _content(ROADMAP)
+    for name in (
+        "data-recipe-extension-ergonomics-plan.md",
+        "data-storage-and-payload-adapter-support-plan.md",
+        "streaming-data-lifecycle-support-plan.md",
+    ):
+        path = DEVELOPMENT_ROOT / name
+        assert path in _research_documents()
+
+
+def test_retained_future_interface_sketches_are_clearly_non_executable() -> None:
+    """Keep only useful sketches, without presenting them as current APIs."""
+
+    for name in (
+        "default-workflow-pipeline-support-plan.md",
+        "hydra-configuration-composition-migration-plan.md",
+        "distributed-training-and-inference-support-plan.md",
+        "automated-model-tuning-plan.md",
+    ):
+        content = _content(DEVELOPMENT_ROOT / name)
+        assert re.search(r"(?:不能|不可)\s*执行", content)
+        assert re.search(r"(?:不是|不构成|非)\s*公共\s*API", content)
+
+
+def test_development_index_reaches_reader_topics_without_fixing_its_layout() -> None:
+    """Allow natural grouping while keeping every reader topic discoverable."""
+
+    reader_documents = set(_reader_documents())
+    edges: dict[Path, set[Path]] = {}
+    for path in (DEVELOPMENT_INDEX, *_reader_documents()):
+        edges[path] = {
+            target
+            for target in _local_link_targets(path, _content(path))
+            if target in reader_documents
+        }
+
+    distance = {DEVELOPMENT_INDEX: 0}
+    queue: deque[Path] = deque([DEVELOPMENT_INDEX])
+    while queue:
+        source = queue.popleft()
+        if distance[source] == 2:
+            continue
+        for target in edges.get(source, set()):
+            if target not in distance:
+                distance[target] = distance[source] + 1
+                queue.append(target)
+
+    missing = reader_documents - distance.keys()
+    assert not missing, f"development topics are more than two clicks away: {missing}"
+    assert "development/README" in _content(DOCS_INDEX)
+
+
+def test_historical_baseline_has_a_current_location_map() -> None:
+    """Preserve maintainer ideas explicitly instead of relying on Git history."""
+
+    content = _content(CONTENT_MAP)
+    assert HISTORICAL_BASELINE in content
+    mapped_rows = []
+    for line in content.splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        assert len(cells) == 3, f"malformed historical mapping row: {line}"
+        if not re.fullmatch(r"`[^`]+\.md`", cells[0]):
+            continue
+        name = cells[0].strip("`")
+        assert cells[1], f"historical mapping does not say what {name} preserves"
+        assert "](" in cells[2], f"historical mapping has no current location: {name}"
+        mapped_rows.append(name)
+
+    assert set(mapped_rows) == _historical_baseline_document_names()
+
+
+def test_historical_review_candidates_remain_a_separate_decision() -> None:
+    """Keep the four historical deletions outside the documentation rewrite."""
+
+    candidates = _historical_review_candidate_names()
+    assert candidates == {
+        "afhq-v2-checkpoint-cleanup-20260806.md",
+        "afhq-v2-learned-range-v-closeout.md",
+        "legacy-intel-macos-pytorch-test-lifecycle.md",
+        "p2-experiment-closeout.md",
+    }
+    content_map = _content(CONTENT_MAP)
+    for name in candidates:
+        assert f"`{name}`" in content_map
+
+
+def test_reader_openings_and_headings_avoid_old_planning_shorthand() -> None:
+    """Keep old IDs and unexplained planning jargon out of the reading path."""
+
+    for path in (DEVELOPMENT_INDEX, *_reader_documents()):
+        content = _content(path)
+        visible = _without_code_or_comments(content)
+        headings = [title for title, _ in _heading_sections(visible)]
+        for title in headings:
+            assert LEGACY_STAGE_HEADING_PATTERN.search(title) is None, (
+                f"{path}: legacy stage heading {title!r} belongs in history"
+            )
+        opening_and_headings = _preamble(visible) + "\n" + "\n".join(headings)
+        for term in BANNED_PLANNING_JARGON:
+            pattern = rf"(?<![A-Za-z]){re.escape(term)}(?![A-Za-z])"
+            assert re.search(pattern, opening_and_headings, re.IGNORECASE) is None, (
+                f"{path}: explain planning jargon {term!r} in ordinary language"
+            )
 
 
 def test_development_markdown_links_resolve_inside_the_repository() -> None:
@@ -538,12 +501,11 @@ def test_development_markdown_links_resolve_inside_the_repository() -> None:
     paths = (
         ROADMAP,
         DEVELOPMENT_INDEX,
-        *_main_development_documents(),
+        *_reader_documents(),
         *sorted(NOTES_ROOT.rglob("*.md")),
     )
     for path in paths:
-        content = path.read_text(encoding="utf-8")
-        for target in _local_link_targets(path, content):
+        for target in _local_link_targets(path, _content(path)):
             assert target.is_relative_to(PROJECT_ROOT), (
                 f"{path}: local link escapes the repository: {target}"
             )

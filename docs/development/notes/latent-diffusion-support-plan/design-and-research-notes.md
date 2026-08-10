@@ -1,42 +1,23 @@
 # Latent Diffusion 设计与研究附录
 
-> 本文保存 2026-08-09 主计划重基线前的完整候选设计、调研、配置草案、
-> 数据与硬件路线以及 future decision gates，供重新启动时复核。它不是当前能力、
-> 排期、公共 API 或验收权威；其中旧章节编号和阶段名称只用于追溯，不构成实施授权。
+> 本文保存 2026-08-09 主计划缩短前的完整候选设计、调研、配置草案、数据路线和
+> 硬件估算。它不是当前能力、排期、公共 API 或验收权威。旧章节编号只用于追查历史。
 
-- 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：Post-A3 roadmap re-decision candidate；不属于当前 pixel-space/Evaluation closeout。
-  Phase 1 inference asset projection 已完成，Phase 2–4 与 task-owned latent formal
-  quality profile 尚未实现且未排期
-- 高层排期：[根级 Roadmap](../../../../ROADMAP.md)；候选依赖与入口见
-  [Development Priority Roadmap](../../development-priority-roadmap.md)。本文仅记录尚未获批的
-  latent capability 候选设计
-- 初始制定日期：2026-07-26
-- 本次修订日期：2026-08-09
-- 排期前置：当前 pixel-space learned-range-v 质量 closeout 完成后，再由根
-  [`ROADMAP.md`](../../../../ROADMAP.md) 明确决定是否恢复本计划。A0、B1/C1、正式 Metrics、
-  A1 与 Phase 1 已完成是技术前置事实，不构成自动启动 Phase 2 的排期授权；已退休的
-  weighting 实验不再是 latent 排期前置
-- 候选产品路线：冻结的预训练图像 codec + conditional latent Gaussian diffusion
-- 首个 reference denoiser：DiT-S/2 → DiT-B/2；它是验收实现，不是该计划的
-  abstraction boundary
-- 下游候选路线：同一 codec/latent contract 上的 Stable Diffusion
-  component-native interoperability、text conditioning 与 UNet training；
-  由
-  [Stable Diffusion Component-Native 支持计划](../../stable-diffusion-component-native-support-plan.md)
-  独立拥有
-- 首个开放正式目标：从 The Met Open Access 策展并冻结的 150k–300k
-  image/metadata snapshot；精确数量和 taxonomy 由 profiling gate 冻结
-- 对照目标：原始分辨率 ImageNet-100 class benchmark；不得使用短边已缩至
-  160 pixels 的镜像冒充 256×256 source
-- 扩展目标：LHQ quality probe、DomainNet class + domain conditioning，以及
-  independent non-DiT denoiser substitution
-- correctness/smoke：AFHQ-v2；它不再承担规模和最终质量证明
-- 关联计划：
-  [默认工作流与可组合任务支持计划](../../default-workflow-pipeline-support-plan.md)、
-  [正式 Metrics 扩展 API](../../../api/extensions.md#metrics)、
-  [训练后 Evaluation 与 Benchmark 支持计划](../../post-training-evaluation-support-plan.md)、
-  [正式架构说明](../../../../ARCHITECTURE.md)
+## 怎样阅读这份附录
+
+- 普通读者先看[Latent Diffusion 主计划](../../latent-diffusion-support-plan.md)。主计划说明
+  用户怎样提供图像与 codec、训练模型、生成图片，以及当前缺什么。
+- 本附录给维护者保存 codec 接口、预先计算的数据、候选模型、外部库、硬件、配置和完整测试
+  思路。真正开始前必须按当前代码、依赖和硬件重新核对。
+- 当前已经完成的是通用 checkpoint 推理资产保存。codec 适配、latent 数据、训练、解码采样
+  和任务评估仍未实现，也没有排期。
+- 旧研究以冻结的预训练 codec 和有类别条件的 latent diffusion 为首版方向。DiT-S/2 或
+  DiT-B/2 只是候选验证模型，不能把公共能力做成 DiT 专用。
+- AFHQ-v2 只用于快速检查流程；The Met、ImageNet-100、LHQ 和 DomainNet 都是需要重新核对
+  许可、规模、用途和硬件成本的数据候选，不是已选数据集。
+- Stable Diffusion 的文本、UNet 和逐组件兼容由它自己的计划负责。本附录只保存可复用的
+  codec、latent 数据和资产恢复研究。
+- 初始制定：2026-07-26；本次整理：2026-08-09。
 
 ## 1. 本轮结论
 

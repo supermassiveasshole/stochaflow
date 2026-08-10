@@ -5,29 +5,17 @@
 > [`default-workflow-pipeline-support-plan.md`](../../default-workflow-pipeline-support-plan.md)
 > 为准。
 
-- 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：Umbrella / promotion plan，尚未进入 Recipe/Pipeline 实现；共享的 immutable
-  outcome foundation、standalone checkpoint Evaluation、prediction artifact/offline
-  replay 以及 AFHQ-v2 full-test slice 已完成，library-first training request API 仍待决
-- 排期权威：[`ROADMAP.md`](../../../../ROADMAP.md)；候选依赖与入口见从属的
-  [Development Priority Roadmap](../../development-priority-roadmap.md)
-- 制定日期：2026-07-25
-- 架构复核：2026-07-26；增加独立 Evaluation operation/recipe entry；
-  2026-07-28 将 Latent Diffusion 与 Stable Diffusion 分为两个关联能力计划；
-  2026-07-29 作为非阻塞 umbrella/promotion plan 重新排期
-- 关联计划：
-  [正式 Metrics 扩展 API](../../../api/extensions.md#metrics)、
-  [训练后 Evaluation 与 Benchmark](../../post-training-evaluation-support-plan.md)、
-  [Latent Diffusion](../../latent-diffusion-support-plan.md)、
-  [Stable Diffusion Component-Native](../../stable-diffusion-component-native-support-plan.md)、
-  [Consistency Distillation](../../consistency-distillation-support-plan.md)、
-  [自动化模型调优](../../automated-model-tuning-plan.md)
-- 首版候选：
-  Gaussian 无条件图像生成、确定性图像超分辨率、Gaussian 条件超分辨率；
-  consistency image generation 在 target lifecycle gate 通过后晋升；
-  conditional latent generation 在 AFHQ 条件生成前置与 codec gate 通过后晋升；
-  Stable Diffusion 1.x component-native text-to-image 在共享 latent 前置和
-  family parity gate 通过后晋升
+## 怎样阅读这份归档
+
+- 普通读者先看[顺序工作流主计划](../../default-workflow-pipeline-support-plan.md)。主计划只讲
+  用户怎样运行“训练后蒸馏”或“生图后超分”。
+- 本文件保留旧方案中的配置模板、Python 调用、结果交接、任务专用 Pipeline、测试矩阵和
+  研究比较。它不是当前 API，也不决定排期。
+- 独立 checkpoint Evaluation、预测文件离线重算和结构化训练结果已经实现；稳定用法应查
+  公开文档。稳定的 Python 训练调用、配置模板目录和多步结果交接仍未实现。
+- 旧文件曾把许多方向放在同一个总计划里。现在 Latent Diffusion、Stable Diffusion、
+  Consistency Distillation、超分辨率和 HPO 各由自己的计划说明，不应从这里推断它们已获批。
+- 初始制定：2026-07-25；主要架构复核：2026-07-26 至 2026-07-29。
 
 ## 1. 目标与核心结论
 

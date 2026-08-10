@@ -1,133 +1,122 @@
-# Hydra 全新训练配置迁移计划
+# Hydra 训练配置组合计划
 
-> 工作状态：候选
+> 文档类型：功能计划
 >
-> 规范来源：[`ROADMAP.md`](../../ROADMAP.md)、[`SPEC.md`](../../SPEC.md)、
-> [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
+> 工作状态：候选（Candidate）
+>
+> 当前可用性：现在不能使用 Hydra 启动训练；一份完整的普通 YAML 仍是唯一受支持的训练配置入口。
 
-## 完成后用户能做什么
+## 只有重复 YAML 真的碍事时，组合配置才值得引入
 
-用户可以用受控的 Hydra `Defaults List` 和少量配置组组合一次全新训练配置，先查看最终的基础
-类型映射并检查错误，再通过与普通 CLI 共用的 Python 入口启动一次训练。这个入口由
-[显式顺序工作流计划](default-workflow-pipeline-support-plan.md)统一交付；Hydra 只消费它。
-检查发生在读取数据或创建正式输出之前。
+普通 YAML 的优点是直接：打开一份文件，就能看到这次训练的完整配置。当两个实验只差模型
+宽度或数据路径时，复制一份 YAML 也许已经是最容易理解的做法。Hydra 不会因为“更先进”而
+自动成为目标。
 
-Hydra 只负责配置编写和组合。Stochaflow 仍负责类型与跨字段校验、extension 激活、
-Registry/Builder 构造、运行目录、日志、checkpoint、manifest 和结果发布。
+问题只会在同一批配置反复成组变化时出现。例如多个任务都要从数据、模型和设备设置中选择
+固定组合，复制整份文件会产生大量几乎相同的版本。后来修改一个共同字段时，很容易漏掉其中
+几份。这时，Hydra 可以让用户选择少量已经批准的 YAML 片段，再把它们合成一份普通的完整
+训练配置。
 
-## 当前仓库已经支持什么
+本计划因此不是把训练迁移到另一套运行系统。Hydra 只负责回答“这一次训练最终使用什么
+配置”；创建模型、检查组件、管理输出、继续中断的训练和保存 checkpoint 仍由现有训练流程
+负责。采样与 Evaluation 也继续读取各自独立的完整配置。
 
-- train 与 sample 已使用各自独立、完整的普通 YAML 配置；sample 不与训练配置或 checkpoint
-  中可变的默认值合并。
-- checkpoint、严格恢复、sampling 和 Evaluation 的约定已由根级规范与公开文档定义。
-- 基础类型映射会经过类型和跨字段校验，再由 Registry、Builder 与受限的原生 provider resolver
-  构造运行对象。
-- MNIST 与 AFHQ-v2 是持续维护的全新训练对照案例。
+## 先看清最终配置，再决定是否训练
 
-当前没有 Hydra/OmegaConf 依赖、`Defaults List`、配置组、Hydra launcher、Sweeper、multirun 或
-`.hydra/` 输出流程。
+组合配置最危险的地方，是用户看见几个短片段，却不知道合并后究竟覆盖了什么。因此第一次
+调用必须只展开和检查配置，不创建正式训练目录，也不读取数据。用户确认完整结果后，第二次
+调用才把同一份普通值交给现有训练入口。
 
-## 还没有支持什么
+下面只说明这种体验。**命令当前不存在，命令名和参数名不是公共 API，示例不能执行。**
 
-- 没有受控的 Hydra 启动入口、明确的项目配置根目录或配置树规模上限。
-- 没有允许覆盖项清单、最终配置预览、组合摘要或支持 Hydra 的 `--check`。
-- 还没有由显式顺序工作流计划交付、供普通 YAML 与 Hydra 共用的不可变单次训练调用。
-- 没有适用于已安装 wheel 的外部 extension 配置根目录约定或项目模板。
-- 没有 MNIST/AFHQ-v2 普通 YAML 与 Hydra 行为一致的证据。
+```text
+# 只展开和检查配置，不创建训练输出
+stochaflow <未来的 Hydra 训练入口> \
+  --config-root examples/showcases/afhq-v2/configs \
+  --train afhq-dit \
+  --preview
 
-## 什么时候可以开始或重新审查
+# 用户确认预览结果后，开始同一次训练
+stochaflow <未来的 Hydra 训练入口> \
+  --config-root examples/showcases/afhq-v2/configs \
+  --train afhq-dit
+```
 
-本计划只有在 [`ROADMAP.md`](../../ROADMAP.md) 指定负责人、范围、依赖和退出方案后才从候选
-转为实施。启动前还必须：
+预览要显示每个片段来自哪里、完全展开后的配置、将要使用的已安装扩展项目和输出位置。真正
+训练以后，用户得到的仍是当前熟悉的结果：
 
-- 固定普通 YAML 的当前行为，并准备 MNIST/AFHQ-v2 有界对照用例；
-- 用当前 lockfile 重新核验 Hydra/OmegaConf 版本、resolver/import/search path 的安全面和许可证；
-- 审核配置树规模上限、允许覆盖项、extension 启动方式和原生 provider 边界；
-- 证明可选安装不会改变未使用 Hydra 的 train/resume/sample/evaluate 路径；
-- 明确 Hydra 不管理正式输出、当前工作目录、`.hydra/` 快照或第二套日志。
-- 明确单次训练 Python 入口由显式顺序工作流计划负责，本文不建立第二个入口。
+```text
+outputs/.../<run-id>/
+├── resolved_config.yaml      # 本次实际使用的完整配置
+├── run_manifest.yaml         # 整次运行的状态、配置和来源
+└── checkpoints/
+    ├── latest.pt
+    └── best.pt               # 只有启用 validation 选优时才存在
+```
 
-Hydra 候选完成后，
-[Sampling Invocation Post-Hydra Review](sampling-request-config-refactor.md)仍保持暂停，只有根路线图
-另行选择才会重审。
+同一份完整配置如果分别由普通 YAML 和 Hydra 产生，选择的组件、训练含义、checkpoint 规则和
+结果文件必须相同。配置的写法可以不同，运行行为不能不同。
 
-有限 multirun 是独立的后续构想，不属于本计划首版。只有单次训练入口稳定，且两个真实使用方
-需要同一种有限笛卡尔积搜索时，才由 Hydra 配置计划负责人重新审查进程隔离、资源预算、输出
-管理和失败汇总；自适应 HPO 仍由独立 HPO 计划负责。
+## Hydra 到完整普通值为止
 
-## 要完成哪些工作
+仓库已经能够解析一份完整 YAML，在读取数据前检查字段、组件名称和扩展来源，然后保存最终
+配置、结果清单和可继续训练的 checkpoint。这条路径会成为 Hydra 实现的对照，而不是被替换。
 
-### 建立受控的配置组合入口
+Hydra 展开配置后，只能交出字典、列表、字符串、布尔值和数值等普通值。之后仍由 Stochaflow
+检查字段、激活经过验证的扩展、创建组件并运行训练。Hydra 自己的配置对象不能进入最终配置、
+结果清单或 checkpoint，也不能建立第二套字段规则。
 
-- 动作：实现明确的配置根目录、有限的 `Defaults List`、允许覆盖项清单、基础类型转换、最终配置
-  预览和组合摘要。
-- 原因：Hydra 必须是可审计的配置入口，不能成为第二套运行时 schema 或任意 Python 对象工厂。
-- 影响范围：可选启动入口、配置编写、预览/检查和配置来源记录。
-- 交付物：受控的搜索路径、配置树规模上限、允许覆盖项、基础类型映射和清晰的错误信息。
-- 验证方法：缺失项、未知项、循环引用、越出根目录、resolver 副作用、插值失败、无权覆盖和
-  `DictConfig` 泄漏都会被明确拒绝。
-- 完成条件：现有 Stochaflow loader 仍作最终解释；Hydra 对象不进入 Builder、manifest、最终
-  配置或 checkpoint。
+配置片段只能从应用明确指定的受信任目录读取。未知片段、循环引用、越出目录、用其他值拼出
+配置值的非法插值和无权修改的字段，必须在创建正式输出或读取数据前报错。配置中不允许
+`_target_` 或任意 Python 导入路径；组合配置不能成为绕过扩展激活检查的代码执行入口。
 
-### 消费普通 CLI 与 Hydra 共用的单次训练入口
+实现仍会复用现有组件名录 `Registry` 和任务组装边界 `Builder`。这些类名只是维护者需要遵守的
+当前结构，用户不需要为了组合 YAML 理解它们。
 
-- 动作：复用显式顺序工作流计划交付的不可变训练调用、extension 预检查、Builder 构造和完整
-  单次运行流程；本文只把 Hydra 组合结果交给该入口。
-- 原因：两个配置入口不应复制调度代码，也不应产生不同的失败或输出顺序。
-- 影响范围：Hydra adapter、extension 激活和配置来源记录；不重新定义训练 Python 入口。
-- 交付物：同一基础类型映射可从普通 CLI 或 Hydra 传入唯一的单次训练接口。
-- 验证方法：两条路径得到相同的类型化配置、组件身份、checkpoint 语义、manifest 事实和
-  失败顺序。
-- 完成条件：CLI 和 Hydra adapter 都只做参数转接；训练入口的 request/result 由工作流计划拥有，
-  Hydra 不改变工作目录、不创建正式输出、不配置第二套 logger。
+## 第一次只证明一个很小的配置树有用
 
-### 证明 MNIST 与 AFHQ-v2 在两种入口下行为一致
+首个实现会用内置 MNIST 和外部扩展提供的 AFHQ 任务做对照。这样既能证明普通内置任务没有
+变化，也能证明安装成 wheel 的扩展可以提供一个明确、受控的配置目录。框架不会扫描任意已
+安装包，也不会在组合配置时提前导入未经验证的扩展代码。
 
-- 动作：为内置 MNIST 和由 extension 提供的 AFHQ-v2 编写全新训练组合配置，与现有普通 YAML
-  配置做有界对照。
-- 原因：一个内置案例和一个真实 extension 同时通过，才能证明启动方式没有破坏开放扩展边界。
-- 影响范围：仓库配置、extension 项目配置根目录、smoke tests 和审计 manifest。
-- 交付物：两条持续维护的配置、最终语义映射和配置来源证据。
-- 验证方法：核对原生 provider、extension 来源、inference recipe、manifest 和有界运行结果；
-  另在已安装 wheel 环境测试外部 extension。
-- 完成条件：Hydra 的配置来源记录可以不同，但最终运行配置和训练语义相同。
+第一棵配置树只有一层用户可见的 `Defaults List`（列出要组合哪些片段的清单），通常不超过
+六个选择。合并顺序必须写清楚并由测试固定，包括 Hydra 的 `_self_` 放在哪里。首版不增加
+自定义插值函数（resolver），不依赖隐式列表追加，也不把所有可选组件都镜像成配置组。树越小，
+用户越容易从预览理解最终训练。
 
-### 交付项目模板、配置参考和迁移说明
+普通 YAML 会一直保留：没有安装 Hydra 的环境仍能运行原有 `train`、继续中断的训练、
+`sample` 和 `evaluate`。Hydra 不能改变当前工作目录、创建 `.hydra/` 正式输出、接管日志，
+也不能用 launcher 或 Sweeper 接管进程和多次训练。
 
-- 动作：为 extension 项目模板增加可选配置根目录，并说明配置编写、预览/检查、错误处理、与
-  普通 YAML 共存及卸载后的回归行为。
-- 原因：只有源码仓库环境可用，不等于已安装的 extension 也能编写 Hydra 配置。
-- 影响范围：项目模板、配置文档、生成的配置参考和严格文档构建。
-- 交付物：已安装 wheel 示例、迁移指南、错误参考和可选依赖说明。
-- 验证方法：生成项目后在独立环境运行普通 YAML/Hydra 有界 smoke；移除 Hydra 后普通操作仍
-  通过。
-- 完成条件：生成的配置参考不会把 Hydra 配置组误写成公共运行时 schema。
+## 什么时候才值得开始
 
-## 如何证明已经完成
+只有路线图选中一个已经被重复 YAML 困扰的真实训练任务，本计划才进入实施。开始前要固定一份
+普通 YAML 对照，指出哪些片段确实需要复用，并决定受信任配置目录、允许修改的字段和配置树
+大小限制。普通 CLI 与 Python 还要能共用一个稳定的“只运行一次训练”调用。
 
-- 普通 YAML 与 Hydra 全新训练得到相同的最终运行配置和有界结果。
-- 预览和检查在 artifact I/O 与正式输出之前给出稳定、可定位的错误。
-- 任意 `_target_`/import、两套输出管理和两套 extension 发现机制被测试阻断。
-- 外部 extension 与已安装 wheel 路径可用；未安装 Hydra 时普通路径完全可用。
-- 公共变化同步 SPEC、ARCHITECTURE、ROADMAP、CHANGELOG、配置与迁移文档。
-- sampling review 仍是独立暂停项，不因本候选完成而自动变更。
+Hydra 与 OmegaConf 的许可证、搜索路径和插值行为会随版本变化，所以实施时必须按当时
+`uv.lock` 的版本重新验证，而不是照抄这份计划中的研究结论。还要先证明：未安装可选依赖时，
+现有全部操作完全不受影响。
 
-## 明确不包含什么
+如果选中的配置树最终比一份完整 YAML 更难理解，正确结论是继续使用普通 YAML，而不是为了
+完成迁移而扩大 Hydra 的权力。
 
-- 不用 Hydra 组合严格恢复、sample、Evaluation、资源证据或可观察性恢复配置。
-- 不使用 `hydra.utils.instantiate()`、`_target_`、class name 或 arbitrary import path。
-- 不把 Registry 全量镜像为配置组，不允许任意递归覆盖。
-- 不引入 Sweeper、launcher plugin、自适应 HPO 或通用工作流调度。
-- 不把 Physics/KD 清理作为前置或交付。
+## 怎样判断这个构想真的解决了问题
 
-## 详细设计和研究资料在哪里
+完成时，用户应能从预览直接说出最终会运行什么。自动测试还必须证明：
 
-- [Hydra 组合迁移设计笔记](notes/hydra-configuration-composition-migration-plan/design-notes.md)
-- [显式顺序工作流与单次操作入口](default-workflow-pipeline-support-plan.md)
-- [当前配置工作流](../configuration/workflows.md)
-- [当前配置兼容与迁移](../configuration/compatibility-and-migration.md)
-- [Sampling Invocation Post-Hydra Review](sampling-request-config-refactor.md)
-- [Hydra 官方文档](https://hydra.cc/docs/intro/)
-- [OmegaConf 官方文档](https://omegaconf.readthedocs.io/)
+- 普通 YAML 与 Hydra 展开为同一配置时，组件、训练含义和结果文件相同；
+- 预览能解释每个值的来源，非法配置在读取数据和创建正式输出前给出可定位错误；
+- 安装成 Python 包（wheel）的外部扩展可以提供受控配置目录，而配置合并不会提前执行扩展代码；
+- 没有 Hydra 依赖的环境仍能运行全部原有操作；
+- 任意导入、第二套输出管理和 Hydra 对继续训练、采样或 Evaluation 的越权会被明确阻止。
 
-启动时必须基于当时版本另写短期调研结论。旧实施阶段只留在 Git 历史，不驱动本文。
+继续中断训练仍以 checkpoint 中保存的训练事实为准，不重新组合 Hydra 配置。采样和 Evaluation
+也不进入本计划。有限多次运行（multirun）是更晚才可能复查的构想：只有单次训练入口稳定，
+而且至少两个真实任务确实需要同一种有限组合搜索时，才研究进程隔离、资源预算和失败汇总；
+复查可以得出“不需要”的结论。Hydra launcher、自适应 HPO 和通用任务调度都不在这里实现，
+Physics/KD 的整理也不属于本计划。
+
+配置目录草案、预览规则、旧 Train/Sample 迁移结论、有限 multirun 条件和历史设计取舍保存在
+[Hydra 配置组合设计附录](notes/hydra-configuration-composition-migration-plan/design-notes.md)。
+这些内容不是当前接口，实施前必须按当时版本重新核对。

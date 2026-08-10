@@ -20,11 +20,23 @@ properties。只有两个独立消费者需要相同字段且当前 manifest 无
 和上游 artifact references。当前 run manifest 已保存操作所需来源；只有跨 run 查询或外部
 消费者证明重复语义时才扩大。
 
+旧提案还保存过 source citation/license、输入引用、materialization transformation sequence，
+以及 code/config/environment snapshot 等候选事实。它们的用途不同：citation/license 帮助
+用户核对来源和使用条件；transformation sequence 解释数据经历了什么处理；code、config 和
+environment snapshot 帮助重现实验。任何一项都需要明确 writer、reader、敏感信息规则和
+版本边界，不能一起塞进一个任意字典，也不能因为有记录就自动改变 artifact identity。
+
 ### Capacity
 
-描述执行资源和测量，例如设备、memory、throughput、batch/accumulation 和限制。Capacity
-会随硬件、依赖和 workload 变化，不应混入 artifact semantic identity。只有两个真实容量
-规划消费者需要同一查询模型时才考虑共享服务。
+Capacity 必须继续区分三类信息：
+
+- **artifact footprint：**样本数、存储字节数、原始尺寸等 artifact 自身占用；
+- **workload estimate：**在运行前估计的 host/GPU memory、I/O 或 compute；
+- **runtime observation：**某次运行在明确机器和配置上的实测 peak、throughput 和耗时。
+
+后两类会随模型、硬件、依赖和 batch/accumulation 变化，不应混入 artifact semantic
+identity。估算不能冒充测量，同一个 artifact 也不能因为换了机器就获得新的内容 identity。
+只有真实容量规划消费者需要同一查询模型时，才考虑共享 contract 或服务。
 
 ## 共同约束
 

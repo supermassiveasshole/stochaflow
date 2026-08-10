@@ -1,153 +1,138 @@
-# 自动化模型调优计划
+# 自动寻找更好训练参数的计划
 
-> 工作状态：暂停
+> 文档类型：功能计划
 >
-> 规范来源：[`ROADMAP.md`](../../ROADMAP.md)、[`SPEC.md`](../../SPEC.md)、
-> [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
+> 工作状态：暂停（Parked）
+>
+> 当前可用性：仓库现在只能运行一次明确的训练，不能自动尝试多组参数并选择结果。
 
-## 完成后用户能做什么
+## 自动搜索的起点仍是一场可信的普通训练
 
-HPO 指超参数优化。根路线图选择本计划后，用户可以固定一份完整训练配置，声明允许尝试的参数
-范围、只使用 validation 的目标和总预算。系统会依次运行彼此隔离的尝试，记录每次输入、结果和
-停止原因，并能继续同一次搜索。
+研究者经常要比较几个学习率、batch size 或模型宽度。今天可以手工修改 YAML，多次运行训练，
+再把每次的 validation 结果抄到表格里。自动调优想消除的是这段重复劳动：系统按预先写好的
+范围运行多次训练，保存每一次结果，再用一个事先选定的 validation 指标找出最佳 checkpoint。
+这通常称为 HPO，也就是超参数优化。
 
-首版只支持一个目标、单机顺序执行、Grid/Random 搜索、每个 epoch 报告和基础剪枝。最终候选
-仍需通过独立的正式 Evaluation；测试集结果不会反馈给搜索。自适应搜索、并行和外部调度保留在
-文末，不属于首版完成条件。
+但自动运行三次不等于三次结果就值得比较。基础训练如果不能可靠重现，搜索只会更快地放大
+随机故障、数据泄漏和资源浪费。因此 HPO 不会重新发明训练：一次“尝试”（trial）仍然是用一组
+确定参数运行一次普通训练，产生自己的最终配置、checkpoint 和结果清单。搜索控制器只负责
+生成候选、隔离这些训练并比较机器可读结果。
 
-## 当前仓库已经支持什么
+仓库已经能够完成单次训练、用 validation 选择该次训练内的 best checkpoint，并让独立
+Evaluation 读取 checkpoint。这些是未来 HPO 的输入和证据，但目前没有代码生成参数组合、隔离
+多次训练、恢复同一次搜索或解释为什么选择某个结果，所以功能还不能使用。
 
-- 单次 training operation 会发布 resolved config、checkpoint、manifest 和不可变 outcome。
-- TrainingBuilder、Trainer、Metrics、checkpoint、extension provenance 和 standalone
-  Evaluation 已有明确所有权。
-- canonical validation observation 可以作为未来 objective 的基础；test、Diagnostic 和普通
-  sampling output 都不是 selection/pruning 证据。
-- extension selection 是进程级固定状态，可作为后续进程隔离的约束。
+## 一份搜索说明只回答“试什么、试多少、按什么选”
 
-这些基础不等于仓库已有 HPO runtime。当前行为以 [`SPEC.md`](../../SPEC.md)、
-[`ARCHITECTURE.md`](../../ARCHITECTURE.md) 和公开文档为准。
+未来用户先准备一份已经可以单独运行的训练 YAML，再写一份独立的搜索说明。下面的例子表示：
+从三个学习率中选择，最多训练三次，每次最多二十个 epoch，以 validation loss 越小越好进行
+比较。
 
-## 还没有支持什么
+**下面的格式、字段和命令都尚未确定，不是公共 API，也不能执行。**
 
-- 没有公开 tuning config、study controller、search-space contract 或 provider adapter。
-- 没有脱离 CLI 的稳定训练调用入口与窄的 epoch observation/control 接口。训练库调用入口由
-  [内置操作与工作流组合计划](default-workflow-pipeline-support-plan.md)负责；HPO 只消费该入口，
-  不另建训练调用面。
-- 没有 pruning、study storage、resume fingerprint、trial failure taxonomy 或候选选择操作。
-- 没有冻结的目标、预算和正式 Evaluation 协议作为真实 HPO 首个完整结果。
-- 没有 Grid/Random correctness oracle，也没有自适应搜索、并行或统计确认支持。
+```yaml
+base_config: configs/train/mnist.yaml
+parameters:
+  optimizer.params.lr: [0.0001, 0.0003, 0.001]
+objective:
+  metric: valid/loss
+  direction: minimize
+budget:
+  max_trials: 3
+  epochs_per_trial: 20
+```
 
-## 什么时候可以开始或重新审查
+```text
+stochaflow <未来的自动调优入口> \
+  --search configs/tuning/mnist-learning-rate.yaml \
+  --output outputs/tuning/mnist-learning-rate
+```
 
-只有以下条件全部成立，才由 [`ROADMAP.md`](../../ROADMAP.md) 把本记录提升为实施计划：
+第一版一次只启动一个独立训练进程。每次训练仍产生当前已有的配置副本、结果清单和 checkpoint。
+全部尝试结束后，系统写下为什么选中最佳结果，指向原 checkpoint，再按用户预先固定的方法运行
+一次正式 Evaluation。
 
-- 指定真实任务、负责人、支持平台、资源预算和首个交付结果；
-- [内置操作与工作流组合计划](default-workflow-pipeline-support-plan.md)已交付并验证普通 CLI 与
-  Python 调用共用的单次训练入口；HPO 只在其上接入 observation/control adapter；
-- 搜索目标、优化方向、预算和正式 Evaluation 协议已固定；
-- 使用当前 installed environment 重新完成 provider/version/license/optional-dependency 调研；
-- study config、resume fingerprint、failure taxonomy 和 artifact layout 获得审阅；
-- 先批准 Grid/Random correctness baseline，再讨论自适应搜索或并行。
+```text
+outputs/tuning/mnist-learning-rate/
+├── <搜索说明副本>
+├── trials/
+│   ├── trial-0000/{resolved_config.yaml, run_manifest.yaml, checkpoints/...}
+│   ├── trial-0001/{resolved_config.yaml, run_manifest.yaml, checkpoints/...}
+│   └── trial-0002/{resolved_config.yaml, run_manifest.yaml, checkpoints/...}
+├── <最佳尝试记录>                    # 指向原 checkpoint，不复制或覆盖它
+└── evaluation/{result.json, evaluation_manifest.yaml}
+```
 
-条件不完整时保持暂停，不以循环调用 CLI、解析日志或复制 `Trainer.fit()` 代替这些门槛。
+尖括号中的文件名也没有确定。`run_manifest.yaml` 是每次普通训练的结果清单；
+`evaluation_manifest.yaml` 是正式 Evaluation 的结果清单。
 
-## 要完成哪些工作
+## 参数范围不能成为任意改写配置的后门
 
-### 消费公共训练入口并固定目标与预算
+搜索说明与基础训练 YAML 分开保存。候选参数只能修改当前配置规则中已经存在、明确允许调节的
+字段，修改后还要重新检查整份训练配置。已安装的扩展项目、输出目录、普通运行 seed 和设备
+分配不能伪装成模型参数。
 
-- 动作：消费[内置操作与工作流组合计划](default-workflow-pipeline-support-plan.md)交付的不可变
-  单次训练入口；HPO 只增加读取规范 validation 结果的 observation/control adapter，并固定
-  搜索目标、优化方向、每个 epoch 的资源计数和单次/整体预算。
-- 原因：provider 必须消费稳定 evidence，不能从日志、test 或 Diagnostic 恢复训练语义。
-- 影响范围：HPO trial adapter、epoch observation、outcome 和 failure taxonomy；不改变训练入口
-  的所有权。
-- 交付物：对公共训练入口的窄调用 adapter、继续/剪枝决定，以及
-  completed/pruned/failed/cancelled 语义。
-- 验证方法：普通 CLI 与 fake HPO adapter 走同一单次训练调用；若 Hydra 已实现，它也只能消费
-  同一入口，但不是 HPO 的前置。非有限、缺失、重复 report 和 publication failure 均有回归测试。
-- 完成条件：工作流计划拥有并验证公共训练入口，HPO 作为另一个 Python 使用方可安全调用它，
-  且没有 HPO 专用训练分支。
+预算至少要写清最大尝试次数、每次 epoch 上限、总时间和失败重试规则。继续同一次搜索时，
+基础配置、参数范围、validation 目标、搜索 seed、数据和最终 Evaluation 方法都必须与原来一致；
+任何一项改变都要开始新搜索，不能静默把新结果写进旧搜索。
 
-### 建立独立搜索配置与顺序 Grid/Random
+首版只实现两个容易验证的方法：Grid（网格搜索）按有限候选值逐一组合，Random（随机搜索）
+使用保存的 seed 从批准范围取值。它们会先在小型已知问题上验证候选顺序、继续搜索和最佳值
+选择。首版不会把某个第三方搜索库写进公共接口，也不允许配置任意 Python 搜索算法。
 
-- 动作：新增独立 study config，冻结 base config，以受控 JSON Pointer patch 生成 trial config，
-  并通过窄 adapter 接入重新选定的成熟 provider。
-- 原因：搜索配置与训练配置必须分开；Grid/Random 为参数范围、seed 和恢复行为提供明确对照。
-- 影响范围：study parser、fingerprint、trial identity、provider adapter 和 artifact layout。
-- 交付物：float/int/categorical/finite-grid domains、单并发 controller、study resume 和 trial
-  lineage。
-- 验证方法：未知字段、重复或无权修改的目标、类型错误、extension/output/seed 修改、provider
-  失败和研究问题变化都会被明确拒绝。
-- 完成条件：相同 frozen study 与 seed 可重建 suggestion 序列，或明确记录 provider 的
-  非确定性边界。
+## 每次尝试必须像一次全新的运行
 
-### 选择最终候选并运行正式 Evaluation
+把多次训练放在同一个 Python 进程里很容易泄漏状态。模型、optimizer、学习率调整器、EMA、
+指标、随机数或扩展激活状态只要残留一项，后面的结果就不再代表自己的参数。因此每次尝试会在
+独立进程和独立目录中运行，互不复用这些状态。
 
-- 动作：由搜索规则发布最佳尝试记录，显式选择 checkpoint，再运行一次独立正式 Evaluation；
-  若需要合并 train+validation 重新训练，由具体 `DataBuilder` 另行提供明确 recipe/config，HPO
-  只绑定并记录它。
-- 原因：Evaluation runtime 不拥有 study selection/acceptance；test 不得反馈给 search。
-- 影响范围：搜索结果、artifact pointers、候选选择命令、可选 DataBuilder recipe identity
-  和 Evaluation invocation。
-- 交付物：不可变 best-trial record、非覆盖式 checkpoint pointer 和 protocol-compatible final
-  result；启用 refit 时另含具体 DataBuilder 拥有的 resolved recipe/config。
-- 验证方法：不同 protocol identity 不会被静默排序；test result 不产生 suggestion；候选选择
-  不覆盖原 trial artifact；未声明 recipe 时不自动合并 train/validation。
-- 完成条件：搜索证据、每次尝试的 artifacts、候选选择规则和最终 Evaluation 可分别恢复与
-  审计；可选 refit 的数据组合由具体 DataBuilder 负责并可独立复现。
+搜索要区分完成、失败、取消和配置错误。重试只能重新运行同一组参数，不能悄悄换成新的候选。
+一次失败不应覆盖其他成功尝试；中断、结果缺失或最终发布失败也不能留下看起来完整的搜索结果。
 
-## 如何证明已经完成
+普通 CLI 和 Python 在这之前要先共用一个稳定的“只运行一次训练”调用，而且训练要直接返回
+机器可读结果，不能要求搜索控制器解析控制台日志。内置任务与外部扩展任务都必须使用这个调用，
+不能增加一条 HPO 专用训练分支。
 
-- plain training 在未安装 HPO extra 时完全可用。
-- built-in 与外部 adapter 走同一 contract，没有 provider-name core dispatch。
-- trial 不共享 model、optimizer、scheduler、EMA、Metric、Diagnostic 或 RNG mutable state。
-- resume 不改变 base config、search space、objective、protocol 或 extension identity。
-- validation-only selection、pruning、failure、候选选择和最终 Evaluation 的职责由测试证明。
-- 对外变化同步 SPEC、ARCHITECTURE、ROADMAP、CHANGELOG、配置 reference 和用户文档。
+## 选择只看 validation，测试集留到最后
 
-## 明确不包含什么
+搜索开始前必须指定唯一的 validation 指标、优化方向和并列规则。搜索只能读取训练正式返回的
+这个指标。某次尝试没有该指标，或结果是 NaN/Inf，就不能成为成功候选。训练 Diagnostic、普通
+sample 输出、人工观察和测试集结果都不能参与排序。
 
-- 不承诺完整 AutoML、自动清洗、特征工程、NAS、ensemble 或 deployment。
-- 不支持 population-based training、manual backward、多 optimizer 或新 training-loop family。
-- 不自动合并 train/validation，不自动选择 test，不修改 DataBuilder 的 task semantics。
-- 不把 runtime resource、study/replication seed 伪装成普通 model hyperparameter。
-- 不把 provider API 草案、版本或 artifact layout 当作当前兼容承诺。
+这样做是为了避免反复查看测试集再调整参数。最佳尝试确定之后，才使用预先固定的方法运行一次
+独立、正式的 Evaluation。Evaluation 负责测量最佳模型，搜索控制器负责解释它为什么被选中；
+两者不能混成同一判断。
 
-## 详细设计和研究资料在哪里
+如果未来要用 train+validation 重新训练最佳参数，具体数据任务必须提供一份明确的新配置。
+HPO 不能擅自合并数据集，也不能把重新训练得到的 checkpoint 伪装成原来的最佳 checkpoint。
 
-以下能力不属于首版完成条件。每项只能在自己的触发证据成立后重开。
+## 为什么现在仍然暂停
 
-### 自适应搜索、统计重复、约束和多目标
+开始自动搜索之前，需要有一个确实值得承担多次训练成本的真实问题，并固定基础配置、唯一的
+validation 目标、优化方向、总预算和最终 Evaluation 方法。目标平台、失败处理、输出目录和可
+承担的验收资源也要先明确。最重要的是，单次训练调用和机器可读结果必须已经稳定。
 
-- 触发证据：顺序 Grid/Random、参数范围、预算、噪声和恢复语义已经稳定，且真实任务证明固定
-  搜索不足。
-- 负责人：HPO provider adapter 与 `TuningBuilder` 维护者；通用 black-box optimizer 仍由独立
-  BO 仓库拥有。
-- 保留范围：TPE、GP-based Bayesian Optimization、provider scheduler/pruner、统计重复、约束、
-  多目标、各类 seed、pruned checkpoint 保留和缺失/非有限/部分失败规则。
-- 验证要求：TPE 不冒充 GP-BO；sampler 与 pruner 职责分开；与 trial 内 early stopping 冲突时
-  明确拒绝；原始参数分配和运行来源不被汇总覆盖。
+Hydra 不是前置条件。即使以后支持 Hydra，它也只能生成一份普通训练配置，不能接管多次训练、
+选择结果或恢复搜索。只有 `ROADMAP.md` 选择本计划，并且上述条件都有真实证据时，HPO 才会
+从暂停转入实施。
 
-### 本地多进程
+## 搜索完成不等于研究结论成立
 
-- 触发证据：顺序执行已经稳定，实际 wall-clock 测量证明并行收益足以承担隔离成本。
-- 负责人：HPO controller 与资源分配维护者。
-- 保留范围：进程 worker、并发上限、CPU/GPU 分配、重试、孤儿进程清理和确定的 artifact 路由。
-- 验证要求：覆盖设备冲突、worker 崩溃、controller 重启、SIGINT 和部分发布；并行只改变吞吐，
-  不改变搜索目标、尝试身份或 artifact 身份。
+第一版完成时，Grid 和带种子的 Random 要在已知小问题上给出可验证的顺序和最佳结果。每次
+尝试都要有独立进程、配置、随机状态、目录和失败状态；继续搜索不能改变基础配置、参数范围、
+目标、预算、数据或扩展项目。测试还要证明测试集与人工结果不会泄漏到选择中。
 
-### Cluster 或 remote launcher
+最佳记录必须指向原 checkpoint，而不是复制或覆盖它，并能触发一次独立、可复现的正式
+Evaluation。未安装调优可选依赖时，普通训练和 Evaluation 必须完全不受影响。任何中断、单次
+失败、结果缺失或发布失败都不能伪造完整搜索。
 
-- 触发证据：本地多进程仍不能满足已测量预算，并且存在真实集群使用方、资源与验收环境。
-- 负责人：独立 launcher/infrastructure 集成负责人；HPO 只提交隔离的单次尝试。
-- 保留范围：cluster launcher、remote launcher 和外部执行状态绑定；不隐式启用 distributed
-  training。
+这只证明“顺序尝试一组明确候选”可靠，不证明更复杂的方法值得加入。第三方搜索工具适配
+（provider）、TPE 和高斯过程贝叶斯优化等自适应搜索、按中间 epoch 提前停止、本地并行、
+集群或远程启动、多次重复训练、噪声统计、约束、多目标选择、Weights & Biases 等托管服务，
+以及种群式训练、神经架构搜索（NAS）、模型集成（ensemble）和部署都继续作为后续构想保留。
+只有顺序搜索稳定且真实测量证明下一项有价值时，才为它单独制定工作与验收标准。
 
-### 相关资料
-
-- [Provider 调研、配置/API 草案与历史映射](notes/automated-model-tuning-plan/research-and-api-draft.md)
-- [Post-training Evaluation 后续决策](post-training-evaluation-support-plan.md)
-- [根级路线图的 HPO 触发条件](../../ROADMAP.md)
-
-附录中的 provider、版本、schema 和 API 必须在启动时重验。本文作为未来支持构想保留，
-未经维护者明确审阅不得删除。
+参数范围草案、搜索恢复、seed 分类、第三方工具、提前停止、并行、独立 BO 仓库和最终重新
+训练规则保存在
+[自动调优研究附录](notes/automated-model-tuning-plan/research-and-api-draft.md)。这些内容不是当前
+接口，真正实施前必须重新核对当时版本、许可证和运行保证。

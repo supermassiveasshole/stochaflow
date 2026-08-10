@@ -334,6 +334,11 @@ channel 确实由该 Strategy 提供；运行时为每个配置 phase 构造独�
 train、validation 与 test state 串扰。train metric 只提交成功 optimizer window 的
 updates；validation/test 则在成功 evaluation step 后提交。
 
+一次 `MetricEngine.update()` 必须包含这个 engine 所绑定的全部 channel；缺少任何一个都
+立即失败。Strategy 可以同时发出当前 engine 没有绑定的额外 channel，engine 会忽略这些
+额外值。某个已绑定 Metric 的 `update()` 抛出异常时，engine 会尝试重置整个统计范围并将
+本次更新判定为失败，避免继续使用已经部分更新的结果。
+
 channel payload 是 Strategy 与所选 Metric 之间的不透明局部协议。`MetricUpdate.args`
 必须是精确 tuple，`kwargs` 必须是精确 dict 或只读 `MappingProxyType`。payload tree
 只接受 Tensor、精确的 dict/list/tuple（以及只读 dict 形式）与
@@ -352,9 +357,15 @@ validation/test 没有 optimizer commit 点，因此在成功 evaluation step �
 history 和 checkpoint 只消费普通 scalar mapping；Metric runtime state、payload 和
 额外的 source/provenance snapshot 不进入 checkpoint。
 
+`compute()` 返回一个 numeric scalar，或 key 合法、value 全为 numeric scalar 的非空
+flat mapping。Bool、非 scalar Tensor、空或嵌套 mapping 以及 list 都不是合法结果；需要
+逐类别结果时应返回 `{"class_0": value, "macro": value}` 这样的平面 mapping。具体
+Metric 可以采用更严格的数值要求。`compute(reset=True)` 无论成功还是失败都会在退出前
+调用 `reset()`；普通 `compute()` 不会清除当前统计状态。
+
 best checkpoint 与 early stopping 只接受 `valid/loss` 或
-`valid/metrics/<id>[/<subkey>]`。train/test phase metric 以及 `diagnostics/...` 日志都不是
-模型选择输入。
+`valid/metrics/<id>[/<subkey>]`，被监控的 observation 必须是有限值。train/test phase
+metric 以及 `diagnostics/...` 日志都不是模型选择输入。
 
 `Metric` state 可以声明 TorchMetrics 的 reduction 与 synchronization policy，但当前
 Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trainer 尚未实现；不要把

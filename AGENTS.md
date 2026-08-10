@@ -111,28 +111,78 @@ execution roadmap are derived navigation views and must match the root roadmap.
 
 Write root governance documents in English. Write development plans in Chinese
 while preserving exact API, type, and configuration identifiers in English.
-Lead with the user outcome and current repository truth. A main plan must make
-clear, in this order: what users can do when it is complete; what works now;
-what is missing; when work may begin or be reviewed again; the required work;
-completion evidence; exclusions; and the location of detailed design or
-research. Each work item must state its action, reason, affected surface,
-deliverable, verification method, and completion condition. Name actions by
-their result; opaque stage identifiers belong only in a linked history note.
+Assume the first reader has only learned how to install the library, edit a YAML
+file, and run `train`, `sample`, or `evaluate`. The first job of a plan is to
+explain the idea to that reader in ordinary, connected prose. Start from a real
+problem, show how it leads to the proposed direction, explain an important
+alternative that was not chosen, and then describe how the work could become a
+usable result. The author chooses the order and headings that fit the idea; do
+not expose a standard questionnaire, task-card template, or repeated “current
+state / gap / work / acceptance” skeleton merely to make documents look uniform.
 
-Aim to keep a main plan below 300 lines and never exceed 400. Keep every main
-plan reachable from `docs/development/README.md` and its Sphinx toctree. A
-preserved future direction must have an owning main plan and a concrete start or
-review condition; split directions with different statuses or triggers into
-separate owners.
+During review, confirm that the prose as a whole lets a reader work out what the
+idea is, why it matters, what works now, what remains missing, what evidence or
+decision would start the work, and what using the completed result would feel
+like. These are review questions, not required headings or literal phrases. A
+future command, Python call, configuration, or directory tree should appear
+only when it materially clarifies the idea. Mark it as non-executable and not a
+public API when it does not exist. Prefer an ordinary user story over an
+invented interface whose names and shape have not been decided.
 
-Keep readable main plans separate from detailed research. Preserve the main
-plan path, and move version-sensitive provider research, candidate API drafts,
-mathematical derivations, long test matrices, and historical implementation
-logs under `docs/development/notes/`. Do not remove a unique future-support idea
-until its new owner and destination are recorded. Do not attach time estimates
-to unselected work; estimate again only after it becomes `Next`. Mark external
+Use headings that advance the particular argument. A step title should explain
+an observable action, result, or design decision. Keep core technical reasoning
+in the main plan when it explains why the design has its shape; move long API
+drafts, provider surveys, mathematical derivations, test matrices, and
+historical logs to notes. Opaque stage identifiers belong only in a linked
+history note.
+
+Explain a technical term the first time it is needed. Prefer “运行产物
+（artifact）” to a bare `artifact`, “结果清单（manifest）” to a bare `manifest`,
+and an ordinary description of what a Builder, runtime, writer, registry,
+identity, digest, or provider does before using its exact name. Keep class names
+and architecture contracts in the maintainer section; do not place a chain of
+internal types in the user flow. Use “继续中断的训练” for resume and reserve
+“图像恢复” or “超分推理” for image restoration so that the two meanings are not
+mixed.
+
+Keep a main plan as short as its argument permits. Do not use a hard line budget
+to cut one continuous explanation into a maze of files, but move bulky research
+that does not support the reader's immediate reasoning into notes. Keep each
+reader-facing topic discoverable from `docs/development/README.md`, normally
+within one or two clicks. Create a main plan only for a concrete product function
+that a maintainer has selected as Candidate, Parked, Next, or In progress. A
+research question, possible helper, provider survey, or hypothetical workload
+may remain in a clearly labelled research note without appearing in
+`ROADMAP.md`. Preserving an idea does not promote it into the product schedule.
+
+Keep readable main plans separate from detailed research. Move
+version-sensitive provider research, candidate API drafts, mathematical
+derivations, long test matrices, and historical implementation logs under
+`docs/development/notes/`. A closed capability may have a short “what users can
+do now” record; it must not be presented as Parked work. A conditional review
+must say that it may conclude “no change”. Do not remove a unique future-support
+idea until its current destination is recorded, but do not make Git history or
+a maze of sibling links its only destination. Do not attach time estimates to
+unselected work; estimate again only after it becomes `Next`. Mark external
 library, hardware, and dataset research with its last review date and require
 fresh verification before implementation.
+
+Use `docs/development/README.md` as the only reader-facing development entry.
+Group links by the function a user is trying to obtain, without copying each
+plan's opening argument into the index. The subordinate development roadmap
+shows only the current execution queue and direct product dependencies; it must
+not duplicate the full plan catalog. Prefer direct prerequisites, stable user
+documentation, and a clearly labelled technical appendix over chains of sibling
+links. Explain why a link is useful.
+
+Before a documentation restructure removes or shortens old material, compare it
+with the maintainer-designated historical baseline. Record each unique feature
+idea as one of: current behavior, concrete future function, research material,
+or retired history. “It remains in Git” is not preservation. Human review must
+confirm that every concrete future function still has a plain-language
+explanation and a discoverable current location. As a final readability check,
+hide the headings and verify that the paragraphs still connect through cause,
+consequence, contrast, and the next decision.
 
 Use ordinary language instead of unexplained planning jargon. In particular,
 replace terms such as “vertical slice”, “substrate”, “seam”, “closeout”,

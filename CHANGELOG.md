@@ -63,6 +63,27 @@ is unavailable.
 
 ### Changed
 
+- Added a parked development plan for processing and training on datasets larger
+  than RAM through bounded storage, host-memory, pinned-memory, and device
+  stages. The incoming eight-H200 node is only the first validation environment;
+  the capability preserves the completed Data lifecycle, works independently
+  of single- or multi-device execution, prefers mature PyTorch, dataset-format,
+  profiling, DALI, and GDS implementations over framework-owned replacements,
+  and adds adapters only where lifecycle or recovery semantics require them.
+- Added one current, user-facing guide for training Metrics, Diagnostics, and
+  model selection. It documents the built-in Strategy channels, validation-only
+  selection, checkpoint v12 state boundary, and the handoff to standalone
+  Evaluation without restoring the superseded diagnostic-selection design.
+- Reorganized the development documentation as short, feature-specific design
+  narratives. Plans now start from the user problem and explain how that
+  problem leads to the proposed design, its limits, and the evidence needed to
+  build it; the former six-question form is retained only as an author review
+  checklist. Future command examples are kept only when they clarify the core
+  experience and are marked as non-executable. The root roadmap remains the
+  only scheduling authority; completed Data and Evaluation work is not
+  presented as open work; and research ideas are preserved without promoting
+  them into the product schedule. The content map traces retained ideas back to
+  the maintainer-designated `5c75a76` baseline.
 - Closed the modality-neutral `DataArtifact` producer lifecycle. Artifacts are
   now sealed, Store-issued return values; source requests reject stale handles
   and requests with a selected or expected source reject wrong producer

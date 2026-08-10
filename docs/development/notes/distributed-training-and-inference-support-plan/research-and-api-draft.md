@@ -311,14 +311,14 @@ CI 中没有目标硬件的能力只能标为未验收，不能用 mock 推导 p
 
 | 历史 ID | 当时表达的主题 | 当前归宿 |
 | --- | --- | --- |
-| D0 | characterization 与 architecture contracts | 正文“需求证据”任务卡 |
-| D1 | SPMD session 与 rank-zero I/O | 正文“SPMD session”任务卡 |
-| D2 | DDP training | 正文“Rank-aware data”和“DDP training”任务卡 |
-| D3 | distributed checkpoint | 正文“Distributed checkpoint”任务卡 |
-| D4 | replicated distributed sampling | 正文“Replicated distributed sampling”任务卡 |
-| D5 | FSDP2 training | 正文“FSDP2 training 与 inference”任务卡 |
-| D6 | FSDP2 inference 与 multi-node hardening | 正文对应 future task card |
-| D7 | exact distributed Evaluation 与 elastic | 正文最后一个 future task card |
+| D0 | characterization 与 architecture contracts | 正文“先证明单机 DDP 确实必要” |
+| D1 | SPMD session 与 rank-zero I/O | 正文“一场多设备运行仍只有一份结果”的设计理由 |
+| D2 | DDP training | 正文的数据分工、全局指标和共同失败语义 |
+| D3 | distributed checkpoint | 正文对训练状态与便携推理 checkpoint 的区分 |
+| D4 | replicated distributed sampling | 正文“多设备采样也要发布成一份完整结果” |
+| D5 | FSDP2 training | 正文“第一版刻意停在完整模型能放进单个设备的地方” |
+| D6 | FSDP2 inference 与 multi-node hardening | 正文首版之后保留的独立方向 |
+| D7 | exact distributed Evaluation 与 elastic | 正文首版之后保留的独立方向 |
 
 这些 ID 不代表依赖已满足、平台已支持或 task 已进入路线图。
 

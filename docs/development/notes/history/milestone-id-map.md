@@ -1,104 +1,111 @@
 # 历史计划 ID 映射
 
-- 文档性质：历史索引，不参与五种排期状态
-- 用途：解释旧 Roadmap、Git 记录和设计归档中的短 ID
-- 当前排期权威：[`ROADMAP.md`](../../../../ROADMAP.md)
-- 当前工程说明：[开发方向与执行顺序](../../development-priority-roadmap.md)
+> 文档性质：历史索引，不参与排期
+>
+> 重点基线：`5c75a76de3d696a5b734ae4eefe88a30532bd2de`
 
-这些 ID 不再表示当前优先级、状态或执行顺序。旧文档曾跨计划重复使用字母和数字，甚至出现
-同名碰撞。新的 Roadmap 使用完整能力名称；只有查阅旧提交、旧评论或设计归档时才需要本表。
+这些短 ID 只用于读旧提交和设计归档。它们不表示当前顺序，也不能把研究材料重新变成
+路线图工作。相同 ID 曾被不同文件复用；本表会写明所属文件和时期。
 
-## 1. 已完成主路径的旧 ID
+## `5c75a76` 开发优先级路线图中的 ID
 
-| 旧 ID | 当时含义 | 现在怎样理解 |
+| 旧 ID | 当时的完整含义 | 当前落点 |
 | --- | --- | --- |
-| `B0` | 建立可运行、可验证的 repository baseline | Done；稳定行为由规范、测试和公开文档拥有 |
-| `A0` | 修正 ADM topology 与 checkpoint compatibility | Done；当前 Gaussian architecture 见 `ARCHITECTURE.md` |
-| `B1` | 切分 train/sample configuration authority | Done；当前规则见 `SPEC.md` 与配置文档 |
-| `A1` | learned-range Gaussian 与数值修正 | Done；当前 family contract 见正式架构和测试 |
-| `A2` | class-aware AFHQ Evaluation readiness | Done；当前 profile 见 AFHQ 公开文档 |
-| `A3` | learned-range-v AFHQ quality validation | Done；结果由公开 AFHQ 文档、CHANGELOG 与 Git 追溯 |
+| `B0` | 可运行、可验证的 baseline | 已完成；规范、测试和公开文档 |
+| `A0` | 修正 canonical ADM topology 与 checkpoint compatibility | 已完成；当前 Gaussian 架构和 AFHQ 文档 |
+| `B1` | 切分 train/sample configuration authority | 已完成；当前配置与 checkpoint-v12 规则 |
+| `K0` | Metrics foundation | 已完成；task-neutral Metrics 与 validation-only selection |
+| `A1` | learned-range Gaussian 与 P2 capability | learned-range 已完成；SNR weighting recipe 已退休 |
+| `A2` | Controlled AFHQ P2 Evidence | 实验已结束且未验证出可靠收益；见 [SNR weighting 决策](afhq-snr-weighting-decision.md) |
+| `L0` | Pretrained codec ready | Latent Diffusion 候选功能的一部分 |
+| `L1` | AFHQ Latent Diffusion 首条完整流程 | Latent Diffusion 候选功能的一部分 |
+| `L2` | 可长期训练的 latent 数据、预算和资产保存 | Latent Diffusion 候选功能的一部分 |
+| `Q0` | Configuration and Latent Evaluation closeout | 后来拆开：Hydra 是独立候选；评估由具体 latent 任务交付 |
+| `L3` | 开放数据上的 DiT baseline | 保留在 Latent Diffusion 计划和研究附录 |
+| `S0` | Stable Diffusion 1.x native sampling | 保留在 Stable Diffusion 暂停计划 |
+| `S1` | Stable Diffusion 1.x full fine-tuning | 保留在 Stable Diffusion 暂停计划 |
+| `X0` | Scale and New Families 总括 | 已拆为 Distributed、HPO、workflow 等独立方向，不再作为一个工作项 |
 
-旧主路径现在统一写成：
+后来有文档把 `A2` 改写成 class-aware Evaluation readiness，并新增 `A3` 表示 AFHQ
+learned-range-v quality validation。那是较晚时期的复用，不能覆盖 `5c75a76` 中 `A2` 的
+Controlled AFHQ P2 Evidence 原意。
 
-```text
-pixel Gaussian foundation
-  -> standalone Evaluation
-  -> live epoch Evaluation and metric-selected checkpoint
-  -> AFHQ learned-range-v quality validation
-  -> waiting for the next product decision
-```
+## Evaluation 计划中的 ID
 
-历史 loss-weighting 实验曾使用 `P2` 名称；它已退休，不能与旧 Roadmap 的 P2 优先级混读，
-也不构成当前 recipe 或 future implementation condition。
-
-## 2. Evaluation 旧 ID
-
-| 旧 ID | 当时含义 | 现在怎样理解 |
+| 旧 ID | `5c75a76` 中的含义 | 当前理解 |
 | --- | --- | --- |
-| `E0` | structured training outcome foundation | Done；由 training outcome contract 拥有 |
-| `E1` | standalone checkpoint Evaluation | Done；由 Evaluation contract 拥有 |
-| `E2` | prediction artifact 与 offline replay | Done；由 Evaluation file contract 拥有 |
-| `E3` | AFHQ profile，以及旧文档中未拆开的其他 task profiles | AFHQ 部分 Done；future task 必须交付自己的 profile |
-| `E4` | 通用结果比较或选择政策 | Parked；只有真实负责人和需求才能开始 |
-| `D1`–`D3`（Evaluation 计划） | reference cache、性能优化、结果比较政策 | Parked 的计划内标签，不是全局执行顺序 |
+| `E0` | structured training outcome 与 phase metric 基础 | 已完成 |
+| `E1` | standalone checkpoint Evaluation | 已完成 |
+| `E2` | prediction artifact 与 offline scoring | 已完成 |
+| `E3` | generation 与 super-resolution quality profiles | AFHQ generation 已完成；其他 profile 随对应任务交付 |
+| `E4` | comparison、selection、gate 与 suite | Comparison/Gate/Suite 只保留为未排期研究；独立 Selection runtime 已被 validation-only training selection 和调用方/HPO/发布流程各自决策替代 |
+| `E5` | 可选 extension/integration | 未实施；benchmark extension、人工评价 artifact、distributed Evaluation、inference-bundle subject 和置信区间等入口保存在 [Evaluation 设计附录](../post-training-evaluation-support-plan/design-notes.md) |
 
-## 3. Latent 与 Stable Diffusion 旧 ID
+一次较晚的文档重构把 reference cache、性能和比较政策误写成 Evaluation 的 `D1`–`D3`。
+基线计划没有这些编号，所以它们不是可追溯的历史 ID。
 
-| 旧 ID | 当时含义 | 现在怎样理解 |
+## Metrics、HPO、Extension 和 Consistency 计划中的 ID
+
+| 所属计划 | 旧 ID | 当时含义 |
 | --- | --- | --- |
-| `L0` | pretrained codec readiness | Candidate codec/latent 方向的第一步 |
-| `L1` | AFHQ latent correctness path | Candidate codec/latent 方向的一条小型完整路径 |
-| `L2` | prepared data、optimizer-step budget 与 codec asset bundle | Candidate latent 方向的生产训练准备 |
-| `L3` | open-data small DiT baseline，再进入更大正式运行 | Candidate latent 产品路线 |
-| `LD2` / `LD3` | 较早版本中的 codec 与 AFHQ latent 阶段名 | 已由完整能力名称替代 |
-| `LD4A` | prepared posterior moments artifact | Candidate latent 方向的生产训练准备 |
-| `LD4B` | optimizer-step production loop | Candidate latent 方向的生产训练准备 |
-| `LD4C` | run-level codec asset bundle | Candidate latent 方向的生产训练准备 |
-| `Q0` | 曾把 Hydra configuration 与 latent Evaluation 合并 | 已拆分；Hydra 独立，latent Evaluation 归具体任务 |
-| `S0` / `S1` | Roadmap 中对 SD native sampling 与 training 的粗分组 | 由 Stable Diffusion 计划的分层说明替代 |
-| `SD0`–`SD10`（SD 计划） | codec、parity、sampling、training 及后续层级 | Parked 的计划内标签；开始前必须重新核对 |
+| Metrics | `M0`–`M4` | 契约/命名、validation MetricEngine、Diagnostic monitoring、extension/distributed readiness、文档收束；当前 Metrics 已完成，Diagnostic 不参与模型选择 |
+| HPO | `T0`–`T5` | single-run call、顺序 Grid/Random、adaptive search、local workers、统计/multi-objective、外部 launcher/provider；当前整个 HPO 功能暂停 |
+| Extension performance | `Phase 0`–`Phase 5` | 冻结证据、拆 contract/implementation、Registry/bootstrap、lazy facade、迁移 CLI/examples、再次评估更细延迟激活；当前只保留测量驱动的性能候选 |
+| Consistency | `Stage 0`–`Stage 6` | 固定算法、teacher bundle、pair construction、训练/target、student sampling、稳定性政策、质量文档；当前改用具体功能描述 |
 
-## 4. Hydra 与 Sampling 旧 ID
+## Latent 与 Stable Diffusion 计划中的 ID
 
-| 旧 ID | 当时含义 | 现在怎样理解 |
+| 旧 ID | 当时含义 | 当前理解 |
 | --- | --- | --- |
-| `C0` / `C1` | plain-YAML train/sample authority cutover | Done；checkpoint-v12 配置归属已稳定 |
-| `H0` | Hydra bootstrap、可信 config root 与依赖边界 | Candidate Hydra 方向的计划内步骤 |
-| `H1` | library-first training call 与 composed config 入口 | Candidate；workflow 计划复用该库入口，不另建一套 |
-| `H2` | preview、检查和受限 override | Candidate Hydra 方向的计划内步骤 |
-| `H3` | maintained fresh-training parity 与文档验收 | Candidate Hydra 方向的计划内步骤 |
-| `H4` | multirun/sweep | Parked；不属于 Hydra 第一轮工作 |
-| `R0`–`R2`（Sampling 复审） | Hydra 完成后的 sampling config 复审步骤 | Parked；Hydra 达到 Done 前不可执行 |
+| `LD2` / `LD3` | 更早版本中的 codec 与 AFHQ latent 阶段名 | 已由完整功能名称替代 |
+| `LD4A` | prepared posterior moments artifact | Latent 生产数据功能 |
+| `LD4B` | optimizer-step production loop | Latent 长训练功能 |
+| `LD4C` | 可搬迁 codec asset bundle | Latent 资产保存功能 |
+| Latent `Phase 0`–`Phase 8` | 边界、codec、AFHQ、prepared data、长训练、开放数据 DiT、ImageNet/DomainNet、非 DiT 替换 | 当前正文按用户流程说明；细节在设计附录 |
+| Stable Diffusion `SD0`–`SD8` | 共享前置、reference backend、text assets、逐组件 sampling、图文 data、256/512 fine-tuning、random-init 与优化 | 当前暂停计划和设计附录；基线没有 `SD9`/`SD10` |
 
-## 5. Workflow、Recipe 与 task 旧 ID
+## Hydra 与 Sampling 文档中的 ID
 
-| 旧 ID | 当时含义 | 现在怎样理解 |
+| 旧 ID | `5c75a76` 中的含义 | 当前理解 |
 | --- | --- | --- |
-| `R0`（Workflow 计划） | 术语与 library run API | Candidate workflow 方向；与 Sampling 的同名 ID 无关 |
-| `R1` | Recipe manifest 与 first-party catalog | Candidate built-in Recipe 工作 |
-| `SR0` | deterministic super-resolution baseline | Candidate SR 方向 |
-| `SR1` | SR metrics 与 formal Evaluation | Candidate SR 方向 |
-| `SR2` | conditional Gaussian super-resolution | Candidate SR 方向的后续步骤 |
-| `LG0` | latent generation Recipe | Candidate；依赖 codec/latent 完整任务 |
-| `SD0`（Workflow 计划） | Stable Diffusion Recipe publication | Parked；与 SD 计划的同名层级无关 |
-| `CM0` | consistency 计划重新核对 | Candidate consistency 方向 |
-| `CM1` | consistency 完整任务路径 | Candidate consistency 方向 |
-| `R2`（Workflow 计划） | inference bundle 与重复调用对象 | Candidate workflow 方向的后续步骤 |
-| `W0A` | 内置任务与显式顺序组合 | Candidate；具体任务被选择后才实施 |
-| `W0B` | 是否需要 core workflow orchestrator | Parked；重复控制逻辑已造成维护问题后再决定 |
+| `C0` / `C1` | plain-YAML train/sample authority cutover | 已完成 |
+| `H0` | Hydra composition kernel | Hydra 候选功能的一部分 |
+| `H1` | fresh single-run launcher | Hydra 候选功能的一部分 |
+| `H2` | MNIST/AFHQ plain-YAML parity | Hydra 候选功能的一部分 |
+| `H3` | scaffold、configuration reference 与文档 | Hydra 候选功能的一部分 |
+| `H4` | 有限 multirun | 不属于第一版，只保存在研究附录 |
 
-## 6. Scale umbrella 与分布式旧 ID
+基线 `sampling-request-config-refactor.md` 没有 `R0`–`R2` 或 `R0`–`R5`。这些编号来自较晚的
+post-Hydra 复查改写，不是 `5c75a76` 的历史阶段；当前读者文档已经删除它们。
 
-| 旧 ID | 当时含义 | 现在怎样理解 |
+## Workflow 与 Super-resolution 文档中的 ID
+
+| 旧 ID | `5c75a76` 中的含义 | 当前理解 |
 | --- | --- | --- |
-| `X0` | 把 distributed、HPO、新 family、workflow 和 generic assets 合并的远期集合 | 已拆为独立 Parked 方向，不再作为一个工作项 |
-| `D0`–`D7`（Distributed 计划） | characterization、DDP、checkpoint、sampling、FSDP2 与 hardening | Parked 的计划内标签；有 profiling 证据后重新核对 |
+| Workflow `R0` | 术语与 library operation API | 显式工作流候选中的稳定 Python operation |
+| Workflow `R1` | recipe manifest 与 first-party catalog | 显式工作流候选中的配方目录 |
+| `SR0` | deterministic super-resolution baseline | Super-resolution 候选的第一版 |
+| `SR1` | SR Metrics 与正式 Evaluation | Super-resolution 候选的一部分 |
+| `SR2` | conditional Gaussian super-resolution | 确定性版本完成后的保留方向 |
+| `LG0` | latent generation recipe | 归 Latent Diffusion 候选 |
+| Workflow `SD0` | Stable Diffusion recipe publication | 归 Stable Diffusion 暂停计划 |
+| `CM0` / `CM1` | 重新核对 consistency 计划并交付首条完整流程 | 归 Consistency/Distillation 候选 |
+| Workflow `R2` | inference bundle 与重复调用 Pipeline | 显式工作流的后续构想 |
+| `W0` | 判断是否需要通用 workflow orchestrator | 只有两条稳定流程重复控制逻辑后才重开 |
 
-## 7. 查阅规则
+`W0A` / `W0B` 是较晚的文档重构为了区分“显式顺序组合”和“通用编排器”而新增的标签，
+不在 `5c75a76` 基线中。当前正文已用完整功能名称替代。
 
-- 当前 Roadmap、开发导览或执行顺序不再使用旧短 ID。
-- 专项计划的设计归档可以保留旧 ID，以便对应原始研究和 Git 讨论；它不改变状态。
-- 同名 ID 必须同时带所属计划名称，例如 “Workflow `R0`” 或 “Sampling `R0`”。
-- 新工作使用完整名称；如确需机器可读标识，应在被选中后定义带命名空间的 ID。
-- 本表只解释历史，不恢复已退休能力，也不改变任何 Candidate 或 Parked 构想。
+## Distributed 计划中的 ID
+
+`D0`–`D7` 在基线 Distributed 计划中依次表示：固定行为与架构约定、进程会话/rank-zero I/O、
+DDP training、distributed checkpoint、replicated sampling、FSDP2 training、FSDP2 inference
+与多节点强化、精确 distributed Evaluation 与 elastic。当前计划先解释固定进程 DDP 和合并
+sampling 的用户结果；其余保留在研究附录，不会因一个编号自动开始。
+
+## 查阅规则
+
+- 当前路线图、开发入口和功能计划不使用这些短 ID；
+- 设计附录可保留 ID，以便对应旧提交，但必须同时写所属计划；
+- 遇到同名 ID，先看文件和提交时期，不能只看字母数字；
+- 新工作使用完整功能名称；只有真正进入实施后才考虑机器可读标识。

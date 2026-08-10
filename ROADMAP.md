@@ -8,125 +8,109 @@
 >
 > Next: None
 >
-> Last reviewed: 2026-08-09
+> Last reviewed: 2026-08-10
 
-This is the canonical product roadmap. It records what is finished, what may be
-chosen next, and what is intentionally waiting. It does not define current
-behavior. Current contracts live in [`SPEC.md`](SPEC.md),
-[`ARCHITECTURE.md`](ARCHITECTURE.md), the public documentation, and tests. The
-subordinate [development roadmap](docs/development/development-priority-roadmap.md)
-explains dependencies and links to design plans, but cannot select work.
+This is the only document that schedules product work. It says what users can
+do today, what could be selected next, and what is intentionally waiting.
+Implementation details belong in development plans. Current behavior belongs in
+[`SPEC.md`](SPEC.md), [`ARCHITECTURE.md`](ARCHITECTURE.md), public documentation,
+and tests.
 
 ## Status model
 
 | Status | Meaning |
 | --- | --- |
-| Done | Implemented, tested, documented, and maintained. |
+| Done | Users can use it through maintained code, tests, and documentation. |
 | In progress | The one selected item being implemented now. |
-| Next | The approved item that directly follows the work in progress. |
-| Candidate | A realistic choice for the next product decision, with no schedule yet. |
-| Parked | A preserved longer-term idea whose start condition has not been met. |
+| Next | The one approved item that will start next. |
+| Candidate | A real product function that may be selected, but is not scheduled. |
+| Parked | A real product function whose required evidence or prerequisite is missing. |
 
-Every item has one status. A detailed plan, experiment, estimate, example, or
-reusable building block does not make a complete user workflow Done.
+A research question, reusable building block, or detailed design is not a
+scheduled product function. It does not appear here until a maintainer selects
+a concrete user result.
 
-## Product direction
+## What users can do now
 
-Stochaflow is a trustworthy composition and execution layer for generative-model
-research. It develops one small but complete user path at a time. A new task
-must include the monitoring, checkpoint-backed inference, and formal Evaluation
-needed to validate that task. Core does not add task branches or broad public
-abstractions before a real use case needs them.
-
-## Done: maintained capabilities
-
-| Capability | What is available now |
+| Capability | Maintained user result |
 | --- | --- |
-| Operations | Independent `init`, `train`, `sample`, and `evaluate` commands with separate configuration ownership. |
-| Pixel Gaussian | Training and sampling with fixed or learned-range variance, DDPM/DDIM, CFG, and maintained MNIST/AFHQ paths. |
-| Training | Builder/Plan/Strategy composition, one automatic optimizer lifecycle, EMA, checkpoints, diagnostics, structured outcomes, and validation-only selection. |
-| Sampling | Checkpoint-v12 inference loading, a complete sample configuration for each run, and atomic output publication. |
-| Evaluation | Checkpoint and prediction-file subjects, live/offline execution, exact completeness, immutable results, FID/KID, and epoch-end checkpoint selection. |
-| Data and extensions | Verified data artifacts, task-level DataBuilders, explicit extension activation, and stable public extension contracts. |
+| Operations | Run independent `init`, `train`, `sample`, and `evaluate` commands, each with its own complete configuration. |
+| Pixel Gaussian models | Train and sample fixed- or learned-range-variance models with DDPM/DDIM and classifier-free guidance on the maintained MNIST/AFHQ paths. |
+| Training | Compose a task through Builder/Plan/Strategy, train with one automatic optimizer lifecycle, save resumable checkpoints, track EMA, and receive a structured outcome. |
+| Sampling | Load checkpoint-v12 inference state, run one complete sampling request, and publish output atomically. |
+| Evaluation | Evaluate a checkpoint or saved prediction artifact, reject missing or duplicate samples, and publish an immutable result. |
+| Data | Acquire and verify arbitrary task data through `DataSource`, then assemble training inputs through `DataBuilder`, including strict-resume identity checks. |
+| Extensions | Activate installed extensions explicitly and use the same public construction paths as built-ins. |
 
-Some useful pieces are narrower than a complete workflow. The repository has a
-super-resolution data recipe and example, but not a maintained built-in
-super-resolution workflow. Frozen-teacher distillation can be expressed through
-extension contracts, but there is no built-in path that trains a teacher and
-hands its output to a distillation run. Structured training outcomes exist, but
-a public library call and multi-step workflow description do not.
+These lower-level abilities do not yet create every product workflow. For
+example, the repository has super-resolution data support but no maintained
+built-in super-resolution operation. It can express a frozen teacher, but it
+does not yet run “train the teacher, then distill the student” as one documented
+workflow.
 
-## Selected work
+## Current selection
 
-The header records the only scheduling values: no work is currently in progress
-and no next item has been selected. The completed pixel-space work is waiting
-for a maintainer product decision.
-Maintenance, bug fixes, and documentation cleanup may continue without choosing
-a new product direction.
+No product item is in progress and no next item has been selected. Maintenance,
+bug fixes, and documentation work may continue without selecting a new product
+direction.
 
-## Candidate: realistic next choices
+## Candidate product functions
 
-| Direction | First complete user result | Start when | Detail |
+| Direction | What the user will do | Start when | Detail |
 | --- | --- | --- | --- |
-| Built-in recipes and explicit multi-step workflows | Discoverable task recipes plus one selected typed sequence; both `train -> export -> distill -> evaluate` and `generate -> super-resolution -> evaluate` remain preserved outcomes | One concrete task is selected | [Plan](docs/development/default-workflow-pipeline-support-plan.md) |
-| Super-resolution | A tested deterministic restoration workflow before a conditional Gaussian version | Data, metrics, output files, and Evaluation rules are agreed | [Plan](docs/development/super-resolution-workflow-support-plan.md) |
-| Consistency and distillation | One teacher/student task with correct target updates and formal results | A research case and Evaluation rules are selected | [Plan](docs/development/consistency-distillation-support-plan.md) |
-| Codec and latent diffusion | A frozen codec followed by AFHQ latent training, sampling, and Evaluation | The latent route is selected and codec assumptions are checked again | [Plan](docs/development/latent-diffusion-support-plan.md) |
-| Hydra training configuration | Readable reusable fresh-training configuration that still uses Stochaflow validation and execution | A selected product task needs composition beyond plain YAML and the shared single-run training call exists | [Plan](docs/development/hydra-configuration-composition-migration-plan.md) |
+| Explicit multi-step workflows | Run existing operations in order and pass a typed result to the next step, first for either teacher training followed by distillation or image generation followed by super-resolution | The required distillation or super-resolution operation is Done, and its multi-step workflow is selected | [Plan](docs/development/default-workflow-pipeline-support-plan.md) |
+| Super-resolution | Train with paired low/high-resolution images, feed in low-resolution images, and receive high-resolution artifacts plus a formal quality result | The first maintained dataset, model, output format, and Evaluation protocol are selected | [Plan](docs/development/super-resolution-workflow-support-plan.md) |
+| Consistency and distillation | Give the run a teacher checkpoint and training data, then receive a faster student checkpoint with quality and speed results | One teacher/student task and its success criteria are selected | [Plan](docs/development/consistency-distillation-support-plan.md) |
+| Codec and latent diffusion | Encode images with a frozen codec, train in latent space, then decode generated samples and evaluate them | This direction is selected and codec assumptions are checked again | [Plan](docs/development/latent-diffusion-support-plan.md) |
+| Hydra training configuration | Choose reusable config fragments, preview the merged config, and launch the existing single training operation | A selected task has a real composition problem that plain YAML cannot solve | [Plan](docs/development/hydra-configuration-composition-migration-plan.md) |
 
-## Parked: longer-term directions
+## Parked product functions
 
-| Direction | Start when | Detail |
-| --- | --- | --- |
-| Stable Diffusion | Shared codec and latent production behavior is Done, then this direction is selected | [Plan](docs/development/stable-diffusion-component-native-support-plan.md) |
-| Sampling configuration review | Hydra training composition is Done and real sampling-call problems are observed | [Review](docs/development/sampling-request-config-refactor.md) |
-| Evaluation cache, speed, or comparison policy | Measurements show repeated reference cost, slow execution, or a real policy owner | [Decision record](docs/development/post-training-evaluation-support-plan.md) |
-| Extension import performance | Independent measurements show a user-visible import or activation problem | [Plan](docs/development/extension-import-boundary-and-activation-latency-plan.md) |
-| Distributed execution | A validated single-device workload misses measured capacity or time requirements | [Plan](docs/development/distributed-training-and-inference-support-plan.md) |
-| Automated model tuning | A stable objective, budget, Evaluation protocol, and reusable single-run library call exist | [Plan](docs/development/automated-model-tuning-plan.md) |
-| Broader artifact metadata, provenance, or capacity models | The metadata, provenance, or resource-evidence direction independently meets its own multi-producer or multi-consumer evidence requirement | [Proposal](docs/development/artifact-metadata-provenance-capacity-model-proposal.md) |
-| Broader data abstractions | Multiple independent data sources or task recipes prove the same missing extension behavior | [Recipe helpers](docs/development/data-recipe-extension-ergonomics-plan.md), [streaming](docs/development/streaming-data-lifecycle-support-plan.md), and [storage/payload adapters](docs/development/data-storage-and-payload-adapter-support-plan.md) |
-| New algorithm families | A complete use case proves that current family contracts cannot express it | [Specification](SPEC.md#16-future-compatible-directions) |
-| General workflow orchestrator | At least two stable multi-step workflows share the same control behavior and manual composition is a maintenance problem | [Plan](docs/development/general-workflow-orchestrator-plan.md) |
+| Direction | What the user would eventually do | Start when | Detail |
+| --- | --- | --- | --- |
+| Stable Diffusion | Supply a compatible component bundle and image-text data, fine-tune the UNet, then generate images from prompts | Latent/codec support is Done and this direction is selected | [Plan](docs/development/stable-diffusion-component-native-support-plan.md) |
+| Extension import performance | Start commands and activate extensions with less import delay, without changing extension behavior | Measurements show a user-visible startup problem | [Plan](docs/development/extension-import-boundary-and-activation-latency-plan.md) |
+| Distributed execution | Run one training or sampling job on several devices and receive a resumable training bundle or one complete merged sample result | A maintained single-device workload misses a measured capacity or time requirement | [Plan](docs/development/distributed-training-and-inference-support-plan.md) |
+| Large-scale dataset processing and training | Train on a verified dataset larger than RAM through bounded storage, host-memory, pinned-memory, and device queues without hiding sample identity or resume behavior | One maintained large-data workload has a repeatable baseline that shows a capacity, throughput, or cost problem in the data path | [Plan](docs/development/hierarchical-data-pipeline-support-plan.md) |
+| Automated model tuning | Give the system a base training config, parameter choices, and a budget; receive the best checkpoint and its formal Evaluation result | A stable objective, budget, Evaluation protocol, and reusable single-run call exist | [Plan](docs/development/automated-model-tuning-plan.md) |
+| General workflow orchestrator | Submit a list of already supported operations, inspect each step, and retry or resume a failed step | At least two maintained workflows repeat the same recovery and state-hand-off code | [Plan](docs/development/general-workflow-orchestrator-plan.md) |
 
-## History
+Data-source helpers, streaming data, storage adapters, post-Hydra sampling review,
+optional Evaluation enhancements, and the three independent artifact questions
+are preserved as research or review notes in the
+[development index](docs/development/README.md). They are not product roadmap
+items. Data and Evaluation remain Done unless a maintainer selects a new,
+concrete user function.
 
-The completed main path was:
+## Completed and retired work
 
-```text
-pixel-space Gaussian foundation
-    -> standalone Evaluation
-    -> epoch-end Evaluation and metric-selected checkpoints
-    -> AFHQ learned-range-v quality validation
-    -> current product decision
-```
+The maintained pixel-space path completed standalone Evaluation, epoch-end
+Evaluation and metric-based checkpoint selection, then the AFHQ learned-range-v
+quality validation. Detailed measurements live in the AFHQ documentation and
+`CHANGELOG.md`.
 
-Detailed experiment numbers belong in the AFHQ public documentation and
-`CHANGELOG.md`, not in scheduling text. The retired **AFHQ-v2 Gaussian SNR
-loss-weighting experiment (gamma 1 versus gamma 0)** showed no verified benefit
-and is not a supported recipe. Any renewed SNR-weighting proposal needs a new
-product decision, a namespaced task recipe, and matched formal validation. Old
-plan identifiers are explained only in the
+The retired **AFHQ-v2 Gaussian SNR loss-weighting experiment (gamma 1 versus
+gamma 0)** showed no verified benefit and is not a supported recipe. Renewing
+that exact idea requires a new product decision, a separately named recipe, and
+matched formal validation. The evidence and interpretation are retained in the
+[historical decision](docs/development/notes/history/afhq-snr-weighting-decision.md).
+
+Old plan identifiers are kept only in the
 [historical plan map](docs/development/notes/history/milestone-id-map.md).
 
 ## When work becomes Done
 
-A major item becomes Done only when it has:
-
-1. a stable user-visible contract in `SPEC.md`;
-2. clear ownership in `ARCHITECTURE.md` when responsibilities change;
-3. implementation through the same public construction paths used by built-ins
-   and extensions;
-4. focused success, failure, and extension tests where relevant;
-5. stable user documentation and a maintained example where appropriate;
-6. a `CHANGELOG.md` `Unreleased` entry; and
-7. measured evidence for quality, performance, or capacity claims.
+A major item becomes Done only when users have a maintained way to run it, its
+behavior and ownership are documented, built-ins and extensions use the same
+public boundaries, success and failure tests pass, and any quality, performance,
+or capacity claim has measured evidence. The same change must update
+`SPEC.md`, `ARCHITECTURE.md`, public documentation, and `CHANGELOG.md` where
+applicable.
 
 ## Updating this roadmap
 
 - Change this file only when product selection, ordering, status, or completion
   evidence changes.
-- Keep implementation details in the owning development plan.
-- Keep exactly one In progress item and one Next item, or write `None`.
-- Preserve Candidate and Parked ideas until a maintainer reviews them.
-- Never use roadmap status as the sole evidence that code exists or works.
+- Keep at most one In progress item and one Next item, or write `None`.
+- Do not promote a research note into this file merely to preserve it.
+- A development plan cannot select or schedule itself.

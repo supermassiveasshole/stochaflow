@@ -1,200 +1,122 @@
 # Latent Diffusion 支持计划
 
-> 工作状态：候选
+> 文档类型：功能计划
 >
-> 规范来源：[`ROADMAP.md`](../../ROADMAP.md)、[`SPEC.md`](../../SPEC.md)、
-> [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
+> 工作状态：候选（Candidate）
+>
+> 当前可用性：不可用。仓库有通用训练、采样和 checkpoint 能力，但还没有把图片压缩、
+> latent 训练与图片解码连成一个可运行的任务。
 
-- 文档类型：未来能力计划；不属于公开 API 或用户文档
-- 最近复核：2026-08-09
-- 受众：codec、data、training、sampling 与 Evaluation 维护者
-- 下游依赖：
-  [Stable Diffusion Component-Native](stable-diffusion-component-native-support-plan.md)
-  必须复用本计划验收后的 codec/latent 基础能力；它不能反向把 text、UNet 或
-  Diffusers Pipeline 语义引入本计划
-- 研究资料：
-  [设计与研究附录](notes/latent-diffusion-support-plan/design-and-research-notes.md)
+## 为什么不再直接处理每一个像素
 
-本文只保存一个尚未获批的首个完整功能候选。实现、优先级和产品声明只能由根路线图
-重新选择；附录中的旧阶段、API 草案、数据集和硬件结论均不是当前承诺。
+现有内置 diffusion 任务直接在图片像素上反复加噪和去噪。图片分辨率升高后，中间张量会迅速
+变大，训练和生成都可能需要更多显存与计算。Latent Diffusion 先让一个图片编解码器（codec）
+把图片压缩成较小的数字表示，这个表示叫 latent；生成模型只在 latent 上学习，最后再由同一个
+codec 把结果还原成图片。
 
-## 完成后用户能做什么
+较小的张量为什么可能更省资源很容易理解，但实际能省多少、会损失多少图片信息，必须由真实
+训练和正式评估回答。这个计划不是把现有像素任务的张量名称换成 latent，而是要保证用户能够
+固定一版 codec、训练生成模型、搬走运行目录、重新生成图片，并分清压缩损失和生成模型质量。
 
-若本计划获批并通过全部验收，用户可以：
+一轮能说明问题的实验必须先固定 codec、许可清楚的数据、可承担的训练预算和评估方法。
+根 [`ROADMAP.md`](../../ROADMAP.md) 还没有把本方向选为 `Next`，因此这些选择现在不会被伪装成
+既定接口。真正实施前还要重新核对 Diffusers 版本、`AutoencoderKL` 权重、许可、固定版本号
+（revision）和离线获取方式。
 
-1. 在训练配置中只声明一次冻结的预训练图像 codec，也就是负责图像编码和解码的模型；
-2. 直接从图像或已经验证的预计算 latent 数据训练生成模型；
-3. 只用 checkpoint 恢复训练出的模型、Gaussian `Process` 和 codec，完成采样、图像解码与
-   artifact 发布；
-4. 分开评估 codec 重建质量与最终生成质量，不让训练日志冒充正式结果；
-5. 用一个非 DiT 模型走通同一流程，证明这套能力不依赖某个特定 backbone。
+## 为什么先固定 codec，而不是先训练 VAE
 
-首个候选范围是“冻结的预训练图像 codec + conditional latent Gaussian diffusion”。DiT-S/2 与
-DiT-B/2 只是用于验证的 denoiser，不是公共抽象。
+第一版直接使用已经训练好的 codec，并在整个生成模型训练过程中保持它不变。这样，训练失败或
+图片变差时可以分别检查两件事：codec 是否把原图压缩坏了，生成模型是否没有学好 latent 分布。
+如果同时训练 codec 和生成模型，两个目标、多个优化器和两套保存规则会混在一起，首个结果很难
+解释，也超出现有自动训练循环的边界。
 
-## 当前仓库已经支持什么
+首个任务做带类别条件的 Latent Gaussian Diffusion。它可以先用一种模型结构建立基线，但共享
+能力不能只为 DiT 服务。随后还要由独立扩展提供一个非 DiT 模型，走完同样的训练、继续中断的
+训练、采样和评估，证明 codec、latent 数据和推理文件的处理确实属于任务共同能力。
 
-当前仓库只具备可复用基础，不具备 Latent Diffusion 产品能力：
+文字、classifier-free guidance（CFG）、条件 UNet 和 Stable Diffusion 不属于这个首版。它们
+依赖这里建立的基础，却有自己的文本输入、组件兼容和质量问题，应当留在下游计划中处理。
 
-| 已有基础 | 当前保证 | 不代表什么 |
-| --- | --- | --- |
-| Gaussian Process、Dynamics 与 Sampler | 对 tensor state 执行既有训练和采样语义 | 不存在 `LatentProcess`，也未验证 latent recipe |
-| `TrainingPlan.inference_assets` 与只读 inference projection | 显式资产可随 checkpoint 投影到 sampling/Evaluation | 没有内置 image codec provider、codec bundle 或 latent diagnostic |
-| schema-v2 `DataArtifact` lifecycle | 可表达有身份、可验证的物化数据 | 尚无 posterior moments payload、source 或 prepared-latent recipe |
-| 与任务无关的 Metrics 和 standalone/live Evaluation | 可由未来任务 Builder 声明正式 protocol | 没有 latent reconstruction 或 decoded-generation profile |
-| checkpoint v12 与完整 sampling invocation | 固定训练语义并接受独立 sample request | 当前 checkpoint 不包含可恢复的 codec contract |
+## 先跑通直接读取图片的完整路径
 
-通用 inference asset 投影已经实现，但它只证明资产投影机制；不能据此宣称
-Diffusers codec、latent training、prepared posterior、decoded sampling 或 latent quality
-支持已经实现。
+用户准备固定版本的 codec、训练图片和生成模型配置。任务读取图片，用冻结 codec 在训练时将
+图片编码为 latent，再训练生成模型。训练结束后，用户得到可以继续训练的 checkpoint，以及
+与它一起保存、可搬到另一台机器并在断网环境读取的 codec 文件。独立采样从 checkpoint 生成
+latent，使用保存的 codec 解码成图片；正式 Evaluation 分别报告 codec 重建和最终生成质量。
 
-## 还没有支持什么
+仓库已经能对普通张量运行 Gaussian 噪声过程与采样算法，checkpoint v12 也能继续训练，并允许
+任务声明采样和评估需要的只读文件。数据层可以保存经过版本与完整性检查的中间数据，正式
+Evaluation 可以读取 checkpoint 或完整预测文件。这些是搭建任务所需的外壳，但仓库还没有
+codec 适配器、latent 数据格式、latent 训练任务、图片解码流程或受维护的配置。
 
-| 缺口 | 所有者 | 必须避免的错误边界 |
-| --- | --- | --- |
-| 冻结 codec capability 与 concrete provider | task adapter / extension | core 导入 Diffusers 或建立万能 VAE hierarchy |
-| codec source、revision、weights/config digest 与离线恢复 | provider + checkpoint asset | sampling 重新填写 source，或 Hub `main` 静默漂移 |
-| range、geometry、posterior、normalization 与 precision contract | codec adapter | 硬编码 scaling、重复 normalization、混搭 encoder/decoder |
-| image-backed latent `TrainingBuilder`/`TrainingStrategy` | 任务自己的组合逻辑 | `Process`、`Sampler` 或 core runtime 解释 image/codec |
-| prepared posterior artifact 与两条完整 data recipe | DataSource/DataBuilder | 用 `latent: true` 合并不同 lifecycle，或把模型权重当数据 artifact |
-| optimizer-step 长训练流程与可观察性 | training runtime 决策 | 用零散 nullable flags 偷渡新的 loop family |
-| run-level codec persistence | checkpoint/asset publication | 每个 checkpoint 重复大型权重，或依赖原 Hub/cache/path |
-| decoded sampling 与正式 Evaluation profile | `SamplingBuilder`/`EvaluationBuilder` | 把 latent MSE 命名为图像重建质量 |
-| 数据、硬件与质量证据 | task profile | 用 AFHQ smoke、显存容量或短跑吞吐冒充规模/质量结论 |
+第一条端到端路径会用 AFHQ-v2 小配置快速核对训练、继续训练、当前权重与指数滑动平均权重
+（raw/EMA）的采样和评估是否正确。这个短跑只证明流程可用，不代表生产质量。正式训练数据的
+许可、原始分辨率、类别信息和预算必须另行确定，不能用缩小过的图片冒充原始分辨率数据。
 
-## 什么时候可以开始或重新审查
+## codec 必须跟着结果走，而不是留在下载缓存里
 
-只有同时满足以下条件，根路线图才能把本记录选为进行中：
+首版会定义一个最小 codec 接口，并提供可选的 Diffusers `AutoencoderKL` 适配器。接口要写清
+输入范围、缩放、图片尺寸、编码分布参数、计算精度，以及哪些步骤必须临时使用更高精度
+（upcast）。从模型仓库、本地目录或可搬迁文件包加载时，都要固定配置、权重版本和校验摘要，
+拒绝远程“最新版”、损坏文件或来自不同版本的 encoder/decoder 混搭。
 
-1. 产品决策明确选择 codec/latent 的首个完整功能，并固定首个用户结果；
-2. 维护者重新核验 optional Diffusers 版本、首个 `AutoencoderKL` 权重来源、许可、
-   immutable revision 与离线获取策略；
-3. AFHQ-v2 只用于 correctness/smoke；正式目标的数据许可、原始分辨率、taxonomy、样本身份
-   和预算需要另有可执行计划；
-4. 正式 Evaluation 同时有 codec reconstruction 和 decoded generation 的任务专用
-   protocol 草案；
-5. 单设备 profiling 先给出真实瓶颈，不能因预计模型规模预先启动 distributed；
-6. 若需要改变 training loop、checkpoint schema、公开 extension 约定或配置解释规则，
-   同一变更先更新相应根级权威；
-7. Stable Diffusion 仍保持下游：它不能成为提前扩大本计划 scope 的理由。
+移动整个运行目录后，采样和评估不能再读取原来的 Hub cache 或本地源目录。长时间训练的预算、
+保存频率和停止条件按优化器真正更新模型的次数（optimizer step）定义，而不是依赖会随数据长度
+变化的 epoch。是否让同一次训练的多个 checkpoint 共用一份 codec 文件，要先测量重复保存的
+实际成本再决定，不能提前引入文件去重机制。
 
-已完成的 pixel-space、Metrics、Evaluation、configuration 或 inference-asset 工作只是技术
-前置，不自动授权启动。
+## 直接路径可靠以后，再保存预计算编码
 
-## 要完成哪些工作
+每次训练都调用 codec 可能浪费时间，因此计划保留预先编码图片的路径。不过 codec 对每张图片
+给出的是一个概率分布的参数，而不是唯一的 latent。预计算数据应保存这些参数——技术资料称为
+posterior moments——而不是碰巧抽到的一次随机 latent。训练时仍可以明确选择从分布抽样，或者
+使用分布平均值。
 
-### 任务卡：确定 codec 约定与 provider
+这套 prepared-posterior 数据会记录稳定样本编号、分片清单、codec 版本、图片预处理和数值精度。
+生成过程被中断时不能发布半成品；图片内容或 codec 变化后，旧数据必须被拒绝。训练时随机裁剪、
+翻转等数据增强也不能伪装成已经预计算的固定内容。最终既要有直接读取图片的配置，也要有读取
+预计算数据的配置，两条路径都能训练、严格继续训练并只依赖 checkpoint 完成采样。
 
-- **动作：** 定义窄 codec capability，并以可选 Diffusers `AutoencoderKL` adapter 验证
-  geometry、posterior、transform、range、precision/upcast 与 identity。
-- **原因：** codec 语义必须显式且可恢复，不能由上游 Pipeline 或硬编码 scaling 隐式拥有。
-- **影响范围：** task adapter、TrainingPlan inference assets、checkpoint 与 reconstruction profile。
-- **交付物：** 不可拆分的 encoder/decoder asset、固定版本的 provider 和独立 fake codec。
-- **验证方法：** 替换性、错误 geometry/range/digest、离线恢复和无网络 forward tests。
-- **完成条件：** core 不导入 Diffusers；训练只声明一次 codec；reconstruction 验收通过。
+## 压缩质量和生成质量必须分开回答
 
-### 任务卡：交付最小但完整的 image-backed 功能
+正式基线先测 codec 把真实图片压缩再还原时损失了什么，再测生成模型能否在 latent 空间学到目标
+分布。首版选择许可清楚、版本固定、能在当前硬件上完成的数据和小模型；更大的数据、更多类别、
+领域对照或更大模型，只有具体比较确有需要且硬件实测可行时才加入。
 
-- **动作：** 用任务专用 Builder 组合 frozen codec、denoiser、Gaussian Process、Objective
-  与 Strategy，完成 bounded train/resume/sample/evaluate。
-- **原因：** 先证明完整流程，再承担 prepared data 或规模训练复杂度。
-- **影响范围：** latent task extension、配置、checkpoint、sampling writer 与 Evaluation profile。
-- **交付物：** AFHQ-v2 correctness config、小型 reference denoiser 和 raw/EMA result bundles。
-- **验证方法：** fresh/resume、checkpoint-only decode、count/identity、range 与 clipping tests。
-- **完成条件：** sample config 不重复 codec，报告只声明 functional correctness。
+单设备实测还会区分编码、训练、保存和解码各自花费的时间与显存。只有测量表明单设备无法满足
+目标，才考虑分布式训练或新的训练循环。正式结果必须同时包含 codec 重建评估和解码后的生成
+评估，训练日志不能冒充最终质量证据。
 
-### 任务卡：物化 prepared posterior
+## Stable Diffusion 依赖它之前，哪些结果必须成立
 
-- **动作：** 定义 posterior moments artifact，并分别交付 image-backed 与 prepared-backed
-  `DataBuilder` recipe。
-- **原因：** production training 需去除重复 encode，同时保持数据与 codec lineage。
-- **影响范围：** DataSource/DataArtifactStore、payload、storage、DataBuilder 与 runtime RNG。
-- **交付物：** stable keys、shards、inventory、codec/preprocessing/dtype identity 和原子发布。
-- **验证方法：** online/offline 数据一致性、mutation、错误 revision、interrupt 与 strict binding
-  tests。
-- **完成条件：** sample/mode 与 fixed-view policy 明确，不虚构 online augmentation。
+- 真实 codec 和独立测试 codec 都能被加载、替换、离线重新建立，并在输入错误时尽早失败；
+- 直接读取图片与 prepared-posterior 两条路径都能训练、严格继续训练并从 checkpoint 采样；
+- 搬迁运行目录后仍能解码，不读取原 Hub cache 或本地源目录；
+- 生成数量、样本顺序和输出文件完整，损坏或版本不符的 codec 与数据在使用前被拒绝；
+- codec 重建质量与最终生成质量分别运行正式评估；
+- 非 DiT 模型无需修改核心运行代码即可走通同一流程；
+- 测试、静态检查、配置参考和严格文档构建通过，公开文档只声明已经验证的范围。
 
-### 任务卡：完成生产训练和资产保存
+## 基础完成后仍然保留的方向
 
-- **动作：** 固定 optimizer-step 流程，并在测量重复成本后决定 run-level codec bundle。
-- **原因：** 长训练、resume 与多 checkpoint 不能依赖 epoch 偶然长度或重复大型权重。
-- **影响范围：** Trainer policy、checkpoint/asset publication、retention 与 local logging。
-- **交付物：** 预算、频率、停止和完成约定，以及可搬迁的 offline bundle。
-- **验证方法：** mid-epoch resume、controlled stop、missing/corrupt asset 与 relocation tests。
-- **完成条件：** 若需新 loop family 则另行决策，不用 Strategy flags 绕过边界。
+| 未来方向 | 重新考虑的条件 |
+| --- | --- |
+| 在 Stochaflow 内训练图片编解码器（VAE） | 获选任务确实需要自训练 codec，冻结的外部 codec 无法满足 |
+| 接入外部 VAE 训练器 | 两个外部流程需要相同的可重新加载 codec 文件包和导入规则 |
+| 同时训练 VAE 与生成模型 | 正式结果证明冻结 codec 是主要瓶颈，且多优化器训练已单独设计 |
+| 离散表示或视频 codec，包括 VQ-VAE、VQGAN、RAE 和 video codec | 具体任务需要新的表示、分布或时间维度，现有接口无法表达 |
+| 让模型学习 latent 噪声的不确定性（learned variance） | 固定 variance 首版完成后，对照实验证明有稳定质量收益 |
+| 兼容完整 Diffusers Pipeline | 下游产品确实需要整套 Pipeline 兼容，逐组件组合不够 |
+| 根据文字生成图片 | Latent 基础完成，并已选定 tokenizer、text encoder、图文数据和评估方法 |
+| 通用预训练文件抽象 | 两个独立任务重复同一套版本、离线加载和失败处理需求 |
 
-### 任务卡：建立开放数据与质量证据
+首版也不包含 ImageNet-1K、DiT-XL/2、联合对抗训练、万能数据或条件格式、通用元数据服务，
+也不会让读取训练数据的子进程一边训练一边写共享 latent 缓存。
 
-- **动作：** profiling 并冻结开放数据、condition/sample plan，再按当前硬件实测推进
-  DiT-S/2 与候选 DiT-B/2。
-- **原因：** 数据许可、原始分辨率、codec ceiling 和吞吐决定正式质量声明是否成立。
-- **影响范围：** The Met 候选、LHQ probe、ImageNet-100/DomainNet 验收与硬件配置。
-- **交付物：** versioned snapshot/profile、reconstruction report、training/Evaluation results。
-- **验证方法：** 许可与下载审计、原图检查、condition completeness、4090/Spark 1k-step 重测。
-- **完成条件：** 不用 160-pixel 镜像冒充 256 source，并分离 codec 与 denoiser quality。
+## 维护者资料
 
-### 任务卡：证明可替换性并交接下游
-
-- **动作：** 用独立 extension 提供的非 DiT denoiser 复用该能力，并把共享能力交给
-  Stable Diffusion 计划。
-- **原因：** 证明 Latent Diffusion 是工作流约定，而不是 DiT 或 SD 的别名。
-- **影响范围：** extension compatibility、Builder validation 与两份计划的依赖边界。
-- **交付物：** 非 DiT denoiser 的完整运行结果，以及共享 codec/latent/artifact/asset 约定清单。
-- **验证方法：** substitution、checkpoint/resume/sample/evaluate 与无 core diff 审查。
-- **完成条件：** 无 concrete/name/topology 分支；text、CFG 和 SD training 仍由下游拥有。
-
-## 如何证明已经完成
-
-功能完成需要同时具备：
-
-- 一个公开权重 codec 和一个独立 fake codec 通过同一 capability、identity、offline 与失败
-  contract；
-- bounded fresh/resumed image-backed 训练以及 checkpoint-only raw/EMA sampling；
-- prepared artifact 的完整性、确定性、身份漂移和中断恢复测试；
-- relocation 后不依赖原 Hub cache/local source 的 run bundle；
-- decoded output 的 exact sample count、stable IDs、atomic writers 与 replayable provenance；
-- 任务专用 reconstruction 和 generation Evaluation，provider/preprocessing identity 非空，
-  completeness 精确，training diagnostics 不冒充 benchmark；
-- 独立非 DiT denoiser 在不修改共享 runtime 的情况下完成相同流程；
-- focused tests、independent-extension tests、ruff、pyright、配置 reference 检查和严格文档构建；
-- SPEC/ARCHITECTURE/ROADMAP/CHANGELOG 与公开使用文档按实际行为同步；
-- 所有性能、容量和质量声明都有当前硬件、数据、protocol 与 artifact 身份证据。
-
-## 明确不包含什么
-
-- Stochaflow-native VAE、VQ-VAE、VQGAN 或通用 external VAE trainer；
-- VAE 与 denoiser joint training、adversarial/multi-optimizer autoencoder loop；
-- LPIPS/discriminator 公共抽象、万能 representation 或 pretrained-model registry；
-- arbitrary checkpoint conversion、floating Hub revision、encoder/decoder 混搭；
-- 首个 recipe 默认启用 learned variance；它需要独立的 latent 一致性和 Evaluation 验收；
-- Stable Diffusion text/UNet/512 profile、完整 Diffusers Pipeline、SDXL、SD3 或 LoRA；
-- ImageNet-1K、DiT-XL/2、video/VQ/RAE 等新 codec family；
-- universal condition/batch schema 或 Dataset/Sampler/DataLoader registry；
-- 通用 metadata/provenance/capacity service；
-- DataLoader worker 写 cache、persistent read-through hybrid latent cache。
-
-这些项目不是被删除的构想；它们的重审触发与负责人见下表。
-
-## 详细设计和研究资料在哪里
-
-| 未来方向 | 重审触发 | Owner |
-| --- | --- | --- |
-| Stochaflow-native VAE training | 一个被选择的完整任务确实需要在 Stochaflow 内训练 codec，冻结的外部 codec 无法满足；数据、重建 Evaluation 和训练预算已经明确 | 独立 VAE task extension 与对应 training-loop 负责人 |
-| External VAE trainer provider | 至少两个外部训练工作流需要相同的可恢复 codec bundle、身份和导入失败语义 | codec provider/extension 负责人 |
-| VAE 与 denoiser joint training | 正式证据表明冻结 codec 是主要质量瓶颈，并且多 optimizer 或交替更新的 training-loop family 已单独获批 | latent task `TrainingBuilder` 与独立 training-loop 负责人 |
-| 新 codec family（VQ-VAE、VQGAN、RAE 或 video codec） | 被选择的任务需要不同 posterior、离散表示或时序 geometry，现有 codec 约定无法表达 | 对应任务 extension 与 codec capability 负责人 |
-| Learned variance | 固定 variance 的 latent 首版已经验收，消融证明 learned variance 有质量收益，并有独立 latent Evaluation | Gaussian family 与 latent task 负责人 |
-| Full Diffusers Pipeline | 下游完整产品明确需要 Pipeline 级兼容，而 component-native 组合不足；不得作为本计划首版捷径 | 对应下游产品计划负责人，首个 owner 为 Stable Diffusion 计划 |
-| Text conditioning | Latent 基础已验收，具体 text-to-image 任务已选择 tokenizer、text encoder、数据和正式 Evaluation | Stable Diffusion 或其他 text-to-image task extension 负责人 |
-| 通用 pretrained asset abstraction | 至少两个独立任务重复相同的资产身份、离线恢复与版本规则，现有 inference asset 约定不足 | inference/extension 架构维护者与两个消费任务负责人 |
-
-### 相关资料
-
-- [完整设计与研究附录](notes/latent-diffusion-support-plan/design-and-research-notes.md)：
-  保存 codec API、posterior/precision policy、Diffusers provider、external VAE workflow、
-  asset/checkpoint、prepared artifact、配置草案、数据集、硬件、测试矩阵和风险。附录用于未来
-  重查，不是当前实现或排期依据；重审触发与 Owner 以上表为准。
-- [Stable Diffusion Component-Native 计划](stable-diffusion-component-native-support-plan.md)：
-  只在本计划共享能力通过验收并被路线图选择后启动。
-- [Evaluation 后续决策记录](post-training-evaluation-support-plan.md)：通用 Evaluation
-  已经实现；latent 的正式 profile 由本计划的首个完整功能交付。
+- 行为和架构边界以 [`SPEC.md`](../../SPEC.md) 和 [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
+  为准；它们不表示本功能已经实现。
+- [图像压缩接口、中间数据与精度规则、数据和硬件调研、配置草案、测试矩阵和历史记录](notes/latent-diffusion-support-plan/design-and-research-notes.md)
+  供实施时核对，普通使用者无需阅读。
+- 当前评估机制见[独立 checkpoint Evaluation](../configuration/workflows.md#独立-checkpoint-evaluation)。

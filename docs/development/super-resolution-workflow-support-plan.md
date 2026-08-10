@@ -1,204 +1,112 @@
-# 内置超分辨率工作流支持计划
+# 内置超分辨率工作流计划
 
-> 工作状态：候选
+> 文档类型：功能计划
 >
-> 当前结论：仓库已有超分辨率数据组合和教程，但没有内置、可独立运行且可被
-> 其他操作组合的训练、恢复、artifact 发布和正式 Evaluation 工作流。
+> 工作状态：候选（Candidate）
 >
-> 规范来源：[`ROADMAP.md`](../../ROADMAP.md)、[`SPEC.md`](../../SPEC.md)、
-> [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
->
-> 最后核对：2026-08-09
+> 当前可用性：不可用。仓库能准备超分训练数据，但还没有可直接训练和运行的内置超分任务。
 
-## 完成后用户能做什么
+## 先把四倍放大这一件事做完整
 
-用户可以训练一个超分辨率模型，选择 checkpoint 对低分辨率图像执行恢复，发布
-可追溯的高分辨率图像 artifact，并用任务自有的正式 Evaluation 比较 checkpoint。
-同一恢复操作既能独立读取输入，也能消费上游 sampling 操作发布的图像 artifact。
+超分辨率要解决的问题很直观：用户给出一张低分辨率图片，模型把它放大并尽量恢复细节。
+仓库已经能把低清和高清图片整理成训练批次，也有一份演示如何自行组合模型与采样器的教程，
+但这些零件还不能让用户稳定地训练一个超分模型、在另一个进程中加载它、放大自己的图片，
+再用统一方法判断结果好不好。
 
-首个可维护结果使用确定性前向模型验证完整产品路径。条件 Gaussian 超分辨率在基础路径稳定后
-作为后续候选，不把 diffusion 作为任务契约的前提。blind SR、
-Real-ESRGAN 风格二阶 degradation、perceptual/adversarial training 和 general restoration
-继续保留为独立重审方向，不进入首版完成条件。
+第一版因此只做一个边界清楚的结果：把 RGB 8-bit 图片的宽和高各放大四倍。模型采用确定性
+方案，同一个 checkpoint 处理同一张输入图片时必须得到同一结果。这样做不是认为随机生成式
+超分没有价值，而是先把图片配对、训练、继续中断的训练、文件发布和质量比较全部核对清楚。
+如果一开始就引入 diffusion 等随机方法，质量变化究竟来自数据、随机采样还是模型会很难判断。
 
-## 当前仓库已经支持什么
+真正开始开发前，还必须选定首个小型数据、最大输入尺寸和正式评估规则。这些选择会决定
+“四倍放大做对了”究竟怎样判断，所以只能在根 [`ROADMAP.md`](../../ROADMAP.md) 将本方向选为
+`Next` 时一起确定；现在它仍是候选构想。
 
-- `super_resolution` DataBuilder 能组合低分辨率输入和高分辨率参考数据。
-- 公开教程展示了相关数据路径和条件生成基础。
-- `TrainingBuilder`/`TrainingStrategy` 可以实现任务特定训练，而不要求 core 理解 batch 字段。
-- `SamplingBuilder` 可以解释任务输入、完成初始化和 batching、组合任务特定 inference adapter，
-  并返回 writer-ready output；sampling runtime 负责验证 output、运行 writers 和原子发布。
-- EvaluationBuilder 可以为任务声明 metric provider、预处理、sample identity 和结果。
-- sampling 和 Evaluation 已有各自独立的完整配置，并能投影 checkpoint inference assets。
+## 用户最终会走过一条怎样的路径
 
-当前基础没有提供内置 SR model、objective、SamplingBuilder、writer、正式 profile 或
-从 sampling artifact 读取输入的产品工作流。
+训练可以读取已经配对的低清/高清图片，也可以读取高清图片并按一条固定规则生成低清输入。
+训练结束后，用户拿到一个可以继续训练、也可以在新进程中加载的 checkpoint。超分推理与训练
+彼此独立：用户既可以放大普通图片，也可以把一次图片生成操作正式发布的整套结果交给超分任务。
 
-## 还没有支持什么
+每张放大后的图片都会保留原样本编号和输入来源。输出目录还会有一份结果清单，记录尺寸、
+颜色范围、文件校验摘要和所用 checkpoint。随后，独立 Evaluation 可以直接评估 checkpoint，
+也可以离线检查这套已经生成的图片，并用固定版本的 PSNR 和 SSIM 比较像素误差与结构相似度。
 
-- 没有第一方确定性 SR extension 和维护配置。
-- 没有统一但足够窄的低分辨率输入与恢复输出 artifact contract。
-- 没有面向大图的 tiling/overlap/blending 实现和边缘正确性测试。
-- 没有任务自有的 PSNR/SSIM 等正式 Evaluation protocol。
-- 没有把 sampling artifact 显式绑定为 SR 输入的组合示例。
-- 没有条件 Gaussian SR 的完整训练、checkpoint sampling 和质量证据。
-- 没有 unknown/mixed degradation 的 blind SR 数据、训练与正式 Evaluation protocol。
-- 没有 Real-ESRGAN 风格二阶 degradation producer、参数 provenance 或合成/真实域验证。
-- 当前 automatic loop 不支持 adversarial 多 optimizer lifecycle，也没有获批的 perceptual/
-  adversarial SR training family。
-- 没有跨 denoising、deblurring、deblocking 等任务证据支持 general restoration abstraction。
+这里特意保留“生成图片后再超分”的用法，但超分任务不能靠扫描某个目录猜测哪些图片属于
+上一步。它必须接收上游完整发布的结果，逐张延续样本编号与来源。这样，生成、超分和评估中的
+任何一步都可以单独重跑，结果仍然能彼此对应。
 
-## 什么时候可以开始或重新审查
+## 现有数据能力为什么还不等于超分任务
 
-路线图选择内置超分辨率为 `Next` 后即可开始确定性基线。开始前必须指定：
+现有 `super_resolution` 数据组件已经支持 bicubic 降采样、对齐的低清/高清文件夹，以及同步
+裁剪和翻转。训练框架也允许扩展自行解释图片批次、定义模型和损失；采样外层会核对输出数量，
+再完整发布结果目录；Evaluation 已能检查 checkpoint 或完整预测文件包。
 
-- 一个可在 CI 中有界运行的小数据配置；
-- 一个独立 extension 负责人，不向 core 添加图像字段；
-- 输入/输出 artifact 的身份和完整性规则；
-- 正式 Evaluation 使用的数据 split、预处理和 metric provider；
-- 首版是否必须支持 tiling，或先明确限制最大输入尺寸。
+缺少的是把这些能力固定成同一套超分语义的任务扩展。低清输入、高分辨率参考、放大倍率、
+颜色和数值范围、样本编号必须在训练、独立推理和评估中表达同一件事。换用另一个遵守这些规则的
+数据来源时，框架核心不应增加图像专用字段或按 `super_resolution` 名称走特殊分支。
 
-条件 Gaussian SR 只有在确定性路径的训练、恢复、writer 和 Evaluation 全部通过后
-才能开始。
+## 先建立可核对的确定性基线
 
-后续方向只在下面各自条件成立后重审，且不会自动扩大确定性首版：
+扩展会提供模型、训练目标和任务自己的训练组合，并继续使用现有的单优化器自动训练循环。
+首个小配置要能快速训练、严格继续中断的训练，并在另一个进程中加载 checkpoint。固定基准上的
+结果至少应优于事先固定的 bicubic 对照，否则它只能算一个可运行原型，不能算受维护的基线。
 
-| 后续方向 | 重审触发 | Owner |
-| --- | --- | --- |
-| Conditional Gaussian SR | 确定性训练、恢复、writer 和正式 Evaluation 已验收，并且被选择的产品结果确实需要随机生成或感知/失真权衡 | SR task extension 与 Gaussian family 负责人 |
-| Blind SR | 至少一个真实输入域无法提供可信 paired degradation，且确定性 paired 基线已成为正确性对照 | 独立 blind-SR task/extension 负责人 |
-| Real-ESRGAN 风格二阶 degradation | blind-SR 方向已被选择，并证明一次 degradation 无法覆盖目标域；完整参数分布、顺序和随机性可版本化 | blind-SR extension 的 DataBuilder/degradation provider 负责人 |
-| Perceptual/adversarial loop | 确定性像素基线已验收，但正式 perception 证据证明仅重建 loss 不足；训练 loop family 与资源预算另获批准 | SR TrainingBuilder/Strategy 负责人；多 optimizer lifecycle 由独立 training-loop 负责人 |
-| General restoration | 至少两个非 scale-only 的持续维护任务重复同一输入/输出、artifact 和 Evaluation 约定 | 新的 general-restoration 计划与 task-extension 负责人，不由 SR core 预建 |
-| 任意或非整数倍率 | 固定整数倍率首版已验收，至少两个真实任务需要不同或连续倍率，并能定义训练配对、geometry 与 Evaluation | SR DataBuilder、model adapter 与 Evaluation 负责人 |
-| Alpha 或 16-bit 图像 | 真实输入需要透明度或高位深，codec、范围、writer、artifact 与 metric 规则已经固定 | SR input/output adapter、writer 与 Evaluation provider 负责人 |
-| Video SR | 一个视频恢复产品被单独选择，帧序、时间身份、数据、时序指标和资源预算已明确 | 独立 video-SR task extension 负责人 |
-| Diffusion upscaler | 确定性首版已验收，正式证据表明随机 upscaler 对目标质量有必要，并能与确定性基线同协议比较 | 独立 diffusion-SR task、Gaussian family 与 Evaluation 负责人 |
+独立超分推理会明确选择当前训练权重或指数滑动平均权重（raw/EMA），按配置的总图片数和批量
+大小处理输入，然后把放大图片与原样本编号交给超分专用的文件写入组件。需要对比图时，输入、
+bicubic 对照、模型结果和高清参考必须分别标明，不能把一批图片不加说明地拼成通用网格。
 
-## 要完成哪些工作
+正式 Evaluation 会固定测试划分、配对方式、图片编解码、量化、裁剪、RGB 数值范围以及
+PSNR/SSIM 的实现版本。确有需要时才增加 LPIPS，用已训练网络比较两张图片在感知上的相似度。
+缺失或重复样本、参考图不匹配，以及在线评估和离线重放结果不一致，都必须使评估失败。
 
-### 固定任务输入和输出
+## 大图片不能被悄悄换一种处理方式
 
-- 动作：由 SR extension 定义低分辨率输入、高分辨率参考、scale factor 和 sample
-  identity；core 继续把 batch 当作结构化 `Any`。
-- 原因：训练、恢复和 Evaluation 必须解释相同的图像对应关系。
-- 影响范围：DataBuilder、artifact manifest 和任务文档。
-- 交付物：训练数据、inference 输入和恢复输出的明确约定。
-- 验证方法：尺寸、scale、配对、重复 sample ID 和不完整 artifact 的失败测试。
-- 完成条件：替换另一种兼容数据来源不需要修改 core runtime。
+第一版开始前必须明确选择一种规则。如果支持切片处理（tiling），就固定图片块大小、相邻块
+重叠、边缘填充、重叠区域合并和最终裁剪方法，并检查奇数尺寸、不能整除的尺寸、拼接接缝、
+不同批量大小和显存上限。如果暂不支持切片，就公开最大输入尺寸，超限时立即报错。框架不能
+为了勉强跑完而在用户不知情时切片，因为这会改变像素结果。
 
-### 交付确定性训练基线
+## 最后要让整条链路可以重放
 
-- 动作：在 extension 中实现 model、objective、TrainingBuilder 和 Strategy，并使用
-  当前 automatic training loop。
-- 原因：先验证产品生命周期，再增加随机生成方法的复杂度。
-- 影响范围：第一方 extension、配置、示例和 checkpoint。
-- 交付物：有界 train config、严格 resume config 和选择 checkpoint 的规则。
-- 验证方法：短训练、resume、loss/metric 记录和 checkpoint portability tests。
-- 完成条件：训练路径不引入任务名称分支或第二套 optimizer lifecycle。
+完成后的证据不是“命令没有报错”，而是下面这些结果能够同时成立：
 
-### 提供独立恢复操作
+- 小型训练、严格继续训练、跨进程加载和文件发布都通过测试；
+- 另一种兼容的数据来源可以替换首个数据实现，而无需修改框架核心；
+- 输出尺寸、顺序、样本编号和不同批量大小下的结果一致性都有检查；
+- 支持切片时，边缘与非整除尺寸不会产生错误；不支持时，超限输入得到明确错误；
+- checkpoint 在线评估与完整预测文件包的离线评估得到一致结果，并证明所有样本齐全；
+- `生成图片 -> 超分 -> 正式评估` 的小型完整流程可以重放，同时超分也能直接读取普通用户图片；
+- 用户文档给出独立超分和生图后超分两个可运行例子，并如实说明第一版限制。
 
-- 动作：实现任务 SamplingBuilder 或窄 inference adapter，接受显式低分辨率输入并
-  返回恢复后的图像与 sample identity。
-- 原因：恢复必须可独立使用，不能只作为训练后的隐式 hook。
-- 影响范围：sampling composition、input loader 和 output writer。
-- 交付物：checkpoint-backed restore config、writer 和 manifest。
-- 验证方法：batch size、顺序、输出尺寸、raw/EMA 选择和重复运行测试。
-- 完成条件：SamplingBuilder 负责任务输入、初始化和按 `num_samples`/`batch_size` batching；
-  sampling runtime 只负责外层执行、完整 output 校验、writers 和原子发布。
+## 确定性四倍放大之后，再考虑哪些方向
 
-### 决定并验证大图切片策略
+下面的构想都保留，但它们不会通过一组暂时为空的配置字段提前塞进第一版：
 
-- 动作：若首版纳入 tiling，明确 tile size、overlap、padding、blend 和边界裁剪规则；
-  否则在配置和文档中拒绝超出限制的输入。
-- 原因：隐式切片会改变像素、显存需求和 Evaluation 结果。
-- 影响范围：任务 inference adapter 和 manifest protocol facts。
-- 交付物：确定的切片策略或明确的输入限制。
-- 验证方法：奇数尺寸、边缘 tile、overlap 拼接接缝、不同 batch 行为一致性和显存上限测试。
-- 完成条件：相同配置和输入得到确定的空间拼接结果。
+- **Conditional Gaussian SR 或 diffusion upscaler：**只有确定性版本完成，且正式结果证明随机
+  方法确实改善目标质量时，才让同一低清输入产生多个可能的高清结果。
+- **Conditional consistency SR：**只有教师、学生、输入条件、噪声时刻、模型输出含义和预处理
+  都能严格对齐时，才单独设计少步超分。
+- **Blind SR：**真实输入确实没有可信的成对训练数据，且确定性成对基线已可作为对照时再开始；
+  合成图片和真实图片必须分开报告。
+- **Real-ESRGAN 风格的二阶 degradation：**Blind SR 已被选择，并证明一次退化模拟不足后再做；
+  多轮压缩、模糊和缩放的参数、顺序与随机种子必须可重放。
+- **感知或对抗训练：**正式结果证明普通像素重建损失不足后再做。多个优化器和交替更新需要
+  单独的训练循环，不能隐藏在一个损失开关里。
+- **General restoration：**去噪、去模糊或去除 JPEG 痕迹等至少两个长期维护任务重复相同的
+  输入、输出和评估规则后，才提取共同能力。
+- **任意或非整数倍率：**固定整数倍率完成后，至少两个真实任务需要不同或连续倍率，并能说明
+  训练配对、几何变化和评估规则时再做。
+- **Alpha 或 16-bit：**真实输入需要透明度或高位深，并已固定编解码、数值范围、文件写入和
+  指标规则时再做。
+- **Video SR：**作为单独产品决定；先写清帧序、时间上的样本编号、数据、时序指标和资源预算。
 
-### 建立任务自有的正式 Evaluation
+这项计划不会建立万能图片流水线，不会把条件、倍率、图片块或参考图加入框架通用配置，也不会
+让训练完成后自动执行超分。第一版不包含上面列出的随机超分、Blind SR、二阶退化、感知/对抗
+训练、通用图像恢复、任意倍率、高位深或视频支持。没有固定数据、预处理和实现版本的普通
+PSNR/SSIM 数字也不能写成可直接比较的质量结论。
 
-- 动作：定义配对 reference 数据、codec/quantization、预处理、PSNR/SSIM provider
-  identity，以及需要时的 perceptual metric。
-- 原因：训练 scalar 或普通 sampling output 不能替代正式质量证据。
-- 影响范围：EvaluationBuilder、metric provider、profile 和公开教程。
-- 交付物：checkpoint Evaluation 和 prediction-artifact offline replay 配置。
-- 验证方法：sample completeness、live/offline 行为一致性、provider identity 和 reference
-  mismatch tests。
-- 完成条件：两个 checkpoint 只有在相同 protocol digest 下才进入普通比较。
+## 维护者资料
 
-### 允许消费上游 sampling artifact
-
-- 动作：为完整图像 sampling artifact 提供显式 SR input binding，不扫描任意目录。
-- 原因：生图后超分必须保留上游 sample identity 和来源。
-- 影响范围：operation result binding、SR input adapter 和组合示例。
-- 交付物：`sample -> super resolve -> evaluate` 示例。
-- 验证方法：digest、顺序、缺失样本、重复样本和不兼容 codec 的失败测试。
-- 完成条件：同一 SR operation 可独立运行或消费受治理的上游 artifact。
-
-## 如何证明已经完成
-
-- 有界 train、strict resume、checkpoint restore 和 writer tests。
-- independent compatible DataSource/DataBuilder substitution tests。
-- 确定性恢复的尺寸、顺序、identity 和不同 batch 一致性测试。
-- 若支持 tiling，包含边缘、overlap 和非整除尺寸 tests。
-- 正式 Evaluation 的 live/offline 一致性和完整性测试。
-- sampling artifact 到 SR artifact 的 end-to-end composition test。
-- 用户文档给出独立恢复和生图后超分两个可运行例子。
-- 后续方向不作为首版验收；若单独重开，必须满足自己的触发证据并由对应负责人验收。
-
-## 明确不包含什么
-
-- 不把图像 condition、scale、tile 或 reference 字段加入通用 core config。
-- 不建立 universal image pipeline 或按 `super_resolution` 名称分支的 runner。
-- 不把训练后的自动恢复作为默认行为。
-- 不在确定性基线完成前承诺 Gaussian、video SR、diffusion upscaler、任意倍率、alpha 或 16-bit。
-- 不在首版实现 blind SR、Real-ESRGAN 二阶 degradation、perceptual/adversarial loop 或 general
-  restoration；暂停不表示删除这些未来构想。
-- 不用 loss flag 把 adversarial 多 optimizer lifecycle 偷塞进当前 automatic Trainer。
-- 不把普通 PSNR/SSIM 数字写成跨 protocol 可比较的证据。
-
-## 详细设计和研究资料在哪里
-
-本节不属于首版“要完成哪些工作”。上面的触发表决定何时重审以及由谁负责；只有被路线图单独
-选择的方向才执行相应工作。
-
-### 条件 Gaussian SR
-
-- 动作：复用现有 Gaussian family 的窄能力，增加条件 model adapter、objective、
-  `SamplingBuilder` 和质量证据。
-- 原因：随机方法不应改变通用 SR 输入和输出约定。
-- 交付物：条件 Gaussian train/sample/evaluate 配置与对照结果。
-- 验证方法：condition 使用、checkpoint restore、sampler compatibility 和质量测试。
-- 完成条件：确定性与 Gaussian 方法共享任务 artifact 和 Evaluation 边界，core 不按方法名称
-  分支。
-
-### Blind、二阶 degradation、感知训练与 general restoration
-
-- 动作：只按触发表分别建立 blind SR、Real-ESRGAN 风格二阶 degradation、perceptual/
-  adversarial loop 或 general restoration 的短期提案。
-- 原因：degradation uncertainty、合成数据分布、GAN optimization 和跨任务抽象是四种不同职责，
-  不能打包成“高级 SR”开关。
-- 交付物：每个被重开的方向各自拥有真实数据/使用方、版本化协议、负责人、资源预算、失败模型
-  和独立验收；未触发方向继续保留。
-- 验证方法：按实际获批方向选择执行 blind synthetic/real domain separation、degradation
-  parameter/seed replay、perceptual provider identity、adversarial optimizer/step ordering，或至少
-  两个 general-restoration task substitution tests。
-- 完成条件：任何方向都不修改确定性 SR artifact/Evaluation 约定，不把多 optimizer 塞入当前
-  automatic loop，也不把任务字段提升为通用 core schema。
-
-### 任意倍率、Alpha/16-bit、Video 与 diffusion upscaler
-
-- 动作：只在触发表对应证据成立后，为被选择的输入表示或模型 family 制定独立短期计划。
-- 原因：倍率、像素表示、时间维度和随机生成分别改变不同的数据、writer 与 Evaluation 规则。
-- 交付物：对应方向的输入输出约定、数据身份、writer、正式 Evaluation、资源预算和失败测试。
-- 验证方法：由对应 Owner 在短期计划中固定，不复用确定性 x4 首版的隐含假设。
-
-### 相关资料
-
-- [原工作流文档中的 SR 详细工程方案和测试矩阵](notes/default-workflow-pipeline-support-plan/design-archive.md)
-- [内置操作与工作流组合计划](default-workflow-pipeline-support-plan.md)
-- [当前 Data 组合边界](../configuration/data-pipeline.md)
-- [正式 Evaluation 后续计划](post-training-evaluation-support-plan.md)
+模型接口草案、文件写入设计、基准指标、切片测试矩阵和旧版研究保存在
+[原始设计归档的超分章节](notes/default-workflow-pipeline-support-plan/design-archive.md#11-super-resolution-详细工程方案)。

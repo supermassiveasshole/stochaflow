@@ -1,58 +1,91 @@
-# 开发文档重构内容转移清单
+# 开发文档内容保全清单
 
-> 用途：在缩短主计划前，记录每类内容的新归属，防止 future-support
-> 构想因改写而消失。
+> 核对基线：`5c75a76de3d696a5b734ae4eefe88a30532bd2de`
 >
-> Last reviewed: 2026-08-09
+> 最后核对：2026-08-10
 
-## 处理规则
+本清单回答一个问题：旧计划被缩短或改名以后，里面仍有价值的功能构想现在在哪里。
+“还在 Git 历史里”不算保留；每项内容必须在当前文档、规范、公开用法或研究附录中有
+明确落点。
 
-- 当前已经实现的行为只在主计划中保留结论和权威链接，详细契约以
-  `SPEC.md`、`ARCHITECTURE.md` 和公开文档为准。
-- 尚未实现的用户结果、接口构想、失败边界和重审条件必须留在主计划或其
-  `notes/` 附录中，不能只依赖 Git 历史。
-- 外部库、硬件、数据集和性能调研移入附录，标明实施前必须重新验证。
-- 已完成的阶段编号只移入历史映射；主计划改用描述动作或结果的标题。
-- 陈旧工期估算不迁移。它们不是产品要求，候选被选为 `Next` 后重新估算。
+## 分类规则
 
-## 逐文档转移
+- 已实现并继续维护的内容写入规范、架构和公开使用文档，不再伪装成开放计划；
+- 有清楚输入、操作和产物的未来功能，保留为功能计划，并由 `ROADMAP.md` 决定状态；
+- 没有真实使用者、数据源或 provider 的假设，保留为研究备忘，不进入排期；
+- 数学推导、API 草案、provider 调研、长测试矩阵和旧阶段编号放在 `notes/`；
+- 已退休实验和平台只保留结论、证据位置和重新讨论的条件。
 
-| 原主文件 | 当前事实的新归属 | Future-support 的新归属 | 研究与历史的新归属 |
-| --- | --- | --- | --- |
-| [开发执行路线图](../development-priority-roadmap.md) | 精简后的当前能力表和根路线图链接 | 精简后的候选/暂停队列及各 owner plan 链接 | [历史计划 ID 映射](history/milestone-id-map.md) |
-| [显式顺序工作流](../default-workflow-pipeline-support-plan.md) | 精简后的独立 operation 与 runtime/Builder 职责 | 原路径只负责显式顺序组合；超分辨率与通用编排分别移入独立主计划 | [原始设计归档](default-workflow-pipeline-support-plan/design-archive.md) |
-| [通用工作流编排器（新 owner）](../general-workflow-orchestrator-plan.md) | 链接当前独立 operation 与显式组合基础 | 独立保留恢复、重试、分支和通用状态传递构想及重审条件 | 复用[原始工作流设计归档](default-workflow-pipeline-support-plan/design-archive.md) |
-| [内置超分辨率工作流（新 owner）](../super-resolution-workflow-support-plan.md) | 链接当前 DataBuilder、教程、Sampling 和 Evaluation 基础 | 独立保留确定性 baseline、Gaussian SR 及高级恢复方向 | 复用[原始工作流设计归档](default-workflow-pipeline-support-plan/design-archive.md)中的 SR 研究 |
-| [Data lifecycle contract](../../../SPEC.md#4-data-contract) | 当前行为进入 `SPEC.md`、`ARCHITECTURE.md` 和公开 Data 文档；已完成决策记录在闭环后删除 | metadata、provenance 和 capacity 由[独立 proposal](../artifact-metadata-provenance-capacity-model-proposal.md)负责 | [实施归档](data-artifact-producer-lifecycle-refactor/implementation-archive.md) |
-| [Data layer composition](../../../ARCHITECTURE.md#5-composition-roots) | 当前职责进入架构和公开 Data 文档；已完成边界记录在闭环后删除 | function helper、streaming、distributed ownership 和 adapter 分别进入下列明确 owner | [研究归档](data-layer-composition-boundary-review/research-archive.md) |
-| [Data recipe extension](../data-recipe-extension-ergonomics-plan.md) | 链接当前 Python 与 recipe-level `DataBuilder` 能力 | 保留 function registration、deterministic helper、view identity 和 major-version 命名重审条件 | 复用[Data layer 研究归档](data-layer-composition-boundary-review/research-archive.md) |
-| [Streaming data lifecycle](../streaming-data-lifecycle-support-plan.md) | 链接当前 iterable 与 artifact snapshot 边界 | 保留 replay、cursor、sharding、sample identity、resume 和 Evaluation completeness 构想 | 复用[Data layer 研究归档](data-layer-composition-boundary-review/research-archive.md) |
-| [Data storage/payload adapter](../data-storage-and-payload-adapter-support-plan.md) | 链接当前 managed/referenced 与 family-owned payload 能力 | 保留 remote store、semantic/storage 拆分、adapter、ImageNet shard 和新 read-boundary failure 构想 | 复用[Data layer 研究归档](data-layer-composition-boundary-review/research-archive.md) |
-| [Latent diffusion](../latent-diffusion-support-plan.md) | 主计划链接现有 checkpoint/inference 基础 | 原路径保留完整 latent 用户结果、启动条件和候选任务 | [Codec、provider、hardware 与数据调研](latent-diffusion-support-plan/design-and-research-notes.md) |
-| [Stable Diffusion](../stable-diffusion-component-native-support-plan.md) | 主计划只写当前未提供完整产品支持 | 原路径保留 text encoder、UNet、CFG、模型兼容及后续模型家族 | [Provider/API 调研](stable-diffusion-component-native-support-plan/design-and-research-notes.md) |
-| [Consistency 与蒸馏](../consistency-distillation-support-plan.md) | 主计划区分 frozen-teacher 基础和内置 workflow 缺口 | 原路径保留 teacher/target lifecycle、算法支持和未来工作流 | [数学与设计依据](consistency-distillation-support-plan/design-and-research-notes.md) |
-| [自动化模型调优](../automated-model-tuning-plan.md) | 主计划链接当前 operation、metrics 和 Evaluation 基础 | 原路径保留 HPO 用户结果、启动条件和失败边界 | [Provider 选型与 API 草案](automated-model-tuning-plan/research-and-api-draft.md) |
-| [Distributed 支持](../distributed-training-and-inference-support-plan.md) | 主计划链接当前单设备生命周期 | 原路径保留 distributed correctness、checkpoint、sampling 与 Evaluation 目标 | [PyTorch/provider/version 调研](distributed-training-and-inference-support-plan/research-and-api-draft.md) |
-| [Hydra 配置迁移](../hydra-configuration-composition-migration-plan.md) | 主计划说明当前 plain-YAML 基线 | 原路径保留 fresh-training composition 和启动迁移目标 | [详细设计](hydra-configuration-composition-migration-plan/design-notes.md) |
-| [Sampling 调用重审](../sampling-request-config-refactor.md) | 主计划说明当前 sampling v12 已完成 | 原路径保留 Hydra 完成后的调用方式重审问题 | [历史 sampling-request 设计](sampling-request-config-refactor/review-notes.md) |
-| [Evaluation 后续](../post-training-evaluation-support-plan.md) | 主计划链接当前 standalone/offline Evaluation | 原路径保留 reference cache、性能证据和 comparison policy 重审条件 | [已完成设计背景](post-training-evaluation-support-plan/design-notes.md) |
-| [Extension 导入性能](../extension-import-boundary-and-activation-latency-plan.md) | 主计划链接当前 activation 正确性 | 原路径保留 import 性能目标和重开条件 | [性能设计笔记](extension-import-boundary-and-activation-latency-plan/design-notes.md) |
-| [Artifact metadata/provenance/capacity](../artifact-metadata-provenance-capacity-model-proposal.md) | 主计划链接当前 run-local artifact 证据 | 原路径分别保留三类信息各自的多使用方触发条件 | [设计与容量调研](artifact-metadata-provenance-capacity-model-proposal/design-notes.md) |
+## 历史基线逐项映射
 
-## 新增的清晰 owner
+| `5c75a76` 中的文件 | 需要保留的内容 | 当前落点与状态 |
+| --- | --- | --- |
+| `artifact-metadata-provenance-capacity-model-proposal.md` | metadata、来源追踪和资源证据是三个不同功能；citation/license、转换记录、code/config/environment snapshot；artifact footprint、运行前估算和运行后实测不能混用 | [研究备忘](../artifact-metadata-provenance-capacity-model-proposal.md)逐项解释使用场景；[设计附录](artifact-metadata-provenance-capacity-model-proposal/design-notes.md)保留候选事实、三类 capacity 和失败边界；三个问题分别等待真实写入方、读取方和用户操作，不参与排期 |
+| `automated-model-tuning-plan.md` | 固定训练配置、搜索范围、预算、validation 目标、trial 隔离/恢复、最终正式 Evaluation；provider、剪枝、并行和统计候选 | [HPO 功能计划](../automated-model-tuning-plan.md)保留用户流程；[调研与 API 草案](automated-model-tuning-plan/research-and-api-draft.md)保留 provider、配置、seed、失败、泄漏和并行设计；当前暂停 |
+| `consistency-distillation-support-plan.md` | teacher/student 数学、teacher bundle、target model 更新、一步/少步采样、只依赖学生的推理产物、未来算法 | [蒸馏功能计划](../consistency-distillation-support-plan.md)解释完整使用流程；[数学与设计附录](consistency-distillation-support-plan/design-and-research-notes.md)保留公式和候选；当前候选 |
+| `data-artifact-producer-lifecycle-refactor.md` | producer、manifest、identity、cache、strict resume 和任意 payload 的生命周期 | 已闭合到 [`SPEC.md`](../../../SPEC.md)、[`ARCHITECTURE.md`](../../../ARCHITECTURE.md)、[Data pipeline](../../configuration/data-pipeline.md)和测试；[实施记录](data-artifact-producer-lifecycle-refactor/implementation-archive.md)保留迁移历史；不是开放计划 |
+| `data-layer-composition-boundary-review.md` | Artifact 不是 Dataset；`DataBuilder` 是一次运行的数据组合；source-only、direct Python 和 recipe 的选择；LMDB、streaming、helper 等研究问题 | 当前边界在 [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)和[Data pipeline](../../configuration/data-pipeline.md)；完整方案比较在[研究归档](data-layer-composition-boundary-review/research-archive.md)；helper、streaming 和新存储分别保留为研究备忘，不参与排期 |
+| `default-workflow-pipeline-support-plan.md` | 可发现的任务 recipe、独立 operation、typed artifact 传递、训练后蒸馏、生图后超分、推理 bundle 和是否需要通用编排器 | [显式工作流计划](../default-workflow-pipeline-support-plan.md)保留两条具体流程；[超分计划](../super-resolution-workflow-support-plan.md)和[通用编排器计划](../general-workflow-orchestrator-plan.md)分别承接独有功能；[原始设计](default-workflow-pipeline-support-plan/design-archive.md)保留接口草案和完整矩阵 |
+| `development-priority-roadmap.md` | 产品先后关系、AFHQ 后的 latent/codec/DiT、Stable Diffusion 原生采样和微调，以及更晚的规模化方向 | 根 [`ROADMAP.md`](../../../ROADMAP.md)是唯一排期；[当前开发队列](../development-priority-roadmap.md)只保留直接依赖；Latent、Stable Diffusion 和 Distributed 计划保留具体功能，旧编号只在[历史编号表](history/milestone-id-map.md) |
+| `distributed-training-and-inference-support-plan.md` | 多进程训练、数据分片、全局指标、分布式 checkpoint、合并采样结果；FSDP2、多节点和弹性后续 | [Distributed 功能计划](../distributed-training-and-inference-support-plan.md)保留用户结果和首版；[调研与 API 草案](distributed-training-and-inference-support-plan/research-and-api-draft.md)保留 PyTorch/version、配置、checkpoint 和后续候选；当前暂停 |
+| `extension-import-boundary-and-activation-latency-plan.md` | 先测公共导入、Registry、plugin activation 和 CLI；保持对象身份、激活顺序和安装 wheel 行为；保留 capability-scoped expected-type resolver 与轻量 Registry/应用级 catalog 拆分候选 | [Extension 性能计划](../extension-import-boundary-and-activation-latency-plan.md)只保留测量驱动的性能功能；[设计附录](extension-import-boundary-and-activation-latency-plan/design-notes.md)保留导入和 Registry 拆分；当前暂停，正确性已闭合 |
+| `hydra-configuration-composition-migration-plan.md` | 用 Hydra 组合全新训练配置，但仍由 Stochaflow 校验和执行；preview、受信任配置根、普通 YAML 对照；不接管 resume/sample | [Hydra 功能计划](../hydra-configuration-composition-migration-plan.md)保留用户流程；[设计附录](hydra-configuration-composition-migration-plan/design-notes.md)保留配置组、override、失败和 multirun 问题；当前候选 |
+| `latent-diffusion-support-plan.md` | 冻结 codec、在线编码与 prepared posterior 两条数据路、AFHQ bring-up、生产资产、开放数据 DiT、独立非 DiT 替换、未来 codec/VAE | [Latent 功能计划](../latent-diffusion-support-plan.md)解释训练和生成流程；[设计与研究附录](latent-diffusion-support-plan/design-and-research-notes.md)保留 codec/provider、The Met、ImageNet-100、DomainNet、硬件和未来算法；当前候选 |
+| `legacy-intel-macos-pytorch-test-lifecycle.md` | Intel macOS 退休决定和不再维护专用依赖/CI 的理由 | 当前支持矩阵在[平台支持](../../platform-support.md)、根 README 和 `CHANGELOG.md`；历史实施记录仍作为独立删除候选，不含 future 功能 |
+| `metrics-support-plan.md` | task-neutral `MetricSpec`/`MetricUpdate`/`MetricEngine`，training 与 Evaluation 分离，selection 只使用 validation | 已闭合到 [`SPEC.md`](../../../SPEC.md)、[`ARCHITECTURE.md`](../../../ARCHITECTURE.md)、[公开工作流](../../configuration/workflows.md)和测试；不再有 Metrics 开放计划 |
+| `p2-weighting-and-adm-topology-refactor-plan.md` | canonical ADM 拓扑、learned-range variance、hybrid loss、respaced sampling、CFG 2C、AFHQ 对照；拓扑与 weighting 分开归因、论文复刻与产品实验分线、谨慎命名复刻结果、Gaussian-local weighting 边界；SNR weighting 实验结论 | ADM/learned-range 能力和证据在 [`CHANGELOG.md`](../../../CHANGELOG.md)、[AFHQ 教程](../../tutorials/afhq-v2.md)、规范和测试；[SNR weighting 历史决策](history/afhq-snr-weighting-decision.md)保留研究理由、gamma 0/1 对照、色彩噪声、联合候选边界和重新讨论条件；P2 支持已退休 |
+| `post-training-evaluation-support-plan.md` | checkpoint Evaluation、prediction artifact offline replay、完整性、结果发布；reference cache、性能、比较、任务 profile、外部报告、benchmark extension、人工评价 artifact、distributed Evaluation、inference-bundle subject 和置信区间设想 | 基础功能已闭合到规范和[公开工作流](../../configuration/workflows.md)；[已完成说明](../post-training-evaluation-support-plan.md)解释当前用法；[设计备忘](post-training-evaluation-support-plan/design-notes.md)保存未排期想法，并说明旧 Selection runtime 已被 training/HPO/调用方各自决策替代；不再把 Evaluation 列为开放工作 |
+| `sampling-request-config-refactor.md` | training/sample 配置分离、完整 sample request、CLI/plugin/output 约定；Hydra 后是否需要稳定 Python 调用的复查 | 当前 v12 行为在规范和[公开工作流](../../configuration/workflows.md)；[条件性复查](../sampling-request-config-refactor.md)明确可能保持现状；[复查资料](sampling-request-config-refactor/review-notes.md)保留旧设计 |
+| `stable-diffusion-component-native-support-plan.md` | black-box 参考路径与逐组件路径、codec/text encoder/UNet/CFG、图文数据、256/512 验证、LoRA/SDXL/SD3/Flux 后续 | [Stable Diffusion 功能计划](../stable-diffusion-component-native-support-plan.md)解释微调和生成流程；[设计与研究附录](stable-diffusion-component-native-support-plan/design-and-research-notes.md)保留 provider、数据、parity 和未来模型；当前暂停 |
 
-- `super-resolution-workflow-support-plan.md` 接管原工作流文档中的超分辨率数据、
-  训练、推理、writer、tiling、metric 和正式 Evaluation 构想。
-- `default-workflow-pipeline-support-plan.md` 不再复制 latent、Stable Diffusion 或
-  consistency 的内部实现；它只说明 operation 之间如何显式传递 typed result
-  和 artifact。
-- `general-workflow-orchestrator-plan.md` 接管启动条件不同的通用恢复、重试、分支和
-  状态传递构想，避免与候选的显式顺序组合共用状态。
+## 后来的决定覆盖了哪些旧想法
+
+保全历史不表示永远服从旧计划。以下内容经过后续实现或维护者决定，已经明确被替换：
+
+- `metrics-support-plan.md` 曾讨论让带 validation metadata 的 Diagnostic 参与模型选择；当前
+  规范只允许正式 validation observations 参与 checkpoint selection 和 early stopping，
+  Diagnostic 只是观察工具。旧想法作为历史背景保留，但不能写回当前功能；
+- `hydra-configuration-composition-migration-plan.md` 曾把清理 Physics/KD reference projects
+  放进迁移范围；维护者后来明确要求本轮不修改 Physics/KD。当前 Hydra 计划只讨论配置
+  组合，不授权删除、移动或改写这些项目；
+- Evaluation 旧计划把 comparison、Selection、gate、suite 和可选 integration 放在后续
+  阶段。当前基础 Evaluation 已闭合；独立 Selection runtime 已被 validation-only training
+  selection、HPO study policy 和发布调用方各自决策替代。其余 benchmark extension、人工
+  评价 artifact、distributed Evaluation、inference-bundle subject、置信区间和外部 reporting
+  只作为彼此独立的未排期研究入口保存；
+- Sampling 旧文件记录的 partial-request 重构已经完成。当前文件只保留 Hydra 之后的条件性
+  复查，并允许得出“无需改变”的结论。
+- Workflow 旧草案曾保留训练结束后自动 sampling、把 sampling/Evaluation reference 写回
+  `TrainingRunOutcome`，以及让符合条件的 Diagnostic 参与 selection。后来决定改为显式、
+  独立的 train/sample/evaluate stage，跨步骤引用由 workflow manifest 保存；模型选择只读取
+  validation observation。这些旧草案不再是 future 功能，训练后蒸馏和生图后超分本身仍由
+  当前工作流计划保留。
+
+## 基线以后新增但必须继续保留的功能
+
+- [内置超分辨率](../super-resolution-workflow-support-plan.md)：低清/高清配对训练、低清输入、
+  高清 artifact、正式 Evaluation，以及以后可能的条件 Gaussian、tiling 和更广恢复任务；
+- [通用工作流编排器](../general-workflow-orchestrator-plan.md)：至少两条稳定工作流重复以后，
+  才提供步骤状态、失败重试和恢复；
+- [大规模数据集的层级处理与训练](../hierarchical-data-pipeline-support-plan.md)：让大于内存的数据
+  通过有预算、可回压、可测量的持久存储、RAM、pinned memory 和设备内存路径；八卡 H200 只
+  作为首个压力测试环境，DALI、GPUDirect Storage 和远程存储仅在实测指向时复查；
+- Data 的三份研究备忘分别保存公共 helper、连续数据流和新存储形式，但不重新打开已经
+  闭合的 Data lifecycle。
+
+## 未合入主线的远端审查草案
+
+2026-07-31 的 Clean Architecture 与内置 Evaluation 草案后来提交在未合入主线的远端审查
+分支 `codex/metrics-system`（提交 `af13619`）。它从未进入 `main` 或当前 `ROADMAP.md`，
+因此不能伪装成已经执行或已经排期的仓库计划。独立 Evaluation 后来已经完成；草案中仍需
+重新判断的运行组装责任和 Diagnostic 窄能力问题，保存在
+[运行组装与 Diagnostic 边界备忘](runtime-composition-and-diagnostic-boundary-refactor-plan.md)。
+该备忘不参与排期，不重新打开 Evaluation，也不授权全仓 package 改名或机械拆分 Trainer。
 
 ## 删除边界
 
-维护者在 lifecycle 实现、规范、公开文档和 future owner 全部核对后，批准删除以下两份
-已完成记录；其研究与实施归档继续由本清单和对应 future plan 提供入口：
+Data lifecycle 和 Data composition 的当前行为、future 构想与研究材料已经完成迁移，维护者
+此前批准删除以下两份已完成记录；其当前内容和研究归档仍由上表提供入口：
 
 - `data-artifact-producer-lifecycle-refactor.md`
 - `data-layer-composition-boundary-review.md`

@@ -1,76 +1,67 @@
-# 为真实 streaming workload 建立可恢复的数据生命周期
+# Data 研究备忘：以后怎样处理连续数据流
 
-> 工作状态：暂停
+> 文档类型：研究备忘，不是开发计划
 >
-> 当前结论：project-private iterable 可以用于普通 Python 组合；在没有真实 workload
-> 证明 replay、resume 和 completeness 需求前，不向 core 增加通用 streaming runtime。
+> 排期状态：不参与排期
 >
-> 规范来源：[`SPEC.md`](../../SPEC.md)、[`ARCHITECTURE.md`](../../ARCHITECTURE.md)
->
-> 排期权威：[`ROADMAP.md`](../../ROADMAP.md)
+> 当前可用性：项目可以自行使用连续读取的数据，但框架不承诺这类数据能够严格恢复或正式评估。
 
-## 完成后用户能做什么
+Data 的固定数据生命周期已经完成。当前没有内置的连续数据流训练配置，也没有正在实现的
+通用数据流功能。过去的数据层审查提出过一个问题：如果将来数据不断到达，不能先保存成
+一份固定快照，训练中断后怎样知道从哪里继续读？这里保存的是这个问题的来由和启动条件，
+不是一项等待完成的 Data 计划。
 
-用户可以运行一个明确获批的 streaming recipe，并知道数据 identity、重放范围、分片、
-epoch、恢复 cursor 和正式 Evaluation 的样本完整性分别由谁负责。
+## 连续数据最难的是中断后从哪里继续
 
-## 当前仓库已经支持什么
+假设将来有一个不断到达记录的数据源。用户希望这样使用它：
 
-- `DataLoaders` 接受普通 reiterable，不要求具体 Dataset 基类。
-- Project `DataBuilder` 可以组合自己的 `IterableDataset`、worker 和 batch 结构。
-- Managed/referenced `DataArtifact` 可以认证有限 snapshot 或外部文件表示。
-- Distributed 与 Evaluation 已各自保留未来的 sharding 和 completeness 启动条件。
+1. 在任务自己的 `DataBuilder` 中选择这个数据源并开始训练；
+2. checkpoint 除了模型状态，还保存“已经读到哪里”；
+3. 训练恢复后，从正确的位置继续读取，不重复也不漏掉记录；
+4. 如果任务需要多个数据读取进程（worker）或多个设备，每条记录只交给正确的读取进程；
+5. 如果任务要发布正式 Evaluation，结果能够说明实际评估了哪些样本。
 
-## 还没有支持什么
+这就是旧文中那些英文术语的实际含义：数据是哪一批、能不能重新读取、由哪个 worker 读取、
+怎样划分一轮训练、从哪里继续，以及最后有没有漏掉样本。
 
-- snapshot-free stream 的稳定 identity；
-- shuffle buffer、shard cursor、worker/rank repartition 和 mid-epoch resume；
-- elastic membership 下的数据恢复；
-- streaming formal Evaluation 的全局 sample completeness。
+## 项目可以自己读取，但框架不保证严格重放
 
-## 什么时候可以开始
+项目可以在普通 Python 代码中自己构造 `IterableDataset` 或其他“边读边返回记录”的对象，
+再由自己的 `DataBuilder` 交给训练器。这个能力现在可以用。
 
-必须先有一个可运行 workload，证明 project-private `IterableDataset`/`DataBuilder` 与现有
-artifact snapshot 无法满足要求，并记录 replay、sharding、epoch、sample identity、失败恢复
-和容量约束。预想中的 LLM 或远程流名称不足以启动。
+但框架目前不承诺：一个没有固定快照的远程数据流可以严格恢复、不重不漏地跨 worker
+分片，或者直接成为正式 Evaluation 能够逐条核对的输入。需要这些保证的项目目前应先把输入
+保存成一份固定、经过验证的数据快照，或者在项目内部负责自己的读取位置和恢复状态。
 
-## 要完成哪些工作
+## 没有真实数据流，就无法定义通用游标
 
-### 固定一个真实 stream 的身份和重放规则
+仓库里没有一个真实、持续维护的数据流任务证明现有做法不够。不同来源的恢复含义差别
+很大：文件分片、消息队列、数据库游标和在线生成的数据不能共享一套凭空设计的“读取到
+哪里”记录格式。现在实现只会得到一个没人验证的通用接口。
 
-- 动作：定义 source snapshot、record identity、epoch 边界、ordering 和允许重放的范围。
-- 原因：没有这些事实就无法区分恢复、重新读取和数据漂移。
-- 影响范围：DataSource、DataBuilder、artifact evidence 和 run outcome。
-- 交付物：一个可运行 workload、不可变 identity 和明确失败案例。
-- 验证方法：相同 identity 重放得到相同 record 集，变化的 source 明确失败或产生新 identity。
-- 完成条件：不依赖任务名称即可判断 stream 是否兼容和可恢复。
+## 先等一个固定快照确实无法解决的任务
 
-### 连接 workload 实际需要的 cursor、分片和 Evaluation
+必须先有一个被选中的真实任务，并且它能明确回答：
 
-- 动作：先接入选中 workload 必需的 iterator state 和 checkpoint；只有 workload 使用多 worker、
-  distributed execution 或正式 Evaluation 时，才与对应 owner 增加 ownership 和 completeness。
-- 原因：单进程 stream 不应被迫同时实现尚未选择的 distributed 或 Evaluation 产品范围。
-- 影响范围：DataBuilder 和 checkpoint；按需涉及 distributed execution 与 Evaluation runtime。
-- 交付物：最小恢复 schema 和 failure tests；按选中范围补分片证据或 completeness 规则。
-- 验证方法：中断恢复与连续运行等价；若启用多 rank 则无重复/遗漏，若发布正式结果则样本集合可审计。
-- 完成条件：选中 workload 的所有输入和状态 fail closed，且 portable inference artifact 不携带 iterator state。
+- 数据从哪里来，是否能够重新读取；
+- 一条记录怎样获得稳定 ID；
+- 中断时必须精确恢复到什么程度；
+- 是否真的需要多 worker 或多设备；
+- 是否真的需要正式 Evaluation，若需要，怎样判断没有漏样本。
 
-## 如何证明已经完成
+只有该任务证明项目自己的 `DataBuilder` 和固定数据快照无法满足要求，维护者
+才决定是否建立一个真正的功能计划。届时计划必须用该任务给出可运行的输入、命令、
+checkpoint 和恢复结果，而不是先设计“支持所有 stream”的接口。
 
-- 同一输入身份的 replay、resume 和 worker-count tests。
-- 选中 workload 使用多 worker 或多 rank 时，互斥、完整性和失败恢复 tests 通过。
-- 选中 workload发布正式 Evaluation 时，对 sample IDs 和缺失记录 fail closed。
-- 一个独立 project recipe 无需 core 的 task-name 分支即可替换。
+## 仍值得保存、但尚未选择的方向
 
-## 明确不包含什么
+- 记录稳定的数据来源快照或等价证明；
+- 为每条记录提供稳定 ID，并明确允许怎样重放；
+- 保存打乱缓冲区、文件分片位置或其他真正需要的恢复状态；
+- 只在选中的任务需要时，才接入多设备分片或正式评估的完整性检查；
+- 不把数据读取位置塞进只用于推理的便携模型文件；
+- 不承诺支持所有消息队列、数据库或远程服务。
 
-- 不承诺任意网络 stream、消息队列或数据库 provider。
-- 不把所有 `IterableDataset` 自动升级为 formal artifact-backed execution。
-- 不把 distributed launcher 或 collective lifecycle 放进 DataBuilder。
-- 不在没有 workload 的情况下预建 universal cursor schema。
-
-## 详细设计和研究资料在哪里
-
-- [原始 streaming、iterable resume 与 ownership 研究](notes/data-layer-composition-boundary-review/research-archive.md)
-- [Distributed 计划](distributed-training-and-inference-support-plan.md)
-- [当前 Data pipeline](../configuration/data-pipeline.md)
+这些内容来自早期的数据层审查。完整比较、方案和风险仍在
+[维护者 Data 研究附录](notes/data-layer-composition-boundary-review/research-archive.md#94-自定义-llm-streaming-dataset)。
+普通使用者不需要阅读这份大型历史附录。

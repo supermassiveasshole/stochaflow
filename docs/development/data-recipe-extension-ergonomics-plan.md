@@ -1,86 +1,62 @@
-# 简化 Data recipe 扩展的重复代码
+# Data 研究备忘：什么时候值得提取公共辅助函数
 
-> 工作状态：暂停
+> 文档类型：研究备忘，不是开发计划
 >
-> 当前结论：Python 组合和 recipe-level `DataBuilder` 是当前稳定入口。只有多个独立
-> extension 重复完全相同的构造与状态规则时，才提炼更窄的 helper 或注册形式。
+> 排期状态：不参与排期
 >
-> 规范来源：[`SPEC.md`](../../SPEC.md)、[`ARCHITECTURE.md`](../../ARCHITECTURE.md)
->
-> 排期权威：[`ROADMAP.md`](../../ROADMAP.md)
+> 当前可用性：扩展现在可以用现有 Data API 读取、验证并组织任意任务数据。
 
-## 完成后用户能做什么
+Data 功能已经完成。扩展作者现在可以先读取并验证外部数据，再把它整理成训练、验证和测试
+批次。这里没有尚未完成的 Data 工作，只保存一个维护问题：如果多个扩展以后反复复制同一
+小段数据组合代码，框架是否值得提供一个公共辅助函数。
 
-Extension 作者可以复用经过真实项目验证的窄 helper，减少重复的 recipe 构造、artifact
-binding 或 deterministic sampler 代码，同时继续由 Python 明确表达任务数据组合。
+## 当前扩展作者怎样使用 Data API
 
-## 当前仓库已经支持什么
+从使用者角度，一项自定义任务仍然只需要选择配置并运行普通训练命令。扩展作者在背后完成
+四件事：
 
-- `DataBuilder` 是配置驱动的 recipe composition root，并通过 Registry 构造。
-- Direct Python 可以直接组合 Dataset、sampler、collate 和 iterable。
-- `DataBuilderContext` 提供 seed、strict-resume expectations 和通用 source context。
-- Family-local Registry 可以选择 project-owned `DataSource`，不需要全局数据 schema。
+1. 用任务自己的 `DataSource` 读取外部内容，并交给 `DataArtifactStore` 检查；
+2. 在任务自己的可选组件清单（registry）中给数据来源命名；
+3. 用 `DataBuilder` 把已验证的数据变成该任务需要的 Dataset、取样顺序和训练批次；
+4. 在配置中选择这个 `DataBuilder`，用户再运行普通的 `stochaflow train`。
 
-## 还没有支持什么
+完整示例见[当前 Data pipeline 文档](../configuration/data-pipeline.md)和
+[Extension API](../api/extensions.md)。这条路径支持图像以外的数据内容，也不要求修改
+框架按配置选择组件的通用代码。
 
-- function-based recipe registration；
-- 面向 extension 的公共 deterministic sampler、binding 或 config helper；
-- 跨 run 的轻量 data-view identity；
-- 对 `DataBuilder` 或 `DataLoaders` 的 major-version 命名迁移。
+## 重复代码出现以前，不知道该提取哪一段
 
-## 什么时候可以开始
+如果将来两个或更多独立扩展反复复制同一段代码，例如都要构造完全相同、顺序可重复的
+取样器，或者都要把数据身份交给 checkpoint，那么可以考虑把那一小段提成公共辅助函数。
+效果必须很具体：扩展作者少写一段已经被多个项目验证的代码，而任务自己的数据含义仍由
+Python 清楚表达。
 
-至少两个独立 extension 必须重复相同的调用签名、ordering、identity、序列化、失败和
-resume 语义，并且提炼后能够删除真实重复代码。单个项目的 convenience wrapper 不足以启动。
+目前没有两个真实扩展提供这样的重复证据，所以没有可实现的公共辅助函数，也没有计划增加
+“用一个函数直接注册完整数据配方”的新接口。
 
-命名重审使用另一条触发条件：只能在已批准的 major-version compatibility window 中进行，
-并且持续的真实误用、迁移收益和替代名称已经有文档或支持请求证据。它不会单独授权新增 helper。
+## 至少两个扩展遇到同一问题，才有提取依据
 
-## 要完成哪些工作
+重新研究前，先并排比较至少两个独立扩展，确认它们的输入、输出、排序、序列化、失败
+和严格继续训练（必须使用完全相同数据）的含义都相同。只有提取后能删除真实重复代码，
+才设计最小辅助函数。相似的函数名，或只给一个项目少写几行代码的薄封装，都不够。
 
-### 比较真实重复代码
+以下是保留的问题，不是承诺：
 
-- 动作：对照两个独立消费者的输入、输出、状态、错误和恢复规则。
-- 原因：相似函数名不能证明它们共享稳定 contract。
-- 影响范围：Extension recipe、DataBuilder construction 和 project helper。
-- 交付物：兼容矩阵、拒绝路径和可删除的重复代码清单。
-- 验证方法：第三个独立实现无需 core 分支即可替换。
-- 完成条件：所有公共字段和状态转换对两个消费者具有相同含义。
+- 是否需要用一个函数直接注册完整数据配方；
+- 可重复取样、数据身份交接或配置辅助函数是否真的被多个项目重复；
+- 是否需要一种能跨多次运行说明“看到的是同一份数据视图”的轻量记录；
+- `DataBuilder`/`DataLoaders` 的名称是否持续导致真实误用。
 
-### 提炼最窄的公共能力
+最后一项只会在允许不兼容改名的大版本窗口中重审；仅仅觉得名字不好听，不值得让扩展迁移。
 
-- 动作：只为已证明重复的 construction、binding、sampler 或 view identity 提供 helper。
-- 原因：避免把任意 Python 数据图或 PyTorch primitive 镜像进 Stochaflow Registry。
-- 影响范围：`stochaflow.extensions`、对应 Registry 和迁移文档。
-- 交付物：窄 API、独立 extension contract tests 和兼容说明。
-- 验证方法：built-in 与 external extension 使用同一路径，runner 不检查具体类型或名称。
-- 完成条件：helper 删除重复代码，且未给不需要它的 recipe 增加必填方法或字段。
+## 一个小辅助函数不能重新打开整个 Data 设计
 
-### 只在 major version 重新核对公共名称
+- 不为单个项目把辅助函数加进公共 API；
+- 不建立一个收纳所有 Dataset、Sampler 和 DataLoader 的通用组件清单；
+- 不把任意 Python 数据组合变成 YAML graph；
+- 不给框架通用代码增加某个任务专用的 batch 字段；
+- 不把这份备忘放进产品排期。
 
-- 动作：根据真实误用核对 `DataBuilder`、`DataLoaders` 与候选名称表达的责任边界。
-- 原因：术语偏好不足以承担 extension 迁移和兼容成本。
-- 影响范围：公共类型、配置文档、extension scaffold 和迁移说明。
-- 交付物：保留现名或执行 rename 的独立兼容决定，以及完整引用和迁移清单。
-- 验证方法：现有 extension 可按文档迁移，旧名称的兼容行为与移除窗口明确。
-- 完成条件：major-version 条件已满足，且新名称可量化减少真实误用；否则明确保留现名。
-
-## 如何证明已经完成
-
-- 两个真实消费者和一个独立替代实现通过同一 contract tests。
-- strict resume、ordering、serialization 和 failure tests 保持一致。
-- API 文档明确 direct Python、完整 `DataBuilder` 与新 helper 的选择条件。
-- 没有新增 universal Dataset、Sampler、DataLoader Registry 或 YAML graph。
-
-## 明确不包含什么
-
-- 不为单个项目提升 convenience helper。
-- 不重新注册 PyTorch 已提供的所有 Dataset、Sampler 或 DataLoader primitive。
-- 不因术语偏好在 pre-1.0 小改动中重命名公共类型。
-- 不把 task batch 字段加入 core schema。
-
-## 详细设计和研究资料在哪里
-
-- [原始 Data layer 比较、API 草案和开放问题](notes/data-layer-composition-boundary-review/research-archive.md)
-- [当前 Extension API](../api/extensions.md)
-- [当前 Data pipeline](../configuration/data-pipeline.md)
+原始方案比较和使用场景保存在
+[维护者 Data 研究附录](notes/data-layer-composition-boundary-review/research-archive.md#8-minimal-api-position)。
+普通使用者不需要阅读这份大型历史附录。

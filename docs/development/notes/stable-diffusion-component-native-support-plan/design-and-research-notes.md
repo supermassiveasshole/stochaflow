@@ -520,7 +520,7 @@ quality、distributed、attention、compile、sharding 与 deduplication 各需�
 
 ## 维护说明
 
-- 主计划决定是否启动、当前缺口、任务卡和验收；本附录不形成第二套路线图。
+- 主计划用完整的设计理由说明何时启动、首版范围和完成证据；本附录不形成第二套路线图。
 - 候选被选中后先重核 provider/data/hardware，再写最小 active implementation plan；不要把
   本附录整体当作承诺。
 - 关闭后把稳定行为提升到根级权威、公开文档和 CHANGELOG，再处置一次性研究材料。

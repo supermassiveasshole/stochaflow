@@ -9,6 +9,7 @@
 :hidden:
 
 reference
+metrics
 data-pipeline
 extensions
 compatibility-and-migration
@@ -24,6 +25,7 @@ troubleshooting
 | --- | --- |
 | 先了解框架包含什么、各扩展角色如何协作 | [框架概览与当前能力](../framework.md) |
 | 查某个 YAML 字段、默认值或 CLI 覆盖 | [完整字段参考](reference.md) |
+| 配置 phase Metric、选择 best checkpoint 或区分 Diagnostic 与 Evaluation | [训练指标、诊断与模型选择](metrics.md) |
 | 配置图像、超分辨率或自定义数据构建 | [数据构建](data-pipeline.md) |
 | 了解自行实现 conditional super-resolution 所需边界 | [条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md) |
 | 注册自定义 DataBuilder、writer 或其他组件 | [扩展与 Registry](extensions.md) |

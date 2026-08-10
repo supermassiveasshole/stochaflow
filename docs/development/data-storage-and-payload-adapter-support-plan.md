@@ -1,76 +1,61 @@
-# 扩展 Data storage 与 semantic payload 表示
+# Data 研究备忘：以后怎样接入新的存储形式
 
-> 工作状态：暂停
+> 文档类型：研究备忘，不是开发计划
 >
-> 当前结论：本地 managed/referenced artifact 与 family-owned payload 已能表达当前用例。
-> 只有多个真实表示重复同一缺口，或现有 read boundary 无法安全拒绝失败时，才新增 adapter。
+> 排期状态：不参与排期
 >
-> 规范来源：[`SPEC.md`](../../SPEC.md)、[`ARCHITECTURE.md`](../../ARCHITECTURE.md)
->
-> 排期权威：[`ROADMAP.md`](../../ROADMAP.md)
+> 当前可用性：本地数据和项目自己管理的数据都能接入；目前没有通用远程存储适配器。
 
-## 完成后用户能做什么
+Data 功能已经完成。现在可以使用由框架保存的本地数据，也可以让项目读取自己管理的文件，
+再由框架检查内容是否与 checkpoint 记录一致。数据不必是图像；具体任务可以返回自己定义的
+Python 数据对象。因此，当前仓库没有一项尚未完成的通用存储工作。下面只保留在真实存储
+需求出现后可能采用的接入思路。
 
-用户可以通过经过验证的窄 adapter 使用新的 storage representation 或 remote provider，
-而兼容的 `DataBuilder` 仍只依赖 semantic payload contract，不需要按存储格式增加 core 分支。
+## 新存储形式也应回到普通训练流程
 
-## 当前仓库已经支持什么
+如果将来某个获选任务必须直接读取对象存储、LMDB 或原生分片文件，理想的使用过程是：
 
-- `DataArtifactStore` 支持本地 managed content 与 filesystem-referenced content。
-- `DataArtifact[P]` 的 payload 由 family 拥有，可以是任意项目 dataclass 或对象。
-- Manifest、content digest、producer identity 和 strict-resume validation 已统一。
-- Family-local source Registry 与 Builder payload validation 不依赖 `IMAGE_DATA_SOURCES`。
+1. 项目实现一个很小的读取器，知道怎样定位并读取这种存储；
+2. 读取器把结果交给现有 `DataArtifactStore`，检查内容和版本；
+3. 任务的 `DataBuilder` 只处理自己理解的数据，不需要为每种存储重写训练逻辑；
+4. 用户仍运行普通的 `stochaflow train`，并得到可以继续训练、会拒绝错误数据的 checkpoint。
 
-## 还没有支持什么
+这是一个可能的未来流程。今天没有一个对 S3、LMDB、数据库和各种分片都通用的远程存储接口。
 
-- provider-neutral remote object-store adapter；
-- semantic inventory 与 folder、shard、LMDB 等 storage locator 的公共拆分；
-- 通用 artifact-to-Dataset adapter Registry；
-- ImageNet shard/native-validation recipe；
-- 当前 manifest/cache read boundary 无法表达的新 failure 类型。
+## 项目自有读取器已经能用，通用适配器还不存在
 
-## 什么时候可以开始
+- 框架保存的本地数据，或项目自己保存、框架负责核对的文件：可以用；
+- 图像以外、由任务自己定义的数据对象：可以用；
+- 项目私有的 LMDB、分片或远程读取器：可以在项目内实现，但框架没有通用适配器；
+- 对所有对象存储、数据库和分片格式都通用的读取器：没有，也没有排期。
 
-至少两种真实 storage representation 或两个独立消费者必须需要相同的窄 contract；或者必须
-提供一个可复现 failure，证明现有 manifest、cache 和 read-boundary validation 不能安全拒绝。
-单一 provider 的字段列表或未来数据集名称不足以启动。
+当前用法见[Data pipeline 文档](../configuration/data-pipeline.md)。
 
-## 要完成哪些工作
+## 为什么现在不新增通用读取接口
 
-### 分离稳定语义与存储偶然性
+仓库没有选定具体存储服务，也没有两个真实任务证明它们需要同一组公共字段。若现在按名称
+预建 S3、LMDB、文件夹或分片接口，存储细节会反过来进入所有任务都要长期兼容的数据记录。
 
-- 动作：比较真实 producer/consumer 的 semantic inventory、locator、内容验证和失败规则。
-- 原因：按格式建立全局 adapter 会把 storage 偶然性变成 core API。
-- 影响范围：family payload、DataSource、Store load callback 和 Builder compatibility。
-- 交付物：兼容矩阵、拒绝路径和最窄可共享 capability。
-- 验证方法：两个 representation 可替换，且 Builder 不读取 provider 名称或具体存储类。
-- 完成条件：共享字段对所有消费者含义一致，未共享部分继续由 family/project 拥有。
+## 真实存储问题重复出现以后再提取公共部分
 
-### 验证新 provider 或 read-boundary failure
+满足以下任一条件后才重新评估：
 
-- 动作：实现一个真实 adapter 或失败 fixture，并复用现有 identity、receipt 和 strict-resume lifecycle。
-- 原因：新边界必须证明它比 project-private Source helper 更可靠或更可复用。
-- 影响范围：DataArtifactStore 的窄 provider boundary、错误分类和公开迁移说明。
-- 交付物：独立 extension、corruption/staleness tests、cache reuse tests 和兼容文档。
-- 验证方法：错误内容在 read boundary 失败，合法 provider 不需要 runner/core dispatch 分支。
-- 完成条件：现有 local managed/referenced 行为不变，provider 私有字段不进入稳定 identity。
+- 两种真实存储表示或两个独立消费者需要同一段读取和验证能力；
+- 出现可重复的内容损坏、过期数据或错误缓存，而当前读取检查无法安全拒绝；
+- 一个被选中的数据集必须保留原生分片或按需读取，先转换成本地标准形式的成本不可接受。
 
-## 如何证明已经完成
+届时先交付一个真实读取器和错误测试，再判断哪些部分值得成为公共能力。没有具体存储服务
+和数据集的字段清单不算启动证据。
 
-- 至少两个真实 representation 的 substitution tests。
-- corruption、staleness、mutation、cache hit 和 strict-resume failure tests。
-- 非图像 family-local payload 与 built-in image recipe 均无需 core 特判。
-- 公开文档区分 semantic contract、storage locator 和 provider responsibility。
+## 仍值得保存、但尚未选择的方向
 
-## 明确不包含什么
+- 不绑定某一家服务商的远程对象存储适配思路；
+- 把任务语义与 folder、shard、LMDB 等存储位置分开；
+- 在真实证据出现后再判断是否需要把数据产物转成 Dataset 的公共适配器；
+- 保留直接读取 ImageNet 原始分片文件、并提供固定验证集配置的可能性；
+- 内容损坏、数据过期、读取期间变化和命中错误缓存都必须在读取时被拒绝；
+- 不建立万能数据格式、组织级数据目录或资源调度器。
 
-- 不建立组织级 catalog、metadata warehouse 或 capacity scheduler。
-- 不定义 universal payload schema 或通用 artifact-to-Dataset graph。
-- 不承诺所有 remote provider、shard format 或数据库。
-- 不把 Dataset、sampler、collate 或 loader 放进 `DataArtifactStore`。
-
-## 详细设计和研究资料在哪里
-
-- [原始 storage、payload、ImageNet 与 adapter 研究](notes/data-layer-composition-boundary-review/research-archive.md)
-- [Artifact metadata/provenance/capacity 提案](artifact-metadata-provenance-capacity-model-proposal.md)
-- [当前 Data pipeline](../configuration/data-pipeline.md)
+详细方案比较和失败案例保存在
+[维护者 Data 研究附录](notes/data-layer-composition-boundary-review/research-archive.md#9-custom-dataset-scenarios)。
+普通使用者不需要阅读这份大型历史附录。

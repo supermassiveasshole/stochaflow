@@ -59,7 +59,7 @@ research-notes/part-3-ddim
 ```
 
 ```{toctree}
-:maxdepth: 2
+:maxdepth: 1
 :caption: 维护与开发
 :hidden:
 
@@ -184,6 +184,8 @@ checkpoint：FID **25.7572**。冻结后的一次 full official-test Evaluation 
 - [架构说明](https://github.com/supermassiveasshole/stochaflow/blob/main/ARCHITECTURE.md)：
   稳定所有权、依赖方向与组合边界。
 - [框架概览与当前能力](framework.md)：当前内置能力、工作流和 extension 心智模型。
+- [训练指标、诊断与模型选择](configuration/metrics.md)：配置 phase Metric、理解 Strategy channel，
+  并区分训练曲线、额外诊断和正式 Evaluation。
 - [平台支持政策](platform-support.md)：当前 Supported CI 矩阵和明确排除项。
 - [配置手册](configuration/index.md)：从最小 YAML 到多源数据、K-fold、自定义组件、
   训练恢复、checkpoint evaluation 与排错。

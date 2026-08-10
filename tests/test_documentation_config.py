@@ -81,7 +81,8 @@ def test_sphinx_publishes_roadmap_and_reader_facing_development_plans() -> None:
         source_path=root_roadmap,
         published_path=DOCS_ROOT / "roadmap.md",
     )
-    assert "(development/development-priority-roadmap.md)" in rewritten_roadmap
+    assert "(development/README.md)" in rewritten_roadmap
+    assert "(development/development-priority-roadmap.md)" not in rewritten_roadmap
     assert (
         "https://github.com/supermassiveasshole/stochaflow/blob/main/SPEC.md"
         in rewritten_roadmap
@@ -118,6 +119,23 @@ def test_sphinx_publishes_roadmap_and_reader_facing_development_plans() -> None:
     ordinary_context: dict[str, object] = {}
     configure_page(None, "index", "page.html", ordinary_context, None)
     assert ordinary_context == {}
+
+
+def test_maintenance_navigation_exposes_the_two_canonical_entries() -> None:
+    """Keep the roadmap and development index visible without fixing layout."""
+
+    homepage = (DOCS_ROOT / "index.md").read_text(encoding="utf-8")
+    targets: set[str] = set()
+    for fragment in homepage.split("```{toctree}")[1:]:
+        body = fragment.split("```", 1)[0]
+        for raw_line in body.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(":"):
+                continue
+            target = line.rsplit("<", 1)[-1].removesuffix(">")
+            targets.add(target)
+
+    assert {"roadmap", "development/README"} <= targets
 
 
 def test_furo_landing_page_assets_are_declared_and_present() -> None:

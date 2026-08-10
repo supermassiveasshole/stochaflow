@@ -287,14 +287,14 @@ training 是两个正交维度；未明确二维资源模型时禁止叠加。
 
 | 历史 ID | 当时表达的主题 | 当前归宿 |
 | --- | --- | --- |
-| E0 | immutable single-run outcome 基础 | 当前事实；不是 HPO task |
+| E0 | immutable single-run outcome 基础 | 当前事实；不是 HPO 待办 |
 | E1 | standalone Evaluation 基础 | 当前事实；future policy 见 Evaluation 记录 |
-| T0 | single-run seam | 正文“训练调用面”任务卡 |
-| T1 | study config 与 Grid/Random | 正文“Study authority”和“顺序执行”任务卡 |
-| T2 | adaptive search 与 scheduler | 正文“自适应搜索与 pruning”任务卡 |
-| T3 | local process workers | 正文“本地并行与外部 launcher”任务卡 |
-| T4 | replication 与 multi-objective | 正文“Objective、预算与统计”任务卡 |
-| T5 | external launcher/provider | 正文“本地并行与外部 launcher”任务卡 |
+| T0 | single-run seam | 正文“自动搜索的起点仍是一场可信的普通训练” |
+| T1 | study config 与 Grid/Random | 正文的搜索说明、参数边界和首版搜索方式 |
+| T2 | adaptive search 与 scheduler | 正文末尾保留、但尚未选择的复杂搜索方向 |
+| T3 | local process workers | 正文“每次尝试必须像一次全新的运行”及后续并行方向 |
+| T4 | replication 与 multi-objective | 正文“搜索完成不等于研究结论成立”中的后续方向 |
+| T5 | external launcher/provider | 正文末尾保留、但尚未选择的第三方与远程执行方向 |
 
 不要从这些 ID 推断排期、依赖已满足或 API 已获批。
 

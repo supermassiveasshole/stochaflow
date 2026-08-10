@@ -1,20 +1,20 @@
 # DataArtifact Producer Lifecycle 原始实施记录
 
-> 本文保存 2026-08-09 文档重构前的 API、manifest、迁移和验收明细。
+> 本文保存 2026-08-09 文档整理前的接口、结果清单、迁移和验收明细。
 > 当前行为以 [`SPEC.md`](../../../../SPEC.md)、
 > [`ARCHITECTURE.md`](../../../../ARCHITECTURE.md) 和公开 Data 文档为准；已完成的开发
-> 决策记录已在 lifecycle 闭环后删除。
+> 决策记录已在 Data 生命周期闭合后归档。
 
-- 文档性质：已实施的开发决策记录；不属于公开 API
-- 状态：Implemented
-- 高层排期：[根级 Roadmap](../../../../ROADMAP.md)；候选依赖与入口见
-  [Development Priority Roadmap](../../development-priority-roadmap.md)。本文作为 prepared
-  posterior artifact 基座，不重开 producer lifecycle
-- Example scope：本文 Physics/KD 矩阵记录真实验收证据；两项目的支持级别、保留或退出
-  不由本记录决定，本轮不修改其项目、测试或公开页面
-- 日期：2026-07-27
-- 最近更新：2026-07-29
-- 兼容性：breaking；不保留旧 artifact 格式或 API
+## 怎样阅读这份归档
+
+- Data 生命周期已经完成，本文件不是待办计划。普通使用者应阅读
+  [Data pipeline](../../../configuration/data-pipeline.md)。
+- 维护者可用本文件查询接口为何发生不兼容变更、数据文件怎样发布和校验，以及当时用哪些
+  内置与扩展任务证明它不限于图像。
+- 本文中的 prepared posterior 是 Latent Diffusion 未来可能使用的数据格式，不会重新打开
+  Data 生命周期。
+- Physics/KD 只作为当时的验收证据出现；本文件不决定两个项目的支持、保留或删除。
+- 初始日期：2026-07-27；原记录最近更新：2026-07-29。
 
 ## 1. 决策
 

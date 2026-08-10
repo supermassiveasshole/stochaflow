@@ -6,22 +6,17 @@
 > 和 [`ROADMAP.md`](../../../../ROADMAP.md) 重新验证。可执行结论见
 > [`consistency-distillation-support-plan.md`](../../consistency-distillation-support-plan.md)。
 
-## 原始设计资料
+## 怎样阅读这份附录
 
-- 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：Later / rebase required，尚未进入实现；不再以退出维护的 extension
-  reference project 作为实施入口
-- 高层排期：[根级 Roadmap](../../../../ROADMAP.md)；候选依赖与入口见
-  [Development Priority Roadmap](../../development-priority-roadmap.md)
-- 制定日期：2026-07-23
-- 架构复核：2026-07-25；标准 distillation 首版改为独立 target student EMA；
-  2026-07-26；质量/性能验收接入独立 Evaluation cases
-- 首版范围：离散 VP Gaussian、无条件图像、冻结 diffusion teacher、端点一致性算子
-- 实施位置：未来先作为临时、可安装的 extension prototype 与 contract fixture 验证；
-  不恢复长期维护的 reference project，也不直接扩大核心算法接口
-- 关联决策：
-  [默认工作流与可组合任务支持计划](../../default-workflow-pipeline-support-plan.md)、
-  [训练后 Evaluation 与 Benchmark 支持计划](../../post-training-evaluation-support-plan.md)
+- 普通读者先看[主计划](../../consistency-distillation-support-plan.md)。主计划说明用户要提供
+  什么、怎样训练学生模型、当前缺什么以及什么时候才会开始。
+- 本附录只保存数学、论文调研、候选接口、配置草案和测试想法。它不表示功能已经实现，
+  也不能改变路线图状态。
+- 旧阶段编号和早期实现清单只用于追查历史。真正开始时，维护者必须按当前代码和规范重新
+  核对，不能照抄旧顺序。
+- 首版研究范围是：无条件图像、冻结教师模型、单优化器训练，以及让学生直接预测最终图像。
+  未来应先用一个临时可安装扩展验证，不恢复已退出维护的参考项目。
+- 初始制定：2026-07-23；主要架构复核：2026-07-25 至 2026-07-26。
 
 ## 1. 目标与结论
 

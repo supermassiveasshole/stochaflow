@@ -492,6 +492,7 @@ Process state.
 ## Documentation
 
 - [Framework overview and current capabilities](docs/framework.md)
+- [Training metrics, diagnostics, and model selection](docs/configuration/metrics.md)
 - [Configuration and workflow handbook](docs/configuration/index.md)
 - [Data configuration and pipelines](docs/configuration/data-pipeline.md)
 - [Extension API](docs/api/extensions.md)
