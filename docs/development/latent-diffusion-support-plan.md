@@ -8,10 +8,10 @@
   capability contract，统一排期拥有跨计划执行顺序
 - 初始制定日期：2026-07-26
 - 本次修订日期：2026-07-30
-- 排期前置：Phase 1 已完成；先完成 A0 ADM topology correctness、B1/C1
-  Train/Sample authority、Metrics M0–M1 和 A1 learned-range/P2 core，再进入本计划
-  Phase 2；这是当前单人实施顺序，不表示 codec 架构依赖 ADM、P2 或 MetricEngine，
-  A2 长实验可与 Phase 2 并行
+- 排期前置：Phase 1、正式 Metrics contract、A0 ADM topology correctness 与 A1
+  learned-range/P2 core 已完成；B1/C1 Train/Sample authority 仍按统一排期处理，再进入
+  本计划 Phase 2；这是当前单人实施顺序，不表示 codec 架构依赖 ADM、P2 或
+  MetricEngine，A2 长实验可与 Phase 2 并行
 - 当前主线：冻结的预训练图像 codec + conditional latent Gaussian diffusion
 - 首个 reference denoiser：DiT-S/2 → DiT-B/2；它是验收实现，不是该计划的
   abstraction boundary
@@ -29,7 +29,7 @@
 - correctness/smoke：AFHQ-v2；它不再承担规模和最终质量证明
 - 关联计划：
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
-  [Metrics 支持开发计划](metrics-support-plan.md)、
+  [Metrics、训练诊断与模型选择正式契约](../metrics.md)、
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)、
   [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)
 
@@ -1434,7 +1434,7 @@ training:
 
 - 先完成 Hydra 迁移计划 C0/C1 的 plain Train/Sample authority cutover；不等待
   Hydra H0–H4；
-- 随后完成 Metrics 计划 M0–M1，冻结 canonical epoch result 与 monitor contract；
+- 复用已经发布的 canonical epoch result 与 monitor contract；
 - 本文档冻结；
 - public docs 不宣称 VAE training support；
 - development docs 区分 pretrained codec、external training、

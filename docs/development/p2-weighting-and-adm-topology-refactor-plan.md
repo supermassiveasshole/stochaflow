@@ -8,7 +8,7 @@
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 关联计划：
-  [Metrics 支持开发计划](metrics-support-plan.md)、
+  [Metrics、训练诊断与模型选择正式契约](../metrics.md)、
   [训练后 Evaluation 支持计划](post-training-evaluation-support-plan.md)
 - 名词说明：本文中的 **P2 weighting** 是论文算法名，不是 Roadmap 的 `P2`
   优先级
@@ -31,7 +31,7 @@ AFHQ showcase 只维护 official cat/dog/wild class-conditional surface，并通
 evaluation protocol 报告 aggregate 和 per-class KID/FID。
 
 目标 GPU 上的容量、吞吐、显存、长训练质量和恢复演练是运行层证据，不是 A0/A1
-代码合并门槛，也不表示 Metrics 计划未完成。
+代码合并门槛。训练指标、诊断来源与 monitor 语义已经作为正式框架能力发布。
 
 ## 2. 已实施能力
 

@@ -4,6 +4,9 @@
 class prediction channel，不要求特定图像数据集、模型家族或 batch 字段，也不会让核心
 猜测 label。
 
+如果还不熟悉 phase Metric、channel、canonical result 与 monitor 的职责划分，先阅读
+[Metrics、训练诊断与模型选择](../metrics.md)。
+
 最终 validation 结果为：
 
 ```text

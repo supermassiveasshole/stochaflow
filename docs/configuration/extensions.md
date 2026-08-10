@@ -583,6 +583,9 @@ EMA 只跟踪 primary model，Process、Objective 和 auxiliary modules 始终�
 
 ### 自定义 Metric 与 Strategy channel
 
+先阅读[Metrics、训练诊断与模型选择](../metrics.md)了解 channel、phase state、
+canonical result 与选择资格；本节聚焦 extension 注册。
+
 metric 的注册入口是 `REGISTRIES.metrics`，注册类必须继承 `torchmetrics.Metric`。metric
 只拥有统计 state 和 `update()`/`compute()`；Strategy 拥有 batch 与模型输出语义，并通过
 一个有文档的 channel 把 payload 交给 metric。核心不按 `preds`、`target`、label 或 batch

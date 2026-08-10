@@ -177,6 +177,10 @@ train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoc
 
 ## Metrics
 
+职责路由、配置、canonical result、Diagnostic source、monitor 和 checkpoint 语义见
+[Metrics、训练诊断与模型选择](../metrics.md)。本节只列稳定的 extension Python
+surface 与 runtime contract。
+
 | 符号 | 用途 |
 | --- | --- |
 | `MetricConfig` | 一条绑定到 train、validation 或 test phase 的 metric 声明 |
@@ -376,10 +380,11 @@ device/mode、优化和 checkpoint 生命周期；EMA 只跟踪 primary model。
 
 ## Diagnostic metric 与 provider 扩展边界
 
-`TrainingDiagnostic` 可以同时产出 artifact、外部运行观测以及候选 validation quality
-metric，但 callback 自己不能宣称一个结果可用于 checkpoint 选择。实现若会返回 epoch
-metric，应实现 `DiagnosticSourceProvider.metric_source_requests`；每个 request 明确
-source id、`train|validation|test|external` data role 和 JSON-safe protocol descriptor。
+`TrainingDiagnostic` 可以同时产出 artifact、外部运行 measurement 以及候选
+validation quality metric，但 callback 自己不能宣称一个结果可用于 checkpoint 选择。
+实现若会返回 epoch metric，应实现
+`DiagnosticSourceProvider.metric_source_requests`；每个 request 明确 source id、
+`train|validation|test|external` data role 和 JSON-safe protocol descriptor。
 Builder/factory 再把 resolved data config、实际 data artifact identity 和已选择插件
 provenance 纳入 SHA-256 digest，并把 request 的 train/validation role 绑定到本次运行
 实际创建的 iterable，生成 `VerifiedMetricSource`。稳定 digest 不包含 Python 对象
@@ -424,8 +429,9 @@ Gaussian quality pipeline 的 provider-level extension surface 也从
 
 这些 Registry 只扩展 Gaussian diagnostic 内部 pipeline，不是 framework-global Metric
 Registry，也不让 provider 直接选择 checkpoint。reference provider 的 `compute()` 结果
-由 diagnostic 的 verified validation source 承载；sampler statistics、延迟与 artifact
-仍属于 external observation。provider 模块必须来自已安装并通过
+由 diagnostic 的 verified validation source 承载；sampler statistics 与延迟属于
+external runtime measurement，artifact 由独立 sink/manifest 承载。provider 模块必须
+来自已安装并通过
 `extensions.plugins` 选择的可信 distribution；完整插件 provenance 随 resolved config 和
 checkpoint 保存。
 

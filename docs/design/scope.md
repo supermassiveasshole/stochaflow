@@ -43,10 +43,16 @@ Stochaflow 位于算法实现与外部基础设施之间：
 flowchart TB
     User["研究者 / 项目代码 / 上层 UI"]
 
-    subgraph Task["任务与项目层"]
-        Data["数据 recipe 与 batch 语义"]
-        Training["训练组合与目标"]
+    subgraph Project["项目与数据集层"]
+        Dataset["数据来源、split、类别映射与 protocol"]
+        Preset["配置、展示与运行证据"]
+    end
+
+    subgraph Builtin["框架内置任务族层"]
+        Data["可复用数据 recipe 与 batch 语义"]
+        Training["可复用训练组合与目标"]
         Sampling["condition / guidance / 输出"]
+        Evaluation["paired / generation / grouped evaluation"]
     end
 
     subgraph Family["算法 family 层"]
@@ -55,33 +61,38 @@ flowchart TB
         Sampler["family-specific Sampler"]
     end
 
-    subgraph Core["Stochaflow 框架层"]
+    subgraph Core["Stochaflow kernel / application 层"]
         Registry["Registry / Config / Injection"]
-        Runtime["受支持的执行生命周期"]
+        Runtime["Training / Sampling / Evaluation lifecycle"]
         State["Checkpoint / Artifact Contract"]
     end
 
     External["外部数据、存储、追踪、调度、监控与 Serving 平台"]
 
-    User --> Task
-    Task --> Family
-    Task --> Core
+    User --> Project
+    Project --> Builtin
+    Project --> Family
+    Project --> Core
+    Builtin --> Family
+    Builtin --> Core
     Family --> Core
     Core --> External
 ```
 
-四层拥有不同的变化轴：
+这些层拥有不同的变化轴：
 
 | 层级 | 所有的复杂度 | 不应吸收的复杂度 |
 | --- | --- | --- |
-| 框架层 | 注册、配置权威、依赖注入、受支持的执行与状态生命周期 | 任务名称分支、全局数学兼容矩阵、外部平台控制平面 |
+| Kernel / application 层 | 注册、配置权威、依赖注入、受支持的执行与状态生命周期 | 数据集名称分支、全局数学兼容矩阵、外部平台控制平面 |
 | 算法 family 层 | family-specific Process、Dynamics、transition、solver 与 Sampler 契约 | 与本 family 无关的通用方法、任务 condition schema |
-| 任务与项目层 | 数据与 batch 解释、模型适配、condition、guidance、初始化、领域输出 | 修改 core dispatch、把私有语义伪装成全局配置 |
+| 框架内置任务族层 | 跨数据集复用的 Builder、Strategy、模型适配、condition、guidance、输出与 evaluation profile | 具体数据集 identity、example 路径、隐藏 core-only dispatch |
+| 项目与数据集层 | 数据来源、类别映射、split、protocol、配置与展示 | 复制已有任务族 runtime、修改 core dispatch |
 | 外部系统层 | 数据分发、对象存储、追踪 UI、集群调度、监控、服务编排 | 决定 Stochaflow 内部算法与工作流语义 |
 
 这个分层是职责边界，不是必须按顺序调用的固定流水线。没有概率路径的方法可以不构造
 `Process`；没有数值求解过程的方法可以不构造 `Sampler`；一次任务也不需要使用每一个
-框架角色。
+框架角色。框架发行版可以包含 concrete built-in；Clean Architecture 要求它们依赖公开
+contract 并与外部扩展走同一组合路径，而不是要求 examples 重写所有实现。
 
 ## 3. 核心原则
 
@@ -133,6 +144,22 @@ Stochaflow 自有的 built-in 不得依赖第三方扩展无法使用的隐藏 d
 - 把外部平台能力复制成 Stochaflow 子系统；
 - 把尚无多个真实使用方的私有约定提升为公共抽象。
 
+### 3.8 Kernel、built-in 与 example 分工
+
+Stochaflow kernel 提供稳定 contract 与 use-case lifecycle；框架内置任务族提供经过验证、
+可跨数据集复用的 concrete implementation；example/project 绑定具体数据集、类别词汇、
+split、protocol 和运行证据。
+
+内置 `ImageDataBuilder`、class-conditional training/sampling、SR recipe 或 grouped
+generation evaluation 本身不违反 Clean Architecture。它们必须位于有界的 built-in
+namespace，不得让 kernel runner 按任务名分支，也不得依赖某个数据集名称。仅更换 AFHQ、
+MNIST 或其他数据来源时，project 应复用同一任务族，通过 DataSource、artifact payload
+和 protocol adapter 表达差异，而不是重写整条 Builder/Runner。
+
+具体数据集适配器可以作为 example 或明确的 first-party adapter 发布，但不能成为
+foundation/application 的依赖。Built-in 与第三方实现必须通过相同的 Registry、
+construction、validation 和 lifecycle contract。
+
 ## 4. Stochaflow 拥有的复杂度
 
 ### 4.1 生成工作流的组合语义
@@ -143,7 +170,7 @@ Stochaflow 定义受支持工作流如何从已选组件形成一个可执行、
 - 解析一份权威配置并完成受控覆盖；
 - 在组合边界构造并注入依赖；
 - 验证必要 capability 与跨组件不变量；
-- 执行已声明的训练、采样、诊断和输出生命周期；
+- 执行已声明的训练、采样、评估、诊断和输出生命周期；
 - 统一报告失败，而不是静默采用任务特例。
 
 框架拥有的是**稳定组合点与生命周期**，不是任意 DAG 引擎，也不是所有组件实现。
@@ -241,6 +268,10 @@ Stochaflow 应允许项目通过实现、注册、配置和测试新增兼容组
 dispatch。扩展面包括但不限于数据、模型、训练组合、算法 family、采样组合、Objective、
 diagnostic、logger 与 artifact writer；是否进入内置发行版是另一个独立决策。
 
+当同一任务组合已经跨数据集或项目稳定复用时，可以将其维护为 framework-shipped
+built-in，使 examples 只提供数据集与 protocol adapter。进入 built-in 不改变其扩展
+契约，也不允许获得 Registry、runner 或 state lifecycle 的隐藏特权。
+
 扩展性不等于任意对象天然兼容。每个公共角色都必须保留其输入、输出、不变量、状态语义
 和错误保证，重要契约应由独立自定义实现验证可替换性，而不能只用 built-in 子类自证。
 
@@ -275,6 +306,10 @@ Dataset、augmentation、sampler、loader、resume 与 batch 语义时，才只�
 `DataSource`。新的 streaming、packing、windowing、multi-source coordination 或
 iterator-state 语义属于项目 `DataBuilder`，不推动 core 建立 universal Dataset、
 Transform、Sampler、Collate 或 DataLoader Registry。
+
+框架可以内置 image、class-labeled image、SR 或 multi-resolution 等可复用
+`DataBuilder`。它们的 typed payload 与 batch contract 属于对应 task-family namespace，
+不进入通用 DataBuilder root；具体数据集只要满足该 contract，就不应重新实现 Builder。
 
 ### 5.2 训练边界
 
@@ -316,7 +351,73 @@ adapter、condition、guidance、initial state、family 兼容性与 writer-read
 没有数值求解过程的 direct transform 可以由 `SamplingBuilder` 直接产生合法输出，不得
 为了满足框架外形而虚构 `Process`、Dynamics 或 Sampler。
 
-### 5.4 Observability 与外部平台边界
+### 5.4 Evaluation 边界
+
+Evaluation 是与 Training、Sampling 并列的一等 framework operation。Kernel/application
+拥有 request/outcome、subject/data/protocol authority、Builder/Plan/Runner lifecycle、
+Metric dispatch、完整性检查和 immutable result publication。
+
+本节定义产品职责归属，不表示当前发布版已经提供独立 `stochaflow evaluate`。当前可用
+operation 以[框架特性与架构](../framework.md)为准；尚未实现的 Evaluation lifecycle
+不得由 TrainingDiagnostic 或 example-private MetricEngine 冒充。
+
+框架可以内置 phase、paired、generation 与 grouped/class-aware 等可复用 evaluation
+profile。Runner 不解释 image、class label、metric name、模型签名或 Sampler；task-family
+Builder 注入窄 inference capability、metric binding、group resolver 与 artifact sink。
+Grouped evaluation 的 group ID 对 kernel 不透明，具体 `cat/dog/wild` 映射只属于 AFHQ
+protocol。
+
+Reference/generated observation 必须通过 task adapter 提供稳定 sample identity；
+grouped generation 不能依赖 tensor block 顺序推断类别。Aggregate 与 group 使用独立
+metric state，结果通过 stable scope ID 寻址；display name 只负责展示。Training 的
+strict per-step MetricUpdate 与 Evaluation 的 scoped multi-stream 更新可以共享底层 metric
+primitives，但不能通过削弱 Training missing-channel contract 来复用。
+
+Example 不应拥有第二套 checkpoint resolution、metric lifecycle、completeness 或 result
+publication。它只提供数据集 identity、split/sample mapping、protocol 参数和必要
+task adapter。Metric 仍只拥有统计 state；Diagnostic 仍只是在训练上下文按 cadence
+运行的 probe，二者都不替代独立 Evaluation operation。
+
+### 5.5 训练观测与决策边界
+
+数值算法、运行上下文和决策政策必须分开：
+
+| 概念 | 正确职责 | 不应拥有 |
+| --- | --- | --- |
+| Objective | 单 step 可微 loss | 跨 batch 统计 |
+| Phase Metric | 消费正常 Strategy step payload，执行 `reset/update/compute` | 模型调用、split、artifact、cadence |
+| TrainingDiagnostic | 绑定当前训练运行，按 event/cadence 做只读补充 probe | 训练状态修改、正式 test、选择政策 |
+| Measurement | latency、throughput、memory、I/O 等运行事实 | 模型质量语义 |
+| Evaluation | 冻结 subject/data/protocol 并发布完整可追溯结果 | 训练更新 |
+| Selection/Gate | 显式消费合格结果并应用决策政策 | 重算 Metric 或执行 probe |
+
+“计算昂贵”只影响 cadence 和执行 binding，不定义类型。同一个 FID、KID 或 PSNR 算法
+可以在训练期间由 Diagnostic 编排，也可以在冻结协议下由 Evaluation 编排；算法本身
+仍是 Metric。只消费普通 validation step 已有输出的 per-class 或 aggregate 统计仍是
+phase Metric，不因结果维度增加而变成 Diagnostic。
+
+TrainingDiagnostic 的架构不变量是 training-run-bound、cadence-driven 和
+observation-only。当前 runtime event 仍暴露 `trainer: Any`，因此 observation-only
+已经是 extension 行为契约，但“只能接收窄 capability”的权限隔离尚未实现；正式重构
+必须关闭这个缺口，而不能把现状解释为允许修改 Trainer。
+
+- 它只能读取显式提供的运行事实与 capability，不得修改 managed model、optimizer、
+  scheduler、EMA 或 checkpoint state；
+- 它可以额外 forward、sampling、reconstruction、cache、artifact 或 measurement，
+  但不能拥有 best checkpoint、early stopping 或 HPO policy；
+- 它输出 typed result 与 source/protocol identity，记录结果不会自动赋予选择资格；
+- 只有经过 composition 验证的 validation-role source 才能被训练期 monitor 显式引用；
+  test、external 与 system measurement 默认不可选择；
+- 未到 cadence、已到期但缺失和 provider failure 是不同状态，不能用旧值、零或
+  `NaN` 混淆。
+
+Phase Metric 的 channel 只是在 Strategy 与统计 state 之间路由 task-owned payload。
+Diagnostic observation 和 Evaluation scoped packet 使用各自 typed contract，不得复用
+任意字符串字典，也不得把 artifact、class mapping 或运行命令塞进 Metric channel。
+当前正式行为与配置见
+[Metrics、训练诊断与模型选择](../metrics.md)。
+
+### 5.6 Observability 与外部平台边界
 
 Stochaflow 可以定义 logger、metric、diagnostic 和 run event 的窄调用契约，并把数据发送
 给 TensorBoard、Weights & Biases、MLflow 或其他系统。它不拥有这些平台的 dashboard、
@@ -392,8 +493,10 @@ Registry 只承载它实际拥有生命周期语义的扩展点。
 ### 6.11 任务与领域语义中心
 
 图像 class label、文本 token、physics boundary condition、医学 metadata、超分辨率
-degradation 和其他领域结构不进入通用 batch、Sampler 或 artifact schema。官方示例可以
-展示这些组合，但示例不能反向扩大 core contract。
+degradation 和其他领域结构不进入通用 batch、Sampler 或 artifact schema。可复用
+task-family built-in 可以在自己的有界 namespace 中定义相应 typed contract，但不能让
+无关任务实现它，也不能扩大 kernel contract。官方示例绑定具体数据集和 protocol，并应
+复用已有 built-in，而不是复制其 runtime。
 
 ### 6.12 环境、源码与组织仓库管理
 
@@ -439,7 +542,8 @@ container image、package index 或源代码管理系统。
 
 | 需求性质 | 默认归属 |
 | --- | --- |
-| 单项目或单 modality 的组合 | 项目 Builder / Strategy / extension |
+| 单项目、单数据集或尚未稳定的组合 | 项目 Builder / Strategy / extension |
+| 跨数据集稳定复用的任务组合 | framework-shipped built-in task family |
 | 一个算法 family 的数学语义 | family-specific contract |
 | 成熟外部平台的能力 | adapter 或外部 orchestration |
 | 只有一个使用方、语义仍变化 | 保持私有并推迟抽象 |
@@ -453,11 +557,12 @@ lifecycle、失败语义、替代方案、明确 non-goals、独立替换测试�
 | 需求 | 正确边界 | 不接受的方向 |
 | --- | --- | --- |
 | 新的 ODE / SDE 生成算法 | 新 family 的 Dynamics 与 solver/Sampler capability | 给根 Dynamics 添加所有 family 的方法 |
-| 类别 condition 或 classifier-free guidance | 任务 SamplingBuilder 与模型 adapter | 给通用 Sampler 增加 `class_label` |
+| 类别 condition 或 classifier-free guidance | 可复用 task-family SamplingBuilder 与模型 adapter | 给通用 Sampler 增加 `class_label` |
 | 同构的新图像来源 | 发布兼容 artifact 的 DataSource | 为每个数据集名称新增 core Builder |
 | sequence packing 或 trajectory window | 项目 DataBuilder runtime recipe | 给通用 Dataset schema 增加私有字段 |
 | frozen teacher | Builder 管理 teacher，Strategy 组合 loss | Strategy 私自加载和序列化模型 |
 | 独立 optimizer 或交替 backward | 明确的新 training-loop family | 在当前自动 loop 中堆叠 mode flag |
+| AFHQ aggregate/per-class KID/FID | 内置 grouped generation evaluation + AFHQ protocol adapter | 在 AFHQ example 复制 EvaluationRunner |
 | 新的实验 dashboard | logger/event adapter | 在 Stochaflow 内实现查询与 UI 平台 |
 | S3、MinIO 或其他远程内容 | 窄 storage adapter，复用官方 SDK | 重写对象存储客户端与复制策略 |
 | Kubernetes GPU job | 外部 launcher/orchestrator | core 负责排队、资源创建与扩缩容 |

@@ -27,6 +27,7 @@ autoencoder 和 distributed training 尚未实现。
 :hidden:
 
 framework
+metrics
 design/scope
 platform-support
 configuration/index
@@ -159,6 +160,8 @@ residual attention。旧拓扑 checkpoint 不兼容；先前展示的指标与�
 - [架构范围与非目标](design/scope.md)：长期职责边界、明确拒绝的复杂度和新公共抽象的
   准入门槛。
 - [框架特性与架构](framework.md)：稳定职责边界、当前内置能力和 extension 心智模型。
+- [Metrics、训练诊断与模型选择](metrics.md)：phase Metric、Strategy channel、
+  canonical result、Diagnostic source、monitor 与 checkpoint 语义。
 - [平台支持政策](platform-support.md)：Supported、Deprecated / best effort 等级和
   当前 CI 验证矩阵。
 - [配置手册](configuration/index.md)：从最小 YAML 到多源数据、K-fold、自定义组件、

@@ -1,14 +1,14 @@
 # 自动化模型调优开发计划
 
 - 文档性质：开发草案；不属于当前公开 API 或正式文档导航
-- 状态：Later，尚未进入实现；等待 stable latent baseline、Metrics、
-  Evaluation 与 reusable single-run seam
+- 状态：Later，尚未进入实现；等待 stable latent baseline、Evaluation 与 reusable
+  single-run seam；正式 Metrics contract 已是当前基线
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-25
 - 架构复核：2026-07-26；final test 改由独立 Evaluation Operation 执行
-- 前置工作：[Metrics 支持开发计划](metrics-support-plan.md)的 canonical epoch
-  snapshot 与 monitor contract
+- 前置工作：[Metrics、训练诊断与模型选择正式契约](../metrics.md)中的 canonical
+  epoch snapshot 与 monitor contract
 - 关联工作：
   [训练后 Evaluation 与 Benchmark 支持计划](post-training-evaluation-support-plan.md)
   负责选定 subject 的独立 final test、result 与 gate
@@ -671,7 +671,7 @@ class TrialOutcome:
     failure: FailureRecord | None
 ```
 
-`EpochMetricSnapshot` 直接复用 Metrics 计划的 values + typed source metadata；
+`EpochMetricSnapshot` 直接复用正式 Metrics contract 的 values + typed source metadata；
 TrialObserver/TuningBuilder 在取 objective 时同时验证 data role、protocol 和
 selection eligibility，不能把它再次压扁成只剩数值的 mapping。
 
@@ -813,7 +813,7 @@ objective:
 验证：
 
 - key 必须由 base config 的 validation metric 或 epoch diagnostic 声明；
-- TuningBuilder 必须读取 Metrics 计划的 `MetricSource`，而不是只检查 key prefix；
+- TuningBuilder 必须读取正式 Metrics contract 的 `MetricSource`，而不是只检查 key prefix；
 - objective observation 必须满足 `data_role="validation"`；diagnostic 还必须
   `selection_eligible=True` 并有固定 `protocol_id`；
 - `test/*`、任何 `data_role="test"` observation 和 prefix/source 冲突一律禁止；
@@ -1057,7 +1057,7 @@ checkpoint 恢复一个候选的训练状态。不能拿另一个 trial 的 best
 
 ### 阶段 T0：Metrics 与 single-run seam
 
-1. 完成 Metrics 计划的 canonical epoch snapshot；
+1. 复用现有 canonical epoch snapshot 与 typed source contract；
 2. 确认 latent codec、posterior artifact、dataset split、sample/evaluation protocol
    与正式 baseline 已冻结；
 3. 复用 Hydra H1 的 `TrainingInvocation`/`run_training_invocation()`；

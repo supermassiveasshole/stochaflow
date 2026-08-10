@@ -3,9 +3,14 @@
 - 文档性质：跨开发计划的执行排期；不属于公开 API 或正式文档导航
 - 状态：Active
 - 制定日期：2026-07-29
-- 最近排期复核：2026-07-30
-- 当前工程优先项：A0/A1、修订后的 A2 class-aware example contract 与 Metrics
-  M0–M4 repository implementation 已关闭；下一步推进通用 Evaluation E0–E1
+- 最近排期复核：2026-07-31
+- 当前最高优先项：执行
+  [Clean Architecture 与内置 Evaluation 重构计划](clean-architecture-refactor-plan.md)
+  的 CA0–CA6；除阻断主分支的 correctness/security 修复外，暂停新增产品能力、
+  新数据集与硬件长跑
+- 已关闭基础：A0/A1 与修订后的 A2 class-aware example contract
+- 当前 capability 主线：Evaluation E0–E3；高层 operation 与可复用
+  phase/paired/generation/grouped profiles 进入框架内置支持
 - 当前产品主线：pretrained image autoencoder + class-conditional latent diffusion
 - 当前 pixel-quality lane：corrected ADM + learned-range Gaussian + P2 weighting
   已具备 algorithm/config substrate；quality evidence 尚未运行
@@ -20,13 +25,13 @@
 当前不应平均推进所有 proposal。单一维护者的主执行序列是：
 
 ```text
-关闭当前基线
-  -> ADM topology correctness cutover
-  -> Train/Sample authority cutover
-  -> Metrics M0-M1
-  -> learned-range Gaussian + exact P2 capability
-  -> class-aware Evaluation
-  -> pretrained AutoencoderKL provider
+冻结 Clean Architecture ownership 与依赖门槛
+  -> 分离 foundation/contracts/application/composition
+  -> 显式 built-in bootstrap 与窄 facade
+  -> Evaluation E0-E1 一等 operation
+  -> Evaluation E2-E3 paired/generation/grouped built-ins
+  -> Trainer/Diagnostic/infrastructure 解耦
+  -> 恢复 pretrained AutoencoderKL provider
   -> AFHQ latent train/resume/sample vertical slice
   -> production latent substrate
   -> open-data DiT baseline
@@ -35,21 +40,28 @@
 
 其中：
 
+- [Clean Architecture 计划](clean-architecture-refactor-plan.md)拥有当前架构主序列。
+  可复用 task-family Builder/Strategy/profile 继续由 framework built-ins 维护；
+  examples 只绑定具体 dataset、mapping、protocol 与展示，不重写完整任务。
+- [Evaluation 计划](post-training-evaluation-support-plan.md)从 formal-release P2 提升为
+  P0/P1 capability 主线。E0–E1 建立 framework operation，E2–E3 提供 paired、
+  generation 与 grouped/class-aware built-ins；AFHQ 迁移为 dataset/protocol adapter。
+- Extension import boundary 不再是条件触发的 P4 性能优化，而是 CA2 的依赖方向与显式
+  composition 工作。绝对启动耗时仍只是观测指标，结构 import boundary 是 hard gate。
 - [P2/ADM 计划](p2-weighting-and-adm-topology-refactor-plan.md)保留两个明确
   attribution boundary：A0 只修 topology；A1 实现 learned variance、hybrid
   objective、P2 和 respaced ancestral DDPM。
-- A0 是当前 `adm_unet` 名称与实现不一致的 correctness 修复，纳入 P0，在 B1 前
-  完成；它不启动新的 production 长训练。
+- A0 已完成 `adm_unet` topology correctness cutover；它没有启动新的 production
+  长训练。
 - `Train/Sample authority cutover` 只执行
   [Hydra 迁移计划](hydra-configuration-composition-migration-plan.md)的 C0/C1。
   它先修正 plain YAML、checkpoint 和 sample authority，不依赖 Hydra runtime。
-- 当前下一项能力计划是 Metrics。B1 关闭后立即执行
-  [Metrics 计划](metrics-support-plan.md)的 M0–M1，先冻结 canonical epoch result、
-  monitor key 和 validation/test MetricEngine，再进入 latent asset 与 codec 实现。
-- Metrics M2–M4、Hydra H0–H3 和 Evaluation 的扩展 profile 不构成首个 AFHQ
-  latent correctness 的架构前置；它们按各自 gate 继续。
-- A1 core implementation 在 K0 后执行。目标硬件上的 capacity、吞吐与显存验证是
-  operational evidence，不是 A0/A1 或 Metrics 合并门槛。
+- [正式 Metrics contract](../metrics.md)提供 canonical result、MetricUpdate、
+  MetricEngine 与 monitor 语义，是 Evaluation 的现成前置。
+- Hydra H0–H4、latent/Stable Diffusion 新能力和新的 production 长训练在 CA0–CA6
+  之后重新排期，避免继续建立在循环依赖、隐式 bootstrap 和重复 Evaluation engine 上。
+- A1 core implementation 已完成。目标硬件上的 capacity、吞吐与显存验证是
+  operational evidence，不是 A0/A1 或 CA0–CA6 合并门槛。
 - prepared posterior、optimizer-step training 与 codec asset bundle 不阻塞 smoke，
   但阻塞正式多 checkpoint 长训练。
 - Stable Diffusion 不是被移除的 future idea，而是复用 latent substrate 的下一条
@@ -61,7 +73,8 @@
 只有一份 train YAML，DDPM/DDIM 变体位于 sample profiles，observability 位于 overlay，
 且 training diagnostics 自己声明采样 shape。该状态只完成了 C2 的 built-in 子集和
 C1 的 diagnostic 解耦子项；checkpoint-v10 的 partial sample request 与自动 final
-sample 尚未切换，因此 B1 仍是 P0 未完成 milestone。
+sample 尚未切换。B1 仍是未完成的 product-authority milestone，但不与当前架构 P0
+并行争夺资源；CA0–CA6 后按新的 owner/config boundary 重新基线化。
 
 本文件拥有**跨计划执行顺序**。各能力计划继续拥有自己的 contract、API、测试和风险。
 若能力计划中的旧 phase 顺序与本文冲突，应先同步能力计划，再开始实现，不能同时执行
@@ -87,44 +100,54 @@ sample 尚未切换，因此 B1 仍是 P0 未完成 milestone。
 
 ```mermaid
 flowchart LR
-    B0["B0 基线关闭"] --> ADM0["A0 ADM topology correctness"]
-    ADM0 --> C1["C0/C1 Train/Sample authority"]
-    C1 --> K0["K0 Metrics M0-M1"]
-    K0 --> P2C["A1 learned variance + P2 capability"]
-    K0 --> LD2["LD2 pretrained AutoencoderKL"]
-    LD2 --> LD3
-
-    P2C --> E01["Evaluation E0-E1 foundation"]
-    K0 --> E01
-    E01 --> E23["Evaluation E2-E3 class-aware profiles"]
-
-    LD3 --> P1["LD4A prepared posterior"]
-    LD3 --> P2["LD4B optimizer-step production loop"]
-    LD3 --> P3["LD4C codec asset bundle"]
-
-    LD3 --> H["Hydra H0-H3 + retained example cleanup"]
-    E23 --> E["latent quality profile"]
-    LD3 --> E
-
-    P1 --> D["The Met + DiT-S/2 baseline"]
-    P2 --> D
-    P3 --> D
-    H --> D
-    E --> D
-    D --> DB["DiT-B/2 formal run"]
-
-    DB --> SD["Stable Diffusion SD1-SD6"]
+    Baseline["Current main contracts"] --> CA0["CA0 ownership + architecture gates"]
+    CA0 --> CA1["CA1 foundation/contracts/application/composition"]
+    CA1 --> CA2["CA2 explicit bootstrap + narrow facades"]
+    CA1 --> E01["Evaluation E0-E1 framework operation"]
+    CA2 --> E01
+    E01 --> E23["Evaluation E2-E3 built-in paired/generation/grouped profiles"]
+    E01 --> CA5["CA5 Trainer/Diagnostic/infrastructure decoupling"]
+    E23 --> CA6["CA6 compatibility + public architecture closeout"]
+    CA5 --> CA6
+    CA6 --> Resume["Resume product mainline"]
+    Resume --> LD2["Pretrained AutoencoderKL"]
+    LD2 --> LD3["AFHQ latent vertical slice"]
+    LD3 --> Production["Production latent substrate"]
+    Production --> D["The Met + DiT baseline"]
+    D --> SD["Stable Diffusion component-native"]
 ```
 
-Inference asset projection 已完成，不再作为未来节点。图中的 `K0 -> LD2` 表示本轮
-明确的实施顺序，不表示 codec 在架构上依赖 MetricEngine。A1 与 L0 也没有架构依赖。
-三类 AFHQ 与 latent quality profile 都消费 Evaluation 基础，但使用不同
-subject/data/protocol，不能共享一个模糊 FID。
+Inference asset projection 与正式 Metrics contract 是当前基线，不再作为未来节点。
+图中的先后顺序是工程返工控制，不表示 codec 在数学上依赖 Evaluation。Pixel AFHQ、
+latent AFHQ 与其他数据集都消费同一 Evaluation operation/built-in task profile，但
+使用各自独立的 subject/data/protocol identity。
 
 ## 4. Milestone 排期
 
 以下为单一主要维护者的相对工程量估计，不包含数据下载、策展审批和 GPU 长训练的
 wall-clock 时间。每个 milestone 应独立提交并保持主分支可运行。
+
+### CA0–CA6 — Clean Architecture and Built-in Evaluation（P0/P1，当前主线）
+
+执行 [Clean Architecture 计划](clean-architecture-refactor-plan.md)：
+
+- CA0：冻结 ownership、allowed dependency DAG、architecture/import gates；
+- CA1：分离 foundation、contracts、application、built-ins、infrastructure 与
+  composition；
+- CA2：显式 activation/bootstrap、lazy facade 与 CLI dispatch；
+- CA3：Evaluation E0–E1 framework operation；
+- CA4：Evaluation E2–E3 paired/generation/grouped built-ins，并让 AFHQ 只保留
+  dataset/protocol adapter；
+- CA5：移除 Diagnostic 对完整 Trainer/字符串 observation bus 的依赖，拆分 Trainer
+  与 checkpoint/logging infrastructure ownership。
+- CA6：删除迁移 shim、同步正式文档并完成 wheel/Sphinx/full verification。
+
+退出条件：package graph 无跨层 SCC，sampling import 不加载 training，built-in 与
+extension 走相同 composition path，`stochaflow evaluate` 可执行框架内置 grouped
+evaluation，AFHQ 不再维护重复 evaluation engine。具体 DoD 由 Clean Architecture 与
+Evaluation 两份计划共同拥有。
+
+以下既有产品 milestone 保留其能力定义，但在 CA0–CA6 关闭前不占用主实施资源。
 
 ### B0 — Baseline Closed（P0，1–2 个工程日）
 
@@ -179,32 +202,6 @@ sample/decode 先接入现有 checkpoint schema，随后又被 C1 重写。
 退出条件：一份 train config 可被 DDPM/DDIM 多个 sample profile 消费；sample 文件
 没有 Builder，train 文件没有最终 sampler 或 writer。
 
-### K0 — Metrics Foundation（P1，1–2 个工程周）
-
-本 milestone 先执行 Metrics 计划的 M0–M1：
-
-- 为现有 loss、history、logger 和 monitor 行为增加 characterization tests；
-- 冻结 canonical metric key、`MetricSource`、`EpochMetricSnapshot`、
-  `MetricUpdate` 和显式 `loss_aggregation_weight` contract；
-- 决定 TorchMetrics 的 base dependency/extra 策略；
-- 实现 task-neutral `MetricEngine`、最小 registry/factory 与 train/validation/test
-  隔离 state；
-- 让内置 supervised/Gaussian Strategy 提供显式 channel；
-- 让 logger、history、checkpoint 和 monitor 消费同一 canonical epoch snapshot；
-- 将 retained MNIST/AFHQ config、配置参考和契约测试中的 `valid_loss` monitor
-  一次性迁移为 `valid/loss`，不保留 alias；
-- 完成最小 `mean`、`mse`、`mae` built-in 及独立 custom implementation contract
-  test。
-
-K0 不提前实现训练后 Evaluation，也不把 FID/KID、额外 sampling 或 image-space
-quality 塞进普通 validation loop。Metrics M2 的 diagnostic monitoring、M3 的完整
-extension/distributed readiness 与 M4 的正式文档/计划收束继续按后续 gate 执行。
-
-退出条件：validation/test metric 能由 Strategy channel 驱动并稳定进入同一
-snapshot、日志和 checkpoint 路径；只有 selection-eligible validation observation
-可以进入 best/early-stopping monitor；旧 metric key 或 checkpoint 不提供兼容迁移；
-retained MNIST/AFHQ 的训练数值行为保持不变。
-
 ### A1 — Learned-range Gaussian and P2 Capability（Done，2026-07-30）
 
 执行 P2/ADM 计划的 A1：
@@ -238,8 +235,10 @@ protocol 或 benchmark resolver。AFHQ 只维护现有 class-conditional product
 - 结果固定 checkpoint、data identity、class allocation、sampler 与 metric protocol。
 
 class-aware evaluation contract 与回归测试已经通过。4090/DGX 上的容量、吞吐、显存
-和长训练质量结果属于后续运行验收，不阻塞 A0/A1、A2、Metrics 或 main 合并。通用
-Evaluation Operation 的 E0–E3 仍是后续独立能力，不影响 AFHQ example 这一已闭合边界。
+和长训练质量结果属于后续运行验收，不阻塞 A0/A1、A2 或 main 合并。通用
+Evaluation Operation 的缺失不反向把 A2 标为未完成；CA3/CA4 会把该 example 已验证的
+aggregate/per-class 行为迁入 framework-owned grouped evaluation，使 AFHQ 收缩为
+dataset/protocol adapter，而不是继续维护一套平行 runtime。
 
 ### L0 — Pretrained Codec Ready（P1，1–2 个工程周）
 
@@ -265,8 +264,8 @@ InferenceAssetProvider -> SamplingBuilderContext`，不在本 milestone 重复�
 - freeze/eval、optimizer/EMA exclusion；
 - self-contained reconstruction config、weight digest 和 offline recovery。
 
-只增加针对 optional dependency 的窄 import gate：import core 不得导入 Diffusers，
-forward 不得访问网络。完整 extension import refactor 不进入本 milestone。
+Optional dependency 的窄 import gate 由 CA0–CA2 统一建立：import kernel 不得导入
+Diffusers，forward 不得访问网络。L0 不再维护第二套临时 import policy。
 
 退出条件：删除原始 provider path、断网后，fake codec 和真实 codec 都能从 checkpoint
 声明/state 恢复并 decode；pixel checkpoint 行为不变。
@@ -309,8 +308,8 @@ Phase A embedded codec 只允许用于 L0/L1 correctness，不用于正式长训
   linter 和文档；
 - C2 retained-example cleanup：只维护 MNIST 与 AFHQ-v2，并以小型 fixture 替代
   Physics/KD 的 framework contract coverage；
-- E0–E3 foundation 已在 pixel P2 lane 提前建立；本 milestone 只补充 latent
-  reconstruction 与 decoded-generation profile 的 codec-dependent 子集；
+- E0–E3 foundation 由 CA3/CA4 提前建立；本 milestone 只补充 latent reconstruction
+  与 decoded-generation profile 的 codec-dependent 子集；
 - Evaluation 复用 L0 的 inference projection，不再实现第二套 checkpoint subject
   asset resolver。
 
@@ -369,18 +368,18 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 
 | 开发计划 | 状态 | 优先级 | 启动/完成门槛 | 本轮决定 |
 | --- | --- | --- | --- | --- |
+| [Clean Architecture and Built-in Evaluation](clean-architecture-refactor-plan.md) | Approved / current mainline | P0 | 立即启动；除 correctness/security 外先于新能力 | CA0–CA6；重建依赖方向、built-in 边界与 Evaluation ownership |
 | [Data Artifact Producer Lifecycle](data-artifact-producer-lifecycle-refactor.md) | Done | B0 maintenance | 当前 follow-up 通过验证 | 作为 prepared posterior 基座，不重开 lifecycle |
 | [Data Layer Composition Boundary](data-layer-composition-boundary-review.md) | Done | Base | 已实施 | image-backed 与 prepared-backed 使用两个 recipe-level Builder |
 | [Sampling Request Config Refactor](sampling-request-config-refactor.md) | Done / 将被替代 | B1 | Hydra C1 | C1 后成为历史记录，不维持 v10 dual authority |
 | [Legacy Intel macOS Lifecycle](legacy-intel-macos-pytorch-test-lifecycle.md) | Done | Maintenance | 无 | Deprecated / best effort，不约束新 codec/DiT |
 | [P2 Weighting and ADM Topology](p2-weighting-and-adm-topology-refactor-plan.md) | A0/A1 implemented | Done core | repository validation | topology/P2 capability 已闭合；单类别 reproduction lane 已取消 |
-| [Metrics](metrics-support-plan.md) | Queued foundation | P1 | A0/B1 后、L0 前 | 立即完成 Metrics M0–M1；M2–M4 按 diagnostic/extension 需求 |
-| [Latent Diffusion](latent-diffusion-support-plan.md) | Current product mainline | P1/P2 | A0 -> B1 -> K0/A1 -> L0–L3 | A1 是当前单人排期前置而非 codec 架构依赖 |
-| [Hydra Configuration Migration](hydra-configuration-composition-migration-plan.md) | Split | P0 + P2 + Later | C0/C1 -> K0 -> L1 -> H0-H3 | C0/C1 先行；H0-H3 在 L1 后；H4 延期 |
-| [Post-training Evaluation](post-training-evaluation-support-plan.md) | Formal-release gate | P2 | Metrics M0–M1 + shared inference projection | E0–E1 建立基础；E2–E3 扩展 class-aware 与 offline evaluation |
+| [Latent Diffusion](latent-diffusion-support-plan.md) | Product mainline paused | P1/P2 after CA | CA0–CA6 后恢复 L0–L3 | 不继续扩大当前依赖环或复制 Evaluation |
+| [Hydra Configuration Migration](hydra-configuration-composition-migration-plan.md) | Split | P0 + P2 + Later | C0/C1 -> L1 -> H0-H3 | C0/C1 先行；H0-H3 在 L1 后；H4 延期 |
+| [Post-training Evaluation](post-training-evaluation-support-plan.md) | Approved / current capability mainline | P0/P1 | Formal Metrics contract + CA1/CA2 seams | E0–E1 framework operation；E2–E3 built-in paired/generation/grouped profiles |
 | [Stable Diffusion Component-Native](stable-diffusion-component-native-support-plan.md) | Next product line | P3 | L2/L3 共享前置稳定 | SD1–SD6；SD7–SD8 后置 |
 | [Default Workflow and Pipeline](default-workflow-pipeline-support-plan.md) | Umbrella / promotion | P3/P4 | 真实 recipe 稳定 | 不阻塞 capability；R0 复用 Hydra H1 invocation seam |
-| [Extension Import Boundary](extension-import-boundary-and-activation-latency-plan.md) | Rebase required | P4 | C1/C2 后重新测量 | 当前 v10、Physics/KD DoD 失效；只做 codec 窄 import gate |
+| [Extension Import Boundary](extension-import-boundary-and-activation-latency-plan.md) | Subsumed by CA2 / rebaseline required | P0 subplan | CA0 ownership baseline 后 | 结构边界进入 hard gate；历史绝对耗时不作 SLA |
 | [Distributed Training and Inference](distributed-training-and-inference-support-plan.md) | Conditional | P4 | L3/S1 profiling 证明需要 | 先 D0 profiling；再决定 DDP/FSDP2 |
 | [Automated Model Tuning](automated-model-tuning-plan.md) | Later | Later | Metrics + Evaluation + stable baseline | 不优化尚未冻结的 codec/data/protocol |
 | [Consistency Distillation](consistency-distillation-support-plan.md) | Rebase required | Later | 主线稳定并重新选择案例 | 不再以已退出维护的 extension project 为实施入口 |
@@ -431,9 +430,10 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
   timestep 与 constant/P2 parity tests 固定；仓库不维护单类别 paper reproduction。
 - Metrics 的 `loss_aggregation_weight` 是 epoch统计权重；P2
   `timestep_loss_weight` 是 timestep objective coefficient，两者不能共用字段。
-- AFHQ evaluation 同时报告 aggregate 和 cat/dog/wild per-class 结果。
-- Metrics M0–M1 在 latent 开发前冻结 canonical result、source 和 monitor contract；
-  它们不提前提供 codec-dependent image-space quality。
+- AFHQ evaluation 同时报告 aggregate 和 cat/dog/wild per-class 结果；CA4 将高层循环
+  迁入 grouped evaluation built-in，类别词汇仍只属于 AFHQ protocol。
+- [正式 Metrics contract](../metrics.md)已冻结 canonical result、source 和 monitor
+  语义；它不直接提供 codec-dependent image-space quality。
 - L1 可声明 experimental functional support，不声明规模或质量。
 - L3 前必须有结构化 reconstruction gate 和 decoded-generation evaluation。
 - latent prediction MSE 不能命名为 image reconstruction PSNR。
@@ -456,18 +456,18 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 
 为降低长分支风险，主线至少拆为：
 
-1. `Close artifact/config baseline`
-2. `Correct ADM topology`
-3. `Separate train and sample authority`
-4. `Add metric contracts and canonical epoch results`
-5. `Add validation MetricEngine`
-6. `Add learned-range Gaussian training`
-7. `Add exact P2 weighting and respaced DDPM`
-8. `Add post-training evaluation foundation`
-9. `Add P2 prediction and quality profiles`
-10. `Add pretrained AutoencoderKL codec`
-11. `Add AFHQ latent diffusion vertical slice`
-12. `Publish controlled AFHQ P2 evidence`
+1. `Freeze clean architecture ownership and dependency gates`
+2. `Extract foundation contracts and composition root`
+3. `Make built-in activation explicit`
+4. `Narrow public facades and CLI imports`
+5. `Add framework evaluation operation`
+6. `Add paired and generation evaluation built-ins`
+7. `Add grouped evaluation and migrate AFHQ`
+8. `Decouple diagnostics from Trainer`
+9. `Split training and checkpoint lifecycle services`
+10. `Close clean architecture compatibility and documentation`
+11. `Add pretrained AutoencoderKL codec`
+12. `Add AFHQ latent diffusion vertical slice`
 13. `Add prepared posterior artifacts`
 14. `Add optimizer-step production lifecycle`
 15. `Deduplicate codec assets in run bundles`
@@ -477,16 +477,18 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 19. `Add Stable Diffusion full fine-tuning`
 
 每个切片都必须更新相应 development plan；只有稳定、已实现的用户行为进入公开文档。
+已经关闭并转入正式框架文档的能力不在此重复列出。
 
 ## 8. 重新排期 gates
 
 只有以下证据允许改变主线顺序：
 
-- A0 corrected topology在目标设备上即使 microbatch 1 仍无法执行；
-- A1 reference parity证明现有 Gaussian family boundary 无法在不污染 universal root
-  的前提下表达 learned variance；
-- Metrics M1 的 TorchMetrics 平台兼容或依赖策略无法满足 Supported matrix，且窄
-  wrapper/extra 方案仍不能关闭；
+- 主分支出现阻断开发的 correctness 或 security 回归；
+- CA0 证明目标 dependency DAG 会破坏不可替代的 public lifecycle contract，且窄 port
+  无法表达；
+- CA1/CA2 证明 Registry 的 registration-time validation 无法在显式 bootstrap 下保持；
+- Evaluation E0/E1 证明现有 inference subject projection 无法在不重建 TrainingPlan 的
+  情况下安全恢复；
 - L0 表明现有 inference asset projection 无法扩展到 self-contained codec recovery；
 - L1 表明 image-backed encode 成为 correctness 测试本身的主要瓶颈；
 - L2 表明 asset bundle 或 step-based loop 需要新的训练 loop family；
@@ -495,4 +497,6 @@ black-box backend 不能证明 native training support，也不成为 latent DiT
 - Stable Diffusion parity 证明现有 Gaussian family primitive 不足；
 - 第二个真实 pretrained provider 证明 codec-private source contract 已重复。
 
-“未来可能需要”不是调高优先级的证据。
+目标 GPU 上的 throughput、VRAM 或长训练质量结果不会改变 Clean Architecture 的 P0
+顺序；它们只能决定后续 capacity、distributed 或产品 profile 的实施选择。“未来可能
+需要”不是调高优先级的证据。

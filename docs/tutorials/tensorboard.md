@@ -3,6 +3,10 @@
 Stochaflow 的基础安装已经包含 TensorBoard。内置 MNIST 配置默认同时启用本地日志和
 TensorBoard，因此不需要修改 Python 代码，也不需要额外安装可选依赖。
 
+本页只说明展示与排错；Metric、Training Diagnostic、source eligibility 和
+model-selection 的规范语义见
+[Metrics、训练诊断与模型选择](../metrics.md)。
+
 ## 启用日志后端
 
 配置中的 `logging.backends` 决定训练指标写往哪里。下面的配置会保留本地

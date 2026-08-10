@@ -99,6 +99,9 @@ checkpoint 的完整 `DataArtifactBindings`。
 
 ### Canonical metric key 是 breaking boundary
 
+Metric lifecycle、source 与 selection 规则见
+[Metrics、训练诊断与模型选择](../metrics.md)。本节只说明 checkpoint wire 与迁移边界。
+
 v11 checkpoint、logger、history 和 monitor 只使用以下 canonical epoch key：
 
 - phase loss：`train/loss`、`valid/loss`、`test/loss`；

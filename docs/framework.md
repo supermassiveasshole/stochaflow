@@ -14,6 +14,7 @@ Stochaflow 是一个配置驱动、面向扩展的生成建模研究框架。它
 | 数据 | 普通图像、有标签图像、超分辨率配对、多源多分辨率图像 recipe | `ImageDataSource` 适配兼容 artifact；独立数据生命周期使用自定义 `DataBuilder` |
 | 模型 | 无条件 UNet、canonical unconditional/class-conditional ADM U-Net 与 pixel DiT | 注册满足任务 capability 的普通 `nn.Module`，模型不拥有训练或采样策略 |
 | 训练 | 无条件/类条件 Gaussian denoising、fixed/learned-range variance、constant/P2 weighting、supervised、混合精度与固定梯度累积 | `TrainingBuilder` 组合资产，`TrainingStrategy` 只解释 batch 并计算 loss/metrics |
+| Metrics 与选择 | train/validation/test phase state、canonical epoch snapshot、verified diagnostic result、best/early stopping、checkpoint v11 strict resume | 注册 `torchmetrics.Metric`，由 Strategy channel 提供 task-owned payload |
 | 概率过程 | 离散 VP Gaussian Process、linear/cosine schedule、selected-pair coefficients 与 learned-range bounds | 注册 family-specific `Process`；不需要概率路径的方法可使用 `process: null` |
 | 采样 | full/respaced ancestral DDPM、DDIM、class-conditional CFG、trajectory observer | family-specific `Sampler` 与任务级 `SamplingBuilder` |
 | 输出 | Tensor、PNG、trajectory grid/GIF | `SamplingArtifactWriter` 可输出 NetCDF、Zarr 等领域格式 |
@@ -282,6 +283,28 @@ backward 属于新的训练循环 family，不应被塞入通用 Strategy mode�
 当前 PyTorch 版本；Stochaflow 不复制上游构造参数和默认值。第三方子类仍可注册到对应
 Registry。
 
+## Metrics、Training Diagnostic 与选择
+
+Metrics 是 task-neutral 的统计 subsystem，不是 Trainer 对通用 batch 的二次解释器。
+具体 Strategy 声明语义 channel，并把 `MetricUpdate` payload 交给 phase-scoped
+`MetricEngine`；每个 train、validation 和 test phase 使用独立 state。完成 epoch 后，
+loss、phase metric、到期的 Diagnostic result 和运行测量进入同一个
+`EpochMetricSnapshot`，logger、history、checkpoint 和 model-selection policy 消费相同
+canonical key 与逐 key source metadata。
+
+Training Diagnostic 是绑定活动训练运行、按 event/cadence 执行的 observation-only
+probe。它可以做额外 forward、sampling、reconstruction、cache 和 artifact，但不拥有
+训练资产修改、checkpoint 选择政策或正式 test lifecycle。只有 composition 验证过的
+validation source 才能让 Diagnostic result 获得 selection 资格；test、external 和
+system measurement 不能控制 best checkpoint 或 early stopping。
+
+计算成本不定义类型。昂贵的质量算法仍是 Metric：训练期间额外运行时由 Diagnostic
+编排，对冻结 subject/data/protocol 的正式运行则属于独立 Evaluation。当前公开 runtime
+尚未提供 `stochaflow evaluate`；final test 会计算并记录配置的 `test/metrics/...`，
+但顶层 train summary 当前只返回 test loss。因此 phase test 与项目级 benchmark 仍需
+遵守各自现有边界。完整配置、channel、canonical result、missing policy 和 checkpoint
+语义见 [Metrics、训练诊断与模型选择](metrics.md)。
+
 ## Checkpoint inference 与采样组合边界
 
 `stochaflow sample` 表示 checkpoint-backed inference，而不只表示随机图像生成。生成、
@@ -372,6 +395,7 @@ extensions:
 ## 下一步
 
 - [快速开始与配置](configuration/index.md#五分钟快速开始)
+- [Metrics、训练诊断与模型选择](metrics.md)
 - [扩展与 Registry](configuration/extensions.md)
 - [常用训练、恢复和采样工作流](configuration/workflows.md)
 - [Extension 公共 API](api/extensions.md)

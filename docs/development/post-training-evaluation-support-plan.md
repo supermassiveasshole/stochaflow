@@ -1,16 +1,19 @@
 # 训练后 Evaluation 与 Benchmark 支持计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：尚未进入实现；E0–E1 在 Metrics M0–M1 后推进，E2–E3 扩展
-  prediction artifact、FID/KID 与 class-aware Gaussian profile
+- 状态：Approved for implementation；E0–E1 是 Clean Architecture P0 主线，
+  E2–E3 在新增产品能力前完成 prediction artifact、FID/KID 与内置 grouped/
+  class-aware generation profile
+- 优先级：E0–E1 为 P0，E2–E3 为 P1；高于新的数据集、模型产品线和硬件长跑
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-26
-- 本次排期修订日期：2026-07-29
+- 本次排期修订日期：2026-07-31
 - 前置工作：
-  [Metrics 支持开发计划](metrics-support-plan.md)的 `MetricUpdate`、`MetricEngine`
-  与 canonical result contract
+  [Metrics、训练诊断与模型选择正式契约](../metrics.md)中的 `MetricUpdate`、
+  `MetricEngine` 与 canonical result
 - 关联计划：
+  [Clean Architecture 与内置 Evaluation 重构计划](clean-architecture-refactor-plan.md)、
   [默认工作流与推理 Pipeline 支持计划](default-workflow-pipeline-support-plan.md)、
   [Latent Diffusion 支持计划](latent-diffusion-support-plan.md)、
   [P2 Weighting 与 ADM 拓扑修复计划](p2-weighting-and-adm-topology-refactor-plan.md)、
@@ -72,6 +75,10 @@
 10. **不同 AFHQ 协议不能只因都叫 FID/KID 就比较。**
     当前三类 official-test DDIM-50 与未来 latent decoded protocol 必须具有不同
     protocol identity。Reporter 可以并列展示，但 Gate 不允许直接计算跨协议 delta。
+11. **框架内置可复用 Evaluation task families。**
+    Kernel/application 提供 task-neutral operation；framework-shipped built-ins 提供
+    phase、paired、generation 与 grouped generation Builder/profile。Examples 只绑定
+    数据集、类别映射、split 和 protocol，不为每个数据集复制 EvaluationRunner。
 
 ## 2. 语义划分：Metrics、Validation、Diagnostic 与 Evaluation
 
@@ -92,8 +99,8 @@ both”应按三条轴回答：
 - validation 可以把配置的 Metric 作为模型选择依据；
 - diagnostic 可以消费同一个 Metric 算法，执行额外 sampling/restore/reference
   计算，并按 cadence 把 scalar 返回统一 snapshot；
-- 独立 Evaluation 也消费同一 MetricEngine，但拥有自己的 subject、数据、协议、
-  artifact 与 manifest；
+- 独立 Evaluation 复用相同的 metric construction、update 与 result-normalization
+  primitives，但拥有自己的 scoped session、subject、数据、协议、artifact 与 manifest；
 - 一个数值只有被 monitor/selection/gate **显式引用**时才成为决策依据，不能因为
   “已经被记录”就自动影响选择。
 
@@ -105,6 +112,7 @@ both”应按三条轴回答：
 | Metric | `reset/update*/compute` | 统计 state、归约、数值结果 | 模型调用、checkpoint、split、artifact |
 | Validation phase | 训练开发循环中的一个 phase | validation loss/metrics | 正式 test 治理、完整 benchmark |
 | Diagnostic | 训练上下文中的按 cadence probe | 额外 forward/sampling/cache/artifact | 通用 test lifecycle |
+| Measurement | 一次 operation 或时间窗口 | latency、throughput、memory、I/O 等运行事实 | 模型质量语义 |
 | Prediction/Sampling | 一次推理或生成 | predictions/samples | reference comparison、质量结论 |
 | Evaluation | 一个冻结 subject/data/protocol 的运行 | 推理、metric、measurement、artifact、provenance | 训练更新、搜索建议 |
 | Selection | validation results 上的决策 | 候选、约束、tie-break、选择记录 | test split |
@@ -112,7 +120,27 @@ both”应按三条轴回答：
 | BenchmarkSuite | 多个版本化 EvaluationCase | 固定数据/推理/metric 协议 | 单一万能 metric |
 | Reporter | result 的呈现 | JSON/YAML/Markdown/图表 | 重跑模型、重新解释协议 |
 
-### 2.3 同一个指标在不同上下文中的语义
+### 2.3 统一路由规则
+
+职责按 lifecycle 与 authority 判定：
+
+1. 参与 backward 的数值属于 Objective。
+2. 只消费普通 Strategy phase step 已有 payload、按 batch 更新统计 state 的工作属于
+   Phase Metric。
+3. 绑定当前 training run，需要额外模型调用、sampling、reconstruction、cache、
+   artifact 或独立 cadence 的工作属于 TrainingDiagnostic。
+4. 对冻结 subject/data/protocol 独立重跑并发布完整、不可变结果的工作属于
+   Evaluation。
+5. latency、throughput、memory、I/O、cache hit/miss 等属于 Measurement；它可由
+   Diagnostic 或 Evaluation 收集，但不进入 quality Metric channel。
+6. Selection、early stopping 与 Gate 是独立 policy；结果不会因为已经记录就自动获得
+   决策资格。
+
+“昂贵”只影响 cadence 和 execution binding，不定义 Metric、Diagnostic 或 Evaluation。
+昂贵的质量算法仍是 Metric；训练期额外运行时由 Diagnostic 编排，冻结协议运行时由
+Evaluation 编排。Diagnostic 是训练生命周期中的补充 probe，不是低配 Evaluation。
+
+### 2.4 同一个指标在不同上下文中的语义
 
 以 SR 的 LPIPS 和生成任务的 FID 为例：
 
@@ -133,7 +161,7 @@ both”应按三条轴回答：
 Metric 算法本身不需要 `DiagnosticMetric`、`ValidationMetric`、
 `EvaluationMetric` 三个继承层次。差异由运行上下文、数据治理和结果用途表达。
 
-### 2.4 两种 “validation” 必须改名避免歧义
+### 2.5 两种 “validation” 必须改名避免歧义
 
 - `validation split/phase`：模型开发与选择使用的数据语义；
 - “验证 evaluation result 是否达标”：质量准入政策。
@@ -154,7 +182,7 @@ validation split 混淆。
 | `InferenceModelProvider` | sampling 已有 raw/EMA 只读权重投影经验 |
 | `SamplingBuilder` 与 `run_sampling()` | 独立 operation、overlay、manifest、structured result 的先例 |
 | diagnostics runtime | RNG、eval mode、EMA 临时切换和 reference cache 的实现经验 |
-| Metrics 计划 | `MetricUpdate`、MetricEngine、canonical key 与 collision/finite policy |
+| 已实现的 Metrics 子系统 | `MetricUpdate`、MetricEngine、canonical key、source metadata 与 result/error policy |
 | registry/extension activation | 自定义 EvaluationBuilder 与 metric 的构造边界 |
 
 这些能力应被复用，但不能直接把 training 或 diagnostic callback lifecycle 伪造成
@@ -166,23 +194,26 @@ validation split 混淆。
 
 - 进入 module eval mode 和 `torch.no_grad()`；
 - 调用 `TrainingStrategy.evaluation_step()`；
-- 只累加 `output.loss`；
-- 忽略 `TrainStepOutput.metrics`、`diagnostics` 和未来 `metric_updates`；
-- 对每个 batch mean 等权平均，无法保证 sample-weighted 正确；
-- 只返回 `loss`、`num_batches` 和 duration。
+- 按显式 `loss_aggregation_weight` 聚合 loss；
+- 把 `TrainStepOutput.metric_updates` 送入 phase-scoped MetricEngine；
+- 返回 loss、普通 metrics、batch count 和 duration；
+- validation/test metric state、canonical key、source metadata 和 monitor policy
+  已由正式 Metrics contract 提供。
 
 训练 epoch 当前近似顺序是：
 
 ```text
 train
--> validation loss
+-> validation
+-> due epoch diagnostics
+-> merge and publish canonical snapshot
 -> best / early-stop decision
 -> checkpoint
--> epoch diagnostic
 ```
 
-Metrics 计划需要把 diagnostic 提前并合入 canonical snapshot，但即使完成该改造，
-它仍只解决**训练上下文**的 phase/diagnostic reporting，不等于独立 benchmark。
+Metrics 已把训练上下文的 phase/diagnostic observation 合入 canonical snapshot。它仍只
+解决**训练上下文**的 reporting/selection，不等于独立 benchmark，也没有冻结独立
+subject、protocol、prediction artifact 或 result manifest。
 
 ### 3.3 当前训练后路径
 
@@ -197,7 +228,8 @@ restore selected best checkpoint
 
 存在以下缺口：
 
-1. `_evaluate_test_split()` 只返回一个 `float test_loss`，没有普通 metrics；
+1. `Trainer.evaluate_epoch()` 已计算普通 metrics，但 `_evaluate_test_split()` 丢弃它们，
+   对外仍只返回一个 `float test_loss`；
 2. test 没有独立 manifest、protocol、数据 fingerprint、样本 identity 或 artifact；
 3. training `run_manifest.yaml` 在运行开始时写入，不包含最终 test result；
 4. `_run_single_run()` 返回 `None`，下游无法通过稳定 API 消费结果；
@@ -207,6 +239,9 @@ restore selected best checkpoint
 7. post-training test 使用已恢复的 raw primary model，而 final sampling 的
    `weights:auto` 可能选择 EMA，二者可能报告不同 subject；
 8. final sampling 只生成 artifact，不比较 reference，也不等于 evaluation。
+9. AFHQ example 为完成正式生成评估，反向复用了 training diagnostics 的 provider
+   Registry 和 image preprocessing；正式 Evaluation 与 training callback 因而没有共同
+   的只读 image-metric adapter owner。
 
 ### 3.4 为什么不能只扩展 `Trainer.evaluate_epoch()`
 
@@ -248,7 +283,7 @@ post-training evaluation 由新的 operation 管理。
 [TorchMetrics](https://lightning.ai/docs/torchmetrics/latest/pages/overview.html)
 的稳定价值是 `update/compute/reset`、device state 和 distributed reduction。
 train/validation/test 必须使用隔离状态。它不选择 checkpoint、数据 split 或模型调用，
-这与 Metrics 计划的横向 subsystem 结论一致。
+这与[正式 Metrics contract](../metrics.md)的横向 subsystem 结论一致。
 
 ### 4.3 Transformers 与 Hugging Face Evaluate：任务适配与 suite
 
@@ -390,7 +425,7 @@ periodic/best checkpoints
 Evaluator 不允许 core 从任意 batch 推断 batch size 或 sample ID。具体 Builder/
 Evaluator 必须显式产生：
 
-- `num_examples`；
+- population/scope 的 expected 与 observed counts；
 - 稳定且唯一的 `input_id` / `sample_id`；
 - stochastic task 的 `replicate_index`；
 - expected 与 observed count；
@@ -443,7 +478,7 @@ flowchart TD
     Builder["Registered EvaluationBuilder"]
     Plan["Validated EvaluationPlan"]
     Evaluator["Task-specific Evaluator"]
-    Metrics["Shared MetricEngine"]
+    Metrics["Shared metric primitives + scoped session"]
     Sink["Task-compatible artifact sink"]
     Runner["EvaluationRunner"]
     Result["EvaluationResult + manifest"]
@@ -483,7 +518,7 @@ flowchart TD
    metric binding 和 writer 组合为评估，不重新解释 sampling compatibility；
 5. Evaluator 解释 batch、调用注入的 Strategy/direct/inference capability 并产生
    metric payload；
-6. MetricEngine 只管理统计 state；
+6. 共享 metric primitives 只管理构造、update、统计 state、reset 和结果归一化；
 7. Runner 只管理 device、eval/inference mode、loop、预算、dispatch、完成状态和发布；
 8. Gate/Reporter 读取不可变 result，不重新运行模型或修改事实。
 
@@ -505,13 +540,25 @@ src/stochaflow/
 │   ├── comparison.py           # result-only comparison/selection
 │   ├── gates.py                # result-only acceptance policy
 │   └── reporting.py            # read-only reporters
+├── builtins/
+│   └── evaluation/
+│       ├── phase.py             # phase snapshot profile
+│       ├── paired.py            # paired prediction/reference profile
+│       ├── generation.py        # generated/reference distribution profile
+│       └── grouped.py           # opaque group aggregate/per-group profile
 └── scripts/
     └── evaluation_cli.py       # thin CLI adapter
 ```
 
-任务专属 evaluator/profile 优先放在拥有该 task method 的 first-party extension/project；
-只有形成稳定跨项目能力后才进入 `stochaflow.evaluation` 的 built-in catalog。core
-package 不按图像、SR、Gaussian 或 consistency 建子目录来暗示通用 modality schema。
+可跨数据集复用的 evaluator/profile 进入 framework-shipped built-in catalog；项目只为
+尚未稳定或真正独有的任务语义提供 extension Builder。Built-in profile 依赖公开
+Evaluation contract，与第三方实现走同一 Registry/construction path，不成为 kernel
+分支。Kernel package 不按图像、SR、Gaussian 或 consistency 建 runner 分支，也不暗示
+通用 modality schema。
+
+首批 built-in profile 为 phase、paired、generation 和 grouped generation。Grouped
+profile 的 `group_id` 对 kernel 不透明；class-aware 是它的内置用途之一，但
+`cat/dog/wild` 等词汇只由 AFHQ protocol adapter 提供。
 
 ## 7. Operation 与配置权威
 
@@ -650,7 +697,8 @@ purpose 不会演变成一个让 Runner 按模式执行任务数学的枚举。
 
 ### 7.3 Config 中的 Metric declaration
 
-Metrics 计划的 training 配置还需要 `phases`，独立 evaluation 没有 phase binding。
+正式 Metrics contract 中的 training 配置还需要 `phases`，独立 evaluation 没有
+phase binding。
 实现前应提取共享的数据化部分：
 
 ```python
@@ -798,9 +846,9 @@ Builder 不拥有 CLI parsing、全局目录选择、reporter 或 sampling compo
 @dataclass(frozen=True, slots=True)
 class EvaluationPlan:
     evaluator: Evaluator
-    data: Iterable[Any]
-    modules: Mapping[str, torch.nn.Module]
-    metrics: MetricEngine
+    work_items: Iterable[IdentifiedEvaluationBatch]
+    execution_session: EvaluationExecutionSession
+    metrics: EvaluationMetricSession
     artifact_sink: EvaluationArtifactSink | None
     protocol: EvaluationProtocol
     subject: ResolvedEvaluationSubject
@@ -808,15 +856,19 @@ class EvaluationPlan:
 
 Plan validation 至少验证：
 
-- iterable 可重入且对应显式 split；
+- work-item stream 对应显式 split/data identity；需要 replay 的 profile 必须可重建；
 - evaluator 声明的 metric channels 覆盖所有配置 binding；
-- modules/weights variant 与 evaluator 引用一致；
+- execution session 的 subject/weights variant 与 evaluator 引用一致；
 - artifact sink 与 evaluator output capability 兼容；
 - protocol sample count、seed plan 和 metric preprocessing 完整；
-- no-grad/inference-only 资产没有 trainable lifecycle 要求；
+- execution session 保证 no-grad/inference-only 资产没有 trainable lifecycle 要求；
 - live Evaluator 只依赖注入的窄 inference capability，不自行重组
   Process/Dynamics/Sampler；
 - offline subject 不意外要求 live model。
+
+`EvaluationExecutionSession` 是只读 mode/capability port。PyTorch adapter 拥有 module、
+device、eval/inference mode 与 enter/exit；Plan 和 Runner 不暴露或解释
+`Mapping[str, nn.Module]`。
 
 不要给 `Process`、`Sampler`、`GenerativeDynamics` 或模型根添加 universal
 `evaluate()`/`predict()`。
@@ -827,33 +879,54 @@ Plan validation 至少验证：
 
 ```python
 class Evaluator(Protocol):
-    def evaluate_batch(self, batch: Any) -> EvaluationStepOutput:
+    def evaluate_batch(
+        self,
+        batch: IdentifiedEvaluationBatch,
+    ) -> EvaluationStepOutput:
         ...
 
 
 @dataclass(frozen=True, slots=True)
-class EvaluationStepOutput:
-    num_examples: int
+class IdentifiedEvaluationBatch:
     sample_ids: tuple[str, ...]
-    metric_update_groups: tuple[
-        Mapping[str, MetricUpdate], ...
-    ]
-    records: Any | None = None
+    payload: Any
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedMetricPacket:
+    population_id: str
+    sample_ids: tuple[str, ...]
+    scope_ids: tuple[str, ...]
+    channel: str
+    update: MetricUpdate
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationStepOutput:
+    metric_packets: tuple[ScopedMetricPacket, ...]
+    artifact_records: Any | None = None
     measurements: Mapping[str, float] = field(default_factory=dict)
 ```
 
 说明：
 
-- `metric_update_groups` 允许同一 batch 对 set metric 先后提交 reference/generated
-  payload；每组仍复用 Metrics 计划的普通 channel mapping；
+- DataBuilder/task adapter 提供 stable sample IDs，不给 universal training batch 增加
+  sample/class/image schema；
+- task Evaluator 解释 payload；mixed-group batch 由 Evaluator 切分成多个 packet；
+- `population_id`、`scope_ids` 和 channel 对 Runner 不透明，Builder/protocol 声明其
+  completeness；
+- 一个 packet 可以同时 fan-out 到 aggregate scope 和一个 group scope；
 - channel 的 args/kwargs 由 task contract 决定，Runner 不理解 `real=True`、
   prediction、target 或 condition；
-- `num_examples` 显式给出，Runner 不从任意 batch 猜 shape；
-- `sample_ids` 用于完整性、join 和 per-sample artifact；
-- `records` 对 core 不透明，只交给 Builder 配对的 task-compatible sink；
+- packet sample IDs 用于 count、完整性、join 和 per-sample artifact；
+- `artifact_records` 对 core 不透明，只交给 Builder 配对的 task-compatible sink；
 - task Evaluator 调用已注入的 inference capability，不构造 model adapter、condition、
   guidance、initial state 或数值 Sampler；
 - Evaluator 不移动 module、选择 checkpoint、打开输出路径或直接发布最终 result。
+
+Class-conditional generation capability 必须产生显式 generated sample IDs 和 group IDs。
+Evaluation 不得在调用完整 Sampling operation 后重新读取 tensor artifact，也不得依赖
+ordered class blocks 按位置猜 group。
 
 ### 9.4 Runner 生命周期
 
@@ -864,15 +937,16 @@ resolve config/subject/extensions
 -> construct EvaluationBuilderContext with capability or offline subject
 -> EvaluationBuilder.build()
 -> plan.validate()
--> seed/device/eval mode/inference mode
--> MetricEngine.reset()
--> for each work batch:
+-> open EvaluationExecutionSession
+-> EvaluationMetricSession.reset()
+-> for each identified work item:
      evaluator.evaluate_batch()
-     validate count/IDs
-     MetricEngine.update() for every update group
-     artifact_sink.consume(records)
+     validate population/scope/count/IDs
+     scoped metric session dispatch every packet
+     artifact_sink.consume(artifact_records)
      measurement collector update
--> MetricEngine.compute()
+-> validate per-scope channel/population completeness
+-> EvaluationMetricSession.compute()
 -> artifact_sink.finalize()
 -> completeness/finite/collision checks
 -> write result + manifest atomically
@@ -907,17 +981,28 @@ EvaluationBuilder 消费它并添加 metric/reference/completeness。对于 dire
 
 ## 10. Metrics、Measurements 与 Reference Cache
 
-### 10.1 共用 MetricEngine
+### 10.1 共用 Metric primitives，不削弱 Training contract
 
-EvaluationRunner 使用 Metrics 计划中的同一构造和 runtime contract：
+EvaluationRunner 复用 Metrics 子系统的构造、state、detach、normalize、finite、
+collision 与 reset primitives，但不直接放宽 training 的 `MetricEngine.update()`：
 
 - Stochaflow 少量 built-in metric 走 `REGISTRIES.metrics`；
 - allowlisted `torchmetrics.*` 走 native-provider resolver；
 - extension metric 走同一 registry；
 - 每个 EvaluationRun 构造独立 state，不能与 training/diagnostic/其他 run 共享；
-- `reset -> update* -> compute -> publish` 严格成对；
+- Training 保留每个 step 必须提供完整 required-channel mapping 的 strict wrapper；
+- Evaluation 使用 scoped/channel-stream session，允许 reference/generated 或 paired
+  population 分批到达；
+- compute 前验证每个 scope/metric 已收到 protocol 声明的全部 channel/population；
+- aggregate/group fan-out 任一更新失败时，整个 session reset 并终止；
+- `reset -> update* -> completeness -> compute -> publish` 严格成对；
 - canonical scalar flatten、collision、NaN/Inf 和 direction metadata 逻辑共用；
 - metric 不进入 optimizer、checkpoint managed asset 或 model mode lifecycle。
+
+实现上应从当前 `MetricEngine` 提炼共享 channel-dispatch primitive，再提供
+`TrainingMetricEngine` 的 strict-full-update adapter 与 Evaluation scoped-stream
+adapter；不能复制第二套 metric factory/result normalization，也不能删除现有
+missing-channel failure。
 
 Evaluation canonical keys：
 
@@ -939,7 +1024,6 @@ sr.prediction_target
 generation.reference
 generation.generated
 generation.prompt_prediction
-performance.forward_event
 ```
 
 这些只是具体 Evaluator 的公开 payload contract，不是 core batch schema。
@@ -951,6 +1035,15 @@ performance.forward_event
   adapter，不给 `Metric` 根增加大量 optional 方法；
 - signature compatibility 用独立 custom Evaluator/Metric contract test 保证，不用
   constructor introspection 或 YAML path DSL。
+
+Forward latency、throughput、memory 与 I/O event 进入独立 Measurement contract，
+不伪装成 Metric channel。
+
+FID/KID provider、image range/color/resize preprocessing 和 reference feature cache 是
+training diagnostic 与正式 Evaluation 的共同底层能力，应位于共享的 built-in
+image-evaluation adapter，而不是由 Evaluation 反向导入
+`training.diagnostics.providers`。Diagnostic 与 Evaluation 各自拥有调用时机和结果
+治理，但共同依赖同一个只读 metric/preprocessing capability。
 
 ### 10.3 Measurement 与 Metric 分开
 
@@ -1065,6 +1158,14 @@ Reporter 不能：
 
 ```python
 @dataclass(frozen=True, slots=True)
+class EvaluationScopeResult:
+    scope_id: str
+    display_name: str
+    metrics: Mapping[str, float]
+    population_counts: Mapping[str, int]
+
+
+@dataclass(frozen=True, slots=True)
 class EvaluationResult:
     schema_version: int
     evaluation_id: str
@@ -1073,7 +1174,7 @@ class EvaluationResult:
     status: str
     subject: ResolvedEvaluationSubject
     data: EvaluationDataIdentity
-    metrics: Mapping[str, float]
+    scopes: Mapping[str, EvaluationScopeResult]
     measurements: Mapping[str, float]
     artifacts: Mapping[str, ArtifactReference]
     completeness: CompletenessRecord
@@ -1082,6 +1183,12 @@ class EvaluationResult:
 
 `EvaluationRunOutcome` 是本地运行后的便利 view，可包含 `Path`；可移植
 `EvaluationResult` 使用相对 artifact reference + digest，不依赖原机器绝对路径。
+
+`aggregate` 是保留的 stable scope ID；其他 scope ID 由 versioned protocol 声明。
+Display name 只用于展示，不参与 identity。Selection/Gate 必须使用
+`(scope_id, metric_id, subkey)` 精确 selector；不支持隐式 wildcard、per-class macro
+或“选择最好 group”。Worst-group/macro 等统计只有作为显式、版本化 derived metric
+时才能进入 result。
 
 ### 12.2 最低 manifest
 
@@ -1192,7 +1299,7 @@ gate:
 
 ### 13.1 Training phase profile
 
-用途：保持现有 train/validation/test convenience，同时补齐 Metrics 计划。
+用途：保持现有 train/validation/test convenience，并复用正式 Metrics contract。
 
 内容：
 
@@ -1559,20 +1666,25 @@ outputs/evaluations/<evaluation-id>/
 
 ### Stage E0：语义、结果与 phase metric 基础
 
-依赖 Metrics 计划的前置 contract。
+依赖已经发布到正式框架文档的 Metrics contract。
 
-排期：Metrics M0–M1 与 P2/ADM A1 core 后启动。现有 inference asset projection
-已经可供 checkpoint subject resolver 复用；pretrained codec 接入后再增加
-codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
+排期：Metrics contract 与 P2/ADM A1 core 已可用，E0 立即进入 CA3。现有 inference
+asset projection 已经可供 checkpoint subject resolver 复用；pretrained codec 接入后
+再增加 codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
 
-交付：
+当前已具备：
 
 - 本计划评审通过；
 - 冻结 Metric/Diagnostic/Evaluation/Selection/Gate 术语；
-- `MetricSpec` 可被 training/evaluation 构造共用；
 - `Trainer.evaluate_epoch()` 消费普通 MetricUpdate；
 - phase loss 支持显式 weighting；
-- train/validation/test 独立 metric state；
+- train/validation/test 独立 metric state。
+
+剩余交付：
+
+- 从现有 MetricEngine 提炼 training/evaluation 共用 primitive，同时保持 Training
+  strict-full-update；
+- `MetricSpec` 可被 training/evaluation 构造共用；
 - `phase_test_snapshot` 替代单一 `test_loss` 的新内部结果。
 
 退出条件：
@@ -1616,6 +1728,7 @@ codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
 
 交付：
 
+- `IdentifiedEvaluationBatch` data-view port；
 - versioned prediction manifest；
 - streaming task sink；
 - safe shard formats；
@@ -1635,20 +1748,29 @@ codec-dependent profile，不要求 pixel 与 latent 两条主线互相等待。
 
 交付：
 
+- Sampling/Evaluation 共用、产生显式 sample/group IDs 的窄 generation capability；
 - paired SR PSNR/SSIM/LPIPS profile；
 - FID/KID distribution binding；
+- training diagnostic/Evaluation 共用的 image metric/preprocessing adapter；
 - content-addressed reference cache；
 - Gaussian generation profile；
+- opaque grouped generation profile，支持 aggregate/per-group 独立 metric state；
 - codec reconstruction profile；
 - decoded latent generation、class fidelity 和 memorization profile；
 - consistency NFE 1/2/4 cases；
 - performance measurement profile；
-- quality-speed curve reporter。
+- quality-speed curve reporter；
+- AFHQ 高层 checkpoint/sampling/metric/result/workspace engine 迁入 framework
+  application/infrastructure；example 只保留 DataSource、protocol config、README、
+  acceptance 与可选 thin CLI alias。
 
 退出条件：
 
 - metric preprocessing/version 全部进入 protocol digest；
 - FID/KID reference/generated 方向不可交换；
+- 同一个 grouped profile 可由 AFHQ adapter 和独立中性 fixture 复用，kernel 不解释
+  class label；
+- AFHQ example 不再反向导入 training diagnostics 作为正式 Evaluation runtime；
 - SR distortion/perception/condition evidence 并列；
 - CM forward count 与 NFE 准确；
 - performance measurement 有 warmup/sync/repeat metadata。
@@ -1789,12 +1911,17 @@ uv run pytest tests/test_experiment_runner.py
   data entrypoint；
 - EvaluationBuilder 是唯一任务评估 composition entrypoint；
 - Runner 不含 task/model/process/metric-name 分支；
-- MetricEngine 被 training 与 evaluation 共用；
+- Training/Evaluation 共用 metric primitives；Training strict-full-update 与 Evaluation
+  scoped-stream adapter 保持各自完整性契约；
 - Evaluator 不拥有 checkpoint selection/device/artifact root；
+- EvaluationPlan 通过只读 execution-session port 管理 module/device/mode，不暴露
+  concrete module mapping；
 - Metric 不调用模型或写报告；
 - SamplingBuilder/sampling subsystem 组合 task inference primitive，
   EvaluationBuilder 只消费其窄 capability；
 - extension custom Builder/Metric 通过同一路径。
+- framework 内置 phase/paired/generation/grouped Builders 与 extension Builder 通过
+  同一路径，example 不复制 operation。
 
 ### 18.2 语义与治理
 
@@ -1804,6 +1931,8 @@ uv run pytest tests/test_experiment_runner.py
 - final test 只接受一个冻结 subject；
 - raw/EMA/profile identity 无歧义；
 - prediction/reference 按 ID 对齐；
+- generated/reference 均有显式 stable sample IDs；group 不由 tensor 位置推断；
+- aggregate/group scope 使用独立 metric state 与精确 selector；
 - incomplete/non-finite 不伪装成功；
 - benchmark 与 metric 概念分开；
 - Gate/Reporter 不修改事实。
@@ -1837,7 +1966,7 @@ uv run pytest tests/test_experiment_runner.py
 | 把 Sampling 当 Evaluation | 有图片但无 reference/协议结论 | 独立 operation/result |
 | raw/EMA 混用 | metric 与最终 artifact 不同 subject | resolved weight identity |
 | test 上挑 checkpoint/NFE | 数据泄漏 | SelectionRecord validation-only |
-| batch mean 等权 | 不同 batch partition 改变结果 | 显式 num_examples/Metric state |
+| 隐式 batch-mean 聚合 | 不同 batch partition 改变结果 | stable sample IDs + scoped Metric state |
 | 样本重复或缺失 | FID/PSNR 等正式分数错误 | exact IDs/completeness/fail closed |
 | metric preprocessing 漂移 | 数值不可比较 | protocol digest/versioned profile |
 | reference cache 误复用 | 隐性污染 benchmark | content-addressed full key |

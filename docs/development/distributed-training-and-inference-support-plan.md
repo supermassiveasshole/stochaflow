@@ -11,7 +11,7 @@
   Deprecated / best effort，其 `torch==2.2.2` compatibility lane 保持
   single-process，不承诺本提案中的 distributed 能力，也不作为设计下限
 - 关联计划：
-  [Metrics 支持](metrics-support-plan.md)、
+  [Metrics、训练诊断与模型选择正式契约](../metrics.md)、
   [训练后 Evaluation 与 Benchmark](post-training-evaluation-support-plan.md)、
   [默认工作流与推理 Pipeline](default-workflow-pipeline-support-plan.md)、
   [Latent Diffusion](latent-diffusion-support-plan.md)、
@@ -706,10 +706,10 @@ PyTorch `DistributedSampler(drop_last=False)` 可能 padding indices，使各 ra
   replicated inference，但 FSDP collective inference 需要 Builder 产生 aligned empty/
   padded calls 和显式 zero weight。
 
-Metrics 计划中的 `loss_aggregation_weight`/`MetricUpdate` 是正确 global reduction
-的前置依赖。
-在该依赖实现前，distributed validation 只能报告受限的 equal-size built-in
-correctness result，不能成为正式 benchmark。
+正式 Metrics contract 中的 `loss_aggregation_weight`/`MetricUpdate` 提供单进程
+聚合语义，但没有定义跨 rank global reduction、padding 去重或 atomic failure。
+这些 distributed contract 完成前，distributed validation 只能报告受限的
+equal-size correctness result，不能成为正式 benchmark。
 
 ## 10. Global metrics、selection 与 side effects
 

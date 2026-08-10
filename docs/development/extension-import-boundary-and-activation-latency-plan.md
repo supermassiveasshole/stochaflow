@@ -1,12 +1,16 @@
 # Extension 导入边界与激活延迟优化计划
 
 - 文档性质：开发计划；不属于当前公开 API 或正式用户文档
-- 状态：需要在 Train/Sample C1 与 retained-example cleanup 后重新基线化；当前不按
-  原 DoD 实施
+- 状态：已并入
+  [Clean Architecture 与内置 Evaluation 重构计划](clean-architecture-refactor-plan.md)
+  的 CA0–CA2；实施前按当前分支重新基线化，不单独按原 DoD 开工
+- 优先级：P0 子计划；结构 import/activation boundary 是架构 hard gate，绝对耗时仍是
+  观测指标
 - 统一排期：
   [Development Priority Roadmap](development-priority-roadmap.md)
 - 制定日期：2026-07-27
-- 最近复核：2026-07-29；确认旧基线需要在 C1/C2 后重建
+- 最近复核：2026-07-31；确认旧基线已失效，当前审计观察到
+  `stochaflow.extensions` 加载 91/103 个 Stochaflow 模块并公开 154 个名称
 - 旧审查基线：checkpoint v10 partial sampling recipe、Physics Reconstruction、
   Knowledge Distillation 与 AFHQ-v2；该基线将被 Train/Sample C1 和
   retained-example cleanup 明确打破，实施前必须重新测量
@@ -18,8 +22,9 @@
 
 > **Rebase notice:** 下文关于 checkpoint v10、partial sample request、98-name export
 > surface、Physics/KD installed-wheel acceptance 的“必须保持”表述只保留为旧测量证据，
-> 不是未来实施要求。C1/C2 完成后必须重写对应 invariant、test matrix 和 DoD，不能从
-> 本文当前正文直接开工。
+> 不是未来实施要求。CA0 必须重写对应 invariant、test matrix 和 DoD，不能从本文当前
+> 正文直接开工。可复用 built-in task implementation 不因 import 重构迁入 example；
+> CA1 只拆分其 owner/import closure，CA2 再建立显式 bootstrap 和 lazy facade。
 
 ## 1. 目标与核心结论
 

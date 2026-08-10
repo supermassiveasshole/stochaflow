@@ -10,7 +10,7 @@
   2026-07-28 将 Latent Diffusion 与 Stable Diffusion 分为两个关联能力计划；
   2026-07-29 作为非阻塞 umbrella/promotion plan 重新排期
 - 关联计划：
-  [Metrics 支持](metrics-support-plan.md)、
+  [Metrics、训练诊断与模型选择正式契约](../metrics.md)、
   [训练后 Evaluation 与 Benchmark](post-training-evaluation-support-plan.md)、
   [Latent Diffusion](latent-diffusion-support-plan.md)、
   [Stable Diffusion Component-Native](stable-diffusion-component-native-support-plan.md)、
@@ -518,7 +518,7 @@ class TrainingRunOutcome:
     manifest_path: Path
 ```
 
-`EpochMetricSnapshot` 复用 Metrics 计划的 values + typed source metadata；不能在
+`EpochMetricSnapshot` 复用正式 Metrics contract 的 values + typed source metadata；不能在
 TrainingRunOutcome、Workflow 或 AutoML 边界重新压扁为裸 scalar mapping，否则
 `diagnostics/...` 无法证明实际使用的是 validation 还是 test reference。
 
@@ -1200,7 +1200,7 @@ PSNR 单点牺牲其生成目标后仍称为胜出。
 
 ## 12. Metrics、diagnostic 与 validation
 
-本节服从[Metrics 支持计划](metrics-support-plan.md)的语义：
+本节服从[Metrics、训练诊断与模型选择正式契约](../metrics.md)的语义：
 
 - Objective：可微、参与优化的 scalar；
 - Metric：跨 batch 累积的只读统计；
@@ -1266,9 +1266,9 @@ quality。建议：
 - 对训练后冻结 checkpoint 独立运行时属于 Evaluation；
 - Metric 算法和 preprocessing profile 应复用，不能复制两套 PSNR/FID 定义。
 
-当 Metrics 计划支持 epoch diagnostic result 进入统一 snapshot 后，训练期结果才允许
-显式成为 best-checkpoint monitor；被选择为 monitor 时 cadence/missing semantics
-必须明确。正式 test Evaluation 永不反向参与该 monitor。
+当前正式 Metrics contract 已允许经过验证的 epoch diagnostic result 进入统一
+snapshot，并在 source、cadence 与 missing policy 全部满足时显式成为
+best-checkpoint monitor。正式 test Evaluation 永不反向参与该 monitor。
 
 ### 12.3 Consistency profile
 
@@ -1513,9 +1513,8 @@ reference project：
 
 ### Stage SR1：Metrics 与 evaluation integration
 
-依赖 Metrics 计划至少完成 validation MetricEngine，并依赖
-[Evaluation 计划](post-training-evaluation-support-plan.md)的独立 operation vertical
-slice：
+Validation MetricEngine 已作为正式能力提供；本阶段依赖
+[Evaluation 计划](post-training-evaluation-support-plan.md)的独立 operation vertical slice：
 
 - PSNR/SSIM channel；
 - periodic LPIPS/full-restore diagnostic；

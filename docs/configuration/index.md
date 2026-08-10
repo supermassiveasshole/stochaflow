@@ -25,6 +25,7 @@ troubleshooting
 | 先了解框架包含什么、各扩展角色如何协作 | [框架特性与架构](../framework.md) |
 | 查某个 YAML 字段、默认值或 CLI 覆盖 | [完整字段参考](reference.md) |
 | 配置图像、超分辨率或自定义数据构建 | [数据构建](data-pipeline.md) |
+| 配置 phase Metric、Diagnostic monitor 与 early stopping | [Metrics、训练诊断与模型选择](../metrics.md) |
 | 实现端到端 conditional diffusion 超分辨率 | [条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md) |
 | 注册自定义 DataBuilder、writer 或其他组件 | [扩展与 Registry](extensions.md) |
 | 理解 config/checkpoint 权威并跨环境移动实验 | [Checkpoint、配置权威与可移植性](compatibility-and-migration.md) |

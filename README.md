@@ -403,6 +403,7 @@ Process state.
 ## Documentation
 
 - [Framework features and architecture](docs/framework.md)
+- [Metrics, training diagnostics, and model selection](docs/metrics.md)
 - [Configuration and workflow handbook](docs/configuration/index.md)
 - [Data configuration and pipelines](docs/configuration/data-pipeline.md)
 - [Extension API](docs/api/extensions.md)
