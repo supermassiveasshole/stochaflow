@@ -5,6 +5,9 @@ import torch
 import yaml
 
 from stochaflow.training.diagnostics import DiffusionQualityDiagnostic
+from stochaflow.training.diagnostics.runtime import (
+    DiagnosticModelAccessCleanupError,
+)
 from stochaflow.training.ema import ExponentialMovingAverage
 
 from .helpers import (
@@ -13,6 +16,7 @@ from .helpers import (
     TinyDenoiser,
     ZeroDenoiser,
     batch_event,
+    diagnostic_context,
     epoch_event,
     fit_event,
     gaussian_system,
@@ -22,8 +26,14 @@ from .helpers import (
 )
 
 
-def _diagnostic(tmp_path, logger, **overrides) -> DiffusionQualityDiagnostic:
+def _diagnostic(
+    tmp_path,
+    logger,
+    runtime,
+    **overrides,
+) -> DiffusionQualityDiagnostic:
     params = {
+        "build_context": diagnostic_context(runtime, logger, tmp_path),
         "logger": logger,
         "output_dir": tmp_path,
         "samplers": profiles(),
@@ -44,14 +54,15 @@ def _diagnostic(tmp_path, logger, **overrides) -> DiffusionQualityDiagnostic:
 
 def test_step_pipeline_logs_all_denoiser_provider_metrics(tmp_path) -> None:
     logger = RecordingLogger()
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=4)
+    runtime = trainer(model)
     diagnostic = _diagnostic(
         tmp_path,
         logger,
+        runtime,
         samplers=profiles()[:1],
         cadence={"step_every": 1, "artifact_every_epochs": 5},
     )
-    model = gaussian_system(ZeroDenoiser(), num_timesteps=4)
-    runtime = trainer(model)
     diagnostic.on_fit_start(fit_event(runtime))
 
     diagnostic.on_train_batch_end(batch_event(runtime))
@@ -66,13 +77,14 @@ def test_step_pipeline_logs_all_denoiser_provider_metrics(tmp_path) -> None:
 
 def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
     logger = RecordingLogger()
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=4)
+    runtime = trainer(model)
     diagnostic = _diagnostic(
         tmp_path,
         logger,
+        runtime,
         samplers=profiles(trajectory=True),
     )
-    model = gaussian_system(ZeroDenoiser(), num_timesteps=4)
-    runtime = trainer(model)
     diagnostic.on_fit_start(fit_event(runtime))
     diagnostic.on_train_batch_end(batch_event(runtime))
 
@@ -118,9 +130,16 @@ def test_gaussian_runtime_compares_ddpm_and_ddim_artifacts(tmp_path) -> None:
 def test_profiles_share_noise_and_restore_ema_model_and_rng(tmp_path) -> None:
     RecordingSampler.records.clear()
     logger = RecordingLogger()
+    model = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    ema = ExponentialMovingAverage(model.inference_model, decay=0.5)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.add_(1.0)
+    runtime = trainer(model, ema=ema)
     diagnostic = _diagnostic(
         tmp_path,
         logger,
+        runtime,
         samplers=[
             {
                 "id": "first",
@@ -135,12 +154,6 @@ def test_profiles_share_noise_and_restore_ema_model_and_rng(tmp_path) -> None:
         ],
         use_ema=True,
     )
-    model = gaussian_system(TinyDenoiser(), num_timesteps=2)
-    ema = ExponentialMovingAverage(model.inference_model, decay=0.5)
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.add_(1.0)
-    runtime = trainer(model, ema=ema)
     diagnostic.on_fit_start(fit_event(runtime))
     diagnostic.on_train_batch_end(batch_event(runtime))
     parameters_before = {
@@ -163,28 +176,31 @@ def test_profiles_share_noise_and_restore_ema_model_and_rng(tmp_path) -> None:
 
 @pytest.mark.parametrize("training", [True, False])
 def test_fit_start_preserves_shared_denoiser_mode(tmp_path, training) -> None:
+    model = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    runtime = trainer(model)
     diagnostic = _diagnostic(
         tmp_path,
         RecordingLogger(),
+        runtime,
         samplers=profiles()[:1],
     )
-    model = gaussian_system(TinyDenoiser(), num_timesteps=2)
     model.train(training)
 
-    diagnostic.on_fit_start(fit_event(trainer(model)))
+    diagnostic.on_fit_start(fit_event(runtime))
 
     assert model.training is training
     assert model.inference_model.training is training
 
 
 def test_fixed_seed_repeats_stochastic_sampler_results(tmp_path) -> None:
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
+    runtime = trainer(model)
     diagnostic = _diagnostic(
         tmp_path,
         RecordingLogger(),
+        runtime,
         samplers=[{"id": "ddpm_full", "name": "ddpm"}],
     )
-    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
-    runtime = trainer(model)
     diagnostic.on_fit_start(fit_event(runtime))
     diagnostic.on_train_batch_end(batch_event(runtime))
 
@@ -205,17 +221,6 @@ def test_fixed_seed_repeats_stochastic_sampler_results(tmp_path) -> None:
 
 def test_warn_policy_isolates_profile_failure_and_records_manifest_error(tmp_path) -> None:
     logger = RecordingLogger()
-    diagnostic = _diagnostic(
-        tmp_path,
-        logger,
-        samplers=[{"id": "broken", "name": "test_failing_diagnostic"}],
-        failure_policy="warn",
-        use_ema=True,
-        providers={
-            **provider_config(),
-            "denoiser_artifacts": [],
-        },
-    )
     model = gaussian_system(TinyDenoiser(), num_timesteps=2)
     ema = ExponentialMovingAverage(model.inference_model, decay=0.5)
     with torch.no_grad():
@@ -225,6 +230,18 @@ def test_warn_policy_isolates_profile_failure_and_records_manifest_error(tmp_pat
         name: value.detach().clone() for name, value in model.named_parameters()
     }
     runtime = trainer(model, ema=ema)
+    diagnostic = _diagnostic(
+        tmp_path,
+        logger,
+        runtime,
+        samplers=[{"id": "broken", "name": "test_failing_diagnostic"}],
+        failure_policy="warn",
+        use_ema=True,
+        providers={
+            **provider_config(),
+            "denoiser_artifacts": [],
+        },
+    )
     diagnostic.on_fit_start(fit_event(runtime))
     model.train()
     torch.manual_seed(321)
@@ -254,3 +271,38 @@ def test_warn_policy_isolates_profile_failure_and_records_manifest_error(tmp_pat
     )
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert manifest["errors"][0]["provider"] == "broken"
+
+
+def test_warn_policy_never_swallows_model_state_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    logger = RecordingLogger()
+    model = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    runtime = trainer(model)
+    diagnostic = _diagnostic(
+        tmp_path,
+        logger,
+        runtime,
+        samplers=[{"id": "ddpm", "name": "ddpm"}],
+        providers={
+            "step_metrics": [],
+            "sampler_metrics": [],
+            "denoiser_artifacts": [],
+            "sampler_artifacts": [],
+        },
+        failure_policy="warn",
+    )
+    diagnostic.on_fit_start(fit_event(runtime))
+    original_train = model.inference_model.train
+
+    def fail_restore(mode: bool = True):
+        result = original_train(mode)
+        if mode:
+            raise RuntimeError("injected model cleanup failure")
+        return result
+
+    monkeypatch.setattr(model.inference_model, "train", fail_restore)
+
+    with pytest.raises(DiagnosticModelAccessCleanupError):
+        diagnostic.on_train_epoch_end(epoch_event(runtime))

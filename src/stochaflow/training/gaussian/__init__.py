@@ -6,7 +6,9 @@ from .class_conditional import (
 )
 from .contracts import (
     ClassConditionalGaussianDiagnosticSemantics,
+    ClassConditionalGaussianStepObservation,
     GaussianDiagnosticSemantics,
+    GaussianStepObservation,
     VarianceMode,
 )
 from .loss import gaussian_training_target
@@ -20,9 +22,11 @@ __all__ = [
     "ClassConditionalGaussianDenoisingTrainingBuilder",
     "ClassConditionalGaussianDenoisingTrainingStrategy",
     "ClassConditionalGaussianDiagnosticSemantics",
+    "ClassConditionalGaussianStepObservation",
     "GaussianDenoisingTrainingBuilder",
     "GaussianDenoisingTrainingStrategy",
     "GaussianDiagnosticSemantics",
+    "GaussianStepObservation",
     "GaussianVarianceConfig",
     "VarianceMode",
     "gaussian_training_target",

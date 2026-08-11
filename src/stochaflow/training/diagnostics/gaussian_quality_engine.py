@@ -22,6 +22,7 @@ from stochaflow.training.diagnostics.contracts import (
     ArtifactRecord,
     DenoiserArtifactContext,
     DenoiserArtifactProvider,
+    DiagnosticModelAccess,
     FitStartEvent,
     ProviderValidationContext,
     ReconstructionCallable,
@@ -38,10 +39,10 @@ from stochaflow.training.diagnostics.providers.reference import ReferenceMetricS
 from stochaflow.training.diagnostics.registry import DIAGNOSTIC_PROVIDERS
 from stochaflow.training.diagnostics.runtime import (
     BoundSampler,
-    EvaluationGuard,
+    DiagnosticModelAccessCleanupError,
     SeedPolicy,
-    clean_samples_from_event,
 )
+from stochaflow.training.gaussian.contracts import GaussianStepObservation
 from stochaflow.utils.logging_contracts import ExperimentLogger
 
 
@@ -58,6 +59,11 @@ class DiagnosticTrainingRuntime(Protocol):
 FamilyRuntimeT = TypeVar(
     "FamilyRuntimeT",
     bound=DiagnosticTrainingRuntime,
+)
+FamilyRuntimeT_contra = TypeVar(
+    "FamilyRuntimeT_contra",
+    bound=DiagnosticTrainingRuntime,
+    contravariant=True,
 )
 FamilySamplerT = TypeVar("FamilySamplerT")
 PoolSamplerT_co = TypeVar("PoolSamplerT_co", covariant=True)
@@ -87,17 +93,12 @@ class GaussianQualitySamplerRunner(Protocol[RunnerSamplerT_contra]):
         ...
 
 
-class GaussianQualityFamily(Protocol[FamilyRuntimeT, FamilySamplerT]):
+class GaussianQualityFamily(Protocol[FamilyRuntimeT_contra, FamilySamplerT]):
     """Inject family-specific runtime, sampler, and conditioning behavior."""
-
-    def training_runtime(self, trainer: Any) -> FamilyRuntimeT:
-        """Resolve the narrow training capability needed by this family."""
-
-        ...
 
     def build_sampling(
         self,
-        runtime: FamilyRuntimeT,
+        runtime: FamilyRuntimeT_contra,
         profiles: Sequence[SamplerProfileConfig],
         *,
         batch_size: int,
@@ -117,7 +118,7 @@ class GaussianQualityFamily(Protocol[FamilyRuntimeT, FamilySamplerT]):
 
     def reconstruction_evaluator(
         self,
-        trainer: Any,
+        model_access: DiagnosticModelAccess,
         seed_policy: SeedPolicy,
     ) -> ReconstructionCallable:
         """Build the family-specific reconstruction service."""
@@ -129,10 +130,7 @@ class GaussianQualityFamily(Protocol[FamilyRuntimeT, FamilySamplerT]):
 
         ...
 
-    def reference_image_extractor(
-        self,
-        trainer: Any,
-    ) -> Callable[[Any], torch.Tensor]:
+    def reference_image_extractor(self) -> Callable[[Any], torch.Tensor]:
         """Resolve the strategy-owned validation batch image extractor."""
 
         ...
@@ -183,6 +181,8 @@ class GaussianQualityEngine[
         failure_policy: str = "raise",
         diagnostic_name: str,
         family: GaussianQualityFamily[RuntimeT, BoundSamplerT],
+        runtime: RuntimeT,
+        model_access: DiagnosticModelAccess,
     ) -> None:
         activate_diagnostic_builtins()
         self.config = parse_diffusion_quality_config(
@@ -200,6 +200,8 @@ class GaussianQualityEngine[
         self.output_dir = Path(output_dir) / "diagnostics" / diagnostic_name
         self.diagnostic_name = diagnostic_name
         self.family = family
+        self.runtime = runtime
+        self.model_access = model_access
         self.seed_policy = SeedPolicy(self.config.sampling.seed)
         self._last_clean_batch: torch.Tensor | None = None
         self._sampler_pool: (
@@ -245,13 +247,13 @@ class GaussianQualityEngine[
     def on_fit_start(self, event: FitStartEvent) -> None:
         """Validate providers, construct samplers, and cache real features."""
 
-        system = self.family.training_runtime(event.trainer)
-        with self.seed_policy.fork_rng(event.trainer.device):
+        system = self.runtime
+        with self.seed_policy.fork_rng(self.model_access.device):
             self._sampler_pool, self._sampler_runner = self.family.build_sampling(
                 system,
                 self.config.samplers,
                 batch_size=self.config.sampling.batch_size,
-                device=event.trainer.device,
+                device=self.model_access.device,
             )
             validation = ProviderValidationContext(
                 process=system.process,
@@ -266,18 +268,16 @@ class GaussianQualityEngine[
                         "diffusion_quality reference metrics require a validation "
                         "dataloader"
                     )
-                extract_images = self.family.reference_image_extractor(
-                    event.trainer
-                )
+                extract_images = self.family.reference_image_extractor()
                 reference_providers = self._build_reference_providers(
-                    event.trainer.device
+                    self.model_access.device
                 )
                 for _, provider in reference_providers:
                     provider.validate(validation)
                 self._reference_suite = ReferenceMetricSuite(
                     reference_providers,
                     self.config.reference,
-                    device=event.trainer.device,
+                    device=self.model_access.device,
                     seed_policy=self.seed_policy,
                     handle_error=self._handle_reference_error,
                     extract_images=extract_images,
@@ -287,7 +287,7 @@ class GaussianQualityEngine[
                 )
                 self.logger.log_metrics(
                     self._scope_metrics(cache_metrics),
-                    step=event.trainer.global_step,
+                    step=event.global_step,
                 )
 
     def _build_reference_providers(
@@ -319,28 +319,29 @@ class GaussianQualityEngine[
                 provider="orchestrator",
             )
             return
-        clean = clean_samples_from_event(event.output, event.batch)
-        if clean is not None:
-            self._last_clean_batch = clean.detach().cpu()
-        if event.global_step % self.config.cadence.step_every != 0:
-            return
-        diagnostics = getattr(event.output, "diagnostics", None)
-        if not isinstance(diagnostics, Mapping):
+        observation = event.diagnostic_observation
+        if not isinstance(observation, GaussianStepObservation):
             self._handle_runtime_error(
-                TypeError("TrainStepOutput.diagnostics must be a mapping"),
+                TypeError(
+                    "Gaussian quality diagnostics require "
+                    "GaussianStepObservation"
+                ),
                 step=event.global_step,
                 phase="step",
                 provider="orchestrator",
             )
             return
+        self._last_clean_batch = observation.clean_samples.detach().cpu()
+        if event.global_step % self.config.cadence.step_every != 0:
+            return
         context = StepMetricContext(
-            process=self.family.training_runtime(event.trainer).process,
-            diagnostics=diagnostics,
+            process=self.runtime.process,
+            diagnostic_observation=observation,
             clean_samples=self._last_clean_batch,
             sample_num=self.config.sampling.sample_num,
             use_ema=self.config.use_ema,
             reconstruct=self.family.reconstruction_evaluator(
-                event.trainer,
+                self.model_access,
                 self.seed_policy,
             ),
         )
@@ -407,7 +408,7 @@ class GaussianQualityEngine[
             self.seed_policy.initial_noise(
                 self.config.sampling.sample_num,
                 self.sample_shape,
-                event.trainer.device,
+                self.model_access.device,
             )
             if artifact_due
             else None
@@ -437,7 +438,7 @@ class GaussianQualityEngine[
             except Exception as exc:  # noqa: BLE001
                 self._handle_runtime_error(
                     exc,
-                    step=event.trainer.global_step,
+                    step=event.global_step,
                     phase="profile",
                     provider=profile.id,
                     store=store,
@@ -466,12 +467,12 @@ class GaussianQualityEngine[
         store.write_manifest(
             {
                 "epoch": event.epoch_index,
-                "global_step": event.trainer.global_step,
+                "global_step": event.global_step,
                 "sample_seed": self.config.sampling.seed,
                 "sample_shape": list(self.sample_shape),
                 "weights": (
                     "ema"
-                    if self.config.use_ema and event.trainer.ema is not None
+                    if self.config.use_ema and self.model_access.ema_available
                     else "raw"
                 ),
                 "artifact_due": artifact_due,
@@ -492,7 +493,7 @@ class GaussianQualityEngine[
         if metrics:
             self.logger.log_metrics(
                 metrics,
-                step=event.trainer.global_step,
+                step=event.global_step,
             )
 
     def _run_denoiser_artifact_provider(
@@ -507,18 +508,18 @@ class GaussianQualityEngine[
                 store=store,
                 clean_samples=self._last_clean_batch,
                 reconstruct=self.family.reconstruction_evaluator(
-                    event.trainer,
+                    self.model_access,
                     self.seed_policy,
                 ),
                 use_ema=self.config.use_ema,
             )
             records = tuple(provider.render(context))
-            self._record_artifacts(name, records, event.trainer.global_step, store)
+            self._record_artifacts(name, records, event.global_step, store)
         # Artifact providers are extension code with no shared exception type.
         except Exception as exc:  # noqa: BLE001
             self._handle_runtime_error(
                 exc,
-                step=event.trainer.global_step,
+                step=event.global_step,
                 phase="denoiser_artifact",
                 provider=name,
                 store=store,
@@ -540,11 +541,9 @@ class GaussianQualityEngine[
         observations: dict[str, float] = {}
         validation_quality: dict[str, float] = {}
         result = None
-        with EvaluationGuard(
-            event.trainer,
+        with self.model_access.evaluation(
             seed=self.seed_policy.profile_seed(profile.id),
-            use_ema=self.config.use_ema,
-            evaluation_modules=(),
+            prefer_ema=self.config.use_ema,
         ):
             if artifact_due:
                 assert initial_noise is not None
@@ -558,7 +557,7 @@ class GaussianQualityEngine[
                 except Exception as exc:  # noqa: BLE001
                     self._handle_runtime_error(
                         exc,
-                        step=event.trainer.global_step,
+                        step=event.global_step,
                         phase="sampling",
                         provider=profile.id,
                         store=store,
@@ -584,7 +583,7 @@ class GaussianQualityEngine[
                     except Exception as exc:  # noqa: BLE001
                         self._handle_runtime_error(
                             exc,
-                            step=event.trainer.global_step,
+                            step=event.global_step,
                             phase=f"sampler_metric:{profile.id}",
                             provider=spec.name,
                             store=store,
@@ -607,14 +606,14 @@ class GaussianQualityEngine[
                         self._record_artifacts(
                             spec.name,
                             records,
-                            event.trainer.global_step,
+                            event.global_step,
                             store,
                         )
                     # Artifact providers are extension code with arbitrary failures.
                     except Exception as exc:  # noqa: BLE001
                         self._handle_runtime_error(
                             exc,
-                            step=event.trainer.global_step,
+                            step=event.global_step,
                             phase=f"sampler_artifact:{profile.id}",
                             provider=spec.name,
                             store=store,
@@ -623,7 +622,7 @@ class GaussianQualityEngine[
                 if self._reference_suite is None:
                     raise RuntimeError("reference metric suite was not initialized")
                 self._reference_store = store
-                self._reference_step = event.trainer.global_step
+                self._reference_step = event.global_step
                 self._reference_profile = profile.id
                 try:
                     reference_result = self._reference_suite.evaluate(
@@ -646,7 +645,7 @@ class GaussianQualityEngine[
                 except Exception as exc:  # noqa: BLE001
                     self._handle_runtime_error(
                         exc,
-                        step=event.trainer.global_step,
+                        step=event.global_step,
                         phase=f"reference:{profile.id}",
                         provider="reference",
                         store=store,
@@ -750,6 +749,8 @@ class GaussianQualityEngine[
         provider: str,
         store: EpochArtifactStore | None = None,
     ) -> None:
+        if isinstance(error, DiagnosticModelAccessCleanupError):
+            raise error
         if self.config.failure_policy == "raise":
             raise error
         self._error_count += 1

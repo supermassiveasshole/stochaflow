@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-import torch
 import torch.nn.functional as F
 
 from stochaflow.processes.gaussian.contracts import (
@@ -15,6 +14,16 @@ from stochaflow.training.diagnostics.contracts import (
     StepMetricContext,
     StepMetricProvider,
 )
+from stochaflow.training.gaussian.contracts import GaussianStepObservation
+
+
+def _gaussian_observation(context: StepMetricContext) -> GaussianStepObservation:
+    observation = context.diagnostic_observation
+    if not isinstance(observation, GaussianStepObservation):
+        raise TypeError(
+            "Gaussian denoiser metrics require GaussianStepObservation"
+        )
+    return observation
 
 
 def parse_timesteps(raw: object, *, provider: str) -> tuple[int, ...]:
@@ -69,14 +78,12 @@ class TimestepBucketLossProvider(StepMetricProvider):
         self.buckets: int = buckets
 
     def collect(self, context: StepMetricContext) -> Mapping[str, float]:
-        timesteps = context.diagnostics.get("timesteps")
-        per_sample_loss = context.diagnostics.get("per_sample_loss")
-        if not isinstance(timesteps, torch.Tensor) or not isinstance(
-            per_sample_loss,
-            torch.Tensor,
-        ):
+        observation = _gaussian_observation(context)
+        timesteps = observation.state_times
+        per_sample_loss = observation.per_sample_loss
+        if per_sample_loss is None:
             raise TypeError(
-                "timestep_bucket_loss requires timesteps and per_sample_loss tensors"
+                "timestep_bucket_loss requires a per-sample loss observation"
             )
         timesteps = timesteps.detach().flatten().cpu()
         losses = per_sample_loss.detach().flatten().cpu()
@@ -108,15 +115,9 @@ class NoiseAlignmentProvider(StepMetricProvider):
     """Measure predicted and target noise distribution alignment."""
 
     def collect(self, context: StepMetricContext) -> Mapping[str, float]:
-        predicted = context.diagnostics.get("predicted_noise")
-        target = context.diagnostics.get("target_noise")
-        if not isinstance(predicted, torch.Tensor) or not isinstance(
-            target,
-            torch.Tensor,
-        ):
-            raise TypeError(
-                "noise_alignment requires predicted_noise and target_noise tensors"
-            )
+        observation = _gaussian_observation(context)
+        predicted = observation.prediction.epsilon
+        target = observation.noise_target
         if predicted.shape != target.shape or predicted.ndim < 2:
             raise ValueError(
                 "noise_alignment predicted and target tensors must have matching "

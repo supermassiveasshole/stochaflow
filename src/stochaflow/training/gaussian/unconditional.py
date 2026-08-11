@@ -26,9 +26,9 @@ class GaussianDenoisingTrainingStrategy(GaussianTrainingStrategyBase):
         batch: Any,
         *,
         apply_training_policy: bool,
-    ) -> tuple[torch.Tensor, object, dict[str, Any]]:
+    ) -> tuple[torch.Tensor, object, object]:
         del apply_training_policy
-        return _clean_samples(batch), None, {}
+        return _clean_samples(batch), None, None
 
     def _predict_training_model(
         self,

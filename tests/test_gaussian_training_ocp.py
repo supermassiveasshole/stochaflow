@@ -285,8 +285,10 @@ def test_namespaced_training_builder_composes_custom_strategy() -> None:
     for output in (training, evaluation):
         assert torch.isfinite(output.loss)
         assert output.loss_aggregation_weight == 2
+        observation = output.diagnostic_observation
+        assert isinstance(observation, dict)
         assert torch.equal(
-            output.diagnostics["timestep_loss_weight"],
+            observation["timestep_loss_weight"],
             torch.full((2,), 0.25),
         )
 

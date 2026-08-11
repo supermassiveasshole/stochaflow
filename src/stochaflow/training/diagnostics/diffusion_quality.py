@@ -8,8 +8,13 @@ from typing import Any
 
 import torch
 
+from stochaflow.processes.gaussian.contracts import (
+    DiscreteGaussianDenoisingProcess,
+)
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
+    DiagnosticBuildContext,
+    DiagnosticModelAccess,
     FitStartEvent,
     ReconstructionCallable,
     TrainBatchEndEvent,
@@ -33,6 +38,7 @@ from stochaflow.training.diagnostics.runtime import (
     SeedPolicy,
     gaussian_training_runtime,
 )
+from stochaflow.training.gaussian.contracts import GaussianDiagnosticSemantics
 from stochaflow.training.strategy import ReferenceImageBatchSemantics
 from stochaflow.utils.logging_contracts import ExperimentLogger
 
@@ -40,10 +46,13 @@ from stochaflow.utils.logging_contracts import ExperimentLogger
 class UnconditionalGaussianQualityFamily:
     """Supply unconditional Gaussian collaborators to the shared engine."""
 
-    def training_runtime(self, trainer: Any) -> GaussianTrainingRuntime:
-        """Resolve unconditional Gaussian diagnostic semantics."""
-
-        return gaussian_training_runtime(trainer)
+    def __init__(
+        self,
+        runtime: GaussianTrainingRuntime,
+        reference_image_extractor: Callable[[Any], torch.Tensor] | None,
+    ) -> None:
+        self.runtime = runtime
+        self._reference_image_extractor = reference_image_extractor
 
     def build_sampling(
         self,
@@ -70,31 +79,27 @@ class UnconditionalGaussianQualityFamily:
 
     def reconstruction_evaluator(
         self,
-        trainer: Any,
+        model_access: DiagnosticModelAccess,
         seed_policy: SeedPolicy,
     ) -> ReconstructionCallable:
         """Build unconditional reconstruction semantics."""
 
-        return ReconstructionEvaluator(trainer, seed_policy)
+        return ReconstructionEvaluator(model_access, seed_policy, self.runtime)
 
     def reference_sampler(self, sampler: BoundSampler) -> BoundSampler:
         """Return the sampler expected by the reference metric suite."""
 
         return sampler
 
-    def reference_image_extractor(
-        self,
-        trainer: Any,
-    ) -> Callable[[Any], torch.Tensor]:
+    def reference_image_extractor(self) -> Callable[[Any], torch.Tensor]:
         """Resolve explicit strategy-owned reference image extraction."""
 
-        strategy = getattr(trainer, "strategy", None)
-        if not isinstance(strategy, ReferenceImageBatchSemantics):
+        if self._reference_image_extractor is None:
             raise TypeError(
                 "diffusion_quality reference metrics require a "
                 "ReferenceImageBatchSemantics strategy"
             )
-        return strategy.extract_reference_images
+        return self._reference_image_extractor
 
     def profile_manifest_metadata(
         self,
@@ -118,9 +123,20 @@ class UnconditionalGaussianQualityFamily:
 class DiffusionQualityDiagnostic(TrainingDiagnostic):
     """Coordinate unconditional Gaussian quality providers."""
 
+    @classmethod
+    def context_parameters(
+        cls,
+        context: DiagnosticBuildContext,
+    ) -> Mapping[str, Any]:
+        """Request the narrow runtime capabilities used by this diagnostic."""
+
+        del cls
+        return {"build_context": context}
+
     def __init__(
         self,
         *,
+        build_context: DiagnosticBuildContext,
         logger: ExperimentLogger,
         output_dir: str | Path,
         samplers: Sequence[Mapping[str, Any]],
@@ -132,6 +148,24 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
         use_ema: bool = True,
         failure_policy: str = "raise",
     ) -> None:
+        strategy = build_context.require_strategy_capability(
+            GaussianDiagnosticSemantics
+        )
+        process = build_context.require_process_capability(
+            DiscreteGaussianDenoisingProcess
+        )
+        runtime = gaussian_training_runtime(process, strategy)
+        reference_semantics = build_context.optional_strategy_capability(
+            ReferenceImageBatchSemantics
+        )
+        family = UnconditionalGaussianQualityFamily(
+            runtime,
+            (
+                reference_semantics.extract_reference_images
+                if reference_semantics is not None
+                else None
+            ),
+        )
         self._engine = GaussianQualityEngine(
             logger=logger,
             output_dir=output_dir,
@@ -144,8 +178,15 @@ class DiffusionQualityDiagnostic(TrainingDiagnostic):
             use_ema=use_ema,
             failure_policy=failure_policy,
             diagnostic_name="diffusion_quality",
-            family=UnconditionalGaussianQualityFamily(),
+            family=family,
+            runtime=runtime,
+            model_access=build_context.model_access,
         )
+        if self._engine.config.reference.enabled and reference_semantics is None:
+            raise TypeError(
+                "diffusion_quality reference metrics require a "
+                "ReferenceImageBatchSemantics strategy"
+            )
         self.config = self._engine.config
         self.step_metrics = self._engine.step_metrics
         self.sampler_metrics = self._engine.sampler_metrics

@@ -16,6 +16,7 @@ from .helpers import (
     RecordingLogger,
     ZeroDenoiser,
     batch_event,
+    diagnostic_context,
     epoch_event,
     fit_event,
     gaussian_system,
@@ -102,7 +103,10 @@ def test_external_module_registers_every_provider_type_without_orchestrator_chan
 ) -> None:
     module_name = _write_extension(tmp_path, monkeypatch)
     logger = RecordingLogger()
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
+    runtime = trainer(model)
     diagnostic = DiffusionQualityDiagnostic(
+        build_context=diagnostic_context(runtime, logger, tmp_path),
         logger=logger,
         output_dir=tmp_path,
         modules=[module_name],
@@ -131,8 +135,6 @@ def test_external_module_registers_every_provider_type_without_orchestrator_chan
             "metrics": [{"name": "ocp_custom_reference"}],
         },
     )
-    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
-    runtime = trainer(model)
     diagnostic.on_fit_start(
         fit_event(runtime, validation=[torch.zeros(2, 1, 4, 4)])
     )
@@ -160,7 +162,10 @@ def test_external_module_registers_every_provider_type_without_orchestrator_chan
 def test_provider_metric_collision_isolated_by_warn_policy(monkeypatch, tmp_path) -> None:
     module_name = _write_extension(tmp_path, monkeypatch)
     logger = RecordingLogger()
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
+    runtime = trainer(model)
     diagnostic = DiffusionQualityDiagnostic(
+        build_context=diagnostic_context(runtime, logger, tmp_path),
         logger=logger,
         output_dir=tmp_path,
         modules=[module_name],
@@ -178,8 +183,6 @@ def test_provider_metric_collision_isolated_by_warn_policy(monkeypatch, tmp_path
         },
         failure_policy="warn",
     )
-    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
-    runtime = trainer(model)
     diagnostic.on_fit_start(fit_event(runtime))
 
     diagnostic.on_train_batch_end(batch_event(runtime))

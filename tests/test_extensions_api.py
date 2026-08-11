@@ -184,6 +184,9 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "ComponentConfig": config.ComponentConfig,
         "ConfigError": config.ConfigError,
         "ContextAwareDiagnostic": training.ContextAwareDiagnostic,
+        "ClassConditionalGaussianStepObservation": (
+            training.ClassConditionalGaussianStepObservation
+        ),
         "ClassLabeledImageFileRecord": data.ClassLabeledImageFileRecord,
         "ClassLabeledImageFolderArtifactPayload": (
             data.ClassLabeledImageFolderArtifactPayload
@@ -209,6 +212,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "DenoiserArtifactContext": diagnostics.DenoiserArtifactContext,
         "DenoiserArtifactProvider": diagnostics.DenoiserArtifactProvider,
         "DiagnosticBuildContext": training.DiagnosticBuildContext,
+        "DiagnosticModelAccess": training.DiagnosticModelAccess,
         "DiagnosticCadenceConfig": diagnostics.DiagnosticCadenceConfig,
         "DiagnosticProviderCatalog": diagnostics.DiagnosticProviderCatalog,
         "DiagnosticSamplingConfig": diagnostics.DiagnosticSamplingConfig,
@@ -239,6 +243,7 @@ def test_public_extension_contracts_reexport_runtime_types() -> None:
         "GaussianModelDynamics": sampling.GaussianModelDynamics,
         "GaussianNoiseSchedule": processes.GaussianNoiseSchedule,
         "GaussianPrediction": sampling.GaussianPrediction,
+        "GaussianStepObservation": training.GaussianStepObservation,
         "GaussianScales": processes.GaussianScales,
         "GaussianTransition": sampling.GaussianTransition,
         "GenerativeDynamics": sampling.GenerativeDynamics,

@@ -3,7 +3,8 @@
 import pytest
 import torch
 
-from stochaflow.sampling import SamplingObservation
+from stochaflow.sampling import GaussianPrediction, SamplingObservation
+from stochaflow.training import GaussianStepObservation
 from stochaflow.training.diagnostics.contracts import (
     DenoiserArtifactContext,
     ProviderValidationContext,
@@ -51,15 +52,22 @@ def _reconstruct(**kwargs) -> ReconstructionResult:
 
 def _step_context() -> StepMetricContext:
     process = gaussian_system(ZeroDenoiser(), num_timesteps=4).process
+    clean = torch.zeros(2, 1, 2, 2)
+    predicted_noise = torch.zeros_like(clean)
     return StepMetricContext(
         process=process,
-        diagnostics={
-            "timesteps": torch.tensor([1, 4]),
-            "per_sample_loss": torch.tensor([1.0, 3.0]),
-            "predicted_noise": torch.zeros(2, 1, 2, 2),
-            "target_noise": torch.ones(2, 1, 2, 2),
-        },
-        clean_samples=torch.zeros(2, 1, 2, 2),
+        diagnostic_observation=GaussianStepObservation(
+            state_times=torch.tensor([1, 4]),
+            prediction=GaussianPrediction(
+                clean=clean,
+                epsilon=predicted_noise,
+                model_output=predicted_noise,
+            ),
+            noise_target=torch.ones_like(clean),
+            clean_samples=clean,
+            per_sample_loss=torch.tensor([1.0, 3.0]),
+        ),
+        clean_samples=clean,
         sample_num=2,
         use_ema=True,
         reconstruct=_reconstruct,
@@ -99,7 +107,7 @@ def test_x0_reconstruction_uses_configured_ema_setting() -> None:
     context = _step_context()
     context = StepMetricContext(
         process=context.process,
-        diagnostics=context.diagnostics,
+        diagnostic_observation=context.diagnostic_observation,
         clean_samples=context.clean_samples,
         sample_num=context.sample_num,
         use_ema=True,

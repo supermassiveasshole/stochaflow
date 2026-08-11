@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Mapping
 from typing import Any, cast
 
 import torch
@@ -27,10 +26,9 @@ from stochaflow.training.objectives import (
 )
 from stochaflow.training.strategy import TrainingStrategy, TrainStepOutput
 
-from .contracts import VarianceMode
+from .contracts import GaussianStepObservation, VarianceMode
 from .loss import (
     GaussianLossComputation,
-    gaussian_loss_diagnostics,
     gaussian_training_target,
     validate_scalar_objective_loss,
 )
@@ -146,8 +144,8 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
         batch: Any,
         *,
         apply_training_policy: bool,
-    ) -> tuple[torch.Tensor, object, Mapping[str, Any]]:
-        """Return clean samples, model context, and task diagnostics."""
+    ) -> tuple[torch.Tensor, object, object]:
+        """Return clean samples, model context, and family-local step facts."""
 
     @abstractmethod
     def _predict_training_model(
@@ -158,13 +156,41 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
     ) -> torch.Tensor:
         """Invoke one task-specific model signature."""
 
+    def _build_diagnostic_observation(
+        self,
+        *,
+        clean: torch.Tensor,
+        noise: torch.Tensor,
+        state_times: torch.Tensor,
+        computation: GaussianLossComputation,
+        task_context: object,
+    ) -> GaussianStepObservation:
+        """Build the typed unconditional Gaussian observation."""
+
+        if task_context is not None:
+            raise TypeError(
+                "unconditional Gaussian diagnostic task context must be None"
+            )
+        prediction = computation.prediction
+        return GaussianStepObservation(
+            state_times=state_times.detach(),
+            prediction=GaussianPrediction(
+                clean=prediction.clean.detach(),
+                epsilon=prediction.epsilon.detach(),
+                model_output=prediction.model_output.detach(),
+            ),
+            noise_target=noise.detach(),
+            clean_samples=clean.detach(),
+            per_sample_loss=_detached_optional(computation.per_sample_loss),
+        )
+
     def _step(
         self,
         batch: Any,
         *,
         apply_training_policy: bool,
     ) -> TrainStepOutput:
-        clean, model_context, task_diagnostics = self._prepare_batch(
+        clean, model_context, task_context = self._prepare_batch(
             batch,
             apply_training_policy=apply_training_policy,
         )
@@ -189,15 +215,13 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
             raw_model_output=raw_model_output,
         )
         prediction = computation.prediction
-        diagnostics: dict[str, Any] = {
-            "timesteps": state_times.detach(),
-            "predicted_noise": prediction.epsilon.detach(),
-            "target_noise": noise.detach(),
-            "predicted_clean": prediction.clean.detach(),
-            "clean_samples": clean.detach(),
-            **task_diagnostics,
-        }
-        diagnostics.update(gaussian_loss_diagnostics(computation))
+        diagnostic_observation = self._build_diagnostic_observation(
+            clean=clean,
+            noise=noise,
+            state_times=state_times,
+            computation=computation,
+            task_context=task_context,
+        )
         strategy_metrics: dict[str, torch.Tensor] = {}
         if computation.per_sample_simple_loss is not None:
             strategy_metrics["simple_loss"] = (
@@ -210,7 +234,7 @@ class GaussianTrainingStrategyBase(TrainingStrategy):
         return TrainStepOutput(
             loss=computation.loss,
             metrics=strategy_metrics,
-            diagnostics=diagnostics,
+            diagnostic_observation=diagnostic_observation,
             metric_updates={
                 "gaussian.prediction_target": MetricUpdate(
                     args=(
@@ -341,6 +365,12 @@ def _reduce_mse_per_sample(
     if objective.reduction == "sum":
         return per_sample_loss.sum()
     return per_sample_loss.mean()
+
+
+def _detached_optional(value: torch.Tensor | None) -> torch.Tensor | None:
+    if value is None:
+        return None
+    return value.detach()
 
 
 __all__: list[str] = []

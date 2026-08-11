@@ -29,6 +29,7 @@ from .helpers import (
     RecordingSampler,
     TinyDenoiser,
     ZeroDenoiser,
+    diagnostic_context,
     epoch_event,
     fit_event,
     gaussian_system,
@@ -51,8 +52,9 @@ def _reference_config() -> dict:
     }
 
 
-def _diagnostic(tmp_path, logger, *, reference=None):
+def _diagnostic(tmp_path, logger, runtime, *, reference=None):
     return DiffusionQualityDiagnostic(
+        build_context=diagnostic_context(runtime, logger, tmp_path),
         logger=logger,
         output_dir=tmp_path,
         samplers=[
@@ -214,15 +216,17 @@ def test_fid_cpu_fallback_accepts_real_mps_images(monkeypatch) -> None:
 
 def test_reference_metrics_require_validation_data(monkeypatch, tmp_path) -> None:
     _install_fake_torchmetrics(monkeypatch)
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
+    runtime = trainer(model)
     diagnostic = _diagnostic(
         tmp_path,
         RecordingLogger(),
+        runtime,
         reference=_reference_config(),
     )
-    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
 
     with pytest.raises(ValueError, match="validation dataloader"):
-        diagnostic.on_fit_start(fit_event(trainer(model)))
+        diagnostic.on_fit_start(fit_event(runtime))
 
 
 def test_reference_providers_cache_multibatch_real_features_and_score_profiles(
@@ -232,13 +236,14 @@ def test_reference_providers_cache_multibatch_real_features_and_score_profiles(
     _install_fake_torchmetrics(monkeypatch)
     RecordingSampler.records.clear()
     logger = RecordingLogger()
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
+    runtime = trainer(model)
     diagnostic = _diagnostic(
         tmp_path,
         logger,
+        runtime,
         reference=_reference_config(),
     )
-    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
-    runtime = trainer(model)
     torch.manual_seed(654)
     rng_before = torch.random.get_rng_state().clone()
 
@@ -288,7 +293,14 @@ def test_builtin_reference_diagnostic_is_observation_only(
     )
     RecordingSampler.records.clear()
     logger = RecordingLogger()
+    assets = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    runtime_namespace = trainer(assets)
     diagnostic = DiffusionQualityDiagnostic(
+        build_context=diagnostic_context(
+            runtime_namespace,
+            logger,
+            tmp_path,
+        ),
         logger=logger,
         output_dir=tmp_path,
         samplers=[
@@ -332,7 +344,6 @@ def test_builtin_reference_diagnostic_is_observation_only(
         use_ema=False,
         failure_policy="warn",
     )
-    assets = gaussian_system(TinyDenoiser(), num_timesteps=2)
     optimizer = torch.optim.SGD(
         assets.inference_model.parameters(),
         lr=0.0,
@@ -422,11 +433,6 @@ def test_reference_cache_uses_strategy_before_label_and_4d_condition(
                 raise TypeError("image must be a Tensor")
             return images
 
-    diagnostic = _diagnostic(
-        tmp_path,
-        RecordingLogger(),
-        reference=_reference_config(),
-    )
     assets = gaussian_system(ZeroDenoiser(), num_timesteps=2)
     runtime = trainer(assets)
     runtime.strategy = MappingReferenceImageStrategy(
@@ -434,6 +440,13 @@ def test_reference_cache_uses_strategy_before_label_and_4d_condition(
         assets.process,
         assets.objective,
         prediction_type="epsilon",
+    )
+    logger = RecordingLogger()
+    diagnostic = _diagnostic(
+        tmp_path,
+        logger,
+        runtime,
+        reference=_reference_config(),
     )
     reference_images = -torch.ones(2, 1, 4, 4)
 
@@ -465,17 +478,19 @@ def test_enabled_reference_reports_missing_optional_dependencies(
 ) -> None:
     monkeypatch.setitem(sys.modules, "torchmetrics.image.fid", None)
     monkeypatch.setitem(sys.modules, "torchmetrics.image.kid", None)
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
+    runtime = trainer(model)
     diagnostic = _diagnostic(
         tmp_path,
         RecordingLogger(),
+        runtime,
         reference=_reference_config(),
     )
-    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
 
     with pytest.raises(RuntimeError, match="quality"):
         diagnostic.on_fit_start(
             fit_event(
-                trainer(model),
+                runtime,
                 validation=[torch.zeros(2, 1, 4, 4)],
             )
         )
@@ -484,14 +499,16 @@ def test_enabled_reference_reports_missing_optional_dependencies(
 def test_disabled_reference_does_not_import_torchmetrics(monkeypatch, tmp_path) -> None:
     monkeypatch.setitem(sys.modules, "torchmetrics.image.fid", None)
     monkeypatch.setitem(sys.modules, "torchmetrics.image.kid", None)
+    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
+    runtime = trainer(model)
     diagnostic = _diagnostic(
         tmp_path,
         RecordingLogger(),
+        runtime,
         reference={"enabled": False},
     )
-    model = gaussian_system(ZeroDenoiser(), num_timesteps=2)
 
-    diagnostic.on_fit_start(fit_event(trainer(model)))
+    diagnostic.on_fit_start(fit_event(runtime))
 
 
 def test_real_cache_warn_failure_disables_only_the_failing_provider() -> None:

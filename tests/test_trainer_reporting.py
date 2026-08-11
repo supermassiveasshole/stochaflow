@@ -266,20 +266,26 @@ class StreamingRegressionDataset(
 class RecordingDiagnostic(TrainingDiagnostic):
     def __init__(self) -> None:
         self.fit_started = False
+        self.fit_global_step: int | None = None
         self.batch_steps: list[int] = []
+        self.batch_observations: list[object | None] = []
         self.epoch_indices: list[int] = []
+        self.epoch_steps: list[int] = []
 
     def on_fit_start(self, event: FitStartEvent) -> None:
         assert event.validation_dataloader is None
         self.fit_started = True
+        self.fit_global_step = event.global_step
 
     def on_train_batch_end(self, event: TrainBatchEndEvent) -> None:
-        assert isinstance(event.output, TrainStepOutput)
-        assert "custom" in event.output.diagnostics
+        assert not hasattr(event, "trainer")
+        assert not hasattr(event, "output")
+        self.batch_observations.append(event.diagnostic_observation)
         self.batch_steps.append(event.global_step)
 
     def on_train_epoch_end(self, event: TrainEpochEndEvent) -> None:
         self.epoch_indices.append(event.epoch_index)
+        self.epoch_steps.append(event.global_step)
 
 
 class CallableTrainingStrategy(TrainingStrategy):
@@ -964,6 +970,7 @@ def test_structured_train_step_runs_diagnostics_hooks(tmp_path) -> None:
     model = TinyRegressor()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     diagnostic = RecordingDiagnostic()
+    observation = object()
 
     objective = nn.MSELoss()
 
@@ -971,7 +978,10 @@ def test_structured_train_step_runs_diagnostics_hooks(tmp_path) -> None:
         inputs, targets = batch
         predictions = model(inputs)
         loss = objective(predictions, targets)
-        return TrainStepOutput(loss=loss, diagnostics={"custom": torch.tensor(1.0)})
+        return TrainStepOutput(
+            loss=loss,
+            diagnostic_observation=observation,
+        )
 
     trainer = _build_trainer(
         tmp_path,
@@ -985,8 +995,11 @@ def test_structured_train_step_runs_diagnostics_hooks(tmp_path) -> None:
     trainer.fit(_make_loader(), num_epochs=1, show_progress=False, track_best=False)
 
     assert diagnostic.fit_started
+    assert diagnostic.fit_global_step == 0
     assert diagnostic.batch_steps == [1, 2]
+    assert all(value is observation for value in diagnostic.batch_observations)
     assert diagnostic.epoch_indices == [1]
+    assert diagnostic.epoch_steps == [2]
     assert (tmp_path / "checkpoints" / "latest.pt").exists()
 
 

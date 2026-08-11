@@ -13,6 +13,7 @@ from stochaflow.training.gaussian import (
     ClassConditionalGaussianDenoisingTrainingBuilder,
     ClassConditionalGaussianDenoisingTrainingStrategy,
     ClassConditionalGaussianDiagnosticSemantics,
+    ClassConditionalGaussianStepObservation,
     GaussianVarianceConfig,
 )
 from stochaflow.training.objectives import MSEObjective
@@ -190,13 +191,34 @@ def test_conditional_strategy_supports_all_gaussian_targets(
 
     assert output.loss.item() == pytest.approx(0.0)
     assert torch.equal(model.seen_labels[-1], torch.tensor([0, 2]))
+    observation = output.diagnostic_observation
+    assert isinstance(observation, ClassConditionalGaussianStepObservation)
+    observation_tensors = (
+        observation.state_times,
+        observation.prediction.clean,
+        observation.prediction.epsilon,
+        observation.prediction.model_output,
+        observation.noise_target,
+        observation.clean_samples,
+        observation.per_sample_loss,
+        observation.class_labels,
+        observation.model_class_labels,
+        observation.condition_dropout_mask,
+    )
+    assert all(value is not None for value in observation_tensors)
+    detached_tensors = [
+        value for value in observation_tensors if isinstance(value, torch.Tensor)
+    ]
+    assert all(not value.requires_grad for value in detached_tensors)
+    assert all(value.shape[0] == 2 for value in detached_tensors)
+    assert {value.device for value in detached_tensors} == {torch.device("cpu")}
     assert torch.allclose(
-        output.diagnostics["predicted_noise"],
-        output.diagnostics["target_noise"],
+        observation.prediction.epsilon,
+        observation.noise_target,
     )
     assert torch.allclose(
-        output.diagnostics["predicted_clean"],
-        output.diagnostics["clean_samples"],
+        observation.prediction.clean,
+        observation.clean_samples,
     )
     assert isinstance(strategy, ClassConditionalGaussianDiagnosticSemantics)
 
@@ -232,8 +254,18 @@ def test_training_applies_dropout_but_evaluation_never_drops_conditions() -> Non
 
     assert torch.equal(model.seen_labels[-2], torch.tensor([3, 3]))
     assert torch.equal(model.seen_labels[-1], torch.tensor([0, 2]))
-    assert torch.all(training.diagnostics["condition_dropout_mask"])
-    assert not torch.any(evaluation.diagnostics["condition_dropout_mask"])
+    training_observation = training.diagnostic_observation
+    evaluation_observation = evaluation.diagnostic_observation
+    assert isinstance(
+        training_observation,
+        ClassConditionalGaussianStepObservation,
+    )
+    assert isinstance(
+        evaluation_observation,
+        ClassConditionalGaussianStepObservation,
+    )
+    assert torch.all(training_observation.condition_dropout_mask)
+    assert not torch.any(evaluation_observation.condition_dropout_mask)
 
 
 def test_learned_range_metrics_use_prediction_head_and_batch_weight() -> None:
@@ -272,8 +304,13 @@ def test_learned_range_metrics_use_prediction_head_and_batch_weight() -> None:
         assert isinstance(clean, torch.Tensor)
         assert reconstructed.shape == clean.shape == (2, 1, 2, 2)
         assert output.loss_aggregation_weight == 2
-        assert output.diagnostics["per_sample_loss"].shape == (2,)
-        assert "timestep_loss_weight" not in output.diagnostics
+        observation = output.diagnostic_observation
+        assert isinstance(
+            observation,
+            ClassConditionalGaussianStepObservation,
+        )
+        assert observation.per_sample_loss is not None
+        assert observation.per_sample_loss.shape == (2,)
 
 
 def test_training_condition_dropout_is_sample_aligned(
@@ -303,8 +340,10 @@ def test_training_condition_dropout_is_sample_aligned(
     output = strategy.training_step(_batch())
 
     assert torch.equal(model.seen_labels[-1], torch.tensor([3, 2]))
+    observation = output.diagnostic_observation
+    assert isinstance(observation, ClassConditionalGaussianStepObservation)
     assert torch.equal(
-        output.diagnostics["condition_dropout_mask"],
+        observation.condition_dropout_mask,
         torch.tensor([True, False]),
     )
 
@@ -464,11 +503,11 @@ def test_builder_composes_learned_range_and_freezes_variance_recipe() -> None:
         "variance": {"mode": "learned_range"},
     }
     assert torch.isfinite(output.loss)
-    assert output.diagnostics["per_sample_loss"].shape == (2,)
-    assert output.diagnostics["per_sample_simple_loss"].shape == (2,)
-    assert output.diagnostics["per_sample_variational_bound"].shape == (2,)
+    observation = output.diagnostic_observation
+    assert isinstance(observation, ClassConditionalGaussianStepObservation)
+    assert observation.per_sample_loss is not None
+    assert observation.per_sample_loss.shape == (2,)
     assert set(output.metrics) == {"simple_loss", "variational_bound"}
-    assert "timestep_loss_weight" not in output.diagnostics
 
 
 @pytest.mark.parametrize(

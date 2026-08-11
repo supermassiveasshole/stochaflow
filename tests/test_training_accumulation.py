@@ -134,9 +134,11 @@ class RecordingTrainingDiagnostic(TrainingDiagnostic):
 
     def __init__(self) -> None:
         self.steps: list[int] = []
+        self.observations: list[object | None] = []
 
     def on_train_batch_end(self, event: TrainBatchEndEvent) -> None:
         self.steps.append(event.global_step)
+        self.observations.append(event.diagnostic_observation)
 
 
 class RecordingMetricLogger(ExperimentLogger):
@@ -224,7 +226,28 @@ class PayloadRetentionStrategy(TrainingStrategy):
         self.previous_payload = weakref.ref(payload)
         return TrainStepOutput(
             (self.model(inputs) - targets).square().mean(),
-            diagnostics={"large_payload": payload},
+            diagnostic_observation={"large_payload": payload},
+        )
+
+
+class OpaqueObservationStrategy(TrainingStrategy):
+    """Emit arbitrary non-mapping observations for accumulation ownership tests."""
+
+    def __init__(self, model: nn.Linear, observations: list[object]) -> None:
+        self.model = model
+        self.observations = observations
+        self.calls = 0
+
+    def training_step(
+        self,
+        batch: tuple[torch.Tensor, torch.Tensor],
+    ) -> TrainStepOutput:
+        inputs, targets = batch
+        observation = self.observations[self.calls]
+        self.calls += 1
+        return TrainStepOutput(
+            (self.model(inputs) - targets).square().mean(),
+            diagnostic_observation=observation,
         )
 
 
@@ -779,6 +802,25 @@ def test_accumulation_retains_only_the_current_microbatch_payload() -> None:
     trainer.train_epoch(regression_batches(3), show_progress=False)
 
     assert strategy.release_checks == [True, True]
+
+
+def test_accumulation_forwards_only_the_final_opaque_observation_per_window() -> None:
+    model = nn.Linear(1, 1, bias=False)
+    observations = [object(), object(), object()]
+    strategy = OpaqueObservationStrategy(model, observations)
+    diagnostic = RecordingTrainingDiagnostic()
+    trainer, _, _ = build_trainer(
+        model=model,
+        strategy=strategy,
+        accumulate_grad_batches=2,
+        diagnostics=(diagnostic,),
+    )
+
+    trainer.train_epoch(regression_batches(3), show_progress=False)
+
+    assert diagnostic.steps == [1, 2]
+    assert diagnostic.observations[0] is observations[1]
+    assert diagnostic.observations[1] is observations[2]
 
 
 @pytest.mark.skipif(

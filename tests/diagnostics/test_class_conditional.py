@@ -29,7 +29,7 @@ from stochaflow.training.diagnostics import (
 
 from .helpers import (
     RecordingLogger,
-    fit_event,
+    diagnostic_context,
     gaussian_system,
     provider_config,
     trainer,
@@ -187,9 +187,16 @@ def _conditional_runtime() -> tuple[SimpleNamespace, RecordingConditionalDenoise
 def _diagnostic(
     tmp_path: Path,
     logger: RecordingLogger,
+    runtime: SimpleNamespace,
     **overrides: Any,
 ) -> ClassConditionalDiffusionQualityDiagnostic:
     params: dict[str, Any] = {
+        "build_context": diagnostic_context(
+            runtime,
+            logger,
+            tmp_path,
+            component_name="class_conditional_diffusion_quality",
+        ),
         "logger": logger,
         "output_dir": tmp_path,
         "conditions": [
@@ -236,16 +243,15 @@ def _events(runtime: SimpleNamespace):
         (clean, {"class_label": labels})
     )
     batch = TrainBatchEndEvent(
-        trainer=runtime,
         batch=(clean, {"class_label": labels}),
-        output=output,
         loss=float(output.loss.detach()),
         global_step=1,
         epoch_index=1,
+        diagnostic_observation=output.diagnostic_observation,
     )
     epoch = TrainEpochEndEvent(
-        trainer=runtime,
         epoch_index=1,
+        global_step=runtime.global_step,
         metrics={},
     )
     return batch, epoch
@@ -255,13 +261,13 @@ def test_conditional_quality_preserves_original_labels_and_records_cfg(
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
-    diagnostic = _diagnostic(tmp_path, logger)
     runtime, model = _conditional_runtime()
+    diagnostic = _diagnostic(tmp_path, logger, runtime)
     batch, epoch = _events(runtime)
     model.label_calls.clear()
 
     diagnostic.on_fit_start(
-        FitStartEvent(runtime, train_dataloader=[], validation_dataloader=None)
+        FitStartEvent([], None, runtime.global_step)
     )
     diagnostic.on_train_batch_end(batch)
 
@@ -311,9 +317,11 @@ def test_conditional_quality_preserves_original_labels_and_records_cfg(
 def test_conditional_quality_cfg_uses_strategy_declared_null_class_id(
     tmp_path: Path,
 ) -> None:
+    runtime, model = _custom_null_runtime(null_class_id=7)
     diagnostic = _diagnostic(
         tmp_path,
         RecordingLogger(),
+        runtime,
         providers={
             "step_metrics": [],
             "sampler_metrics": [],
@@ -323,13 +331,12 @@ def test_conditional_quality_cfg_uses_strategy_declared_null_class_id(
             ],
         },
     )
-    runtime, model = _custom_null_runtime(null_class_id=7)
 
     diagnostic.on_fit_start(
-        FitStartEvent(runtime, train_dataloader=[], validation_dataloader=None)
+        FitStartEvent([], None, runtime.global_step)
     )
     diagnostic.on_train_epoch_end(
-        TrainEpochEndEvent(runtime, epoch_index=1, metrics={})
+        TrainEpochEndEvent(1, runtime.global_step, {})
     )
 
     guided = [
@@ -363,31 +370,24 @@ def test_conditional_quality_validates_declared_null_class_id(
     error: type[Exception],
     message: str,
 ) -> None:
-    diagnostic = _diagnostic(tmp_path, RecordingLogger())
     runtime, _ = _custom_null_runtime(null_class_id=null_class_id)
 
     with pytest.raises(error, match=message):
-        diagnostic.on_fit_start(
-            FitStartEvent(
-                runtime,
-                train_dataloader=[],
-                validation_dataloader=None,
-            )
-        )
+        _diagnostic(tmp_path, RecordingLogger(), runtime)
 
 
 def test_conditional_quality_repeats_fixed_seed_samples(tmp_path: Path) -> None:
-    diagnostic = _diagnostic(tmp_path, RecordingLogger())
     runtime, _ = _conditional_runtime()
+    diagnostic = _diagnostic(tmp_path, RecordingLogger(), runtime)
     batch, _ = _events(runtime)
     diagnostic.on_fit_start(
-        FitStartEvent(runtime, train_dataloader=[], validation_dataloader=None)
+        FitStartEvent([], None, runtime.global_step)
     )
     diagnostic.on_train_batch_end(batch)
 
     for epoch_index in (1, 2):
         diagnostic.on_train_epoch_end(
-            TrainEpochEndEvent(runtime, epoch_index=epoch_index, metrics={})
+            TrainEpochEndEvent(epoch_index, runtime.global_step, {})
         )
 
     root = tmp_path / "diagnostics" / "class_conditional_diffusion_quality"
@@ -406,18 +406,19 @@ def test_conditional_quality_warns_without_successful_batch_and_keeps_sampling(
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
+    runtime, _ = _conditional_runtime()
     diagnostic = _diagnostic(
         tmp_path,
         logger,
+        runtime,
         failure_policy="warn",
     )
-    runtime, _ = _conditional_runtime()
     diagnostic.on_fit_start(
-        FitStartEvent(runtime, train_dataloader=[], validation_dataloader=None)
+        FitStartEvent([], None, runtime.global_step)
     )
 
     result = diagnostic.on_train_epoch_end(
-        TrainEpochEndEvent(runtime, epoch_index=1, metrics={})
+        TrainEpochEndEvent(1, runtime.global_step, {})
     )
 
     root = (
@@ -454,16 +455,19 @@ def test_conditional_quality_warns_without_successful_batch_and_keeps_sampling(
 def test_conditional_quality_rejects_incompatible_runtime_and_config(
     tmp_path: Path,
 ) -> None:
+    runtime, _ = _conditional_runtime()
     with pytest.raises(ValueError, match="condition counts"):
         _diagnostic(
             tmp_path,
             RecordingLogger(),
+            runtime,
             conditions=[{"class_label": 0, "count": 1}],
         )
     with pytest.raises(ValueError, match="reference metrics are not supported"):
         _diagnostic(
             tmp_path,
             RecordingLogger(),
+            runtime,
             reference={
                 "enabled": True,
                 "num_real": 2,
@@ -472,11 +476,9 @@ def test_conditional_quality_rejects_incompatible_runtime_and_config(
                 "metrics": [{"name": "fid", "params": {}}],
             },
         )
-
-    diagnostic = _diagnostic(tmp_path, RecordingLogger())
     unconditional = trainer(gaussian_system(num_timesteps=2))
     with pytest.raises(
         TypeError,
         match="ClassConditionalGaussianDiagnosticSemantics",
     ):
-        diagnostic.on_fit_start(fit_event(unconditional))
+        _diagnostic(tmp_path, RecordingLogger(), unconditional)

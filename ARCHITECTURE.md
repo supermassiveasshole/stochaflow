@@ -4,7 +4,7 @@
 >
 > Applies to: the current source tree
 >
-> Last reviewed: 2026-08-10
+> Last reviewed: 2026-08-11
 
 This document defines the stable ownership, dependency, and composition model
 of Stochaflow. It explains how the product contract in [`SPEC.md`](SPEC.md) is
@@ -222,6 +222,23 @@ state, and structured outcomes. Process, Objective, and auxiliary modules retain
 raw state; EMA tracks only the primary model. Independent optimizers,
 alternating updates, closure-driven optimization, or manual backward require a
 separate training-loop family.
+
+Training runtime composition also constructs each Diagnostic from a narrow
+`DiagnosticBuildContext`. It injects logging/output ownership, protected model
+access, and only the explicit Strategy or Process capabilities requested by the
+Diagnostic. Missing capabilities fail before training begins; configuration
+cannot replace runtime-owned values. The Trainer dispatches fact-only fit,
+successful-step, and epoch events under isolated RNG state. A Strategy may attach
+one opaque family-owned observation to a successful step, but core neither
+interprets it nor exposes the Trainer or complete step result to callbacks.
+
+Protected Diagnostic model access serializes temporary model use and owns
+inference mode, deterministic RNG, raw/EMA selection, managed-module eval mode,
+and complete restoration. It exposes no model, Trainer, optimizer, scheduler,
+checkpoint manager, or EMA object. Restoration failures remain fatal even for a
+Diagnostic whose own provider failures are configured to degrade. Built-in
+Gaussian observations are typed within that family rather than becoming a
+framework-wide Diagnostic schema.
 
 A configured epoch validation evaluator is a narrow collaboration at the
 Trainer boundary. On its absolute epoch cadence it builds an `EvaluationPlan`
@@ -455,7 +472,9 @@ state, or identity semantics.
 ### Observability
 
 Metrics receive explicit, task-interpreted updates. Loggers, diagnostics, and
-artifact writers are replaceable collaborators with explicit failure policies.
+artifact writers are replaceable collaborators. A collaborator declares a
+failure policy only when it genuinely supports degraded execution; state
+restoration failures are never degradable.
 Validation observations alone control checkpoint selection.
 
 ### Reproducibility

@@ -4,7 +4,7 @@
 >
 > 排期状态：不参与排期
 >
-> 当前可用性：运行组装边界已经收口；Training Diagnostic 的窄能力改造仍是架构维护工作
+> 当前可用性：运行组装与 Training Diagnostic 窄能力都已收口；用户命令和配置保持不变
 
 2026-07-31 的一份 Clean Architecture 草案提出了很多方向。它后来只提交在未合入主线的
 远端审查分支 `codex/metrics-system`（提交 `af13619`），没有进入 `main` 或当前排期。按当前
@@ -13,7 +13,7 @@
 
 不过，草案里有一个判断仍然重要：**一段代码应当明确说明自己依赖什么，而不是因为拿到了
 一个大对象或导入了一个工具模块，就能碰到整个运行时。** 2026-08-10 开始这轮维护时，仓库有
-两处具体事实说明这件事还没有完全做到。
+两处具体事实说明这件事当时还没有完全做到。
 
 第一处曾是运行组件的组装。`stochaflow.utils.factory` 直接导入 Process、TrainingBuilder、
 Trainer、Diagnostics、checkpoint 和 logging，并在模块导入时调用
@@ -22,9 +22,9 @@ Trainer、Diagnostics、checkpoint 和 logging，并在模块导入时调用
 一次操作真正会加载和构造什么。下面“把对象组装放回具体操作的入口”一节保留了当时的推导，
 随后的小节记录实际采用的结果。
 
-第二处是训练诊断。`FitStartEvent`、`TrainBatchEndEvent` 和 `TrainEpochEndEvent` 仍把完整的
+第二处是训练诊断。`FitStartEvent`、`TrainBatchEndEvent` 和 `TrainEpochEndEvent` 曾把完整的
 `trainer: Any` 交给 Diagnostic；Gaussian 诊断还会从 `Mapping[str, Any]` 中读取约定好的
-字符串键。现有诊断能够工作，但一个 Diagnostic 的真实依赖只能靠阅读实现猜出来。Trainer
+字符串键。当时的诊断能够工作，但一个 Diagnostic 的真实依赖只能靠阅读实现猜出来。Trainer
 以后只要改名或移动内部属性，Diagnostic 就可能在运行中才失败。它也与当前规范中“诊断应
 声明自己需要的能力”这条规则不一致。
 
@@ -50,10 +50,9 @@ Extension 的启动耗时另有条件性性能复查负责。本提案不承诺�
 也不把 lazy import 当作成功标准。如果依赖整理顺便减少了导入模块，只记录结果；不能为了
 追求数字而改变 Extension 的对象身份、验证时机或错误保证。
 
-## 把对象组装放回具体操作的入口
+## 当时怎样推导出具体操作入口
 
-第一步不是移动文件，而是记录今天真实发生的事情。维护者应生成当前 package 导入图，并用
-全新 Python 进程分别执行以下操作：
+当时没有直接移动文件，而是先记录真实发生的事情。维护者用全新 Python 进程核对了：
 
 - 只导入 `stochaflow.data`、`stochaflow.sampling` 或 `stochaflow.evaluation`；
 - 显示根命令和各子命令帮助；
@@ -61,11 +60,11 @@ Extension 的启动耗时另有条件性性能复查负责。本提案不承诺�
 - 准备 Extension 激活，以及真正激活一个选中的 Extension。
 
 这里记录的是“加载了哪些 Stochaflow package、Registry 是否发生变化”，不是性能排名。结果
-会成为迁移前的行为基线，也会暴露哪些调用仍依赖偶然的 import 顺序。
+成为改造前的行为基线，也暴露了哪些调用依赖偶然的 import 顺序。
 
 随后把 `utils.factory` 中的组装代码交还给实际使用它的操作。训练入口负责创建完整的
-训练协作，采样和 Evaluation 只构造各自需要的只读推理对象。具体模块名可以在实施时选择，
-但必须满足两条简单规则：
+训练协作，采样和 Evaluation 只构造各自需要的只读推理对象。当时用两条简单规则选择最终
+实现位置：
 
 1. `utils` 不再需要导入 Trainer、TrainingDiagnostic 或任务运行时来完成普通工具职责；
 2. CLI 只解析参数并调用对应操作，不成为所有领域对象都能互相看见的第二个 factory。
@@ -75,9 +74,8 @@ Extension 的启动耗时另有条件性性能复查负责。本提案不承诺�
 初始化触发，不能继续要求调用者碰巧先导入某个聚合模块。初始化失败后应终止本次进程中的
 初始化，不能留下部分 Registry 状态后继续运行。
 
-迁移期间可以保留 `stochaflow.utils.factory` 的薄转发函数，避免一次改动所有内部调用。新的
-内部代码不得再增加对它的依赖；所有调用迁走并通过安装包测试后，再决定是在 pre-1.0 阶段
-删除转发，还是把它保留为明确记录的兼容入口。
+最终决定保留 `stochaflow.utils.factory` 的现有调用方式作为薄转发，不发弃用警告，也没有删除
+计划。框架内部的新代码不再依赖它；这个入口只负责兼容既有调用，不重新承担完整运行组装。
 
 ## 运行组装最后落在什么位置
 
@@ -99,35 +97,42 @@ Extension 的启动耗时另有条件性性能复查负责。本提案不承诺�
 `sample` 或 `evaluate` 时也不会先加载训练 runner；只有真正选择 `train` 才导入训练运行时。
 这些变化不改变配置、checkpoint、命令参数或 Extension 使用的 Registry。
 
-## Diagnostic 不再得到整台 Trainer
+## Diagnostic 最后只拿到明确需要的事实和能力
 
-Diagnostic 在构造时应声明自己需要什么。例如，一个只记录 loss 的诊断只需要批次结束事实；
-一个生成预览图的诊断还需要只读模型视图、临时切换 eval/EMA 的保护以及 writer；一个计算
-Gaussian 重建结果的诊断需要该 family 明确提供的重建能力。它们都不需要得到 optimizer、
-scheduler、checkpoint manager 和 Trainer 的其他可变状态。
+2026-08-11 完成的实现没有机械拆分 Trainer，也没有建立通用 Diagnostic schema。三个事件现在
+只携带已经发生的事实：fit 开始时的 iterable 和恢复后的 step、成功 optimizer step 的 batch、
+loss、step、epoch 与观察对象，以及 epoch 结束时不可修改的 metrics。事件不再携带 Trainer 或
+完整 `TrainStepOutput`。Trainer 用同一个内部调用入口执行三个 callback，统一隔离 RNG、传播
+异常，并要求 callback 返回 `None`。
 
-实施时先为仓库现有 Diagnostic 列一张依赖清单。每项依赖必须归入以下一种来源：
+Strategy 若要把任务特有的中间结果交给 Diagnostic，只需把一个普通 Python 对象放入
+`TrainStepOutput.diagnostic_observation`。框架核心（core）会在一次真正执行 optimizer 更新的
+累积窗口（optimizer window）成功后，原样转交最后一个小批次（microbatch）的对象，不读取
+字段，也不建立跨算法家族（family）的 batch 或观察值格式。Gaussian 算法家族
+使用自己的 `GaussianStepObservation` 和 `ClassConditionalGaussianStepObservation`，显式保存
+已从反向传播图分离（detached）的时间、prediction、训练目标、clean sample、可选逐样本 loss
+与类条件事实；其他算法家族可以定义完全不同的类型。
 
-- 事件事实，例如 epoch、global step、loss 和已经完成的 Strategy 输出；
-- TrainingBuilder 在组装时注入的只读能力；
-- Diagnostic 自己拥有的临时缓存或输出 sink；
-- 明确禁止读取的训练状态。
+Diagnostic 在构造时通过 `DiagnosticBuildContext` 得到组件名、logger、输出目录和
+`DiagnosticModelAccess`，并按需要求明确的 Strategy 或 Process 窄能力接口（Protocol）。缺失
+能力会在训练开始前失败，YAML 不能伪造或覆盖 runtime 注入值。普通 Diagnostic 不必声明空的
+cadence、artifact 或 failure-policy 配置；只有确实拥有这些行为的具体类型才声明它们。
 
-然后用窄能力替换 `event.trainer`。事件只携带不可变事实；需要调用模型的 Diagnostic 在创建时
-收到只读能力，而不是运行到 callback 才从 Trainer 上找属性。能力不存在或与任务不兼容时，
-组装阶段就给出可操作错误，不能等到若干 epoch 后才失败。
+需要临时调用当前模型的 Diagnostic 只使用 `DiagnosticModelAccess.evaluation()`。这个窄能力
+不暴露 model、Trainer、optimizer、scheduler、checkpoint manager 或 EMA 对象。这个保护范围
+（context）会隔离
+全局 RNG、固定本次随机种子、启用 inference mode、选择 raw/EMA 权重、管理所有 module 的 eval
+mode，并在退出时按模块的父子依赖顺序完整恢复。主体、EMA copy、mode 切换或某个恢复动作失败时，
+其余恢复仍会继续；
+状态恢复失败是不可降级错误，不能被 provider 的 `warn` 策略吞掉。
 
-Gaussian Strategy 与 Diagnostic 之间约定的字符串键也要收窄，但不能因此建立通用 batch 或
-通用诊断 schema。Gaussian family 可以定义自己的 typed observation，其他 family 只实现自己
-确实需要的契约。普通 `MetricUpdate` 继续走现有指标通道；训练期额外采样、重建和 artifact
-仍属于 Diagnostic；冻结 subject、data 和 protocol 后发布正式证据仍属于 Evaluation。
+普通 `MetricUpdate` 继续走现有指标通道；训练期额外采样、重建和 artifact 仍属于 Diagnostic；
+冻结 subject、data 和 protocol 后发布正式证据仍属于 Evaluation。这次收口没有改变模型选择、
+checkpoint、配置 schema 或 CLI 行为。
 
-当这些调用边界建立后，再判断 Trainer 内部是否需要提取小协作者。如果一个对象只为减少文件
-行数、却仍然可以访问整个 Trainer，它没有改善架构，不应创建。
+## 用失败案例守住已经完成的边界
 
-## 用失败案例证明边界真的存在
-
-这次整理不能只靠移动 import。至少需要以下回归证据：
+这次整理不是只移动 import。当前回归测试守住以下证据：
 
 - AST 依赖检查能指出从工具/契约层反向导入训练 runtime 的具体文件和 import；
 - package 依赖图没有因为迁移新增循环，重要 operation 的导入闭包由全新进程测试固定；
@@ -141,34 +146,27 @@ Gaussian Strategy 与 Diagnostic 之间约定的字符串键也要收窄，但�
 测试不应规定整个仓库只能采用一份僵硬的 package 分层表。它只检查已经写进
 `ARCHITECTURE.md` 的责任边界，以及本次迁移明确禁止的依赖方向。
 
-## 什么结果才算完成
+## 最终结果
 
-完成后，普通用户继续运行相同的 `train`、`sample` 和 `evaluate` 命令，配置、checkpoint 和
+普通用户继续运行相同的 `train`、`sample` 和 `evaluate` 命令，配置、checkpoint 和
 运行产物含义不变。Extension 作者不会获得第二套注册方式；Diagnostic 作者则能从类型和构造
 参数看出自己可以使用哪些事实与能力。
 
-代码层面应能直接确认：
+代码层面可以直接确认：
 
 - operation 组装不再以 `utils.factory` 作为所有领域共享的隐藏入口；
 - built-in 初始化有唯一、显式、幂等且可测试的调用位置；
 - Diagnostic event 和 provider contract 中不再出现完整 `trainer: Any`；
-- family-specific observation 不再依赖未声明的跨模块字符串键；
+- 算法家族自己的（family-specific）观察值不再依赖未声明的跨模块字符串键；
 - 当前 Evaluation、Sampling、checkpoint、Extension 激活和训练选择语义没有改变；
 - 规范、架构文档和公开 Extension 文档只描述最终实现，不把本提案中的候选名字写成当前 API。
 
-如果实施调查发现 `utils.factory` 的当前位置并未造成错误依赖，或者收窄 Diagnostic 所需代价
-明显高于现有两个调用者的收益，可以缩小方案并记录原因。允许得出“只修 Diagnostic，不移动
-其他 composition”的结论；不允许为了宣称完成而进行没有行为或边界收益的大规模改名。
-
-## 什么时候值得先处理
+## 排期与后续边界
 
 这两项是现有架构维护，不是等待排期的新产品，因此不占用 [`ROADMAP.md`](../../../ROADMAP.md)
 的 `Next`。如果下一项工作会新增训练 Diagnostic、改变 Trainer 生命周期、增加 operation，
-或扩展 built-in 注册范围，应先完成与那项工作直接相关的边界修正，避免继续复制隐藏依赖。
-与这些边界无关的小型维护和算法实现不必等待本文全部完成。
-
-继续改造 Diagnostic 前仍需重新核对它的当前调用者和所需能力，因为这些细节可能已经变化。
-维护可以缩小到证据支持的部分；它不会因为被记录在这里就自动获得大范围重构授权。
+或扩展 built-in 注册范围，应沿用这里已经建立的窄边界，避免重新复制隐藏依赖。与这些边界
+无关的小型维护和算法实现不需要额外排期许可。
 
 当前规范与实现证据见：
 

@@ -459,16 +459,17 @@ performance/curve 和 comparison/gate 是可选增强。
 | `DenoiserChannelLayout` | model 可选暴露的静态 `in_channels`/`out_channels` capability；Gaussian Builder 据此在组合时预检 fixed `C` 或 learned-range `2C` 输出 |
 | `DeviceTransferableBatch` | 自定义领域 batch 可选择实现的显式设备迁移 capability |
 | `ReferenceImageBatchSemantics` | Strategy 可选实现的 reference-metric image extraction capability |
-| `TrainStepOutput` | Strategy 返回的 scalar loss、低成本 step report、diagnostics、metric channel updates 与 epoch loss reporting weight |
+| `TrainStepOutput` | Strategy 返回的 scalar loss、低成本 step report、不透明的 `diagnostic_observation`、metric channel updates 与 epoch loss reporting weight |
 | `MSEObjective` | 内置 task-neutral scalar MSE Objective |
 | `PerSampleObjective` | 可选的逐样本 loss capability |
 | `compute_objective` | 校验并执行 scalar Objective，同时读取可选逐样本 capability |
 | `TrainingDiagnostic` | training diagnostic 生命周期根契约 |
 | `ContextAwareDiagnostic` | diagnostic 可选实现的构建期 context 参数能力 |
-| `DiagnosticBuildContext` | diagnostic 构建期 logger 和输出目录；采样 shape 由 diagnostic 私有配置拥有 |
-| `FitStartEvent` | fit 开始事件 |
-| `TrainBatchEndEvent` | 成功 optimizer step 后的事件 |
-| `TrainEpochEndEvent` | 一个 epoch 完成后的事件 |
+| `DiagnosticBuildContext` | Diagnostic 构建期的组件名、logger、输出目录、模型访问能力，以及按需取得 Strategy/Process 窄能力的方法 |
+| `DiagnosticModelAccess` | 在固定随机种子和 inference mode 下临时选择 raw/EMA 权重并完整恢复训练状态的窄能力 |
+| `FitStartEvent` | fit 开始时的 train/validation iterable 和恢复后的 `global_step` |
+| `TrainBatchEndEvent` | 成功 optimizer step 后的 batch、loss、step、epoch 与不透明观察值 |
+| `TrainEpochEndEvent` | 一个 epoch 完成后的 epoch、step 与不可修改 metric mapping |
 | `ExperimentLogger` | extension logger backend 契约 |
 
 Strategy 不是 `nn.Module`，也不移动、冻结、选择或序列化资产；这些生命周期由
@@ -500,7 +501,7 @@ RNG 不会改变训练或其他 callback 看到的随机流；若 diagnostic 需
 class TrainStepOutput:
     loss: torch.Tensor
     metrics: Mapping[str, float | int | torch.Tensor] = ...
-    diagnostics: Mapping[str, Any] = ...
+    diagnostic_observation: object | None = None
     metric_updates: Mapping[str, MetricUpdate] = ...
     loss_aggregation_weight: float | int | torch.Tensor = 1.0
 
@@ -588,12 +589,33 @@ device/mode、优化和 checkpoint 生命周期；EMA 只跟踪 primary model。
 
 ## Training diagnostic 与 provider 扩展边界
 
-`TrainingDiagnostic` 是 observation-only 生命周期。callback 可以通过构建期注入的
-`ExperimentLogger` 记录 `diagnostics/...` scalar 日志，也可以写 artifact；callback
-必须返回 `None`，其输出不会合并进训练 epoch metric mapping、best checkpoint 判定或
-early stopping。diagnostic 可以在 `FitStartEvent` 中观察本次 train/validation iterable，
-但不存在 source role、protocol digest、selection eligibility 或 checkpoint provenance
-绑定契约。
+`TrainingDiagnostic` 是 observation-only 生命周期。Strategy 若要把某个任务特有的中间结果
+交给 Diagnostic，就把一个普通 Python 对象放进
+`TrainStepOutput.diagnostic_observation`。core 只在成功的 optimizer step 后原样转交这个对象，
+不会复制它、解析字段或建立跨算法 family 的通用 schema。内置 Gaussian Strategy 使用
+`GaussianStepObservation`；类条件版本使用
+`ClassConditionalGaussianStepObservation`。第三方算法可以定义自己的 frozen dataclass，
+不需要迁就 Gaussian 字段。
+
+callback 可以通过构建期注入的 `ExperimentLogger` 记录 `diagnostics/...` scalar 日志，也可以
+写 artifact；三个 callback 都必须返回 `None`，其输出不会合并进训练 epoch metric mapping、
+best checkpoint 判定或 early stopping。事件只携带已经发生的事实：`FitStartEvent` 给出本次
+train/validation iterable 和恢复 checkpoint 后的准确 step；`TrainBatchEndEvent` 给出这次成功
+更新的 batch、loss、step、epoch 和观察对象；`TrainEpochEndEvent` 给出 epoch、step 和不可修改
+的 epoch metric mapping。事件不暴露 `Trainer`、optimizer 或完整 `TrainStepOutput`。
+
+需要额外运行时能力的 Diagnostic 通过 `ContextAwareDiagnostic.context_parameters()` 查看
+`DiagnosticBuildContext`。它可以要求一个明确的 Strategy/Process Protocol；能力不存在时，
+Diagnostic 在训练开始前的构造阶段失败。组件配置不能覆盖 `logger`、`output_dir`、
+`build_context`、`model_access` 或其他由 runtime 注入的值。
+
+需要临时调用当前模型时，Diagnostic 只接收 `DiagnosticModelAccess`，而不是 model、
+`Trainer`、EMA、optimizer、scheduler 或 checkpoint manager。它的 `evaluation(seed=...,
+prefer_ema=...)` context 会隔离全局 RNG，进入 inference mode，按要求选择 raw 或 EMA 权重，
+把所有 managed module 切到 eval mode，并在退出时逆序恢复。主体或任一清理动作失败时仍会尝试
+其余恢复；状态恢复失败是不可降级错误，不能被 Diagnostic 的 `warn` 策略吞掉。
+真实的模型访问只由完整 Training composition 注入；兼容用的独立
+`utils.factory.build_diagnostics()` 只能构造不请求模型或 Strategy/Process 能力的简单 Diagnostic。
 
 `TrainBatchEndEvent` 只在成功 optimizer step 后发送，`TrainEpochEndEvent` 在训练 epoch
 完成后发送。diagnostic 的 cache、计数器和采样状态都是本次 invocation 的临时状态，
@@ -656,6 +678,8 @@ normalization。这个物理目录约定不是 extension import surface；下表
 | `DiscreteGaussianProcess` | 内置 coefficient-snapshot Process；另外满足 selected-pair coefficients 与 learned-range variance bounds |
 | `PredictionType` | Gaussian model prediction parameterization |
 | `GaussianPrediction` | 归一化后的 epsilon 与 predicted-clean 结果 |
+| `GaussianStepObservation` | Gaussian Strategy 交给 Diagnostic 的 detached、batch-aligned 训练观察值 |
+| `ClassConditionalGaussianStepObservation` | 在 Gaussian 观察值上增加真实标签、模型输入标签与逐样本 condition-dropout mask |
 | `GaussianTransition` | 一步离散 Gaussian transition distribution |
 | `GaussianDenoisingDynamics` | DDPM/DDIM 消费的窄 Gaussian Dynamics capability |
 | `GaussianModelDynamics` | 将 Process、model callable、prediction/variance semantics 与 clipping 组合成 Gaussian Dynamics |

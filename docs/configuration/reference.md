@@ -1515,7 +1515,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 
 使用原始 batch labels 做对齐重建，并按显式 class allocation 与 CFG 比较 Gaussian sampler profile。
 
-运行时注入（不得在 YAML 中覆盖）：`logger`, `output_dir`。
+运行时注入（不得在 YAML 中覆盖）：`build_context`, `logger`, `output_dir`。
 
 | 参数 | 含义与约束 |
 | --- | --- |
@@ -1535,7 +1535,7 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 
 通过可插拔 provider 记录 denoiser 指标，并在固定噪声下比较多个 sampler profile。
 
-运行时注入（不得在 YAML 中覆盖）：`logger`, `output_dir`。
+运行时注入（不得在 YAML 中覆盖）：`build_context`, `logger`, `output_dir`。
 
 | 参数 | 含义与约束 |
 | --- | --- |

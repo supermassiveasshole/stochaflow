@@ -2736,7 +2736,7 @@ def test_trainer_isolates_each_diagnostic_rng_callback(
     elif hook == "batch_end":
         trainer._emit_batch_diagnostics(
             batch=torch.ones(1, 1),
-            output=TrainStepOutput(loss=torch.zeros(())),
+            diagnostic_observation=None,
             loss=0.0,
             global_step=1,
             epoch_index=1,

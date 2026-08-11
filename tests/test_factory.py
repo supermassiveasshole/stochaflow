@@ -1,7 +1,8 @@
 """Tests for registry and builder utilities."""
 
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast, runtime_checkable
 
 import pytest
 import torch
@@ -14,6 +15,7 @@ from stochaflow.processes import (
     Process,
 )
 from stochaflow.training import (
+    DiagnosticBuildContext,
     GaussianDenoisingTrainingStrategy,
     MSEObjective,
     Trainer,
@@ -59,6 +61,62 @@ class MinimalDiagnostic(TrainingDiagnostic):
 
 
 REGISTRIES.diagnostics.add("test_minimal", MinimalDiagnostic)
+
+
+@runtime_checkable
+class ExampleDiagnosticCapability(Protocol):
+    """Narrow capability used to exercise DiagnosticBuildContext."""
+
+    @property
+    def marker(self) -> str: ...
+
+
+class CapableDiagnosticDependency:
+    """Independent Strategy or Process capability implementation."""
+
+    marker = "capable"
+
+
+class ExampleDiagnosticModelAccess:
+    """Minimal model-access implementation for build-context tests."""
+
+    device = torch.device("cpu")
+    ema_available = False
+
+    def evaluation(
+        self,
+        *,
+        seed: int,
+        prefer_ema: bool,
+    ) -> AbstractContextManager[None]:
+        del seed, prefer_ema
+        return nullcontext()
+
+
+class CapabilityDiagnostic(TrainingDiagnostic):
+    """Require one Strategy capability during construction."""
+
+    @classmethod
+    def context_parameters(cls, context: DiagnosticBuildContext):
+        del cls
+        return {
+            "capability": context.require_strategy_capability(
+                ExampleDiagnosticCapability
+            )
+        }
+
+    def __init__(
+        self,
+        *,
+        logger: ExperimentLogger,
+        output_dir: str,
+        capability: ExampleDiagnosticCapability,
+    ) -> None:
+        del logger, output_dir
+        self.capability = capability
+
+
+REGISTRIES.diagnostics.add("test_capability", CapabilityDiagnostic)
 
 TINY_UNET_PARAMS = {
     "in_channels": 1,
@@ -506,6 +564,80 @@ def test_custom_diagnostic_receives_only_generic_runtime_parameters(tmp_path) ->
     assert diagnostic.logger is logger
     assert diagnostic.output_dir == str(tmp_path)
     assert diagnostic.marker == "ready"
+
+
+def test_diagnostic_build_context_resolves_only_explicit_narrow_capabilities(
+    tmp_path,
+) -> None:
+    logger = NullLogger()
+    model_access = ExampleDiagnosticModelAccess()
+    strategy = CapableDiagnosticDependency()
+    process = CapableDiagnosticDependency()
+    context = DiagnosticBuildContext(
+        component_name="tests.capability",
+        logger=logger,
+        output_dir=tmp_path,
+        model_access=model_access,
+        _strategy=strategy,
+        _process=process,
+    )
+
+    assert context.component_name == "tests.capability"
+    assert context.logger is logger
+    assert context.output_dir == tmp_path
+    assert context.model_access is model_access
+    assert context.require_strategy_capability(ExampleDiagnosticCapability) is strategy
+    assert context.optional_strategy_capability(ExampleDiagnosticCapability) is strategy
+    assert context.require_process_capability(ExampleDiagnosticCapability) is process
+
+    missing = DiagnosticBuildContext(
+        component_name="tests.missing",
+        logger=logger,
+        output_dir=tmp_path,
+        model_access=model_access,
+        _strategy=object(),
+        _process=None,
+    )
+    assert missing.optional_strategy_capability(ExampleDiagnosticCapability) is None
+    with pytest.raises(TypeError, match=r"tests\.missing.*ExampleDiagnosticCapability"):
+        missing.require_strategy_capability(ExampleDiagnosticCapability)
+    with pytest.raises(TypeError, match=r"tests\.missing.*ExampleDiagnosticCapability"):
+        missing.require_process_capability(ExampleDiagnosticCapability)
+
+
+def test_legacy_diagnostic_factory_fails_capability_requests_at_construction(
+    tmp_path,
+) -> None:
+    with pytest.raises(
+        TypeError,
+        match=r"test_capability.*ExampleDiagnosticCapability",
+    ):
+        build_diagnostics(
+            [ComponentConfig(name="test_capability", params={})],
+            logger=NullLogger(),
+            output_dir=str(tmp_path),
+        )
+
+
+@pytest.mark.parametrize(
+    "reserved_name",
+    ["build_context", "component_name", "logger", "model_access", "output_dir"],
+)
+def test_diagnostic_yaml_cannot_override_runtime_context(
+    tmp_path,
+    reserved_name: str,
+) -> None:
+    with pytest.raises(RegistryError, match="cannot override runtime parameter"):
+        build_diagnostics(
+            [
+                ComponentConfig(
+                    name="test_minimal",
+                    params={"marker": "ready", reserved_name: object()},
+                )
+            ],
+            logger=NullLogger(),
+            output_dir=str(tmp_path),
+        )
 
 
 def test_warmup_cosine_lr_scheduler_uses_explicit_total_steps() -> None:

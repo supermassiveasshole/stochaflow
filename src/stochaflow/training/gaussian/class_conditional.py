@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 
 import torch
 from torch import nn
 
-from stochaflow.families.gaussian import PredictionType
+from stochaflow.families.gaussian import GaussianPrediction, PredictionType
 from stochaflow.models.conditioning import (
     ClassConditionalDenoiser,
     predict_prevalidated_class_conditioned,
@@ -20,8 +21,19 @@ from stochaflow.processes.gaussian.contracts import (
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
+from .contracts import ClassConditionalGaussianStepObservation
+from .loss import GaussianLossComputation
 from .strategy import GaussianTrainingStrategyBase
 from .variance import GaussianVarianceConfig, parse_gaussian_variance
+
+
+@dataclass(frozen=True, slots=True)
+class ClassConditionalStepContext:
+    """Conditioning decisions made for one Gaussian training step."""
+
+    class_labels: torch.Tensor
+    model_class_labels: torch.Tensor
+    condition_dropout_mask: torch.Tensor
 
 
 class ClassConditionalGaussianDenoisingTrainingStrategy(
@@ -70,7 +82,7 @@ class ClassConditionalGaussianDenoisingTrainingStrategy(
         batch: Any,
         *,
         apply_training_policy: bool,
-    ) -> tuple[torch.Tensor, object, dict[str, Any]]:
+    ) -> tuple[torch.Tensor, object, object]:
         clean, class_labels = _class_conditional_batch(
             batch,
             num_classes=self.num_classes,
@@ -89,11 +101,46 @@ class ClassConditionalGaussianDenoisingTrainingStrategy(
             torch.full_like(class_labels, self.null_class_id),
             class_labels,
         )
-        return clean, model_labels, {
-            "class_labels": class_labels.detach(),
-            "model_class_labels": model_labels.detach(),
-            "condition_dropout_mask": dropout_mask.detach(),
-        }
+        return clean, model_labels, ClassConditionalStepContext(
+            class_labels=class_labels.detach(),
+            model_class_labels=model_labels.detach(),
+            condition_dropout_mask=dropout_mask.detach(),
+        )
+
+    def _build_diagnostic_observation(
+        self,
+        *,
+        clean: torch.Tensor,
+        noise: torch.Tensor,
+        state_times: torch.Tensor,
+        computation: GaussianLossComputation,
+        task_context: object,
+    ) -> ClassConditionalGaussianStepObservation:
+        """Build a typed observation with explicit label/dropout facts."""
+
+        if not isinstance(task_context, ClassConditionalStepContext):
+            raise TypeError(
+                "class-conditional Gaussian diagnostic task context is invalid"
+            )
+        prediction = computation.prediction
+        return ClassConditionalGaussianStepObservation(
+            state_times=state_times.detach(),
+            prediction=GaussianPrediction(
+                clean=prediction.clean.detach(),
+                epsilon=prediction.epsilon.detach(),
+                model_output=prediction.model_output.detach(),
+            ),
+            noise_target=noise.detach(),
+            clean_samples=clean.detach(),
+            per_sample_loss=(
+                None
+                if computation.per_sample_loss is None
+                else computation.per_sample_loss.detach()
+            ),
+            class_labels=task_context.class_labels.detach(),
+            model_class_labels=task_context.model_class_labels.detach(),
+            condition_dropout_mask=task_context.condition_dropout_mask.detach(),
+        )
 
     def _predict_training_model(
         self,

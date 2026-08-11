@@ -63,6 +63,14 @@ is unavailable.
 
 ### Changed
 
+- Narrowed Training Diagnostic contracts by replacing Trainer-bearing events and
+  string-keyed step payloads with fact-only events and opaque task-owned
+  observations. Diagnostics now request Strategy/Process capabilities during
+  construction and use protected `DiagnosticModelAccess` for deterministic
+  raw/EMA inference with complete RNG, weight, and module-mode restoration.
+  Gaussian training publishes detached typed observations without defining a
+  cross-family schema. This is a direct pre-1.0 API replacement with no legacy
+  event or `TrainStepOutput.diagnostics` compatibility layer.
 - Made runtime composition explicit: each operation now activates one fixed
   built-in scope before selected Extensions, built-in registration is
   deterministic and terminal on partial failure, sampling and Evaluation no

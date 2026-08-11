@@ -528,8 +528,8 @@ class DirectTransformBuilder(SamplingBuilder):
 训练侧的注册入口是 `TrainingBuilder`，而不是 Strategy。Builder 接收核心预先构建的
 primary model、可选 Process/Objective 和辅助 factory，返回完成依赖注入的
 `TrainingPlan`。`TrainingStrategy` 只是普通训练计算对象：解释 structured batch、调用
-注入的模型和 Objective，并返回包含 loss、低成本 step report、diagnostics 和可选
-metric channel updates 的 `TrainStepOutput`。
+注入的模型和 Objective，并返回包含 loss、低成本 step report、不透明
+`diagnostic_observation` 和可选 metric channel updates 的 `TrainStepOutput`。
 Strategy 没有统一的构造参数 schema；每个 Builder 可以直接向它注入该任务需要的模型、
 Objective、Process capability 或 callable。统一的是 step 的输入输出和职责边界，而不是
 把所有训练任务压进一个包含大量可选字段的 Strategy context。
@@ -541,7 +541,7 @@ Trainer 原生递归迁移 `Tensor`、`Mapping` value、tuple/namedtuple 和 lis
 
 离散 Gaussian 自定义 Strategy 可直接复用 `gaussian_training_target()` 构造 epsilon、x0、
 v 或 score target，并用 `compute_objective()` 获得统一的 scalar/per-sample Objective 校验。
-batch 解释、condition、timestep sampling、模型调用和 diagnostics 仍由具体 Strategy 拥有；
+batch 解释、condition、timestep sampling、模型调用和 Diagnostic 观察值仍由具体 Strategy 拥有；
 这两个 helper 不构成新的通用 TrainingStrategy。
 
 ```python
@@ -592,6 +592,25 @@ EMA 只跟踪 primary model，Process、Objective 和 auxiliary modules 始终�
 这个片段是普通 paired regression，不是 diffusion super-resolution。Gaussian 条件超分
 还必须由 Strategy 采样 marginal、构造 prediction target 并把 LR condition 传给模型；
 extension 边界草图见[条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md)。
+
+### 构造 Training Diagnostic
+
+Diagnostic 构造器默认只得到 `logger` 和 `output_dir`。如果它还需要调用当前任务的模型或读取
+某个算法能力，就实现 `ContextAwareDiagnostic.context_parameters()`，从
+`DiagnosticBuildContext` 请求明确的窄能力。`require_strategy_capability()` 和
+`require_process_capability()` 会在构造阶段检查所需 Protocol；不兼容的组合不会拖到训练中途
+才失败。可选能力使用 `optional_strategy_capability()`。
+
+模型调用通过 `DiagnosticModelAccess.evaluation(seed=..., prefer_ema=...)` 进行。这个 context
+只告诉 Diagnostic 当前 device 和是否有 EMA；它不暴露 model、Trainer、optimizer 或 EMA
+对象。进入 context 后，runtime 固定随机流、启用 inference mode、临时选择 raw/EMA 权重并
+管理所有 module 的 eval mode；退出时完整恢复。Diagnostic 只需关心自己的推理和记录逻辑。
+
+Strategy 放入 `TrainStepOutput.diagnostic_observation` 的对象会在成功 optimizer step 后原样
+出现在 `TrainBatchEndEvent`。core 不要求 mapping 或固定字段。Gaussian family 提供
+`GaussianStepObservation` 和 `ClassConditionalGaussianStepObservation`；其他 family 应定义
+自己的类型。只有确实需要 cadence、额外 artifact 或可降级失败策略的 Diagnostic，才在自己的
+typed config 中声明这些选项，不需要为了形式统一建立空配置对象。
 
 ### 自定义 Metric 与 Strategy channel
 
@@ -1048,8 +1067,10 @@ writer 返回的 mapping 不能为空；artifact key 在全部 writer 间必须�
 - SamplingBuilder：`SamplingBuilderContext`；
 - optimizer / LR scheduler：模型参数或 optimizer；
 - logger：`output_dir`、`run_name`；
-- diagnostic：`logger`、`output_dir`。需要采样的 diagnostic 在自己的私有配置中声明
-  shape，framework 不从独立 sample workflow 或 DataBuilder 猜测。
+- diagnostic：`logger`、`output_dir`，以及通过 `DiagnosticBuildContext` 明确请求的窄能力。
+  `build_context`、`model_access`、component name 和这些 runtime 注入值不能由 YAML 覆盖。
+  需要采样的 diagnostic 在自己的私有配置中声明 shape，framework 不从独立 sample
+  workflow 或 DataBuilder 猜测。
 
 optimizer 的配置 `params` 不得包含其运行时 `params` iterable；LR scheduler 的配置
 `params` 不得包含 `optimizer`。`T_max`、`total_steps` 等具体构造参数必须显式写成确定值，

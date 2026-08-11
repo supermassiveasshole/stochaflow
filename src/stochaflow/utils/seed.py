@@ -1,8 +1,8 @@
 """Random seed helpers."""
 
 import random
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, suppress
 
 import numpy as np
 import torch
@@ -45,12 +45,68 @@ def preserve_global_rng_state(
     )
     python_state = random.getstate()
     numpy_state = np.random.get_state()
+    cpu_state = torch.random.get_rng_state().clone()
+    cuda_states = tuple(
+        (device_index, torch.cuda.get_rng_state(device_index).clone())
+        for device_index in cuda_devices
+    )
     mps_state = torch.mps.get_rng_state().clone() if preserve_mps else None
-    try:
-        with torch.random.fork_rng(devices=cuda_devices):
-            yield
-    finally:
-        random.setstate(python_state)
-        np.random.set_state(numpy_state)
+
+    def restore_states() -> list[tuple[str, BaseException]]:
+        failures: list[tuple[str, BaseException]] = []
+
+        def attempt(label: str, action: Callable[[], None]) -> None:
+            try:
+                action()
+            except BaseException as error:  # noqa: BLE001
+                failures.append((label, error))
+
+        attempt("restore Python RNG state", lambda: random.setstate(python_state))
+        attempt(
+            "restore NumPy RNG state",
+            lambda: np.random.set_state(numpy_state),
+        )
+        attempt(
+            "restore CPU Torch RNG state",
+            lambda: torch.random.set_rng_state(cpu_state),
+        )
+        for device_index, cuda_state in cuda_states:
+            attempt(
+                f"restore CUDA device {device_index} RNG state",
+                lambda index=device_index, state=cuda_state: torch.cuda.set_rng_state(
+                    state, index
+                ),
+            )
         if mps_state is not None:
-            torch.mps.set_rng_state(mps_state)
+            saved_mps_state = mps_state
+            attempt(
+                "restore MPS RNG state",
+                lambda: torch.mps.set_rng_state(saved_mps_state),
+            )
+        return failures
+
+    def add_failure_notes(
+        primary: BaseException,
+        failures: list[tuple[str, BaseException]],
+    ) -> None:
+        for label, failure in failures:
+            try:
+                detail = str(failure)
+            except BaseException:  # noqa: BLE001
+                detail = "<exception text unavailable>"
+            with suppress(BaseException):
+                BaseException.add_note(
+                    primary,
+                    f"{label}: {type(failure).__name__}: {detail}",
+                )
+
+    try:
+        yield
+    except BaseException as error:
+        add_failure_notes(error, restore_states())
+        raise
+    failures = restore_states()
+    if failures:
+        primary = failures[0][1]
+        add_failure_notes(primary, failures[1:])
+        raise primary

@@ -9,11 +9,12 @@ import torch
 from torch import nn
 
 from stochaflow.processes import DiscreteGaussianProcess
-from stochaflow.sampling import PredictionType
+from stochaflow.sampling import GaussianPrediction, PredictionType
 from stochaflow.training import (
     ClassConditionalGaussianDenoisingTrainingStrategy,
     GaussianDenoisingTrainingBuilder,
     GaussianDenoisingTrainingStrategy,
+    GaussianStepObservation,
     MetricChannelProvider,
     MetricUpdate,
     MSEObjective,
@@ -154,6 +155,22 @@ class PerfectTargetModel(nn.Module):
         return target + self.offset * 0.0
 
 
+class AutocastGaussianModel(nn.Module):
+    """Use a convolution so CPU autocast changes the model-output dtype."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.projection = nn.Conv2d(1, 1, kernel_size=1)
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+    ) -> torch.Tensor:
+        del model_time
+        return self.projection(state)
+
+
 class LearnedVarianceGaussianModel(nn.Module):
     """Return epsilon and learned-range interpolation heads."""
 
@@ -257,13 +274,31 @@ def test_gaussian_strategy_supports_all_prediction_targets(
     output = strategy.training_step(torch.full((2, 1, 2, 2), 0.25))
 
     assert output.loss.item() == pytest.approx(0.0)
+    observation = output.diagnostic_observation
+    assert isinstance(observation, GaussianStepObservation)
+    observation_tensors = (
+        observation.state_times,
+        observation.prediction.clean,
+        observation.prediction.epsilon,
+        observation.prediction.model_output,
+        observation.noise_target,
+        observation.clean_samples,
+        observation.per_sample_loss,
+    )
+    assert all(value is not None for value in observation_tensors)
+    detached_tensors = [
+        value for value in observation_tensors if isinstance(value, torch.Tensor)
+    ]
+    assert all(not value.requires_grad for value in detached_tensors)
+    assert all(value.shape[0] == 2 for value in detached_tensors)
+    assert {value.device for value in detached_tensors} == {torch.device("cpu")}
     assert torch.allclose(
-        output.diagnostics["predicted_noise"],
-        output.diagnostics["target_noise"],
+        observation.prediction.epsilon,
+        observation.noise_target,
     )
     assert torch.allclose(
-        output.diagnostics["predicted_clean"],
-        output.diagnostics["clean_samples"],
+        observation.prediction.clean,
+        observation.clean_samples,
     )
     assert isinstance(strategy, MetricChannelProvider)
     assert strategy.metric_channels == frozenset(
@@ -281,6 +316,50 @@ def test_gaussian_strategy_supports_all_prediction_targets(
     assert torch.allclose(model_output, target)
     assert torch.allclose(predicted_clean, clean)
     assert output.loss_aggregation_weight == 2
+
+
+def test_gaussian_observation_accepts_autocast_prediction_dtype() -> None:
+    process = DeterministicGaussianProcess(
+        {"name": "linear_beta", "params": {"num_timesteps": 4}}
+    )
+    strategy = GaussianDenoisingTrainingStrategy(
+        AutocastGaussianModel(),
+        process,
+        MSEObjective(),
+        prediction_type="epsilon",
+    )
+    clean = torch.zeros(2, 1, 2, 2)
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        output = strategy.training_step(clean)
+
+    observation = output.diagnostic_observation
+    assert isinstance(observation, GaussianStepObservation)
+    assert observation.clean_samples.dtype == torch.float32
+    assert observation.prediction.model_output.dtype == torch.bfloat16
+    assert observation.prediction.model_output.device == clean.device
+
+
+@pytest.mark.parametrize("integer_field", ["clean_samples", "noise_target"])
+def test_gaussian_observation_rejects_integer_sample_tensors(
+    integer_field: str,
+) -> None:
+    floating = torch.zeros(2, 1, 2, 2)
+    values: dict[str, object] = {
+        "state_times": torch.ones(2, dtype=torch.long),
+        "prediction": GaussianPrediction(
+            clean=floating,
+            epsilon=floating,
+            model_output=floating,
+        ),
+        "noise_target": floating,
+        "clean_samples": floating,
+        "per_sample_loss": torch.zeros(2),
+    }
+    values[integer_field] = torch.zeros(2, 1, 2, 2, dtype=torch.long)
+
+    with pytest.raises(TypeError, match="must use floating dtypes"):
+        GaussianStepObservation(**values)  # type: ignore[arg-type]
 
 
 def test_class_conditional_gaussian_strategy_emits_shared_gaussian_channels() -> None:
@@ -380,7 +459,11 @@ def test_gaussian_builder_composes_learned_range_recipe() -> None:
         "variance": {"mode": "learned_range"},
     }
     assert torch.isfinite(output.loss)
-    assert output.diagnostics["per_sample_loss"].shape == (2,)
+    observation = output.diagnostic_observation
+    assert isinstance(observation, GaussianStepObservation)
+    assert observation.per_sample_loss is not None
+    assert observation.per_sample_loss.shape == (2,)
+    assert not observation.per_sample_loss.requires_grad
     metric_prediction, metric_target = output.metric_updates[
         "gaussian.prediction_target"
     ].args
@@ -404,7 +487,7 @@ def test_gaussian_builder_composes_learned_range_recipe() -> None:
     assert isinstance(clean, torch.Tensor)
     assert metric_clean.shape == clean.shape == (2, 1, 2, 2)
     assert output.loss_aggregation_weight == 2
-    assert "timestep_loss_weight" not in output.diagnostics
+    assert set(output.metrics) == {"simple_loss", "variational_bound"}
 
 
 @pytest.mark.parametrize(

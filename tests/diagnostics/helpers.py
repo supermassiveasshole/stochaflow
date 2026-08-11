@@ -10,16 +10,24 @@ import torch
 from torch import nn
 
 from stochaflow.processes import DiscreteGaussianProcess
-from stochaflow.sampling import Sampler, SamplerResult, SamplingObservation
+from stochaflow.sampling import (
+    GaussianPrediction,
+    Sampler,
+    SamplerResult,
+    SamplingObservation,
+)
 from stochaflow.training import (
+    DiagnosticBuildContext,
     FitStartEvent,
     GaussianDenoisingTrainingStrategy,
+    GaussianStepObservation,
     ManagedTrainingModule,
     MSEObjective,
     TrainBatchEndEvent,
     TrainEpochEndEvent,
     TrainStepOutput,
 )
+from stochaflow.training.diagnostics.runtime import TrainingDiagnosticModelAccess
 from stochaflow.utils.logging import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
 
@@ -239,43 +247,77 @@ def trainer(model: GaussianTestAssets, *, ema=None, global_step: int = 1):
 
 
 def train_output(batch_size: int = 2) -> TrainStepOutput:
+    clean = torch.zeros(batch_size, 1, 4, 4)
+    predicted_noise = torch.zeros_like(clean)
     return TrainStepOutput(
         loss=torch.tensor(0.0),
-        diagnostics={
-            "timesteps": torch.tensor([1, 4])[:batch_size],
-            "per_sample_loss": torch.tensor([1.0, 3.0])[:batch_size],
-            "predicted_noise": torch.zeros(batch_size, 1, 4, 4),
-            "target_noise": torch.ones(batch_size, 1, 4, 4),
-            "clean_samples": torch.zeros(batch_size, 1, 4, 4),
-        },
+        diagnostic_observation=GaussianStepObservation(
+            state_times=torch.tensor([1, 4])[:batch_size],
+            prediction=GaussianPrediction(
+                clean=clean,
+                epsilon=predicted_noise,
+                model_output=predicted_noise,
+            ),
+            noise_target=torch.ones_like(clean),
+            clean_samples=clean,
+            per_sample_loss=torch.tensor([1.0, 3.0])[:batch_size],
+        ),
     )
 
 
 def fit_event(runtime, validation=None) -> FitStartEvent:
     return FitStartEvent(
-        trainer=runtime,
         train_dataloader=[],
         validation_dataloader=validation,
+        global_step=runtime.global_step,
     )
 
 
 def batch_event(runtime, *, global_step: int = 1) -> TrainBatchEndEvent:
     output = train_output()
     return TrainBatchEndEvent(
-        trainer=runtime,
-        batch=output.diagnostics["clean_samples"],
-        output=output,
+        batch=torch.zeros(2, 1, 4, 4),
         loss=0.0,
         global_step=global_step,
         epoch_index=1,
+        diagnostic_observation=output.diagnostic_observation,
     )
 
 
 def epoch_event(runtime, epoch_index: int = 1) -> TrainEpochEndEvent:
     return TrainEpochEndEvent(
-        trainer=runtime,
         epoch_index=epoch_index,
+        global_step=runtime.global_step,
         metrics={},
+    )
+
+
+def diagnostic_context(
+    runtime,
+    logger: RecordingLogger,
+    output_dir: str | Path,
+    *,
+    component_name: str = "diffusion_quality",
+) -> DiagnosticBuildContext:
+    """Build the explicit runtime context used by a Diagnostic constructor."""
+
+    access = TrainingDiagnosticModelAccess(
+        device=runtime.device,
+        model=runtime.model,
+        ema=runtime.ema,
+        managed_modules=tuple(
+            (name, asset.module)
+            for name, asset in runtime.managed_modules.items()
+            if name != "primary_model"
+        ),
+    )
+    return DiagnosticBuildContext(
+        component_name=component_name,
+        logger=logger,
+        output_dir=output_dir,
+        model_access=access,
+        _strategy=runtime.strategy,
+        _process=runtime.process,
     )
 
 
@@ -287,6 +329,7 @@ __all__ = [
     "TinyDenoiser",
     "ZeroDenoiser",
     "batch_event",
+    "diagnostic_context",
     "epoch_event",
     "fit_event",
     "gaussian_system",

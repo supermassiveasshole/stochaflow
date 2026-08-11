@@ -10,6 +10,7 @@ from stochaflow.utils.registry import RegistryError
 from .helpers import (
     RecordingLogger,
     ZeroDenoiser,
+    diagnostic_context,
     fit_event,
     gaussian_system,
     profiles,
@@ -19,8 +20,11 @@ from .helpers import (
 
 
 def _params(tmp_path) -> dict[str, Any]:
+    logger = RecordingLogger()
+    runtime = trainer(gaussian_system(ZeroDenoiser(), num_timesteps=2))
     return {
-        "logger": RecordingLogger(),
+        "build_context": diagnostic_context(runtime, logger, tmp_path),
+        "logger": logger,
         "output_dir": tmp_path,
         "sampling": {"shape": [1, 4, 4]},
         "samplers": profiles()[:1],

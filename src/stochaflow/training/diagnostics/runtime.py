@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import random
+import threading
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -35,46 +36,18 @@ from stochaflow.sampling.sampler import (
 )
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
+    DiagnosticModelAccess,
     ReconstructionFrame,
     ReconstructionResult,
     SamplingResult,
 )
+from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.training.gaussian.contracts import (
     ClassConditionalGaussianDiagnosticSemantics,
     GaussianDiagnosticSemantics,
 )
 from stochaflow.utils.registry import REGISTRIES
 from stochaflow.utils.seed import preserve_global_rng_state
-
-
-def first_tensor_from_batch(batch: Any) -> torch.Tensor | None:
-    """Find the first tensor in a common training batch structure."""
-
-    if isinstance(batch, torch.Tensor):
-        return batch
-    if isinstance(batch, Mapping):
-        for value in batch.values():
-            tensor = first_tensor_from_batch(value)
-            if tensor is not None:
-                return tensor
-        return None
-    if isinstance(batch, (tuple, list)):
-        for value in batch:
-            tensor = first_tensor_from_batch(value)
-            if tensor is not None:
-                return tensor
-    return None
-
-
-def clean_samples_from_event(output: Any, batch: Any) -> torch.Tensor | None:
-    """Prefer train-step clean samples, then fall back to the input batch."""
-
-    diagnostics = getattr(output, "diagnostics", None)
-    if isinstance(diagnostics, Mapping):
-        clean = diagnostics.get("clean_samples")
-        if isinstance(clean, torch.Tensor):
-            return clean
-    return first_tensor_from_batch(batch)
 
 
 def prepare_reference_images(images: torch.Tensor) -> torch.Tensor:
@@ -91,11 +64,18 @@ def prepare_reference_images(images: torch.Tensor) -> torch.Tensor:
 
 
 def _manual_seed(seed: int, device: torch.device) -> None:
+    if device.type not in {"cpu", "cuda", "mps"}:
+        raise ValueError(
+            "diagnostic evaluation supports CPU, CUDA, or MPS devices"
+        )
     random.seed(seed)
     np.random.seed(seed % 2**32)
-    torch.manual_seed(seed)
+    torch.random.default_generator.manual_seed(seed)
     if device.type == "cuda":
-        torch.cuda.manual_seed_all(seed)
+        with torch.cuda.device(device):
+            torch.cuda.manual_seed(seed)
+    elif device.type == "mps":
+        torch.mps.manual_seed(seed)
 
 
 def _synchronize(device: torch.device) -> None:
@@ -153,77 +133,244 @@ class SeedPolicy:
             yield
 
 
-class EvaluationGuard:
-    """Protect inference mode, model mode, EMA weights, and global RNG state."""
+class DiagnosticModelAccessCleanupError(RuntimeError):
+    """Report that protected diagnostic model state could not be restored."""
+
+
+type ModuleMode = tuple[str, nn.Module, bool, int, int]
+type ModuleRootMode = tuple[str, nn.Module, bool]
+type ModuleModeTree = tuple[ModuleRootMode, frozenset[int]]
+
+
+def _capture_module_mode_trees(
+    managed_modules: Sequence[tuple[str, nn.Module]],
+) -> tuple[tuple[ModuleModeTree, ...], tuple[ModuleMode, ...]]:
+    """Capture unique managed modules and a parent-before-child restore order."""
+
+    modes: dict[int, ModuleMode] = {}
+    edges: dict[int, set[int]] = {}
+    mode_trees: list[ModuleModeTree] = []
+    capture_order = 0
+    for name, root in managed_modules:
+        root_id = id(root)
+        if root_id in modes:
+            continue
+        reachable: set[int] = set()
+        pending: list[tuple[str, nn.Module]] = [(name, root)]
+        while pending:
+            label, module = pending.pop()
+            module_id = id(module)
+            if module_id in reachable:
+                continue
+            reachable.add(module_id)
+            existing = modes.get(module_id)
+            if existing is None:
+                modes[module_id] = (
+                    label,
+                    module,
+                    bool(module.training),
+                    0,
+                    capture_order,
+                )
+                capture_order += 1
+            children = tuple(module.named_children())
+            edges.setdefault(module_id, set()).update(
+                id(child) for _, child in children
+            )
+            for child_name, child in reversed(children):
+                pending.append((f"{label}.{child_name}", child))
+        root_mode = modes[root_id]
+        mode_trees.append(
+            ((root_mode[0], root_mode[1], root_mode[2]), frozenset(reachable))
+        )
+
+    indegrees = dict.fromkeys(modes, 0)
+    for children in edges.values():
+        for child_id in children:
+            indegrees[child_id] += 1
+    longest_depth = dict.fromkeys(modes, 0)
+    ready = [module_id for module_id, degree in indegrees.items() if degree == 0]
+    visited = 0
+    while ready:
+        module_id = ready.pop()
+        visited += 1
+        for child_id in edges.get(module_id, ()):
+            longest_depth[child_id] = max(
+                longest_depth[child_id], longest_depth[module_id] + 1
+            )
+            indegrees[child_id] -= 1
+            if indegrees[child_id] == 0:
+                ready.append(child_id)
+    if visited != len(modes):
+        raise ValueError(
+            "managed Diagnostic modules must form an acyclic module graph"
+        )
+    for module_id, mode in tuple(modes.items()):
+        modes[module_id] = (
+            mode[0],
+            mode[1],
+            mode[2],
+            longest_depth[module_id],
+            mode[4],
+        )
+    ordered_modes = tuple(
+        sorted(modes.values(), key=lambda item: (item[3], -item[4]))
+    )
+    return tuple(mode_trees), ordered_modes
+
+
+class TrainingDiagnosticModelAccess:
+    """Serialize protected diagnostic access to one managed training model."""
 
     def __init__(
         self,
-        trainer: Any,
         *,
-        seed: int,
-        use_ema: bool,
-        evaluation_modules: Sequence[nn.Module] = (),
+        device: torch.device,
+        model: nn.Module,
+        ema: ExponentialMovingAverage | None,
+        managed_modules: Sequence[tuple[str, nn.Module]],
     ) -> None:
-        self.trainer = trainer
-        self.seed = seed
-        self.use_ema = use_ema
-        self.model = trainer.model
-        self.ema_model = getattr(trainer, "ema_model", self.model)
-        self._stack = ExitStack()
-        self._ema = trainer.ema if use_ema else None
-        self._ema_stored = False
-        discovered: list[nn.Module] = [self.model, *evaluation_modules]
-        managed = getattr(trainer, "managed_modules", None)
-        if isinstance(managed, Mapping):
-            for asset in managed.values():
-                module = getattr(asset, "module", asset)
-                if isinstance(module, nn.Module):
-                    discovered.append(module)
+        self._device = torch.device(device)
+        self._model = model
+        self._ema = ema
+        discovered = (("primary_model", model), *managed_modules)
         seen: set[int] = set()
-        evaluation_module_modes: list[tuple[nn.Module, bool]] = []
-        for module in discovered:
+        modules: list[tuple[str, nn.Module]] = []
+        for name, module in discovered:
             if id(module) in seen:
                 continue
             seen.add(id(module))
-            evaluation_module_modes.append((module, bool(module.training)))
-        self._evaluation_module_modes = tuple(evaluation_module_modes)
+            modules.append((name, module))
+        self._managed_modules = tuple(modules)
+        self._lock = threading.RLock()
+        self._active = False
 
-    def __enter__(self) -> nn.Module:
-        self._stack.__enter__()
+    @property
+    def device(self) -> torch.device:
+        """Return the device used by the managed training model."""
+
+        return self._device
+
+    @property
+    def ema_available(self) -> bool:
+        """Report whether this training run owns an EMA snapshot."""
+
+        return self._ema is not None
+
+    def evaluation(
+        self,
+        *,
+        seed: int,
+        prefer_ema: bool,
+    ) -> AbstractContextManager[None]:
+        """Return one serialized, fully restored diagnostic evaluation scope."""
+
+        seed_value = cast(object, seed)
+        if isinstance(seed_value, bool) or not isinstance(seed_value, int):
+            raise TypeError("diagnostic evaluation seed must be an integer")
+        prefer_ema_value = cast(object, prefer_ema)
+        if not isinstance(prefer_ema_value, bool):
+            raise TypeError("diagnostic prefer_ema must be a boolean")
+        return DiagnosticEvaluationContext(self, seed_value, prefer_ema_value)
+
+
+class DiagnosticEvaluationContext:
+    """Implement one strict DiagnosticModelAccess evaluation scope."""
+
+    def __init__(
+        self,
+        owner: TrainingDiagnosticModelAccess,
+        seed: int,
+        prefer_ema: bool,
+    ) -> None:
+        self._owner = owner
+        self._seed = seed
+        self._prefer_ema = prefer_ema
+        self._stack = ExitStack()
+        self._module_mode_trees: list[ModuleModeTree] = []
+        self._captured_module_modes: tuple[ModuleMode, ...] = ()
+        self._ema_stored = False
+        self._entered = False
+
+    def __enter__(self) -> None:
+        owner = self._owner
+        owner._lock.acquire()
+        if owner._active:
+            owner._lock.release()
+            raise RuntimeError("diagnostic model evaluation cannot be nested")
+        owner._active = True
+        self._entered = True
         try:
+            self._stack.__enter__()
             self._stack.enter_context(torch.inference_mode())
-            self._stack.enter_context(
-                preserve_global_rng_state(self.trainer.device)
-            )
-            _manual_seed(self.seed, self.trainer.device)
-            if self._ema is not None:
-                self._ema.store(self.ema_model)
+            self._stack.enter_context(preserve_global_rng_state(owner.device))
+            _manual_seed(self._seed, owner.device)
+            if self._prefer_ema and owner._ema is not None:
+                owner._ema.store(owner._model)
                 self._ema_stored = True
-                self._ema.copy_to(self.ema_model)
-            for module, _ in self._evaluation_module_modes:
+                owner._ema.copy_to(owner._model)
+            mode_trees, self._captured_module_modes = _capture_module_mode_trees(
+                owner._managed_modules
+            )
+            for mode_tree in mode_trees:
+                (_, module, _), _ = mode_tree
+                self._module_mode_trees.append(mode_tree)
                 module.eval()
-            return self.model
-        except BaseException:
-            self._restore()
-            self._stack.close()
+        except BaseException as error:
+            self._finish(error)
             raise
+        return
 
     def __exit__(self, exc_type, exc, traceback) -> bool:
-        del exc_type, exc, traceback
-        try:
-            self._restore()
-        finally:
-            self._stack.close()
+        del exc_type, traceback
+        self._finish(exc)
         return False
 
-    def _restore(self) -> None:
-        try:
-            if self._ema is not None and self._ema_stored:
-                self._ema.restore(self.ema_model)
-                self._ema_stored = False
-        finally:
-            for module, was_training in self._evaluation_module_modes:
+    def _finish(self, body_error: BaseException | None) -> None:
+        failures: list[tuple[str, BaseException]] = []
+        affected_modules: set[int] = set()
+        for _, reachable in self._module_mode_trees:
+            affected_modules.update(reachable)
+        for name, module, was_training, _, _ in self._captured_module_modes:
+            if id(module) not in affected_modules:
+                continue
+            try:
                 module.train(was_training)
+            except BaseException as error:  # noqa: BLE001
+                failures.append((f"restore module '{name}' mode", error))
+        self._module_mode_trees.clear()
+        self._captured_module_modes = ()
+        owner = self._owner
+        if self._ema_stored:
+            assert owner._ema is not None
+            try:
+                owner._ema.restore(owner._model)
+            except BaseException as error:  # noqa: BLE001
+                failures.append(("restore raw model weights", error))
+            self._ema_stored = False
+        try:
+            self._stack.close()
+        except BaseException as error:  # noqa: BLE001
+            failures.append(("restore inference and RNG state", error))
+        if self._entered:
+            owner._active = False
+            owner._lock.release()
+            self._entered = False
+        if failures:
+            cleanup_error = DiagnosticModelAccessCleanupError(
+                "diagnostic model state restoration failed"
+            )
+            for label, error in failures:
+                try:
+                    detail = str(error)
+                except BaseException:  # noqa: BLE001
+                    detail = "<exception text unavailable>"
+                BaseException.add_note(
+                    cleanup_error,
+                    f"{label}: {type(error).__name__}: {detail}"
+                )
+            cause = body_error if body_error is not None else failures[0][1]
+            raise cleanup_error from cause
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,18 +398,16 @@ class ClassConditionalGaussianTrainingRuntime:
     variance_mode: VarianceMode = "fixed"
 
 
-def gaussian_training_runtime(trainer: Any) -> GaussianTrainingRuntime:
-    """Resolve the narrow Gaussian training capability from a Trainer."""
+def gaussian_training_runtime(
+    process: object,
+    strategy: object,
+) -> GaussianTrainingRuntime:
+    """Bind Gaussian diagnostic semantics from explicit narrow capabilities."""
 
-    model = getattr(trainer, "model", None)
-    if not isinstance(model, nn.Module):
-        raise TypeError("Gaussian diagnostics require a primary nn.Module model")
-    process = getattr(trainer, "process", None)
     if not isinstance(process, DiscreteGaussianDenoisingProcess):
         raise TypeError(
             "Gaussian diagnostics require DiscreteGaussianDenoisingProcess"
         )
-    strategy = getattr(trainer, "strategy", None)
     if not isinstance(strategy, GaussianDiagnosticSemantics):
         raise TypeError(
             "Gaussian diagnostics require GaussianDiagnosticSemantics strategy"
@@ -276,22 +421,16 @@ def gaussian_training_runtime(trainer: Any) -> GaussianTrainingRuntime:
 
 
 def class_conditional_gaussian_training_runtime(
-    trainer: Any,
+    process: object,
+    strategy: object,
 ) -> ClassConditionalGaussianTrainingRuntime:
-    """Resolve the narrow class-conditional Gaussian diagnostic capability."""
+    """Bind conditional diagnostics from explicit narrow capabilities."""
 
-    model = getattr(trainer, "model", None)
-    if not isinstance(model, nn.Module):
-        raise TypeError(
-            "class-conditional Gaussian diagnostics require a primary nn.Module"
-        )
-    process = getattr(trainer, "process", None)
     if not isinstance(process, DiscreteGaussianDenoisingProcess):
         raise TypeError(
             "class-conditional Gaussian diagnostics require "
             "DiscreteGaussianDenoisingProcess"
         )
-    strategy = getattr(trainer, "strategy", None)
     if not isinstance(strategy, ClassConditionalGaussianDiagnosticSemantics):
         raise TypeError(
             "class-conditional Gaussian diagnostics require "
@@ -752,7 +891,7 @@ class ClassConditionalSamplerRunner:
 
 def _evaluate_reconstruction(
     *,
-    trainer: Any,
+    model_access: DiagnosticModelAccess,
     seed_policy: SeedPolicy,
     clean_samples: torch.Tensor,
     timesteps: Sequence[int],
@@ -760,14 +899,13 @@ def _evaluate_reconstruction(
     use_ema: bool,
     dynamics: GaussianDenoisingDynamics,
 ) -> ReconstructionResult:
-    x0 = clean_samples[:max_samples].to(trainer.device)
+    x0 = clean_samples[:max_samples].to(model_access.device)
     if x0.ndim != 4:
         raise ValueError("reconstruction samples must have shape (N, C, H, W)")
     frames: list[ReconstructionFrame] = []
-    with EvaluationGuard(
-        trainer,
+    with model_access.evaluation(
         seed=seed_policy.base_seed,
-        use_ema=use_ema,
+        prefer_ema=use_ema,
     ):
         process = dynamics.process
         for timestep in timesteps:
@@ -775,14 +913,14 @@ def _evaluate_reconstruction(
                 (x0.shape[0],),
                 timestep,
                 dtype=torch.long,
-                device=trainer.device,
+                device=model_access.device,
             )
             noise = torch.randn_like(x0)
             noisy, _ = process.sample_marginal(x0, times, noise=noise)
             predicted_clean = dynamics.predict(noisy, times).clean
             mse = (predicted_clean - x0).square().mean()
             psnr = 10.0 * torch.log10(
-                torch.tensor(4.0, device=trainer.device)
+                torch.tensor(4.0, device=model_access.device)
                 / mse.clamp_min(1e-12)
             )
             frames.append(
@@ -801,9 +939,15 @@ def _evaluate_reconstruction(
 class ReconstructionEvaluator:
     """Evaluate fixed-timestep ``x0`` reconstruction under a protected model."""
 
-    def __init__(self, trainer: Any, seed_policy: SeedPolicy) -> None:
-        self.trainer = trainer
+    def __init__(
+        self,
+        model_access: DiagnosticModelAccess,
+        seed_policy: SeedPolicy,
+        runtime: GaussianTrainingRuntime,
+    ) -> None:
+        self.model_access = model_access
         self.seed_policy = seed_policy
+        self.runtime = runtime
 
     def __call__(
         self,
@@ -813,16 +957,15 @@ class ReconstructionEvaluator:
         max_samples: int,
         use_ema: bool,
     ) -> ReconstructionResult:
-        runtime = gaussian_training_runtime(self.trainer)
         dynamics = GaussianModelDynamics(
-            runtime.process,
-            runtime.predict_fn,
-            prediction_type=runtime.prediction_type,
-            variance_mode=runtime.variance_mode,
+            self.runtime.process,
+            self.runtime.predict_fn,
+            prediction_type=self.runtime.prediction_type,
+            variance_mode=self.runtime.variance_mode,
             clip_denoised=True,
         )
         return _evaluate_reconstruction(
-            trainer=self.trainer,
+            model_access=self.model_access,
             seed_policy=self.seed_policy,
             clean_samples=clean_samples,
             timesteps=timesteps,
@@ -837,16 +980,18 @@ class ClassConditionalReconstructionEvaluator:
 
     def __init__(
         self,
-        trainer: Any,
+        model_access: DiagnosticModelAccess,
         seed_policy: SeedPolicy,
+        runtime: ClassConditionalGaussianTrainingRuntime,
         class_labels: torch.Tensor,
     ) -> None:
         if class_labels.ndim != 1:
             raise ValueError(
                 "conditional reconstruction labels must be a 1D Tensor"
             )
-        self.trainer = trainer
+        self.model_access = model_access
         self.seed_policy = seed_policy
+        self.runtime = runtime
         self.class_labels = class_labels.detach().cpu()
 
     def __call__(
@@ -863,23 +1008,22 @@ class ClassConditionalReconstructionEvaluator:
                 "conditional reconstruction labels do not match clean samples"
             )
         labels = self.class_labels[:count].to(
-            self.trainer.device,
+            self.model_access.device,
             dtype=torch.long,
         )
-        runtime = class_conditional_gaussian_training_runtime(self.trainer)
         dynamics = GaussianModelDynamics(
-            runtime.process,
-            lambda state, model_time: runtime.predict_fn(
+            self.runtime.process,
+            lambda state, model_time: self.runtime.predict_fn(
                 state,
                 model_time,
                 labels,
             ),
-            prediction_type=runtime.prediction_type,
-            variance_mode=runtime.variance_mode,
+            prediction_type=self.runtime.prediction_type,
+            variance_mode=self.runtime.variance_mode,
             clip_denoised=True,
         )
         return _evaluate_reconstruction(
-            trainer=self.trainer,
+            model_access=self.model_access,
             seed_policy=self.seed_policy,
             clean_samples=clean_samples,
             timesteps=timesteps,
@@ -896,15 +1040,12 @@ __all__ = [
     "ClassConditionalReconstructionEvaluator",
     "ClassConditionalSamplerPool",
     "ClassConditionalSamplerRunner",
-    "EvaluationGuard",
     "GaussianTrainingRuntime",
     "ReconstructionEvaluator",
     "SamplerPool",
     "SamplerRunner",
     "SeedPolicy",
     "class_conditional_gaussian_training_runtime",
-    "clean_samples_from_event",
-    "first_tensor_from_batch",
     "gaussian_training_runtime",
     "prepare_reference_images",
 ]

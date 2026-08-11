@@ -57,13 +57,15 @@ class TrainStepOutput:
     semantics should therefore return a mean over logical samples.
 
     ``metric_updates`` contains task-owned channel payloads for configured
-    metrics. ``loss_aggregation_weight`` affects only epoch reporting; it never
-    scales the loss used for backward propagation.
+    metrics. ``diagnostic_observation`` is an opaque task-owned value forwarded
+    unchanged to training Diagnostics after a successful optimizer step. Core
+    never inspects its type or fields. ``loss_aggregation_weight`` affects only
+    epoch reporting; it never scales the loss used for backward propagation.
     """
 
     loss: torch.Tensor
     metrics: Mapping[str, ScalarMetric] = field(default_factory=dict)
-    diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    diagnostic_observation: object | None = None
     metric_updates: Mapping[str, MetricUpdate] = field(default_factory=dict)
     loss_aggregation_weight: float | int | torch.Tensor = 1.0
 
@@ -114,13 +116,6 @@ def validate_train_step_output(value: object) -> TrainStepOutput:
                 )
         elif not isinstance(metric, (int, float)):
             raise TypeError(f"TrainStepOutput metric '{name}' must be numeric")
-    diagnostics = cast(object, value.diagnostics)
-    if not isinstance(diagnostics, Mapping):
-        raise TypeError("TrainStepOutput.diagnostics must be a mapping")
-    if any(not isinstance(key, str) or not key for key in diagnostics):
-        raise ValueError(
-            "TrainStepOutput diagnostic names must be non-empty strings"
-        )
     metric_updates = cast(object, value.metric_updates)
     if not isinstance(metric_updates, Mapping):
         raise TypeError("TrainStepOutput.metric_updates must be a mapping")

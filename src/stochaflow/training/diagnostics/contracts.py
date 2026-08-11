@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 import torch
 
@@ -14,13 +15,96 @@ from stochaflow.sampling.sampler import SamplingObservation
 from stochaflow.utils.logging_contracts import ExperimentLogger
 from stochaflow.utils.registry import REGISTRIES
 
+CapabilityT = TypeVar("CapabilityT")
+
+
+@runtime_checkable
+class DiagnosticModelAccess(Protocol):
+    """Narrow protected access to the current raw or EMA model snapshot."""
+
+    @property
+    def device(self) -> torch.device:
+        """Return the device used by managed training modules."""
+
+        ...
+
+    @property
+    def ema_available(self) -> bool:
+        """Report whether an EMA snapshot can be selected."""
+
+        ...
+
+    def evaluation(
+        self,
+        *,
+        seed: int,
+        prefer_ema: bool,
+    ) -> AbstractContextManager[None]:
+        """Protect RNG, inference mode, weights, and managed module modes."""
+
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticBuildContext:
     """Runtime values available while constructing a diagnostic."""
 
+    component_name: str
     logger: ExperimentLogger
     output_dir: str | Path
+    model_access: DiagnosticModelAccess
+    _strategy: object = field(repr=False)
+    _process: object | None = field(repr=False)
+
+    def require_strategy_capability(
+        self,
+        capability: type[CapabilityT],
+    ) -> CapabilityT:
+        """Return a required narrow Strategy capability or fail construction."""
+
+        if not _supports_capability(self._strategy, capability):
+            raise TypeError(
+                f"diagnostic '{self.component_name}' requires Strategy capability "
+                f"{_capability_name(capability)}"
+            )
+        return cast(CapabilityT, self._strategy)
+
+    def optional_strategy_capability(
+        self,
+        capability: type[CapabilityT],
+    ) -> CapabilityT | None:
+        """Return an optional narrow Strategy capability when present."""
+
+        if not _supports_capability(self._strategy, capability):
+            return None
+        return cast(CapabilityT, self._strategy)
+
+    def require_process_capability(
+        self,
+        capability: type[CapabilityT],
+    ) -> CapabilityT:
+        """Return a required Process capability or fail construction."""
+
+        if not _supports_capability(self._process, capability):
+            raise TypeError(
+                f"diagnostic '{self.component_name}' requires Process capability "
+                f"{_capability_name(capability)}"
+            )
+        return cast(CapabilityT, self._process)
+
+
+def _supports_capability(value: object, capability: type[object]) -> bool:
+    try:
+        return isinstance(value, capability)
+    except TypeError as exc:
+        raise TypeError(
+            f"diagnostic capability {_capability_name(capability)} must support "
+            "runtime isinstance checks"
+        ) from exc
+
+
+def _capability_name(capability: type[object]) -> str:
+    return f"{capability.__module__}.{capability.__qualname__}"
 
 
 class ContextAwareDiagnostic(Protocol):
@@ -40,29 +124,28 @@ class ContextAwareDiagnostic(Protocol):
 class FitStartEvent:
     """Values supplied to diagnostics immediately before the training loop."""
 
-    trainer: Any
     train_dataloader: Iterable[Any]
     validation_dataloader: Iterable[Any] | None
+    global_step: int
 
 
 @dataclass(frozen=True, slots=True)
 class TrainBatchEndEvent:
     """Values supplied after a successful optimizer step."""
 
-    trainer: Any
     batch: Any
-    output: Any
     loss: float
     global_step: int
     epoch_index: int | None
+    diagnostic_observation: object | None
 
 
 @dataclass(frozen=True, slots=True)
 class TrainEpochEndEvent:
     """Values supplied after a completed training epoch."""
 
-    trainer: Any
     epoch_index: int
+    global_step: int
     metrics: Mapping[str, float]
 
 
@@ -144,7 +227,7 @@ class StepMetricContext:
     """Inputs shared by step-level metric providers."""
 
     process: Any
-    diagnostics: Mapping[str, Any]
+    diagnostic_observation: object | None
     clean_samples: torch.Tensor | None
     sample_num: int
     use_ema: bool
@@ -280,6 +363,7 @@ __all__ = [
     "DenoiserArtifactContext",
     "DenoiserArtifactProvider",
     "DiagnosticBuildContext",
+    "DiagnosticModelAccess",
     "DiagnosticProvider",
     "FitStartEvent",
     "ProviderValidationContext",

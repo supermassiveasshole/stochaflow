@@ -514,7 +514,7 @@ registries:
     entries:
       class_conditional_diffusion_quality:
         description: 使用原始 batch labels 做对齐重建，并按显式 class allocation 与 CFG 比较 Gaussian sampler profile。
-        runtime_parameters: [logger, output_dir]
+        runtime_parameters: [build_context, logger, output_dir]
         parameters:
           conditions: {description: "有序 `{class_label, count}` 列表；总数必须等于 sampling.sample_num。"}
           guidance_scale: {description: diagnostic sampler 使用的有限非负 CFG scale。}
@@ -528,7 +528,7 @@ registries:
           failure_policy: {description: 运行期错误采用 raise 或 warn；配置错误始终失败。}
       diffusion_quality:
         description: 通过可插拔 provider 记录 denoiser 指标，并在固定噪声下比较多个 sampler profile。
-        runtime_parameters: [logger, output_dir]
+        runtime_parameters: [build_context, logger, output_dir]
         parameters:
           samplers: {description: sampler profile 列表；每项声明唯一 id、Registry name、构造 params 和可选 trajectory。}
           modules: {description: 按声明顺序导入并注册第三方 diagnostic provider 的 Python module。}

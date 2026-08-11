@@ -10,8 +10,13 @@ from typing import Any, cast
 
 import torch
 
+from stochaflow.processes.gaussian.contracts import (
+    DiscreteGaussianDenoisingProcess,
+)
 from stochaflow.training.diagnostics.config import SamplerProfileConfig
 from stochaflow.training.diagnostics.contracts import (
+    DiagnosticBuildContext,
+    DiagnosticModelAccess,
     FitStartEvent,
     ReconstructionCallable,
     TrainBatchEndEvent,
@@ -32,6 +37,10 @@ from stochaflow.training.diagnostics.runtime import (
     ClassConditionalSamplerRunner,
     SeedPolicy,
     class_conditional_gaussian_training_runtime,
+)
+from stochaflow.training.gaussian.contracts import (
+    ClassConditionalGaussianDiagnosticSemantics,
+    ClassConditionalGaussianStepObservation,
 )
 from stochaflow.utils.logging_contracts import ExperimentLogger
 
@@ -57,7 +66,7 @@ def _class_allocations(
         if not isinstance(item, Mapping):
             raise TypeError(f"{path} must be a mapping")
         if set(item) != {"class_label", "count"}:
-            raise ValueError(
+            raise TypeError(
                 f"{path} must contain only class_label and count"
             )
         label = cast(object, item["class_label"])
@@ -95,19 +104,13 @@ class ClassConditionalGaussianQualityFamily:
         self,
         allocations: Sequence[DiagnosticClassAllocation],
         guidance_scale: float,
+        runtime: ClassConditionalGaussianTrainingRuntime,
     ) -> None:
         self.allocations = tuple(allocations)
         self.guidance_scale = guidance_scale
+        self.runtime = runtime
         self._last_class_labels: torch.Tensor | None = None
         self._sampler_runner: ClassConditionalSamplerRunner | None = None
-
-    def training_runtime(
-        self,
-        trainer: Any,
-    ) -> ClassConditionalGaussianTrainingRuntime:
-        """Resolve class-conditional Gaussian diagnostic semantics."""
-
-        return class_conditional_gaussian_training_runtime(trainer)
 
     def build_sampling(
         self,
@@ -132,7 +135,7 @@ class ClassConditionalGaussianQualityFamily:
             device=device,
         )
         if bool(torch.any(labels >= runtime.num_classes)):
-            raise ValueError(
+            raise TypeError(
                 "class_conditional_diffusion_quality class labels exceed "
                 "the model's num_classes"
             )
@@ -151,34 +154,20 @@ class ClassConditionalGaussianQualityFamily:
     def capture_batch(self, event: TrainBatchEndEvent) -> None:
         """Capture labels aligned with the retained clean samples."""
 
-        diagnostics = getattr(event.output, "diagnostics", None)
-        labels = (
-            diagnostics.get("class_labels")
-            if isinstance(diagnostics, Mapping)
-            else None
-        )
-        clean = (
-            diagnostics.get("clean_samples")
-            if isinstance(diagnostics, Mapping)
-            else None
-        )
-        if (
-            not isinstance(labels, torch.Tensor)
-            or labels.ndim != 1
-            or labels.dtype != torch.long
-            or not isinstance(clean, torch.Tensor)
-            or clean.ndim == 0
-            or labels.shape[0] != clean.shape[0]
+        observation = event.diagnostic_observation
+        if not isinstance(
+            observation,
+            ClassConditionalGaussianStepObservation,
         ):
-            raise ValueError(
-                "conditional diagnostic requires aligned clean_samples "
-                "and 1D long class_labels diagnostics"
+            raise TypeError(
+                "conditional diagnostic requires "
+                "ClassConditionalGaussianStepObservation"
             )
-        self._last_class_labels = labels.detach().cpu()
+        self._last_class_labels = observation.class_labels.detach().cpu()
 
     def reconstruction_evaluator(
         self,
-        trainer: Any,
+        model_access: DiagnosticModelAccess,
         seed_policy: SeedPolicy,
     ) -> ReconstructionCallable:
         """Build reconstruction semantics for the latest labeled batch."""
@@ -188,8 +177,9 @@ class ClassConditionalGaussianQualityFamily:
                 "conditional diagnostic has not captured a labeled batch"
             )
         return ClassConditionalReconstructionEvaluator(
-            trainer,
+            model_access,
             seed_policy,
+            self.runtime,
             self._last_class_labels,
         )
 
@@ -204,13 +194,9 @@ class ClassConditionalGaussianQualityFamily:
             "class-conditional reference metrics require a class-aware evaluator"
         )
 
-    def reference_image_extractor(
-        self,
-        trainer: Any,
-    ) -> Callable[[Any], torch.Tensor]:
+    def reference_image_extractor(self) -> Callable[[Any], torch.Tensor]:
         """Reject reference extraction for this unsupported evaluator."""
 
-        del trainer
         raise RuntimeError(
             "class-conditional reference metrics require a class-aware evaluator"
         )
@@ -259,9 +245,20 @@ class ClassConditionalGaussianQualityFamily:
 class ClassConditionalDiffusionQualityDiagnostic(TrainingDiagnostic):
     """Run label-aligned reconstruction and CFG sampler diagnostics."""
 
+    @classmethod
+    def context_parameters(
+        cls,
+        context: DiagnosticBuildContext,
+    ) -> Mapping[str, Any]:
+        """Request the narrow runtime capabilities used by this diagnostic."""
+
+        del cls
+        return {"build_context": context}
+
     def __init__(
         self,
         *,
+        build_context: DiagnosticBuildContext,
         logger: ExperimentLogger,
         output_dir: str | Path,
         conditions: Sequence[Mapping[str, Any]],
@@ -275,11 +272,19 @@ class ClassConditionalDiffusionQualityDiagnostic(TrainingDiagnostic):
         use_ema: bool = True,
         failure_policy: str = "raise",
     ) -> None:
+        strategy = build_context.require_strategy_capability(
+            ClassConditionalGaussianDiagnosticSemantics
+        )
+        process = build_context.require_process_capability(
+            DiscreteGaussianDenoisingProcess
+        )
+        runtime = class_conditional_gaussian_training_runtime(process, strategy)
         self.allocations = _class_allocations(conditions)
         self.guidance_scale = _guidance_scale(guidance_scale)
         family = ClassConditionalGaussianQualityFamily(
             self.allocations,
             self.guidance_scale,
+            runtime,
         )
         self._engine = GaussianQualityEngine(
             logger=logger,
@@ -294,6 +299,8 @@ class ClassConditionalDiffusionQualityDiagnostic(TrainingDiagnostic):
             failure_policy=failure_policy,
             diagnostic_name="class_conditional_diffusion_quality",
             family=family,
+            runtime=runtime,
+            model_access=build_context.model_access,
         )
         self.config = self._engine.config
         if self.config.reference.enabled:

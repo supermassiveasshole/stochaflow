@@ -1,7 +1,7 @@
 """State, RNG, and sampling runtime service tests."""
 
 import random
-from types import SimpleNamespace
+import threading
 
 import numpy as np
 import pytest
@@ -16,17 +16,32 @@ from stochaflow.training.diagnostics.config import (
     TrajectoryProviderConfig,
 )
 from stochaflow.training.diagnostics.runtime import (
-    EvaluationGuard,
+    DiagnosticModelAccessCleanupError,
     GaussianTrainingRuntime,
     SamplerPool,
     SamplerRunner,
     SeedPolicy,
+    TrainingDiagnosticModelAccess,
     gaussian_training_runtime,
     prepare_reference_images,
 )
 from stochaflow.training.ema import ExponentialMovingAverage
+from stochaflow.utils.seed import preserve_global_rng_state
 
 from .helpers import TinyDenoiser, gaussian_system, trainer
+
+
+def _model_access(runtime, *, ema=None) -> TrainingDiagnosticModelAccess:
+    return TrainingDiagnosticModelAccess(
+        device=runtime.device,
+        model=runtime.model,
+        ema=ema,
+        managed_modules=tuple(
+            (name, asset.module)
+            for name, asset in runtime.managed_modules.items()
+            if name != "primary_model"
+        ),
+    )
 
 
 class MappingSignatureModel(nn.Module):
@@ -75,7 +90,7 @@ class PredictionOnlyGaussianStrategy(TrainingStrategy):
 
 
 @pytest.mark.parametrize("device_name", ["cpu", "cuda", "mps"])
-def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
+def test_model_access_restores_weights_mode_and_rng_on_success_and_error(
     device_name,
 ) -> None:
     if device_name == "cuda" and not torch.cuda.is_available():
@@ -108,8 +123,10 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
         torch.mps.get_rng_state().clone() if device.type == "mps" else None
     )
 
-    with EvaluationGuard(runtime, seed=123, use_ema=True):
+    access = _model_access(runtime, ema=ema)
+    with access.evaluation(seed=123, prefer_ema=True):
         assert not model.inference_model.training
+        assert torch.is_inference_mode_enabled()
         random.random()
         np.random.random()
         torch.rand(4, device=device)
@@ -126,7 +143,7 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
         assert torch.equal(value, parameters_before[name])
 
     def fail_inside_guard() -> None:
-        with EvaluationGuard(runtime, seed=456, use_ema=True):
+        with access.evaluation(seed=456, prefer_ema=True):
             random.random()
             np.random.random()
             torch.rand(4, device=device)
@@ -145,6 +162,413 @@ def test_evaluation_guard_restores_weights_mode_and_rng_on_success_and_error(
         assert torch.equal(torch.mps.get_rng_state(), mps_rng_before)
     for name, value in model.named_parameters():
         assert torch.equal(value, parameters_before[name])
+
+
+def test_model_access_raw_selection_fallback_and_mixed_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assets = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    ema = ExponentialMovingAverage(assets.inference_model, decay=0.5)
+    runtime = trainer(assets, ema=ema)
+    access = _model_access(runtime, ema=ema)
+    for hidden_name in (
+        "model",
+        "trainer",
+        "optimizer",
+        "scheduler",
+        "checkpoint_manager",
+        "ema",
+    ):
+        assert not hasattr(access, hidden_name)
+    assets.objective.eval()
+    raw_parameters = {
+        name: value.detach().clone()
+        for name, value in assets.inference_model.named_parameters()
+    }
+
+    def unexpected_ema_call(module: nn.Module) -> None:
+        del module
+        raise AssertionError("raw Diagnostic evaluation must not touch EMA")
+
+    monkeypatch.setattr(ema, "store", unexpected_ema_call)
+    monkeypatch.setattr(ema, "copy_to", unexpected_ema_call)
+    monkeypatch.setattr(ema, "restore", unexpected_ema_call)
+    draws: list[torch.Tensor] = []
+    for _ in range(2):
+        with access.evaluation(seed=123, prefer_ema=False):
+            assert torch.is_inference_mode_enabled()
+            assert not assets.inference_model.training
+            assert not assets.objective.training
+            draws.append(torch.rand(3))
+
+    assert access.ema_available
+    assert torch.equal(draws[0], draws[1])
+    assert assets.inference_model.training
+    assert not assets.objective.training
+    for name, value in assets.inference_model.named_parameters():
+        assert torch.equal(value, raw_parameters[name])
+
+    no_ema_access = _model_access(trainer(assets))
+    assert not no_ema_access.ema_available
+    with no_ema_access.evaluation(seed=3, prefer_ema=True):
+        assert torch.is_inference_mode_enabled()
+
+
+@pytest.mark.parametrize("failure_stage", ["success", "body", "entry"])
+def test_model_access_restores_nested_mixed_module_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    nested = nn.Sequential(nn.ReLU(), nn.Linear(2, 2))
+    model = nn.Sequential(nn.Linear(2, 2), nested)
+    model.train()
+    model[0].eval()
+    nested[0].eval()
+    original_modes = {
+        name: module.training for name, module in model.named_modules()
+    }
+    access = TrainingDiagnosticModelAccess(
+        device=torch.device("cpu"),
+        model=model,
+        ema=None,
+        managed_modules=(("shared_nested", nested),),
+    )
+    entry_error = RuntimeError("injected nested mode entry failure")
+    if failure_stage == "entry":
+        original_train = model[0].train
+        entry_failed = False
+
+        def fail_first_eval(mode: bool = True) -> nn.Module:
+            nonlocal entry_failed
+            result = original_train(mode)
+            if not mode and not entry_failed:
+                entry_failed = True
+                raise entry_error
+            return result
+
+        monkeypatch.setattr(model[0], "train", fail_first_eval)
+
+    body_error = RuntimeError("injected nested mode body failure")
+    if failure_stage == "success":
+        with access.evaluation(seed=17, prefer_ema=False):
+            assert all(not module.training for module in model.modules())
+    elif failure_stage == "body":
+        def fail_inside_evaluation() -> None:
+            with access.evaluation(seed=17, prefer_ema=False):
+                assert all(not module.training for module in model.modules())
+                raise body_error
+
+        with pytest.raises(RuntimeError) as caught:
+            fail_inside_evaluation()
+        assert caught.value is body_error
+    else:
+        with (
+            pytest.raises(RuntimeError) as caught,
+            access.evaluation(seed=17, prefer_ema=False),
+        ):
+            pytest.fail("entry failure must prevent the context body")
+        assert caught.value is entry_error
+
+    restored_modes = {
+        name: module.training for name, module in model.named_modules()
+    }
+    assert restored_modes == original_modes
+
+
+@pytest.mark.parametrize("failure_stage", ["success", "body", "entry"])
+def test_model_access_restores_shared_descendant_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    shared = nn.ReLU()
+    left = nn.Sequential(shared)
+    right = nn.Sequential(shared)
+    model = nn.ModuleDict({"left": left, "right": right})
+    model.train()
+    left.eval()
+    right.train()
+    shared.eval()
+    modules = (model, left, right, shared)
+    original_modes = tuple(module.training for module in modules)
+    access = TrainingDiagnosticModelAccess(
+        device=torch.device("cpu"),
+        model=model,
+        ema=None,
+        managed_modules=(),
+    )
+    entry_error = RuntimeError("injected shared mode entry failure")
+    if failure_stage == "entry":
+        original_train = right.train
+        entry_failed = False
+
+        def fail_right_eval(mode: bool = True) -> nn.Module:
+            nonlocal entry_failed
+            result = original_train(mode)
+            if not mode and not entry_failed:
+                entry_failed = True
+                raise entry_error
+            return result
+
+        monkeypatch.setattr(right, "train", fail_right_eval)
+
+    body_error = RuntimeError("injected shared mode body failure")
+    if failure_stage == "success":
+        with access.evaluation(seed=19, prefer_ema=False):
+            assert all(not module.training for module in modules)
+    elif failure_stage == "body":
+        def fail_inside_evaluation() -> None:
+            with access.evaluation(seed=19, prefer_ema=False):
+                assert all(not module.training for module in modules)
+                raise body_error
+
+        with pytest.raises(RuntimeError) as caught:
+            fail_inside_evaluation()
+        assert caught.value is body_error
+    else:
+        with (
+            pytest.raises(RuntimeError) as caught,
+            access.evaluation(seed=19, prefer_ema=False),
+        ):
+            pytest.fail("entry failure must prevent the context body")
+        assert caught.value is entry_error
+
+    assert tuple(module.training for module in modules) == original_modes
+
+
+def test_model_access_does_not_seed_non_target_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    non_target_seed = 999
+
+    def broadcast_seed(seed: int) -> torch.Generator:
+        nonlocal non_target_seed
+        non_target_seed = seed
+        return torch.random.default_generator.manual_seed(seed)
+
+    monkeypatch.setattr(torch, "manual_seed", broadcast_seed)
+    access = TrainingDiagnosticModelAccess(
+        device=torch.device("cpu"),
+        model=nn.Linear(2, 2),
+        ema=None,
+        managed_modules=(),
+    )
+
+    with access.evaluation(seed=123, prefer_ema=False):
+        torch.rand(1)
+
+    assert non_target_seed == 999
+
+
+def test_model_access_attempts_every_rng_restore_after_one_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    access = TrainingDiagnosticModelAccess(
+        device=torch.device("cpu"),
+        model=nn.Linear(2, 2),
+        ema=None,
+        managed_modules=(),
+    )
+    random.seed(101)
+    np.random.seed(202)
+    torch.random.default_generator.manual_seed(303)
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.random.get_rng_state().clone()
+    original_setstate = random.setstate
+    restore_error = RuntimeError("injected Python RNG restore failure")
+
+    def fail_python_restore(state: object) -> None:
+        del state
+        raise restore_error
+
+    def consume_diagnostic_rng() -> None:
+        with access.evaluation(seed=31, prefer_ema=False):
+            random.random()
+            np.random.random()
+            torch.rand(1)
+
+    monkeypatch.setattr(random, "setstate", fail_python_restore)
+    with pytest.raises(DiagnosticModelAccessCleanupError) as caught:
+        consume_diagnostic_rng()
+    original_setstate(python_state)
+
+    assert caught.value.__cause__ is restore_error
+    np.testing.assert_equal(np.random.get_state(), numpy_state)
+    assert torch.equal(torch.random.get_rng_state(), torch_state)
+
+
+def test_rng_restore_never_masks_body_error_with_invalid_notes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body_error = RuntimeError("diagnostic callback failed")
+    object.__setattr__(body_error, "__notes__", "invalid notes storage")
+    python_state = random.getstate()
+    original_setstate = random.setstate
+
+    def fail_python_restore(state: object) -> None:
+        del state
+        raise RuntimeError("injected Python RNG restore failure")
+
+    def fail_inside_scope() -> None:
+        with preserve_global_rng_state(torch.device("cpu")):
+            raise body_error
+
+    monkeypatch.setattr(random, "setstate", fail_python_restore)
+    with pytest.raises(RuntimeError) as caught:
+        fail_inside_scope()
+    original_setstate(python_state)
+
+    assert caught.value is body_error
+
+
+def test_model_access_restores_raw_weights_when_ema_copy_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assets = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    ema = ExponentialMovingAverage(assets.inference_model, decay=0.5)
+    with torch.no_grad():
+        for parameter in assets.inference_model.parameters():
+            parameter.add_(1.0)
+    runtime = trainer(assets, ema=ema)
+    access = _model_access(runtime, ema=ema)
+    raw = {
+        name: value.detach().clone()
+        for name, value in assets.inference_model.named_parameters()
+    }
+    original_copy_to = ema.copy_to
+    copy_error = RuntimeError("injected diagnostic EMA copy failure")
+
+    def copy_to_and_fail(module: nn.Module) -> None:
+        original_copy_to(module)
+        raise copy_error
+
+    monkeypatch.setattr(ema, "copy_to", copy_to_and_fail)
+
+    with (
+        pytest.raises(RuntimeError) as caught,
+        access.evaluation(seed=7, prefer_ema=True),
+    ):
+        pass
+
+    assert caught.value is copy_error
+    for name, value in assets.inference_model.named_parameters():
+        assert torch.equal(value, raw[name])
+    assert assets.inference_model.training
+
+
+def test_model_access_restores_all_state_when_module_eval_mutates_then_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assets = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    runtime = trainer(assets)
+    access = _model_access(runtime)
+    objective = assets.objective
+    original_train = objective.train
+    entry_error = RuntimeError("injected diagnostic mode entry failure")
+    torch.manual_seed(1234)
+    rng_before = torch.random.get_rng_state().clone()
+
+    def enter_eval_and_fail(mode: bool = True) -> nn.Module:
+        result = original_train(mode)
+        if not mode:
+            raise entry_error
+        return result
+
+    monkeypatch.setattr(objective, "train", enter_eval_and_fail)
+
+    with (
+        pytest.raises(RuntimeError) as caught,
+        access.evaluation(seed=9, prefer_ema=False),
+    ):
+        pass
+
+    assert caught.value is entry_error
+    assert assets.inference_model.training
+    assert assets.process.training
+    assert objective.training
+    assert torch.equal(torch.random.get_rng_state(), rng_before)
+
+
+def test_model_access_cleanup_failure_is_fatal_and_attempts_every_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assets = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    ema = ExponentialMovingAverage(assets.inference_model, decay=0.5)
+    runtime = trainer(assets, ema=ema)
+    access = _model_access(runtime, ema=ema)
+    model_train = assets.inference_model.train
+    objective_train = assets.objective.train
+    restore_calls: list[str] = []
+    body_error = RuntimeError("diagnostic body failed")
+    ema_restore = ema.restore
+    torch.manual_seed(4321)
+    rng_before = torch.random.get_rng_state().clone()
+
+    def failing_model_restore(mode: bool = True) -> nn.Module:
+        result = model_train(mode)
+        if mode:
+            restore_calls.append("model")
+            raise RuntimeError("model mode restore failed")
+        return result
+
+    def failing_objective_restore(mode: bool = True) -> nn.Module:
+        result = objective_train(mode)
+        if mode:
+            restore_calls.append("objective")
+            raise RuntimeError("objective mode restore failed")
+        return result
+
+    def failing_ema_restore(module: nn.Module) -> None:
+        ema_restore(module)
+        restore_calls.append("ema")
+        raise RuntimeError("EMA restore failed")
+
+    monkeypatch.setattr(assets.inference_model, "train", failing_model_restore)
+    monkeypatch.setattr(assets.objective, "train", failing_objective_restore)
+    monkeypatch.setattr(ema, "restore", failing_ema_restore)
+
+    with (
+        pytest.raises(DiagnosticModelAccessCleanupError) as caught,
+        access.evaluation(seed=11, prefer_ema=True),
+    ):
+        raise body_error
+
+    assert caught.value.__cause__ is body_error
+    assert restore_calls == ["objective", "model", "ema"]
+    notes = "\n".join(caught.value.__notes__)
+    assert "objective mode restore failed" in notes
+    assert "model mode restore failed" in notes
+    assert "EMA restore failed" in notes
+    assert assets.inference_model.training
+    assert assets.objective.training
+    assert torch.equal(torch.random.get_rng_state(), rng_before)
+
+
+def test_model_access_serializes_threads_and_rejects_same_thread_reentry() -> None:
+    assets = gaussian_system(TinyDenoiser(), num_timesteps=2)
+    runtime = trainer(assets)
+    access = _model_access(runtime)
+    attempting = threading.Event()
+    entered = threading.Event()
+
+    def worker() -> None:
+        attempting.set()
+        with access.evaluation(seed=5, prefer_ema=False):
+            entered.set()
+
+    with access.evaluation(seed=5, prefer_ema=False):
+        with (
+            pytest.raises(RuntimeError, match="cannot be nested"),
+            access.evaluation(seed=5, prefer_ema=False),
+        ):
+            pass
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert attempting.wait(timeout=2.0)
+        assert not entered.is_set()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert entered.is_set()
 
 
 def test_seed_policy_is_stable_and_uses_common_initial_noise() -> None:
@@ -281,7 +705,8 @@ def test_gaussian_diagnostic_uses_strategy_model_adapter() -> None:
     model = MappingSignatureModel()
     strategy = MappingGaussianStrategy(model)
     resolved = gaussian_training_runtime(
-        SimpleNamespace(model=model, process=assets.process, strategy=strategy)
+        assets.process,
+        strategy,
     )
     profile = SamplerProfileConfig(
         id="adapted",
@@ -305,9 +730,6 @@ def test_gaussian_diagnostic_rejects_prediction_type_only_strategy() -> None:
 
     with pytest.raises(TypeError, match="GaussianDiagnosticSemantics"):
         gaussian_training_runtime(
-            SimpleNamespace(
-                model=assets.inference_model,
-                process=assets.process,
-                strategy=PredictionOnlyGaussianStrategy(),
-            )
+            assets.process,
+            PredictionOnlyGaussianStrategy(),
         )

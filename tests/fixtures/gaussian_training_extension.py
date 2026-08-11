@@ -83,7 +83,7 @@ class PluginScaledGaussianStrategy(TrainingStrategy):
         )
         return TrainStepOutput(
             loss=loss,
-            diagnostics={
+            diagnostic_observation={
                 "timestep_loss_weight": torch.full_like(
                     per_sample,
                     self.scale,

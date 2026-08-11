@@ -1170,22 +1170,19 @@ class Trainer:
         self,
         *,
         batch: Batch,
-        output: TrainStepOutput,
+        diagnostic_observation: object | None,
         loss: float,
         global_step: int,
         epoch_index: int | None,
     ) -> None:
         event = TrainBatchEndEvent(
-            trainer=self,
             batch=batch,
-            output=output,
             loss=loss,
             global_step=global_step,
             epoch_index=epoch_index,
+            diagnostic_observation=diagnostic_observation,
         )
-        for diagnostic in self.diagnostics:
-            with preserve_global_rng_state(self.device):
-                diagnostic.on_train_batch_end(event)
+        self._dispatch_diagnostics("on_train_batch_end", event)
 
     def _emit_fit_start_diagnostics(
         self,
@@ -1194,13 +1191,11 @@ class Trainer:
         validation_dataloader: Iterable[Batch] | None,
     ) -> None:
         event = FitStartEvent(
-            trainer=self,
             train_dataloader=train_dataloader,
             validation_dataloader=validation_dataloader,
+            global_step=self.global_step,
         )
-        for diagnostic in self.diagnostics:
-            with preserve_global_rng_state(self.device):
-                diagnostic.on_fit_start(event)
+        self._dispatch_diagnostics("on_fit_start", event)
 
     def _emit_epoch_diagnostics(
         self,
@@ -1211,17 +1206,30 @@ class Trainer:
         """Notify observation-only diagnostics after one completed epoch."""
 
         event = TrainEpochEndEvent(
-            trainer=self,
             epoch_index=epoch_index,
+            global_step=self.global_step,
             metrics=MappingProxyType(dict(metrics)),
         )
+        self._dispatch_diagnostics("on_train_epoch_end", event)
+
+    def _dispatch_diagnostics(
+        self,
+        callback_name: str,
+        event: object,
+    ) -> None:
+        """Invoke one callback with RNG isolation and a strict None result."""
+
         for diagnostic in self.diagnostics:
+            callback = cast(
+                Callable[[object], object],
+                getattr(diagnostic, callback_name),
+            )
             with preserve_global_rng_state(self.device):
-                result = diagnostic.on_train_epoch_end(event)
+                result = callback(event)
             if result is not None:
                 raise TypeError(
                     f"diagnostic {type(diagnostic).__name__!r} "
-                    "on_train_epoch_end() must return None"
+                    f"{callback_name}() must return None"
                 )
 
     def _finish_optimizer_step(self) -> tuple[bool, float | None]:
@@ -1490,7 +1498,9 @@ class Trainer:
                     optimizer_steps += 1
                     self._emit_batch_diagnostics(
                         batch=result.final_batch,
-                        output=result.final_output,
+                        diagnostic_observation=(
+                            result.final_output.diagnostic_observation
+                        ),
                         loss=result.loss,
                         global_step=self.global_step,
                         epoch_index=epoch_index,

@@ -126,6 +126,7 @@ TrainingStrategy 解释 batch 并定义一次训练计算：
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 
 import torch
@@ -145,6 +146,12 @@ from stochaflow.extensions import (
 )
 
 from .model import ConditionalDenoiser
+
+
+@dataclass(frozen=True, slots=True)
+class SuperResolutionStepObservation:
+    state_times: torch.Tensor
+    per_sample_loss: torch.Tensor | None
 
 
 class ConditionalGaussianStrategy(TrainingStrategy):
@@ -194,10 +201,16 @@ class ConditionalGaussianStrategy(TrainingStrategy):
             prediction,
             target,
         )
-        diagnostics: dict[str, Any] = {"state_times": state_times.detach()}
-        if per_sample is not None:
-            diagnostics["per_sample_loss"] = per_sample.detach()
-        return TrainStepOutput(loss=loss, diagnostics=diagnostics)
+        observation = SuperResolutionStepObservation(
+            state_times=state_times.detach(),
+            per_sample_loss=(
+                None if per_sample is None else per_sample.detach()
+            ),
+        )
+        return TrainStepOutput(
+            loss=loss,
+            diagnostic_observation=observation,
+        )
 
 
 @REGISTRIES.training_builders.register("my-sr.gaussian-super-resolution")

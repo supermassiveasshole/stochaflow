@@ -765,13 +765,41 @@ def test_direct_builtin_diagnostic_activates_providers_and_sampler_pool() -> Non
                 ")",
                 (
                     "from stochaflow.training.diagnostics.runtime import "
-                    "ClassConditionalSamplerPool"
+                    "ClassConditionalSamplerPool, TrainingDiagnosticModelAccess"
+                ),
+                "from stochaflow.processes import DiscreteGaussianProcess",
+                (
+                    "from stochaflow.training import DiagnosticBuildContext, "
+                    "GaussianDenoisingTrainingStrategy, MSEObjective"
                 ),
                 "from stochaflow.utils.logging import NullLogger",
                 "from stochaflow.utils.registry import REGISTRIES",
+                "class ActivationProbeModel(torch.nn.Module):",
+                "    def forward(self, state, model_time):",
+                "        del model_time",
+                "        return torch.zeros_like(state)",
+                "model = ActivationProbeModel()",
+                "process = DiscreteGaussianProcess({",
+                "    'name': 'linear_beta',",
+                "    'params': {'num_timesteps': 4},",
+                "})",
+                "strategy = GaussianDenoisingTrainingStrategy(",
+                "    model, process, MSEObjective(), prediction_type='epsilon'",
+                ")",
+                "logger = NullLogger()",
+                "model_access = TrainingDiagnosticModelAccess(",
+                "    device=torch.device('cpu'), model=model, ema=None,",
+                "    managed_modules=(),",
+                ")",
+                "build_context = DiagnosticBuildContext(",
+                "    component_name='diffusion_quality', logger=logger,",
+                "    output_dir='unused', model_access=model_access,",
+                "    _strategy=strategy, _process=process,",
+                ")",
                 "assert DIAGNOSTIC_PROVIDERS.step_metrics.names() == ()",
                 "DiffusionQualityDiagnostic(",
-                "    logger=NullLogger(), output_dir='unused',",
+                "    build_context=build_context, logger=logger,",
+                "    output_dir='unused',",
                 "    samplers=[{'id': 'ddpm', 'name': 'ddpm'}],",
                 "    sampling={'shape': [1, 4, 4]},",
                 ")",

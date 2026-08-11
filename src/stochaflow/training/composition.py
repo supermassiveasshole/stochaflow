@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, cast, get_type_hints
 
+import torch
 from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -21,11 +23,14 @@ from stochaflow.training.builder import (
     TrainingPlan,
     build_training_plan,
     trainable_parameters,
+    training_module_roots,
 )
 from stochaflow.training.diagnostics.contracts import (
     DiagnosticBuildContext,
+    DiagnosticModelAccess,
     TrainingDiagnostic,
 )
+from stochaflow.training.diagnostics.runtime import TrainingDiagnosticModelAccess
 from stochaflow.training.ema import ExponentialMovingAverage
 from stochaflow.training.metric_binding import TrainingMetricRuntime
 from stochaflow.training.optimization import build_lr_scheduler, build_optimizer
@@ -111,14 +116,73 @@ def build_diagnostics(
     logger: ExperimentLogger,
     output_dir: str,
 ) -> list[TrainingDiagnostic]:
-    """Instantiate training diagnostic plugins from configuration."""
+    """Instantiate diagnostics without a complete Training composition.
 
-    context = DiagnosticBuildContext(
+    Diagnostics that request model, Strategy, or Process capabilities fail at
+    construction. The complete training operation injects those capabilities
+    through its private composition path.
+    """
+
+    return _build_diagnostics(
+        configs,
         logger=logger,
         output_dir=output_dir,
+        model_access=UnavailableDiagnosticModelAccess(),
+        strategy=UnavailableDiagnosticCapability(),
+        process=None,
     )
+
+
+class UnavailableDiagnosticModelAccess:
+    """Reject model use outside complete Training runtime composition."""
+
+    @property
+    def device(self) -> torch.device:
+        raise RuntimeError(
+            "DiagnosticModelAccess requires complete Training composition"
+        )
+
+    @property
+    def ema_available(self) -> bool:
+        return False
+
+    def evaluation(
+        self,
+        *,
+        seed: int,
+        prefer_ema: bool,
+    ) -> AbstractContextManager[None]:
+        del seed, prefer_ema
+        raise RuntimeError(
+            "DiagnosticModelAccess requires complete Training composition"
+        )
+
+
+class UnavailableDiagnosticCapability:
+    """Represent unavailable Strategy capabilities in legacy construction."""
+
+
+def _build_diagnostics(
+    configs: list[ComponentConfig],
+    *,
+    logger: ExperimentLogger,
+    output_dir: str,
+    model_access: DiagnosticModelAccess,
+    strategy: object,
+    process: object | None,
+) -> list[TrainingDiagnostic]:
+    """Instantiate diagnostics with explicit runtime-owned capabilities."""
+
     diagnostics: list[TrainingDiagnostic] = []
     for diagnostic_config in configs:
+        context = DiagnosticBuildContext(
+            component_name=diagnostic_config.name,
+            logger=logger,
+            output_dir=output_dir,
+            model_access=model_access,
+            _strategy=strategy,
+            _process=process,
+        )
         diagnostic_cls = REGISTRIES.diagnostics.resolve(diagnostic_config.name)
         context_parameters = getattr(
             diagnostic_cls,
@@ -136,8 +200,49 @@ def build_diagnostics(
                     f"diagnostic '{diagnostic_config.name}' context_parameters "
                     "must return a mapping"
                 )
+            invalid_keys = sorted(
+                repr(key)
+                for key in provided
+                if not isinstance(key, str) or not key
+            )
+            if invalid_keys:
+                raise RegistryError(
+                    f"diagnostic '{diagnostic_config.name}' context_parameters "
+                    "returned invalid key(s): " + ", ".join(invalid_keys)
+                )
+            protected = sorted(
+                set(provided).intersection({"logger", "output_dir", "model_access"})
+            )
+            if protected:
+                raise RegistryError(
+                    f"diagnostic '{diagnostic_config.name}' context_parameters "
+                    "cannot replace runtime parameter(s): "
+                    + ", ".join(protected)
+                )
+            if (
+                "build_context" in provided
+                and provided["build_context"] is not context
+            ):
+                raise RegistryError(
+                    f"diagnostic '{diagnostic_config.name}' context_parameters "
+                    "must return its supplied DiagnosticBuildContext"
+                )
             runtime_params.update(provided)
         conflicts = sorted(set(diagnostic_config.params).intersection(runtime_params))
+        reserved_conflicts = sorted(
+            set(diagnostic_config.params).intersection(
+                {
+                    "build_context",
+                    "component_name",
+                    "logger",
+                    "model_access",
+                    "output_dir",
+                    "process",
+                    "strategy",
+                }
+            )
+        )
+        conflicts = sorted(set(conflicts).union(reserved_conflicts))
         if conflicts:
             raise RegistryError(
                 f"diagnostic '{diagnostic_config.name}' config cannot override "
@@ -221,10 +326,20 @@ def build_training_components(
         experiment=config.experiment,
         resolved_config=config,
     )
-    diagnostics = build_diagnostics(
+    managed_diagnostic_modules = training_module_roots(plan)
+    diagnostic_model_access = TrainingDiagnosticModelAccess(
+        device=device,
+        model=plan.primary_model,
+        ema=ema,
+        managed_modules=managed_diagnostic_modules[1:],
+    )
+    diagnostics = _build_diagnostics(
         config.diagnostics,
         logger=logger,
         output_dir=config.experiment.output_dir,
+        model_access=diagnostic_model_access,
+        strategy=plan.strategy,
+        process=process,
     )
     metric_runtime = TrainingMetricRuntime(
         config.metrics,

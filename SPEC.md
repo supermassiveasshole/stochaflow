@@ -4,7 +4,7 @@
 >
 > Applies to: the current source tree
 >
-> Last reviewed: 2026-08-09
+> Last reviewed: 2026-08-11
 
 This document defines the product-level contract of Stochaflow: what the
 framework is responsible for, which observable guarantees supported workflows
@@ -284,8 +284,17 @@ public contract.
 - Logging backends and artifact writers MUST be replaceable integrations; core
   MUST NOT absorb their external dashboard, query, retention, or access-control
   planes.
-- Diagnostics MUST declare cadence, assets, failure policy, and any task-specific
-  invocation capability they consume.
+- Training Diagnostic events MUST carry observed facts rather than a Trainer or
+  full step result. Strategy-owned Diagnostic observations MUST remain opaque to
+  core and MUST NOT imply a cross-family observation schema.
+- A Diagnostic that invokes the task model MUST receive protected model access
+  and any task-specific Strategy or Process behavior through explicit narrow
+  capabilities validated during construction. Protected access MUST isolate RNG,
+  raw/EMA selection, inference mode, and managed-module modes, then attempt every
+  restoration even when execution or another restoration fails.
+- A Diagnostic MUST declare cadence, additional assets, or a degradable failure
+  policy only when its concrete behavior owns that concern. The framework MUST
+  NOT require empty universal Diagnostic declarations.
 - Failures MUST be visible and attributable. Optional diagnostics MAY degrade
   according to an explicit policy, but core state publication MUST remain
   correct.
