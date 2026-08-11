@@ -1,151 +1,62 @@
-# Sampling artifact 容量边界
+# Sampling 结果需要多少内存
 
-## 决策摘要
+一次采样究竟会占多少内存，不能只看 `batch_size`。当前 sampling runtime 会先让
+`SamplingBuilder.run()` 返回完整的 `SamplingOutput`，等所有 sample batch 和可选
+trajectory 都在内存中以后，才把结果交给 writer 保存。内置 Standard Builder 会把
+writer 需要的 Tensor 转到 CPU，但自定义 Builder 的公共
+`SamplingBatch.samples: Any` 契约并不强制设备。
 
-当前 sampling lifecycle 是**整体物化式**：`SamplingBuilder.run()` 先返回完整
-`SamplingOutput`，其中所有 sample batch 和可选 trajectory 都已存在；随后 runtime
-才把同一个完整 `SamplingArtifactContext` 依次交给 writer。内置 Standard Builder
-会将 writer-ready Tensor 转存到 CPU；公共 `SamplingBatch.samples: Any` contract 不强制
-自定义 Builder 的设备。
+这意味着减小 `batch_size` 可以减轻模型单次前向的 accelerator 工作集，却不会减少
+固定 `num_samples` 对应的最终 CPU 结果。打开 trajectory 后，每一份保留的中间状态
+还会让整批结果再驻留一次；writer 拼接和编码时则可能需要额外副本。先做容量投影，
+再决定样本数、trajectory 间隔和 writer，比运行到一半才发现内存不足更可靠。
 
-这个 contract 适合有界的离线采样，但不是 streaming contract：
+## 从 shape 算出最低占用
 
-- Builder 返回前不会把 batch 逐个交给 writer；
-- writer 可以逐 batch 编码已收到的数据，但不能消除
-  `SamplingOutput` 在 writer 开始前的整体驻留；
-- 当前没有 `begin/write_batch/finish`、sink 或自定义 streaming writer 生命周期。
+设 $N$ 是样本数，$P$ 是单样本 Tensor 的元素数（不含 batch 维），$d$ 是每个元素的
+字节数。一份完整 state snapshot 的原始 Tensor payload 是：
 
-因此，本文把 Physics AI 参考案例限定为“全量 final-only 结果 +
-独立的小样本 trajectory preview”。全量 dense trajectory 不在当前支持
-边界内。若未来出现真实需求，应先设计新的增量 lifecycle，不应让
-Builder 越过 writer 职责直接写文件，也不应把当前 writer 误称为
-streaming。
+$$
+Q = N P d.
+$$
 
-## 可计算的驻留下界
-
-设：
-
-- $N$ 是样本数；
-- $P$ 是单样本 Tensor 的元素数，不含 batch 维；
-- $d$ 是每个元素的字节数；
-- $Q = N P d$ 是一份全量 state snapshot 的 raw Tensor payload；
-- $K$ 是 accepted solver step 数；
-- $e$ 是 `trajectory.every_steps`。
-
-trajectory 会强制保留 initial 和 final，并保留每个能被 $e$ 整除的
-accepted step。当 $K>0$ 时，保留的 snapshot 数为：
+若 solver 接受了 $K$ 步，`trajectory.every_steps` 为 $e$，trajectory 会保留 initial、
+final，以及每个能被 $e$ 整除的 accepted step。当 $K>0$ 时，保留的 snapshot 数是：
 
 $$
 S = 1 + \left\lceil \frac{K}{e} \right\rceil.
 $$
 
-对当前内置 Tensor 路径：
+对当前内置 Tensor 路径，可以先用下面的下界判断一个请求是否明显过大：
 
 | 阶段 | final-only | 启用 trajectory |
 | --- | ---: | ---: |
-| Builder 返回后的 raw payload | $Q$ | $Q(1+S)$ |
+| Builder 返回后的原始 payload | $Q$ | $Q(1+S)$ |
 | `tensor` writer 的结构性峰值下界 | $2Q$ | $Q(1+3S)$ |
-| `samples.pt` + `trajectory.pt` raw payload | $Q$ | $Q(1+S)$ |
+| `samples.pt` 与 `trajectory.pt` 的原始 payload | $Q$ | $Q(1+S)$ |
 
-`tensor` writer 会先临时拼接 sample batch，并在 `torch.save()` 返回后释放该
-Tensor 引用；随后它为每个 snapshot 拼接 batch，再将所有 snapshot `stack`
-成一个 Tensor。两阶段峰值分别为 $2Q+SQ$ 和 $Q+3SQ$；因为 $S\ge 2$，
-表中 tensor 路径取后者。`image` writer 则会把拼接后的 sample Tensor 保留到
-trajectory 组装阶段，因此该路径的结构性下界是 $2Q+3SQ$，此外还有
-PNG/GIF 编码开销。
+`tensor` writer 会先拼接所有 sample batch，再逐个拼接 trajectory snapshot，最后把
+snapshot stack 成一个 Tensor。因此，writer 开始工作并不代表 Builder 的完整结果已经
+释放。`image` writer 还会保留拼接后的 sample Tensor，并产生网格、归一化和 PNG/GIF
+编码所需的临时内存。
 
-这些数字是根据当前数据流得到的**逻辑 payload 和分配下界**，不是
-进程 RSS 的跨平台保证。实际 RSS 还包含 allocator、serializer、Python
-object、数据源、模型和 OS page cache。`.pt`/`.npy` 实际文件也会有
-header 和 serialization overhead。
+这些数值是由当前数据流得到的逻辑 payload 和分配下界，不是进程 RSS 或显存的跨平台
+保证。真实运行还包含模型 activation、allocator、serializer、Python object、backend
+workspace 和 OS page cache；文件也会有 header 与编码开销。
 
-## Physics reconstruction 参考 profile
+## 先投影，再运行小规模基准
 
-Physics AI 参考案例使用二维 Kolmogorov flow reconstruction：
+仓库在 `benchmarks/sampling_capacity_profiles.yaml` 中保留几种与具体任务无关的
+profile：
 
-- 测试集是 4 条时间序列，每条 320 帧；
-- 每个 state 由连续 3 帧组成，shape 为 `[3, 256, 256]`；
-- 滑动窗口后 $N=4(320-2)=1272$；
-- state 为 float32，因此一份全量 3-channel snapshot 为
-  `1,000,341,504 B = 954 MiB = 0.931640625 GiB`；
-- 只保留中心物理帧时，全量 payload 为
-  `333,447,168 B = 318 MiB = 0.310546875 GiB`。
-
-容量投影使用两种 solver 长度：
-
-| profile | partial-noise time | accepted steps | 主输出 trajectory |
-| --- | ---: | ---: | --- |
-| baseline DFSR | 240 | 30 | 关闭 |
-| physics-guided DFSR | 320 | 40 | 关闭 |
-
-例如 batch 8 和 batch 1 的单份 device state payload 分别只是 6 MiB 和
-0.75 MiB，但 sampling batch size 不改变全部 final output 的总 payload，也不能代表
-accelerator 峰值；模型 activation、physics residual autograd 和 backend workspace 必须在
-目标设备上实测。checked-in production config 和目标设备容量测试才是实际 batch size 的
-权威。
-
-容量验收默认按最保守的 3-channel final output 计算：Builder 结束时
-保留 0.9316 GiB，内置 `tensor` writer 的结构性峰值下界为
-1.8633 GiB。真实领域 writer 可以只接收 Builder 归一化后的中心涡量场：
-Builder 先在每个 batch 上计算需要的 L2/PDE 指标，再丢弃不需要的两个
-边界帧，仅将中心帧放入 writer-ready `SamplingBatch`。这时一份结果是
-318 MiB。若同时持久化 low-resolution input、reference 和 reconstruction
-三份中心场，raw payload 合计约 954 MiB。
-
-这种领域归一化会减少物化数据，但仍然不是 streaming：writer 仍在
-Builder 返回所有中心场 batch 后才开始。
-
-## 为什么不支持全量 dense trajectory
-
-| profile | $K/e$ | $S$ | Builder raw payload | `tensor` writer 结构性峰值下界 | raw artifact payload |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| DFSR dense | 30/1 | 31 | 29.8125 GiB | 87.5742 GiB | 29.8125 GiB |
-| guided DFSR dense | 40/1 | 41 | 39.1289 GiB | 115.5234 GiB | 39.1289 GiB |
-| DFSR every 10 | 30/10 | 4 | 4.6582 GiB | 12.1113 GiB | 4.6582 GiB |
-| guided DFSR every 10 | 40/10 | 5 | 5.5898 GiB | 14.9063 GiB | 5.5898 GiB |
-
-参考实现本身也不保存 reverse-state trajectory：它每个 accepted step 后丢弃
-旧 state，只纪录 batch 聚合的 L2/PDE 标量。“40 条 trajectory”指物理数据的
-时间序列，不是 40 份 reverse sampling snapshot。
-
-因此，`1272 x [3, 256, 256]` 的全量 dense trajectory 属于当前 contract
-的明确非支持场景。降低 sampling batch size 只会减少 device-side 单次工作集，
-不会改变全部 CPU trajectory 在 writer 前整体驻留的事实。
-
-## 独立 trajectory preview
-
-trajectory 可以在与主重建分开的采样调用中生成。Physics AI 参考项目
-对 preview 使用以下容量限制：
-
-- `sample.num_samples <= 8`；
-- `trajectory.every_steps >= 10`；
-- accepted steps 不超过主 profile 的 40；
-- preview 可以用 tensor/image writer，但不与 1272-sample 主 artifact 合并。
-
-对 8 个 `[3, 256, 256]` float32 sample，每个 snapshot 为 6 MiB。30 步
-preview 保留 4 份 snapshot，Builder/raw artifact payload 为 30 MiB，`tensor`
-writer 结构性峰值下界为 78 MiB。40 步 preview 保留 5 份 snapshot，
-对应为 36 MiB 和 96 MiB。image writer 的实际峰值和文件大小仍需在
-目标主机上测量，并保存在本地报告或外部实验跟踪系统中。
-
-## 验收证据的层级
-
-| 证据 | 可以得出的结论 | 不能得出的结论 |
+| profile | 用途 | 是否实际分配完整 Tensor |
 | --- | --- | --- |
-| shape/count/dtype 与上述公式 | raw payload、snapshot 数和必需的逻辑驻留 | 某种硬件一定不 OOM |
-| 当前 Builder/Writer 数据流 | 整体物化和 `cat`/`stack` 带来的结构性分配下界 | allocator 和 serializer 的精确额外开销 |
-| 指定主机的 RSS/device 基准 | 该主机、该 backend 和该 writer 的当次容量证据 | Linux/CUDA/MPS/其他 PyTorch 版本的跨平台保证 |
-| writer 产物的实际字节数 | 指定格式、编码器和数据的存储成本 | 其他数据分布、压缩级别或文件系统的成本 |
+| `ci_smoke` | 很小的本地和 CI 生命周期检查 | 是 |
+| `field3d_preview` | 小规模三维场与 trajectory 写入 | 是 |
+| `high_resolution_1024_projection` | 高分辨率图像与长 trajectory 的容量投影 | 否 |
+| `field3d_dense_projection` | 较大三维场与长 trajectory 的容量投影 | 否 |
 
-记录主机基准时，至少要保存 OS、Python/PyTorch 版本、device/backend、
-CPU/GPU 内存、dtype、shape、sample/batch 数、accepted steps、trajectory
-间隔、writer 和产物字节数。RSS、accelerator allocated/reserved、wall time 和
-throughput 都是**参考主机证据**，不应写成通用容量保证。
-
-### 运行本地主机基准
-
-受版本控制的 profile 位于 `benchmarks/sampling_capacity_profiles.yaml`。先查看
-可执行 profile 和只做数学投影的 profile：
+先查看当前 profile：
 
 ```bash
 uv run python tools/benchmark_sampling_capacity.py \
@@ -153,65 +64,70 @@ uv run python tools/benchmark_sampling_capacity.py \
   --list
 ```
 
-下列命令在 fresh subprocess 中分别运行 full final-only 和小样本 preview，
-同时包含 image/GIF、dense stress、3D 小样本和只做数学投影的大 profile，
-并保存机器可读的本地报告：
+只想检查公式和报告格式时，可以运行很小的 smoke profile：
 
 ```bash
 uv run python tools/benchmark_sampling_capacity.py \
   --profiles benchmarks/sampling_capacity_profiles.yaml \
-  --profile dfsr_final \
-  --profile dfsr_trajectory_preview \
-  --profile dfsr_image_preview \
-  --profile dfsr_dense_trajectory_stress \
-  --profile field3d_preview \
+  --profile ci_smoke \
+  --device cpu \
+  --result outputs/benchmarks/sampling-capacity-smoke.json
+```
+
+投影 profile 不会分配声明中的大 Tensor。下面的命令可以安全比较高分辨率图像和三维场
+请求的逻辑 payload：
+
+```bash
+uv run python tools/benchmark_sampling_capacity.py \
+  --profiles benchmarks/sampling_capacity_profiles.yaml \
   --profile high_resolution_1024_projection \
   --profile field3d_dense_projection \
-  --profile dfsr_full_trajectory_projection \
   --device cpu \
-  --result outputs/benchmarks/sampling-capacity.json
+  --result outputs/benchmarks/sampling-capacity-projection.json
 ```
 
-更换 `--device` 会得到新的主机/backend 证据，不能把它当作对其他报告或平台的
-“通过性增强”。投影 profile 不分配对应的大 Tensor，只根据 shape、dtype、sample
-数和 observation 数计算上述结构性 payload。
-
-### 本地结果与版本控制边界
-
-机器相关的 RSS、显存、wall time、throughput 和 artifact size 是运行产物，不属于
-版本化源码。请将结果写到已忽略的 `outputs/benchmarks/`，不要提交 JSON、日志或由
-特定主机测得的汇总表：
+需要观察当前主机上的实际 writer 峰值时，再运行有界的三维场 profile：
 
 ```bash
 uv run python tools/benchmark_sampling_capacity.py \
   --profiles benchmarks/sampling_capacity_profiles.yaml \
-  --profile dfsr_final \
+  --profile field3d_preview \
   --device cpu \
-  --result outputs/benchmarks/sampling-capacity.json
+  --result outputs/benchmarks/sampling-capacity-field3d.json
 ```
 
-仓库只版本化工具、profile 和对投影公式/执行生命周期的测试。CI 不读取历史机器结果，
-也不把某台主机的测量值作为跨平台硬阈值。需要比较两次运行时，应在同一受控环境中保留
-本地报告或交给外部实验跟踪系统，而不是把报告提交到 Git。
+每个可执行 profile 都在 fresh subprocess 中运行。工具在启动 worker 前会把投影工作集
+和原始 artifact payload 与当前内存、临时文件系统预算比较；默认超过 50% 就拒绝，
+并为每个 worker 应用 timeout。`--allow-over-budget` 只表示用户读过投影后接受风险，
+不会降低实际占用，也不会把报告中的 70% 参考线变成安全保证。
 
-工具在启动 worker 前会将投影工作集和 raw artifact 与当前内存/临时文件系统
-预算比较，默认在超过 50% 时拒绝，并对每个 fresh worker 应用 profile timeout。
-`--allow-over-budget` 只是用户阅读投影后的显式风险接受，不会改变 70% 报告参考线。
-磁盘预检会按 writer 数累加 input-sized raw payload；自定义格式可以产生更大的
-artifact，因此这是防误操作 guard，不是通用磁盘上界。
+## 怎样阅读和保存结果
 
-## Physics AI 参考项目的使用约束
+shape、count、dtype 和上面的公式只能证明逻辑驻留下界；某台机器上的 RSS、device
+allocated/reserved、wall time 和 throughput，只能说明该主机、backend、PyTorch 版本和
+writer 的这一次运行。它们不能证明另一种硬件一定不会 OOM。
 
-1. 主采样固定为 1272 个 `[3, 256, 256]` float32 生成 state 的
-   final-only profile；baseline/guided 分别使用 30/40 个 accepted step。batch size
-   按 checked-in config 和目标 accelerator 的实测容量选择。
-2. 主配置必须关闭 trajectory，并使用领域 writer 输出场数据和指标；
-   image 只是独立 preview artifact。
-3. Builder 必须逐 batch 处理 low-resolution/reference input，计算指标后只将
-   writer 需要的场放入 `SamplingOutput`。数据源不得因为方便而长期保留
-   两份 `[1272, 3, 256, 256]` 展平 Tensor。
-4. trajectory preview 必须是单独采样调用，且 `num_samples <= 8`、
-   `every_steps >= 10`、accepted steps 不超过 40；writer-ready field 必须转存到
-   CPU，不得让全量 device output 在 Builder 返回后继续占用 accelerator。
-5. 不得将当前 contract 描述为支持自定义 streaming。若案例需求扩展到
-   全量 dense trajectory，必须停止案例实施，回到 sampling lifecycle 设计阶段。
+记录本地主机基准时，至少保留 OS、Python/PyTorch 版本、device/backend、CPU/GPU
+内存、dtype、shape、sample/batch 数、trajectory observation 数、writer 和产物字节数。
+机器相关报告属于运行产物，请写入已忽略的 `outputs/benchmarks/`，不要提交 JSON、日志
+或某台主机的测量表。需要比较两次运行时，应在同一受控环境中保存报告，或交给外部
+实验跟踪系统。
+
+仓库只版本化工具、通用 profile，以及投影公式和执行生命周期的测试。CI 不读取历史
+机器结果，也不会把某台机器的数值当作跨平台阈值。
+
+## 请求太大时可以怎样缩小
+
+在当前生命周期内，最有效的办法是减少必须同时存在的结果：
+
+- 降低 `num_samples`；
+- 主运行只保存 final output，把 trajectory 放进单独的小样本 preview；
+- 增大 `trajectory.every_steps`，减少保留的 observation；
+- 让任务 Builder 先完成指标计算，只把 writer 真正需要的场或通道放入
+  `SamplingOutput`；
+- 先用投影 profile 确认逻辑下界，再在目标设备上逐步增加 batch 和样本数。
+
+只注册一个新 writer 不会把当前生命周期变成 streaming。writer 收到数据时，Builder
+的全部 output 已经物化；如果任务确实需要全量 dense trajectory 或无法整体驻留的结果，
+需要先设计增量的 sampling/writer 生命周期，而不是让 Builder 越过 writer 直接写文件，
+也不应把现有接口称为 streaming。

@@ -13,7 +13,6 @@ metrics
 data-pipeline
 extensions
 compatibility-and-migration
-reference-projects
 sampling-capacity
 workflows
 troubleshooting
@@ -30,7 +29,6 @@ troubleshooting
 | 了解自行实现 conditional super-resolution 所需边界 | [条件 Gaussian 超分辨率教程](../tutorials/super-resolution.md) |
 | 注册自定义 DataBuilder、writer 或其他组件 | [扩展与 Registry](extensions.md) |
 | 理解 config/checkpoint 权威并跨环境移动实验 | [Checkpoint、配置权威与可移植性](compatibility-and-migration.md) |
-| 查看 Physics reconstruction 与蒸馏的 legacy architecture fixtures | [纵向扩展参考项目](reference-projects.md) |
 | 训练、smoke run、恢复、checkpoint 采样和独立评估 | [常用工作流](workflows.md) |
 | 配置 learned-range variance 或 respaced DDPM | {ref}`Gaussian variance 与 respaced DDPM <gaussian-variance-respaced-ddpm>` |
 | 用 TensorBoard 查看 loss、学习率、样本网格并比较运行 | [TensorBoard 使用指南](../tutorials/tensorboard.md) |

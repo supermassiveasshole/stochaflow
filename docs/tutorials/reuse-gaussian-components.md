@@ -13,7 +13,7 @@ model(state, model_time, condition) -> Tensor
 
 示例 condition 与生成 state 同形，便于展示完整边界。超分任务可以让 condition 使用
 不同分辨率，并在模型内部编码；此时应在项目 Builder 中替换本示例“condition 与 state
-同形”的校验和扩展逻辑。physics 任务也可以在闭包中加载并预处理物理状态。这些变化都
+同形”的校验和扩展逻辑。物理场任务也可以在闭包中加载并预处理领域状态。这些变化都
 不需要修改 Process 或 Sampler。
 
 ## 1. 创建可安装扩展
@@ -371,5 +371,7 @@ DDPM 与 DDIM 都只依赖 `GaussianDenoisingDynamics` 行为，不读取 condit
 继续复用 DDPM/DDIM 公开的 family-specific `transition()` 或 `resolve_schedule()`，
 但不应把任务参数加入通用 `Sampler.sample()`。
 
-完整的 physics 条件、partial noising、内置 DDPM/DDIM 复用和 guided-DDIM transition
-组合可参考 [Physics reconstruction 参考项目](../configuration/reference-projects.md)。
+在场重建等任务中，扩展应自行拥有 condition、partial noising 和领域 correction。
+如果 correction 只改变模型给出的 Gaussian prediction，就继续使用内置 DDPM/DDIM；
+如果它改变 accepted transition，就组合公开的 family primitive，并由项目自己的
+Sampler 负责该数值步骤。

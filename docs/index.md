@@ -196,8 +196,6 @@ checkpoint：FID **25.7572**。冻结后的一次 full official-test Evaluation 
   聚合逐类别与 macro validation 指标。
 - [AFHQ-v2 数据准备与训练](tutorials/afhq-v2.md)：安全下载、确定性 managed artifact、
   离线验证、strict resume 与 128×128 showcase。
-- [纵向扩展参考项目](configuration/reference-projects.md)：Physics reconstruction 与
-  frozen-teacher distillation 的 legacy install/architecture fixtures，不是 maintained task。
 - [复用 Gaussian family 教程](tutorials/reuse-gaussian-components.md)与
   [自定义生成 family 教程](tutorials/custom-generation-family.md)：两条独立最小扩展路径。
 - [条件 Gaussian 超分辨率](tutorials/super-resolution.md)：从内置 data-only SR recipe

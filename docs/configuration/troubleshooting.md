@@ -380,15 +380,13 @@ output。
 - 对主运行关闭 trajectory，另建小样本 preview；
 - 增大 `every_steps`，减少保留的 observation；
 - 让任务 Builder 先完成指标计算，再只把 writer 真正需要的场或通道
-  放入 `SamplingOutput`；
-- 对 Physics AI 预览使用独立配置，限制 `num_samples <= 8`、
-  `every_steps >= 10` 且 accepted steps 不超过 40。
+  放入 `SamplingOutput`。
 
 仅注册一个新 writer 不会把当前 lifecycle 变成 streaming；writer 看到数据时，
 Builder 的全部 output 已经物化。全量 dense trajectory 不在当前容量支持
 边界内。若任务确实要求该能力，需要先设计新的增量 sampling/writer
-lifecycle，不要让 Builder 绕过 writer 直接写 artifact。详细公式和 DFSR
-边界见 [Sampling artifact 容量](sampling-capacity.md)。文档中的
+lifecycle，不要让 Builder 绕过 writer 直接写 artifact。详细公式和本地主机
+基准方法见 [Sampling artifact 容量](sampling-capacity.md)。文档中的
 RSS 和编码峰值只能视为对应主机/backend 的证据，不是跨平台保证。
 
 ### `sample.shape is required`
@@ -411,25 +409,13 @@ Process/Objective、可选 EMA model、带 concrete class identity 的 optimizer
 不读取、不补写 recipe，也不能 strict resume 或用于 `sample`；请使用新 schema 启动
 fresh run。
 
-### Legacy distillation fixture resume 找不到 teacher/calibrator bootstrap state
-
-以下说明只用于仓库的 legacy installed-acceptance fixture，不代表 maintained distillation
-task 或兼容性承诺。TrainingBuilder 在核心加载 checkpoint 之前必须先构造结构兼容的完整
-TrainingPlan。因此
-strict resume 仍要求项目配置中的 teacher 与 calibrator bootstrap 文件可读取；它们只是
-acquisition/构造资源，文件中的值随后会被 checkpoint 的同名
-`training_assets_state_dict` 覆盖。不要根据 output path 或文件是否存在猜测
-fresh/resume。checkpoint-backed sampling 不构造 TrainingBuilder，也不读取 bootstrap：
-它从 checkpoint declaration 重建并加载 embedded calibrator，teacher 与 distillation
-Objective 保持 training-only。若 sampling 仍读取任一 bootstrap，说明项目
-SamplingBuilder 错误地依赖了训练 acquisition 配置。
-
-### Physics reconstruction 的 DDIM 首坐标不匹配
+### partial-noised initial state 的 DDIM 首坐标不匹配
 
 partial-noised initial state 使用 public state time `t` 时，显式 DDIM schedule 的第一个
 坐标也必须是 `t`，最后一个坐标必须是 clean time `0`。例如 `t=240, r=30` 使用
-`[240, 232, ..., 8, 0]`，而不是先在 `alpha_bar[239]` 加噪后从较小 source state 开始。
-参考项目的 lifecycle observer 会在写 artifact 前拒绝这种错位。
+`[240, 232, ..., 8, 0]`，而不是按另一个 state time 加噪后从较小坐标开始。Builder
+应在启动 sampler 前核对 initial state 的 public time 与 schedule 首坐标；二者不一致时
+立即拒绝请求，避免产生时间语义错位的结果。
 
 ### checkpoint state 不是 weights-only 安全值
 

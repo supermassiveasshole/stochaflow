@@ -18,10 +18,10 @@ probability path 或 numerical solver 时不需要虚构 Process、Dynamics 或 
 开始前需要一个由项目训练侧生成的 v12 checkpoint：其 primary model 对
 vector-field 路径实现 `model(state, time) -> Tensor`，所用完整 config 分别声明匹配的
 `VectorPath` 或 `process: null`，并已选择本教程的 `generation-demo` 插件。训练资产如何
-组成 checkpoint 见[扩展手册](../configuration/extensions.md)；
-可直接执行 train → resume → sample 的完整包见
-[纵向扩展参考项目](../configuration/reference-projects.md)。本教程中的 CLI 从该前置
-checkpoint 开始，不把采样侧代码误称为完整训练项目。
+组成 checkpoint 见[扩展手册](../configuration/extensions.md)。本教程不虚构一套与
+vector-field 数学匹配的训练任务；其中的 CLI 从项目已经产出的前置 checkpoint 开始，
+不把采样侧代码误称为完整训练项目。需要创建可安装的项目骨架时，先运行
+`stochaflow init`，再由项目实现并验证自己的训练侧组合。
 
 ## 1. 注册私有 family 契约
 

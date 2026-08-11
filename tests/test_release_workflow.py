@@ -19,20 +19,10 @@ PUBLIC_TUTORIAL_PATHS = (
     PROJECT_ROOT / "docs" / "tutorials" / "custom-generation-family.md",
     PROJECT_ROOT / "docs" / "tutorials" / "reuse-gaussian-components.md",
 )
-REFERENCE_PROJECT_METADATA_PATHS = (
-    PROJECT_ROOT
-    / "examples"
-    / "extension-projects"
-    / "knowledge-distillation"
-    / "pyproject.toml",
-    PROJECT_ROOT
-    / "examples"
-    / "extension-projects"
-    / "physics-reconstruction"
-    / "pyproject.toml",
-    PROJECT_ROOT / "examples" / "showcases" / "afhq-v2" / "pyproject.toml",
+AFHQ_SHOWCASE_METADATA_PATH = (
+    PROJECT_ROOT / "examples" / "showcases" / "afhq-v2" / "pyproject.toml"
 )
-AFHQ_METADATA_PATH = REFERENCE_PROJECT_METADATA_PATHS[-1]
+INSTALLABLE_SHOWCASE_METADATA_PATHS = (AFHQ_SHOWCASE_METADATA_PATH,)
 ACTION_REFERENCE_PATTERN = re.compile(
     r"^\s*uses:\s+(?P<reference>\S+?@\S+)(?:\s+#.*)?$",
     flags=re.MULTILINE,
@@ -242,7 +232,9 @@ def test_release_matrix_and_dependencies_exclude_intel_macos() -> None:
         for marker in required_environments
     )
 
-    showcase_metadata = tomllib.loads(AFHQ_METADATA_PATH.read_text(encoding="utf-8"))
+    showcase_metadata = tomllib.loads(
+        AFHQ_SHOWCASE_METADATA_PATH.read_text(encoding="utf-8")
+    )
     showcase_environments = showcase_metadata["tool"]["uv"]["environments"]
     assert isinstance(showcase_environments, list)
     assert set(showcase_environments) == {
@@ -297,7 +289,7 @@ def test_public_release_references_match_project_version() -> None:
             if path.relative_to(PROJECT_ROOT / "docs").parts[:2]
             != ("development", "notes")
         ),
-        *REFERENCE_PROJECT_METADATA_PATHS,
+        *INSTALLABLE_SHOWCASE_METADATA_PATHS,
     )
     referenced_paths: set[Path] = set()
     tagged_example_paths: set[Path] = set()
@@ -319,7 +311,7 @@ def test_public_release_references_match_project_version() -> None:
     assert PROJECT_ROOT / "README.md" in referenced_paths
     assert PROJECT_ROOT / "docs" / "configuration" / "index.md" in referenced_paths
     assert set(PUBLIC_TUTORIAL_PATHS).issubset(referenced_paths)
-    assert set(REFERENCE_PROJECT_METADATA_PATHS).issubset(referenced_paths)
+    assert set(INSTALLABLE_SHOWCASE_METADATA_PATHS).issubset(referenced_paths)
     assert PROJECT_ROOT / "README.md" in tagged_example_paths
     assert PROJECT_ROOT / "docs" / "index.md" in tagged_example_paths
     assert (
@@ -329,8 +321,8 @@ def test_public_release_references_match_project_version() -> None:
     assert wheel_url in (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
 
-def test_reference_projects_use_installable_release_requirements() -> None:
-    """Keep example metadata usable without an unpublished PyPI package."""
+def test_installable_showcase_uses_release_requirements() -> None:
+    """Keep showcase metadata usable without an unpublished PyPI package."""
 
     root_metadata = tomllib.loads(
         PROJECT_METADATA_PATH.read_text(encoding="utf-8")
@@ -342,12 +334,12 @@ def test_reference_projects_use_installable_release_requirements() -> None:
     )
     core_requirement = f"stochaflow @ {wheel_url}"
 
-    for path in REFERENCE_PROJECT_METADATA_PATHS:
+    for path in INSTALLABLE_SHOWCASE_METADATA_PATHS:
         metadata = tomllib.loads(path.read_text(encoding="utf-8"))
         assert core_requirement in metadata["project"]["dependencies"], path
 
     afhq_metadata = tomllib.loads(
-        AFHQ_METADATA_PATH.read_text(encoding="utf-8")
+        AFHQ_SHOWCASE_METADATA_PATH.read_text(encoding="utf-8")
     )
     quality_requirement = f"stochaflow[quality] @ {wheel_url}"
     assert quality_requirement in (

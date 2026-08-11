@@ -14,7 +14,7 @@ migration：
   `DataArtifactStore` lifecycle；
 - cache 位于 `<cache_root>/data-artifacts/v2/...`，旧目录不会被发现或自动删除；
 - 升级后应以 `policy: ensure` 重新 materialize AFHQ、Torchvision、image-folder、
-  paired-folder 与 Physics 输入；
+  paired-folder 与扩展自有的外部输入；
 - 保存旧 artifact binding 的 checkpoint 不能 strict resume，应启动新 run；
 - `require` 不会将旧 cache 转换为新格式，也不会产生任何修复写入。
 

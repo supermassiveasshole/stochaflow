@@ -177,6 +177,14 @@ is unavailable.
 
 ### Removed
 
+- Removed the stopped-maintenance Physics reconstruction and knowledge-
+  distillation reference projects, their project-specific installed-wheel
+  acceptance suite, and the DFSR capacity profiles derived from the Physics
+  fixture. The reusable extension, frozen-teacher, inference-asset, Gaussian,
+  and capacity contracts remain covered by focused core tests. A future
+  distillation task starts only when the existing roadmap candidate is selected;
+  Physics reconstruction requires a new user result and formal evaluation
+  decision rather than continued compatibility work on the retired fixture.
 - Removed the Intel macOS dependency pins, CI lane, and runtime test exception;
   macOS x86_64 is no longer a supported or best-effort target.
 - Removed the legacy AFHQ-v2 evaluator executable, its private configuration and

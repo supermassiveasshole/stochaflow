@@ -53,7 +53,7 @@ flowchart LR
 | Diagnostics | 训练期 denoiser/sampler observation、reference metrics、artifacts 与显式 failure policy |
 | Evaluation | checkpoint/prediction-artifact subjects、raw/EMA、validation/test、exact completeness、offline replay、optional streamed predictions 与 immutable results |
 | 生命周期 | DataArtifact schema v2、checkpoint v12、strict resume、read-only inference projection、structured outcomes 和 run manifests |
-| 扩展 | standard Python entry point、typed registries、extension provenance、installable reference projects |
+| 扩展 | standard Python entry point、typed registries、extension provenance、`stochaflow init` 项目脚手架 |
 
 内置算法主线仍是 pixel-space 离散 Gaussian diffusion。Latent diffusion、预训练
 autoencoder、Stable Diffusion component-native workflow、flow matching 与 distributed
@@ -232,6 +232,5 @@ Extension 是普通 Python distribution，通过
 - [常用训练、恢复、采样和评估工作流](configuration/workflows.md)
 - [数据构建与 artifact 生命周期](configuration/data-pipeline.md)
 - [扩展与 Registry](configuration/extensions.md)
-- [纵向参考项目](configuration/reference-projects.md)
 - [复用离散 Gaussian 组件](tutorials/reuse-gaussian-components.md)
 - [自定义生成算法 family](tutorials/custom-generation-family.md)

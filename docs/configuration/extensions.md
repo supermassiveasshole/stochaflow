@@ -264,12 +264,6 @@ locking、publication 或 quarantine。消费 source 时使用 `materialize_data
 完整符号与 callback 契约见
 [Extension 公共 API](../api/extensions.md)。
 
-需要查看跨 data/training/sampling 三条扩展轴的 legacy architecture fixture 时，参考两个
-彼此独立、可安装的[纵向扩展项目](reference-projects.md)。它们分别展示 Physics reconstruction 对离散
-Gaussian primitive 的复用与扩展，以及 frozen-teacher distillation 的多资产 checkpoint
-组合；两者都只使用这里公开的稳定入口，不依赖 checkout 源码路径，但不是 maintained
-task、quality benchmark 或 formal Evaluation surface。
-
 ## 自定义 Process、Sampler 与 SamplingBuilder
 
 生成扩展分成三层，层间共享的是生命周期，不是万能数学接口：
@@ -445,18 +439,18 @@ class PhysicsGuidedDynamics(GaussianDenoisingDynamics):
 ```
 
 `apply_physics_guidance()` 必须返回彼此一致的 clean/epsilon prediction。只要这个行为契约
-成立，同一个 Dynamics 可以交给 DDPM 或 DDIM。若 DFSR correction 改变的是 reverse
+成立，同一个 Dynamics 可以交给 DDPM 或 DDIM。若 correction 改变的是 reverse
 transition、accepted-step 更新或 solver 内部子步，而不能表达为 Gaussian prediction
 修正，则应在项目扩展中提供匹配的窄 Dynamics 和自定义 Sampler；不要给内置 Process、
 DDPM/DDIM 或顶层 YAML 增加 physics 专用参数。
 
-exact DFSR 的典型顺序是：guided Dynamics 产生 source-state `GaussianPrediction` 和 physics
-correction；项目 Sampler 调用公开 `resolve_schedule()` 与 `transition()`，从标准 DDIM
-transition 抽样后再减 correction，最后才发送 accepted observation。correction 的数学方向
-由任务 Dynamics 计算，correction 在数值 update 中的位置由项目 Sampler 决定。这样能够
-复用内置 DDIM 数学，又不会让 Dynamics 感知 target schedule，或让 Observer 反向修改 solver
-state。correction 为零时，项目 Sampler 应在相同 schedule 和 generator 下与内置 DDIM
-逐步一致。
+需要在 DDIM transition 之后施加 correction 的任务采用同样的责任划分：任务 Dynamics
+产生 source-state `GaussianPrediction` 和 correction；项目 Sampler 调用公开
+`resolve_schedule()` 与 `transition()`，从标准 DDIM transition 抽样后再应用 correction，
+最后才发送 accepted observation。correction 的数学方向由任务 Dynamics 计算，correction
+在数值 update 中的位置由项目 Sampler 决定。这样能够复用内置 DDIM 数学，又不会让
+Dynamics 感知 target schedule，或让 Observer 反向修改 solver state。correction 为零时，
+项目 Sampler 应在相同 schedule 和 generator 下与内置 DDIM 逐步一致。
 
 ### 接入新的算法 family
 

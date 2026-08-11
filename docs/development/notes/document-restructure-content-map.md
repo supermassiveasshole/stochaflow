@@ -2,7 +2,7 @@
 
 > 核对基线：`5c75a76de3d696a5b734ae4eefe88a30532bd2de`
 >
-> 最后核对：2026-08-10
+> 最后核对：2026-08-11
 
 本清单回答一个问题：旧计划被缩短或改名以后，里面仍有价值的功能构想现在在哪里。
 “还在 Git 历史里”不算保留；每项内容必须在当前文档、规范、公开用法或研究附录中有
@@ -46,8 +46,12 @@
   规范只允许正式 validation observations 参与 checkpoint selection 和 early stopping，
   Diagnostic 只是观察工具。旧想法作为历史背景保留，但不能写回当前功能；
 - `hydra-configuration-composition-migration-plan.md` 曾把清理 Physics/KD reference projects
-  放进迁移范围；维护者后来明确要求本轮不修改 Physics/KD。当前 Hydra 计划只讨论配置
-  组合，不授权删除、移动或改写这些项目；
+  放进迁移范围；维护者随后要求配置重构期间不要顺带修改它们。2026-08-11，维护者进一步
+  决定停止维护并移除这两个 fixture，以免它们在高频接口迭代中持续制造无关工作。KD 的重做
+  节点归现有 Consistency 候选；Physics 没有当前产品 owner，只有真实任务、数据、模型和
+  formal Evaluation 都明确并由 `ROADMAP.md` 选中后才会重建。独有设计和恢复边界保存在
+  [退役备忘](retired-physics-and-distillation-reference-projects.md)；这项决定不属于 Hydra
+  配置组合的范围；
 - Evaluation 旧计划把 comparison、Selection、gate、suite 和可选 integration 放在后续
   阶段。当前基础 Evaluation 已闭合；独立 Selection runtime 已被 validation-only training
   selection、HPO study policy 和发布调用方各自决策替代。其余 benchmark extension、人工

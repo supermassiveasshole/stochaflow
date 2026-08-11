@@ -140,9 +140,7 @@ The actively maintained example surface is deliberately small:
 
 Separate CIFAR-10, Flowers102, and multi-source training YAMLs are not maintained.
 Their removal does not remove the underlying reusable data sources or recipes.
-The Physics reconstruction and knowledge-distillation directories are legacy
-reference implementations retained temporarily for cleanup; they are outside
-the maintained example and compatibility surface.
+Only the two examples listed above are maintained as runnable end-to-end examples.
 
 ### MNIST DDPM and DDIM
 

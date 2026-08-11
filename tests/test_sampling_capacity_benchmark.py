@@ -96,7 +96,7 @@ def test_tool_sha256_normalizes_checkout_line_endings(tmp_path: Path) -> None:
     assert _SHA256_FILE(windows_source) == expected
 
 
-def test_capacity_projection_reports_exact_reference_payloads(
+def test_capacity_projection_reports_exact_generic_payloads(
     tmp_path: Path,
 ) -> None:
     result_path = tmp_path / "projection.json"
@@ -105,7 +105,7 @@ def test_capacity_projection_reports_exact_reference_payloads(
         "--profiles",
         str(PROFILES),
         "--profile",
-        "dfsr_full_trajectory_projection",
+        "high_resolution_1024_projection",
         "--profile",
         "field3d_dense_projection",
         "--result",
@@ -115,24 +115,24 @@ def test_capacity_projection_reports_exact_reference_payloads(
     assert completed.returncode == 0, completed.stderr
     report = json.loads(result_path.read_text(encoding="utf-8"))
     assert report["source"]["selected_profiles"] == [
-        "dfsr_full_trajectory_projection",
+        "high_resolution_1024_projection",
         "field3d_dense_projection",
     ]
     assert report["source"]["tool_sha256"] == _canonical_sha256(TOOL)
     assert report["source"]["profiles_sha256"] == _canonical_sha256(PROFILES)
-    dfsr, field = report["profiles"]
-    assert dfsr["projection"] == {
-        "one_sample_bytes": 786432,
-        "final_state_bytes": 1000341504,
-        "trajectory_state_bytes": 31010586624,
-        "sampling_output_live_bytes": 32010928128,
-        "tensor_writer_structural_peak_lower_bound_bytes": 94032101376,
-        "raw_artifact_payload_bytes": 32010928128,
+    high_resolution, field = report["profiles"]
+    assert high_resolution["projection"] == {
+        "one_sample_bytes": 12582912,
+        "final_state_bytes": 201326592,
+        "trajectory_state_bytes": 10267656192,
+        "sampling_output_live_bytes": 10468982784,
+        "tensor_writer_structural_peak_lower_bound_bytes": 31004295168,
+        "raw_artifact_payload_bytes": 10468982784,
     }
     assert field["projection"]["final_state_bytes"] == 268435456
     assert field["projection"]["trajectory_state_bytes"] == 13690208256
     assert field["projection"]["sampling_output_live_bytes"] == 13958643712
-    assert not dfsr["executed"]
+    assert not high_resolution["executed"]
     assert not field["executed"]
 
 
@@ -225,7 +225,7 @@ def test_capacity_smoke_uses_fresh_worker_and_cleans_artifacts(
 
 
 def test_capacity_preflight_rejects_unsafe_execution_without_override() -> None:
-    profile = _LOAD_PROFILES(PROFILES)["dfsr_full_trajectory_projection"]
+    profile = _LOAD_PROFILES(PROFILES)["high_resolution_1024_projection"]
 
     with pytest.raises(ValueError, match="--allow-over-budget"):
         _PREFLIGHT_PROFILE(
@@ -244,17 +244,22 @@ def test_capacity_preflight_rejects_unsafe_execution_without_override() -> None:
         allow_over_budget=True,
     )
 
-    image_profile = _LOAD_PROFILES(PROFILES)["dfsr_image_preview"]
+    field_profile = _LOAD_PROFILES(PROFILES)["field3d_preview"]
+    image_profile = replace(
+        field_profile,
+        name="field3d_image_preview",
+        writers=(replace(field_profile.writers[0], name="image"),),
+    )
     with pytest.raises(ValueError, match="projected memory"):
         _PREFLIGHT_PROFILE(
             image_profile,
-            host_memory_bytes=300 * 2**20,
+            host_memory_bytes=400 * 2**20,
             available_memory_bytes=None,
             disk_free_bytes=2**40,
             allow_over_budget=False,
         )
 
-    final_profile = _LOAD_PROFILES(PROFILES)["dfsr_final"]
+    final_profile = _LOAD_PROFILES(PROFILES)["field3d_dense_projection"]
     two_writers = replace(
         final_profile,
         writers=final_profile.writers + final_profile.writers,

@@ -34,9 +34,10 @@ environment。默认配置含相对 `data/` 和 `outputs/` 路径，应从项目
 在提供安全 descriptor-relative 文件系统原语的平台，`init` 可写入已存在的空真实目录；
 其他平台需删除该空目录，让 `init` 自行创建目标目录。
 
-仓库中的 [纵向扩展参考项目](reference-projects.md) 进一步展示一个领域任务如何在自己的
-distribution 内组合 DataBuilder、TrainingBuilder/Strategy、SamplingBuilder、Sampler 和
-Writer，以及 frozen-teacher 资产如何严格 resume。它们是普通示例包，不是新的核心模板。
+生成的项目是扩展任务的起点，不是必须照抄的核心模板。如何复用 Gaussian 训练与采样能力见
+[复用 Gaussian family 教程](../tutorials/reuse-gaussian-components.md)；如何为新的数学 family
+定义自己的 Process、Dynamics、Sampler 和 SamplingBuilder，见
+[自定义生成 family 教程](../tutorials/custom-generation-family.md)。
 
 ### Smoke run
 
@@ -484,7 +485,7 @@ Evaluation，再按同一个 primary metric 比较；无需另一套 selection r
 ## Checkpoint-backed inference
 
 `sample` 是统一的 checkpoint-backed inference 命令：MNIST、AFHQ 等生成任务产生图像，
-Physics 任务执行重建，direct-transform 任务也可以产生 prediction。数值 `Sampler`
+领域扩展可以执行重建，direct-transform 任务也可以产生 prediction。数值 `Sampler`
 只是某些 recipe 的内部协作，不是运行该命令的前提。
 
 v12 checkpoint 除模型、可选 EMA/Process state 和训练配置外，还保存
@@ -893,12 +894,10 @@ contract。
 真正需要的场或通道放入 `SamplingOutput`；这会减少 payload，但仍不会把 lifecycle 变成
 streaming。
 
-Physics reconstruction 参考项目提供了一个具体例子：1272 个
-`[3, 256, 256] float32` state 的 dense 30/40-step trajectory 会达到数十 GiB，因此正式
-配置采用 final-only，preview 与主输出分离。不要把这些任务数值当作其他数据的通用上限。
-完整公式、benchmark profile、安全预检和证据分级见
+具体任务应根据 sample shape、数量、保留的 trajectory 和 writer 临时副本重新估算，不能
+沿用别的任务留下的固定数字。通用公式、安全预检、测量工具和证据分级见
 [Sampling artifact 容量](sampling-capacity.md)。其中 RSS、accelerator peak、编码开销
-和耗时只属于指定参考主机，不是跨平台容量保证。
+和耗时只属于实际测量的主机与请求，不是跨平台容量保证。
 
 ## 本地文档
 

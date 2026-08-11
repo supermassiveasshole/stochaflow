@@ -14,68 +14,6 @@ profiles:
     warmup_runs: 0
     measured_runs: 1
 
-  dfsr_final:
-    description: Conservative full DFSR writer-ready three-channel final states.
-    num_samples: 1272
-    batch_size: 8
-    shape: [3, 256, 256]
-    dtype: float32
-    trajectory_observations: 0
-    writers:
-      - name: tensor
-        params: {}
-    execute: true
-    warmup_runs: 1
-    measured_runs: 5
-
-  dfsr_trajectory_preview:
-    description: Sparse trajectory preview with eight samples.
-    num_samples: 8
-    batch_size: 8
-    shape: [3, 256, 256]
-    dtype: float32
-    trajectory_observations: 4
-    writers:
-      - name: tensor
-        params: {}
-    execute: true
-    warmup_runs: 1
-    measured_runs: 5
-
-  dfsr_image_preview:
-    description: Sparse image-grid and GIF preview with eight samples.
-    num_samples: 8
-    batch_size: 8
-    shape: [3, 256, 256]
-    dtype: float32
-    trajectory_observations: 4
-    pattern: random
-    seed: 2026
-    writers:
-      - name: image
-        params:
-          grid_nrow: 4
-          gif_fps: 8
-          denormalize: true
-    execute: true
-    warmup_runs: 1
-    measured_runs: 5
-    timeout_seconds: 300
-
-  dfsr_dense_trajectory_stress:
-    description: Small-sample stress case retaining all 31 reverse observations.
-    num_samples: 8
-    batch_size: 8
-    shape: [3, 256, 256]
-    dtype: float32
-    trajectory_observations: 31
-    writers:
-      - name: tensor
-        params: {}
-    execute: true
-    warmup_runs: 1
-    measured_runs: 5
-
   field3d_preview:
     description: Executable small 3D field and trajectory workload.
     num_samples: 2
@@ -111,20 +49,6 @@ profiles:
     shape: [4, 128, 128, 128]
     dtype: float32
     trajectory_observations: 51
-    writers:
-      - name: tensor
-        params: {}
-    execute: false
-    warmup_runs: 0
-    measured_runs: 1
-
-  dfsr_full_trajectory_projection:
-    description: Unsupported full DFSR output retaining all 31 observations.
-    num_samples: 1272
-    batch_size: 8
-    shape: [3, 256, 256]
-    dtype: float32
-    trajectory_observations: 31
     writers:
       - name: tensor
         params: {}

@@ -46,20 +46,6 @@
       ]
     },
     {
-      "root": "examples/extension-projects/physics-reconstruction",
-      "extraPaths": [
-        "src",
-        "examples/extension-projects/physics-reconstruction/src"
-      ]
-    },
-    {
-      "root": "examples/extension-projects/knowledge-distillation",
-      "extraPaths": [
-        "src",
-        "examples/extension-projects/knowledge-distillation/src"
-      ]
-    },
-    {
       "root": "examples/showcases/afhq-v2",
       "extraPaths": [
         "src",
