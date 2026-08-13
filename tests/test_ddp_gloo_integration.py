@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import socket
+import sys
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -609,9 +610,20 @@ def reference_global_batch_weight() -> float:
     return float(model.weight.detach().item())
 
 
+GLOO_PROCESS_ACCEPTANCE_UNAVAILABLE = (
+    not torch_distributed.is_available()
+    or not torch_distributed.is_gloo_available()
+    or sys.platform == "darwin"
+)
+GLOO_PROCESS_ACCEPTANCE_REASON = (
+    "fixed-DDP process acceptance runs on Linux/Windows; macOS remains a "
+    "single-process MPS platform"
+)
+
+
 @pytest.mark.skipif(
-    not torch_distributed.is_available() or not torch_distributed.is_gloo_available(),
-    reason="this Torch build does not provide the Gloo backend",
+    GLOO_PROCESS_ACCEPTANCE_UNAVAILABLE,
+    reason=GLOO_PROCESS_ACCEPTANCE_REASON,
 )
 def test_real_gloo_accumulation_matches_one_effective_global_batch(
     tmp_path: Path,
@@ -630,8 +642,8 @@ def test_real_gloo_accumulation_matches_one_effective_global_batch(
 
 
 @pytest.mark.skipif(
-    not torch_distributed.is_available() or not torch_distributed.is_gloo_available(),
-    reason="this Torch build does not provide the Gloo backend",
+    GLOO_PROCESS_ACCEPTANCE_UNAVAILABLE,
+    reason=GLOO_PROCESS_ACCEPTANCE_REASON,
 )
 def test_real_gloo_rank_local_reader_error_exits_every_rank_without_update(
     tmp_path: Path,
@@ -650,8 +662,8 @@ def test_real_gloo_rank_local_reader_error_exits_every_rank_without_update(
 
 
 @pytest.mark.skipif(
-    not torch_distributed.is_available() or not torch_distributed.is_gloo_available(),
-    reason="this Torch build does not provide the Gloo backend",
+    GLOO_PROCESS_ACCEPTANCE_UNAVAILABLE,
+    reason=GLOO_PROCESS_ACCEPTANCE_REASON,
 )
 def test_real_gloo_rank_local_backward_error_has_bounded_launcher_exit(
     tmp_path: Path,
@@ -695,8 +707,8 @@ def test_real_gloo_rank_local_backward_error_has_bounded_launcher_exit(
 
 
 @pytest.mark.skipif(
-    not torch_distributed.is_available() or not torch_distributed.is_gloo_available(),
-    reason="this Torch build does not provide the Gloo backend",
+    GLOO_PROCESS_ACCEPTANCE_UNAVAILABLE,
+    reason=GLOO_PROCESS_ACCEPTANCE_REASON,
 )
 def test_real_gloo_rank_zero_validation_finalization_error_exits_every_rank(
     tmp_path: Path,
