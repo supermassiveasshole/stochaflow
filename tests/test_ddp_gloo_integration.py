@@ -616,8 +616,8 @@ GLOO_PROCESS_ACCEPTANCE_UNAVAILABLE = (
     or sys.platform == "darwin"
 )
 GLOO_PROCESS_ACCEPTANCE_REASON = (
-    "fixed-DDP process acceptance runs on Linux/Windows; macOS remains a "
-    "single-process MPS platform"
+    "two-rank Gloo process acceptance requires a supported Linux or Windows "
+    "Gloo build"
 )
 
 

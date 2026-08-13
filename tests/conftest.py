@@ -14,14 +14,22 @@ import pytest
 import stochaflow.utils.plugins as plugin_runtime
 
 
-def _github_annotation_value(value: object) -> str:
-    """Escape one value for the GitHub Actions workflow command protocol."""
+def _github_annotation_data(value: object) -> str:
+    """Escape message data for the GitHub Actions command protocol."""
 
     return (
         str(value)
         .replace("%", "%25")
         .replace("\r", "%0D")
         .replace("\n", "%0A")
+    )
+
+
+def _github_annotation_property(value: object) -> str:
+    """Escape one property for the GitHub Actions command protocol."""
+
+    return (
+        _github_annotation_data(value)
         .replace(":", "%3A")
         .replace(",", "%2C")
     )
@@ -32,8 +40,8 @@ def format_github_failure_annotation(*, nodeid: str, summary: str) -> str:
 
     return (
         "::error title="
-        f"{_github_annotation_value(nodeid)}::"
-        f"{_github_annotation_value(summary)}"
+        f"{_github_annotation_property(nodeid)}::"
+        f"{_github_annotation_data(summary)}"
     )
 
 

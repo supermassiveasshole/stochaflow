@@ -80,7 +80,7 @@ def test_github_failure_annotation_escapes_workflow_commands(
 
     assert annotation == (
         "::error title=tests/test_example.py%3A%3Atest_value[param%2Cother]::"
-        "tests/test_example.py%3A12%3A bad%3A value%2C 50%25%0Anext line"
+        "tests/test_example.py:12: bad: value, 50%25%0Anext line"
     )
 
 
