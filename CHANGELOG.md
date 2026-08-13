@@ -81,13 +81,21 @@ is unavailable.
   failure remains primary while every Metric, module-mode, EMA, and unpublished
   prediction-sink restoration is still attempted. Prediction sinks now finalize
   only after framework-owned state has been restored successfully.
-- Added a parked development plan for processing and training on datasets larger
-  than RAM through bounded storage, host-memory, pinned-memory, and device
-  stages. The incoming eight-H200 node is only the first validation environment;
-  the capability preserves the completed Data lifecycle, works independently
-  of single- or multi-device execution, prefers mature PyTorch, dataset-format,
-  profiling, DALI, and GDS implementations over framework-owned replacements,
-  and adds adapters only where lifecycle or recovery semantics require them.
+- Expanded the parked large-data plan into a complete “prepare once, run
+  anywhere” design: resumable work-unit preparation, immutable portable
+  artifacts, transfer verification and adoption, separate preparation,
+  transfer, and training recovery, plus bounded machine-specific disk, host,
+  pinned-memory, and per-device queues. The plan preserves the completed Data
+  lifecycle and defers Ray, DALI, GDS, and stricter mid-epoch recovery until a
+  selected workload provides the evidence and semantics they require.
+- Narrowed the parked distributed direction's first deliverable to fixed,
+  single-node, non-elastic Linux DDP training. The plan now makes run ownership,
+  a dedicated DDP Trainer rather than base-Trainer mode branches,
+  canonical-versus-execution model binding, effective global batch, bounded
+  data assignment and verification, all-rank update/Metric decisions,
+  fixed-topology resume, portable checkpoint export, and 8×H200 acceptance
+  explicit; replicated sampling, FSDP2, DCP, multi-node, and elastic execution
+  remain separately evidenced future work.
 - Added one current, user-facing guide for training Metrics, Diagnostics, and
   model selection. It documents the built-in Strategy channels, validation-only
   selection, checkpoint v12 state boundary, and the handoff to standalone

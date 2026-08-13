@@ -43,10 +43,11 @@
 
 - **[用 Hydra 组合训练配置](hydra-configuration-composition-migration-plan.md)（候选）**：在重复 YAML
   已成为真实问题时，先预览合并结果，再交给现有训练入口。
-- **[多设备训练和采样](distributed-training-and-inference-support-plan.md)（暂停）**：在单设备任务实测
-  无法满足容量或时间要求后，把一次运行分给固定数量的设备。
-- **[大规模数据集的层级处理与训练](hierarchical-data-pipeline-support-plan.md)（暂停）**：让大于内存的
-  数据经过有上限的存储、RAM、pinned memory 和设备队列；新服务器只是首个实测环境。
+- **[固定单机的多设备训练](distributed-training-and-inference-support-plan.md)（暂停）**：在所需有效 batch
+  和训练质量下，单设备任务仍无法满足吞吐或训练时间预算时，用固定数量的 Linux GPU 闭合一场
+  DDP 训练；多进程采样随后单独验收。
+- **[一次准备、跨机器运行的大规模数据管线](hierarchical-data-pipeline-support-plan.md)（暂停）**：把本地
+  TB 级原始数据可恢复地准备成便携版本，复制后只更换机器资源 profile，再用有界管线训练。
 - **[自动寻找训练参数](automated-model-tuning-plan.md)（暂停）**：隔离运行多次普通训练，只按
   validation 选择最佳候选，再独立运行正式 Evaluation。
 

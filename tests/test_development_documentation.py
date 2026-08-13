@@ -168,6 +168,27 @@ def _without_code_or_comments(content: str) -> str:
     return INLINE_CODE_PATTERN.sub("", content)
 
 
+def _has_semantic_paragraph(
+    content: str, *concept_groups: tuple[str, ...]
+) -> bool:
+    """Find related ideas together without requiring one heading or wording."""
+
+    visible = FENCED_CODE_PATTERN.sub("", content)
+    visible = HTML_COMMENT_PATTERN.sub("", visible)
+    visible = INLINE_CODE_PATTERN.sub(
+        lambda match: match.group(0).strip("`"), visible
+    )
+    paragraphs = (
+        re.sub(r"\s+", " ", paragraph).strip()
+        for paragraph in re.split(r"\n\s*\n", visible)
+    )
+    return any(
+        all(any(term in paragraph for term in group) for group in concept_groups)
+        for paragraph in paragraphs
+        if paragraph
+    )
+
+
 def _local_link_targets(path: Path, content: str) -> tuple[Path, ...]:
     content = _without_code_or_comments(content)
     resolved: list[Path] = []
@@ -352,6 +373,38 @@ def test_key_product_meanings_survive_editorial_rewrites() -> None:
         for conclusion in ("保持现状", "无需改变", "不修改")
     )
 
+    large_data = _content(
+        DEVELOPMENT_ROOT / "hierarchical-data-pipeline-support-plan.md"
+    )
+    for concept_words in (
+        ("数据准备中断", "journal"),
+        ("数据复制中断", "传输工具"),
+        ("训练中断", "checkpoint"),
+        ("artifact identity", "digest"),
+        ("execution profile", "资源"),
+    ):
+        assert all(word in large_data for word in concept_words)
+    assert re.search(
+        r"PC.{0,120}服务器.{0,120}(?:同一|同一个).{0,40}(?:digest|identity)",
+        large_data,
+        re.DOTALL,
+    )
+    assert all(
+        boundary in large_data
+        for boundary in (
+            "managed artifact",
+            "referenced folder",
+            "adopt 不能伪造",
+            "显式引用已 adopt 的 artifact",
+            "每个输入时仍要按 snapshot",
+            "full verification",
+            "DataArtifactStore",
+        )
+    )
+    assert _status(
+        DEVELOPMENT_ROOT / "hierarchical-data-pipeline-support-plan.md"
+    ) == "暂停"
+
     assert "| Data |" in _content(ROADMAP)
     for name in (
         "data-recipe-extension-ergonomics-plan.md",
@@ -360,6 +413,102 @@ def test_key_product_meanings_survive_editorial_rewrites() -> None:
     ):
         path = DEVELOPMENT_ROOT / name
         assert path in _research_documents()
+
+
+def test_distributed_and_large_data_stages_keep_their_product_boundary() -> None:
+    """Keep the first DDP result narrow without prescribing the plan's outline."""
+
+    distributed_path = (
+        DEVELOPMENT_ROOT / "distributed-training-and-inference-support-plan.md"
+    )
+    distributed = _content(distributed_path)
+    assert _status(distributed_path) == "暂停"
+    assert _has_semantic_paragraph(
+        distributed,
+        ("第一项", "第一版", "首版", "首轮", "第一阶段"),
+        ("单机", "single-node"),
+        ("固定", "fixed"),
+        ("DDP",),
+        ("训练",),
+    )
+
+    deferred_words = (
+        "后续",
+        "随后",
+        "以后",
+        "第二阶段",
+        "首轮之后",
+        "不在首轮",
+        "后置",
+        "再做",
+        "再考虑",
+        "不会实现",
+        "等待",
+    )
+    for concept in (("Sampling", "采样"), ("FSDP2",), ("elastic", "弹性")):
+        assert _has_semantic_paragraph(distributed, concept, deferred_words)
+
+    assert _has_semantic_paragraph(
+        distributed,
+        ("per-rank batch",),
+        ("effective global batch",),
+        ("world size",),
+        ("gradient accumulation", "梯度累积"),
+    )
+    assert _has_semantic_paragraph(
+        distributed,
+        ("Trainer",),
+        ("DDPTrainer",),
+        ("if distributed", "条件分支", "模式分支"),
+    )
+    assert _has_semantic_paragraph(
+        distributed,
+        ("DDPTrainer",),
+        ("FSDPTrainer",),
+        ("独立", "不同"),
+    )
+    assert _has_semantic_paragraph(
+        distributed,
+        ("gradient accumulation", "梯度累积"),
+        ("单卡", "单设备"),
+        ("吞吐", "训练时间", "wall-time"),
+        ("Parked", "开始前"),
+    )
+    roadmap = _content(ROADMAP)
+    assert _has_semantic_paragraph(
+        roadmap,
+        ("Fixed single-node distributed training",),
+        ("effective global batch",),
+        ("quality",),
+        ("wall-time", "throughput"),
+    )
+    assert _has_semantic_paragraph(
+        distributed,
+        ("DataBuilder",),
+        ("实际样本数", "loss 权重"),
+        ("不透明 batch", "不查看", "不解释"),
+        ("覆盖证据",),
+    )
+
+    large_data = _content(
+        DEVELOPMENT_ROOT / "hierarchical-data-pipeline-support-plan.md"
+    )
+    development_roadmap = _content(DEVELOPMENT_ROADMAP)
+    for content in (large_data, development_roadmap):
+        assert _has_semantic_paragraph(
+            content,
+            ("PC", "个人电脑"),
+            ("服务器",),
+            ("单卡", "单设备"),
+            ("不依赖", "无需", "不需要", "可以先"),
+            ("DDP", "Distributed"),
+        )
+        assert _has_semantic_paragraph(
+            content,
+            ("八卡", "8 卡", "8卡"),
+            ("依赖", "才由", "需要"),
+            ("DDP", "Distributed", "多设备"),
+        )
 
 
 def test_retained_future_interface_sketches_are_clearly_non_executable() -> None:

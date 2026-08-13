@@ -27,7 +27,7 @@
 | `data-layer-composition-boundary-review.md` | Artifact 不是 Dataset；`DataBuilder` 是一次运行的数据组合；source-only、direct Python 和 recipe 的选择；LMDB、streaming、helper 等研究问题 | 当前边界在 [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)和[Data pipeline](../../configuration/data-pipeline.md)；完整方案比较在[研究归档](data-layer-composition-boundary-review/research-archive.md)；helper、streaming 和新存储分别保留为研究备忘，不参与排期 |
 | `default-workflow-pipeline-support-plan.md` | 可发现的任务 recipe、独立 operation、typed artifact 传递、训练后蒸馏、生图后超分、推理 bundle 和是否需要通用编排器 | [显式工作流计划](../default-workflow-pipeline-support-plan.md)保留两条具体流程；[超分计划](../super-resolution-workflow-support-plan.md)和[通用编排器计划](../general-workflow-orchestrator-plan.md)分别承接独有功能；[原始设计](default-workflow-pipeline-support-plan/design-archive.md)保留接口草案和完整矩阵 |
 | `development-priority-roadmap.md` | 产品先后关系、AFHQ 后的 latent/codec/DiT、Stable Diffusion 原生采样和微调，以及更晚的规模化方向 | 根 [`ROADMAP.md`](../../../ROADMAP.md)是唯一排期；[当前开发队列](../development-priority-roadmap.md)只保留直接依赖；Latent、Stable Diffusion 和 Distributed 计划保留具体功能，旧编号只在[历史编号表](history/milestone-id-map.md) |
-| `distributed-training-and-inference-support-plan.md` | 多进程训练、数据分片、全局指标、分布式 checkpoint、合并采样结果；FSDP2、多节点和弹性后续 | [Distributed 功能计划](../distributed-training-and-inference-support-plan.md)保留用户结果和首版；[调研与 API 草案](distributed-training-and-inference-support-plan/research-and-api-draft.md)保留 PyTorch/version、配置、checkpoint 和后续候选；当前暂停 |
+| `distributed-training-and-inference-support-plan.md` | 多进程训练、数据分片、全局指标、分布式 checkpoint、合并采样结果；FSDP2、多节点和弹性后续 | [Distributed 功能计划](../distributed-training-and-inference-support-plan.md)把首个用户结果收窄为固定单机 DDP 训练，并让 DDP 由独立 Trainer 生命周期承接，而不是给单进程 Trainer 堆模式分支；未来 FSDP 在需求成立时重新设计自己的执行生命周期；[调研与 API 草案](distributed-training-and-inference-support-plan/research-and-api-draft.md)保留 PyTorch/version、训练恢复、多进程采样、FSDP2、多节点和弹性等独立后续候选；当前暂停 |
 | `extension-import-boundary-and-activation-latency-plan.md` | 先测公共导入、Registry、plugin activation 和 CLI；保持对象身份、激活顺序和安装 wheel 行为；保留 capability-scoped expected-type resolver 与轻量 Registry/应用级 catalog 拆分候选 | [Extension 性能计划](../extension-import-boundary-and-activation-latency-plan.md)只保留测量驱动的性能功能；[设计附录](extension-import-boundary-and-activation-latency-plan/design-notes.md)保留导入和 Registry 拆分；当前暂停，正确性已闭合 |
 | `hydra-configuration-composition-migration-plan.md` | 用 Hydra 组合全新训练配置，但仍由 Stochaflow 校验和执行；preview、受信任配置根、普通 YAML 对照；不接管 resume/sample | [Hydra 功能计划](../hydra-configuration-composition-migration-plan.md)保留用户流程；[设计附录](hydra-configuration-composition-migration-plan/design-notes.md)保留配置组、override、失败和 multirun 问题；当前候选 |
 | `latent-diffusion-support-plan.md` | 冻结 codec、在线编码与 prepared posterior 两条数据路、AFHQ bring-up、生产资产、开放数据 DiT、独立非 DiT 替换、未来 codec/VAE | [Latent 功能计划](../latent-diffusion-support-plan.md)解释训练和生成流程；[设计与研究附录](latent-diffusion-support-plan/design-and-research-notes.md)保留 codec/provider、The Met、ImageNet-100、DomainNet、硬件和未来算法；当前候选 |
@@ -71,9 +71,11 @@
   高清 artifact、正式 Evaluation，以及以后可能的条件 Gaussian、tiling 和更广恢复任务；
 - [通用工作流编排器](../general-workflow-orchestrator-plan.md)：至少两条稳定工作流重复以后，
   才提供步骤状态、失败重试和恢复；
-- [大规模数据集的层级处理与训练](../hierarchical-data-pipeline-support-plan.md)：让大于内存的数据
-  通过有预算、可回压、可测量的持久存储、RAM、pinned memory 和设备内存路径；八卡 H200 只
-  作为首个压力测试环境，DALI、GPUDirect Storage 和远程存储仅在实测指向时复查；
+- [一次准备、跨机器运行的大规模数据管线](../hierarchical-data-pipeline-support-plan.md)：把本地 TB 级
+  原始数据可恢复地准备成不可变、可验证、可搬运的数据版本；PC 与服务器保持同一 artifact identity，
+  只更换有预算、可回压、可测量的运行 profile。producer-private resumable shard scratch、稳定 sample
+  key 和 mmap-friendly shards 等早期构想已归入该计划；Ray、DALI 与 GPUDirect Storage 只在实测指向
+  时复查；
 - Data 的三份研究备忘分别保存公共 helper、连续数据流和新存储形式，但不重新打开已经
   闭合的 Data lifecycle。
 

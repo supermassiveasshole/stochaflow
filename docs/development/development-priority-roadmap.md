@@ -35,9 +35,10 @@
   全新训练配置的组合问题。只有迁移完成后仍出现真实的采样配置或重复推理问题，才重审
   Sampling 调用方式。
 - **[大规模数据集管线](hierarchical-data-pipeline-support-plan.md)不等于
-  [多设备执行](distributed-training-and-inference-support-plan.md)。** 前者也要支持单卡，负责有界读取、缓存、
-  设备搬运和测量；只有选中的用户结果需要多卡时，才由后者提供稳定的进程编号、数据分工输入和
-  共同失败语义。多设备运行不应猜测任务的数据布局，数据管线也不负责启动 DDP。
+  [多设备执行](distributed-training-and-inference-support-plan.md)。** 可恢复的数据准备、跨机器复制、验证采用
+  以及 PC/服务器单卡的有界读取都不依赖 DDP。只有固定八卡训练验收时，才依赖多设备计划的首个
+  固定单机 DDP 交付，由它提供稳定的 rank/world size、共同更新和失败语义；并不依赖后续的多进程
+  采样、FSDP2 或弹性运行。多设备运行不应猜测任务的数据布局，数据管线也不负责启动 DDP。
 
 排期发生变化时，先更新根 `ROADMAP.md`，再把被选中工作的实际步骤写到本页。
 

@@ -100,8 +100,9 @@ post-Hydra 复查改写，不是 `5c75a76` 的历史阶段；当前读者文档�
 
 `D0`–`D7` 在基线 Distributed 计划中依次表示：固定行为与架构约定、进程会话/rank-zero I/O、
 DDP training、distributed checkpoint、replicated sampling、FSDP2 training、FSDP2 inference
-与多节点强化、精确 distributed Evaluation 与 elastic。当前计划先解释固定进程 DDP 和合并
-sampling 的用户结果；其余保留在研究附录，不会因一个编号自动开始。
+与多节点强化、精确 distributed Evaluation 与 elastic。当前主计划只把固定单机 DDP training
+作为首个用户结果；replicated sampling 和其余方向都保留在研究附录，分别验收，不会因一个编号
+自动开始。
 
 ## 查阅规则
 

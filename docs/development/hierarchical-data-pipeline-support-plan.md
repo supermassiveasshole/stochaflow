@@ -1,254 +1,262 @@
-# 大规模数据集的层级处理与训练计划
+# 一次准备、跨机器运行的大规模数据管线计划
 
 > 文档类型：功能计划
 >
 > 工作状态：暂停（Parked）
 >
-> 当前可用性：现有训练可以用多个 CPU worker、预取和 pinned memory 读取有限数据集，
-> 但还没有一条面向“数据远大于内存”的、带容量预算、回压、恢复说明和分层测量的数据管线。
+> 当前可用性：现有框架能验证数据产物、用普通 `DataLoader` 训练；维护中的有限 map-style
+> recipe 还能在已记录的 epoch 边界重建顺序，
+> 但还不能把几 TB 到几十 TB 的本地原始数据可恢复地准备成一份便携数据版本，再复制到另一台机器直接使用。
 
-## 数据集放不进内存以后，问题不再只是“读取快一点”
+## 故事从本地已有的几十 TB 数据开始
 
-小数据集可以在训练前全部准备好，甚至反复命中操作系统缓存。数据规模继续增加以后，这种经验
-会失效：数据可能远大于 RAM，单个样本可能需要昂贵解码，多个训练进程可能重复读取同一分片，
-而 GPU 只要等一次数据，昂贵的计算资源就在空转。
+真实的大数据工作通常不是“让框架替我下载一个数据集”。数据可能早已散落在本地硬盘、NAS、
+LMDB、tar、Parquet 或项目自己的目录中，预处理一次需要数小时甚至数天。用户先在 64 GB RAM、
+24 GB 显存的 PC 上整理和试跑，之后再把结果复制到公司的 2 TB RAM、八卡 H200 服务器。如果换一台
+机器就重新下载、重新解码或重新生成索引，准备工作不仅昂贵，也很难证明两边训练的确是同一份数据。
 
-因此这里要建设的不是某一种 GPU 的专用优化，也不是一个更大的内存缓存。目标是一项长期能力：
-用户给出一份经过验证的大规模数据集和任务自己的读取规则，框架能够让数据有界地经过持久存储、
-普通内存、pinned memory 和设备内存，持续供给单卡或多卡训练；训练中断后仍知道用了哪份数据、
-怎样分片以及从哪个稳定边界继续。
+因此这项功能的中心不是“增加一层显存缓存”，而是：
 
-“有界”很重要。上游读取速度快于下游时，管线应暂停上游，而不是不断申请内存。这种让较慢阶段
-限制较快阶段的机制叫回压。它让内存占用可以预测，也让我们看到真正的瓶颈，而不是用越来越深的
-队列暂时掩盖问题。
+```text
+本地原始数据
+  -> 可中断、可继续的数据准备
+  -> 不可变且可验证的 prepared dataset
+  -> 可恢复地复制到另一台机器
+  -> 复核后用该机器自己的资源配置训练
+```
 
-完成后，用户仍然运行普通训练。任务选择自己的数据表示和变换，框架负责执行已经验证的数据
-身份、各层预算、设备搬运和共同观测规则。训练结果除了 checkpoint，还应说明实际数据分片、
-吞吐、各层等待和峰值占用，使“这套配置能处理多大数据”成为可复查的结论。
+准备后的数据版本承担身份和可搬运性；PC 与服务器的运行配置只决定怎样尽快读取它。换路径、worker
+数量、RAM 预算或 GPU 数量都不能暗中改变样本、预处理结果和数据身份。这就是本计划所说的
+“once prepared, run anywhere”。它并不承诺改变 world size、global batch size 后还能逐步复现同一
+训练 run；那是分布式训练和训练恢复共同拥有的另一项保证。
 
-## 一批数据会经过哪些层，由任务和机器共同决定
+## 数据准备必须独立于训练，而且可以从中断处继续
 
-层级描述的是数据在一次运行中的位置，不要求所有任务使用完全相同的实现。CPU 训练不需要设备
-内存层；已经是连续 tensor 的数据可能不需要解码缓存；压缩图像则可能把 CPU 解码变成最慢阶段。
+几十 TB 的转换不能藏在 `train` 的第一次启动中。训练进程不应一边等待数据，一边决定如何扫描、
+切分和发布长期数据。未来应有一次独立的数据准备操作：它先盘点有限的源数据，展示样本、预计输出
+体积和分片规划，用户确认后才开始昂贵转换。
 
-Pinned memory 也不是一块额外硬件。它是普通 RAM 中被锁定、不会被操作系统换出的区域，适合
-暂存即将复制到 GPU 的少量 batch，不适合保存整个数据集。
+开始写输出以前，准备过程要固定以下事实：经过认证的源数据快照、稳定样本编号、准备 recipe 及
+版本、会影响结果的外部资产、输出 schema、容器格式和分片规划。它们共同形成准备计划的摘要。
+任何一项变化都代表一份新数据，不能拿旧进度记录继续拼接。首版面对普通可变目录时，必须先完整
+建立并认证输入 snapshot，再开始转换；可信的不可变存储快照或 provider checksum 可以作为另一种
+明确的输入证明。一次预扫描并不会把普通目录冻结：转换每个输入时仍要按 snapshot 中的 size/digest
+认证实际读取的 bytes，遇到替换、短读或内容变化立即失败。只有框架明确支持并认证的 immutable
+filesystem/provider snapshot 才能免去这次逐输入复核。以后若要边转换边认证，只能采用两阶段计划：
+最初的 discovery key 只定位未完成 workspace，逐 work unit 的输入摘要归并后才形成最终 source
+identity，绝不能把 discovery key 当数据身份。
 
-| 层级 | 这一层保存什么 | 长期责任 |
+随后把工作确定性地分成有限单元。producer 只通过 Store 管理的 unit writer 写入任务内容；Store
+拥有临时文件句柄、flush/fsync、内容摘要、关闭、原子重命名和 journal commit。每个单元核对样本数、
+字节数和 schema 后才提交为已完成，producer 不能自行声明一个未经 Store 认证的 shard digest。进度日志
+（journal）只记录这次尚未完成的准备工作和已经核对过的单元。进程被强制结束后，新进程会重新检查
+这些单元，跳过完好的分片，只重做临时、缺失或损坏的部分。两个准备进程不能同时写同一个最终目标。
+
+只有全部预定样本恰好覆盖、没有重复或遗漏、所有分片都通过核对后，`DataArtifactStore` 才发布最终
+的 managed `DataArtifact`。半成品、进度日志和可丢弃的 scratch 永远不能被 `DataBuilder` 当作训练
+输入。现有 Store 已拥有内容身份、逐文件摘要、隔离损坏内容和原子发布；实现应在它的最终发布之前
+增加可恢复 workspace，而不是另建第二套较弱的 manifest 或绕过 Store 签发 handle。
+
+当前 Store 会在 producer 返回后一次性枚举、排序并哈希全部输出。数千万文件时，这既可能重复读取
+几十 TB 数据，也会让 inventory 构建占用过多内存。新的 Store-managed writer 应在关闭每个分片时
+顺便生成大小、记录数和摘要；最终 inventory 采用 root 到 shard/index 的分层摘要，内存只随有界工作
+单元增长。writer 的摘要可以消除 producer 自己已经做过的重复读取，
+却不能默默取消 Store 当前签发 handle 前的最终完整认证。若受信 shard transaction 要替代某次完整
+读回，必须先定义防篡改信任模型并修改 `SPEC.md`/`ARCHITECTURE.md`；在此之前仍执行现有 full verification。
+
+确定性 resize、固定 crop、tokenization 或 codec 编码可以进入 prepared dataset。每个 epoch 变化的
+随机 crop、颜色增强和随机 posterior sample 仍留在训练时。否则“准备一次”会不经意地删除任务原有
+的数据分布。
+
+## 被复制的是不可变内容，不是某台机器的 cache 目录
+
+最终数据根只保存规范化相对路径、分片和索引。结果清单（manifest）应绑定源快照、准备 recipe、
+数据语义、稳定样本覆盖、分片清单和内容摘要；本机盘符、绝对路径、cache 位置、worker 数和内存预算
+都不属于数据身份。内部路径还要拒绝 `..`、盘符或 UNC 路径、大小写折叠后的重名、Windows 保留名，
+以及依赖 symlink、junction 或 hardlink 才能成立的布局。这样同一 bundle 才能在 Windows PC 与 Linux
+服务器之间无损搬运。
+
+框架不需要重写文件传输工具。用户可以用经过选定和验证的 `rsync`、rclone、公司已有同步工具或
+对象存储 multipart 模式继续传输：至少跳过已经完成的 shard；能否从单个 shard 的中间继续，取决于
+工具参数和存储 backend。Stochaflow 负责提供完整内容清单，并在目标机器采用数据前核对每个声明分片。
+接收流程应先写入未完成区域，传完后验证缺失、额外和同尺寸篡改，再按 artifact digest 把对象纳入
+本地 Store。adopt 不能伪造原 producer 的 locator。首版的新训练配置要显式引用已 adopt 的 artifact
+identity/manifest；兼容 `DataSource` 在当前请求中把它作为 expected identity，Store 完整验证后才签发
+handle，`DataBuilder` 同时捕获该次 receipt。这样新服务器不需要旧 checkpoint 或原始目录，也不靠
+locator key 猜对象。以后若需要更简短的选择方式，才另行设计窄的 imported-managed-artifact source，
+不能让 portable descriptor 自己伪造 handle。安全时可原子移动或直接采用已经位于受控接收区的内容，
+不能为了“导入”再复制几十 TB。
+
+复制完成后，即使原始数据和原机器已经离线，目标机器也应能从这份 managed artifact 训练；但对应的
+source/materializer 扩展、兼容 recipe 和 `DataBuilder` 仍须安装并能解释同一 domain/schema。若用户
+只是给出 referenced folder、LMDB 或远程 locator，它仍可作为原始输入，但不是“准备一次、到处运行”
+的最终结果，因为外部内容和绝对位置仍由用户管理。
+
+## 三种“继续”解决的是三个不同的中断
+
+笼统写一个 `resume: true` 会把完全不同的安全边界混在一起。本计划分别定义：
+
+| 中断发生在哪里 | 谁保存继续所需事实 | 首个可用版本的保证 |
 | --- | --- | --- |
-| 持久存储 | 经过验证的数据分片、索引和结果清单 | 数据可以大于 RAM；重启后仍能定位和核对同一份内容 |
-| 普通内存 | 文件页、任务索引，以及有上限的读取、解码或变换缓存 | 减少重复工作，并让 CPU worker 并行准备样本 |
-| Pinned memory | 已经组成 batch、马上要交给设备的少量数据 | 为主机到设备复制提供稳定来源，同时受全局内存预算限制 |
-| 设备内存 | 当前计算的 batch，以及至多很少几个待用 batch | 把复制和计算重叠，但不能挤占模型、optimizer 和中间激活所需空间 |
+| 数据准备中断 | preparation workspace 和已提交 work-unit journal | 从已核对分片继续；源快照或 recipe 改变时拒绝旧进度 |
+| 数据复制中断 | rsync、rclone 或存储服务自己的传输状态 | 传输工具补齐内容；框架最终按 manifest 验证并采用新 locator |
+| 训练中断 | checkpoint 中的数据身份、epoch、shuffle/partition 事实 | 先保证固定拓扑下从完整 epoch 边界继续，运行 cache 与队列重建 |
 
-每层都需要回答同样的四个问题：最多能占多少空间，什么时候开始准备，下一层跟不上时怎样停下，
-以及怎样观察它是否为空、已满或正在等待。具体缓存算法和队列深度可以不同，这四个行为不能靠
-任务代码各自猜测。
+若一次 epoch 会持续数小时或数天，epoch 边界最终可能不够。届时 reader 要在一个 optimizer step 成功后
+提交“下一个逻辑 batch”的游标，包括 epoch、分片顺序位置、分片内记录位置、shuffle 算法版本以及
+rank/world-size 约定。预取到 RAM 或 GPU 但尚未消费的 batch 不进入游标；恢复后重新读取即可。
+Mosaic Streaming 或 StatefulDataLoader 可以作为候选实现，但必须用选定任务证明精确覆盖与恢复，
+不能把 worker 队列快照误称为数据准备 resume。
 
-## 当前框架有基本零件，缺少的是共同的容量和传输规则
+## 同一份数据在两台机器上只更换资源 profile
 
-当前 `LoaderRecipeConfig` 已支持 `num_workers`、`pin_memory`、`persistent_workers` 和
-`prefetch_factor`，内置训练配置也已经使用这些参数。普通的多 worker DataLoader 和 CPU 侧
-预取并不是新功能。
+数据内容、运行时数据视图、当前机器上的位置和机器资源是四类不同事实：
 
-现有参数没有说明预取内容一共会占多少 RAM 或 pinned memory，也没有把多个训练进程的总占用
-合在一起检查。训练器会把 batch 递归移动到目标设备，但还没有独立的 CUDA 拷贝流、完成事件和
-有上限的设备预取。大规模数据也没有统一的分片吞吐报告，导致用户只能反复试 worker 数量，
-很难判断瓶颈来自磁盘、解码、组 batch、主机复制还是模型计算。
+- prepared artifact identity 说明源快照、recipe、schema、分片和每个稳定 sample ID；
+- 训练数据视图说明 split、epoch、shuffle、rank assignment、drop 或 pad 规则，并进入相应恢复检查；
+- 当前 locator 只说明这台机器从哪里找到已经认证的数据，不进入 artifact identity；
+- 机器 execution profile 说明 reader 私有参数、worker、NUMA 放置以及磁盘、RAM、pinned memory 和
+  每张 GPU 的队列预算。
 
-这些缺口不能靠一个万能 Dataset、DataLoader 或数据格式解决。图像、文本、音频和预编码 tensor
-有不同的读取与变换方法；任务仍应理解自己的 payload 和 batch。框架需要补的是不依赖模态的
-容量预算、回压、设备传输生命周期、分片上下文和测量结果。
+后两类事实不能改写 prepared artifact identity。PC 和服务器使用同一个 digest，只选择不同 profile。
+配置名称与字段尚未决定，下面只是资源责任的例子，不是可执行配置或公共 API：
 
-## 数据身份保持稳定，缓存只负责加速
-
-已经闭合的 Data 生命周期保持不变。`DataSource` 取得、读取并验证外部数据，
-`DataArtifactStore` 是唯一可以签发运行时 `DataArtifact` 的组件，`DataBuilder` 再把经过验证的
-数据组成 Dataset、sampler、collate function 和 DataLoader。本计划不会重新打开这些责任。
-
-数据分片、稳定索引、内容摘要和选中的分区规则可以成为 checkpoint 需要核对的事实。操作系统
-页缓存里恰好有哪些文件、worker 已经解码了哪些样本、pinned queue 中有几个 batch、设备预取
-到了哪一批，都是一次运行的临时状态。它们应在恢复时重建，而不是写进便携 checkpoint 或改变
-数据身份。
-
-首版只保证从完整 epoch 边界继续中断的训练。checkpoint 保存数据产物身份、epoch、随机种子、
-稳定分片方案和已经声明的进程布局。精确保存 epoch 中途的读取游标、worker 队列和设备预取状态
-属于更强的恢复能力，只有真实任务证明 epoch 边界不够时才重新设计。
-
-## 不同组件只处理自己知道的那一段
-
-`DataSource` 和 `DataArtifactStore` 继续负责持久内容和验证，不创建 Dataset、DataLoader 或设备
-tensor。任务的 `DataBuilder` 负责选择分片、读取样本、数据变换、worker、sampler 和组 batch，
-因为只有任务知道样本的含义。
-
-训练运行时负责把已经组成的 batch 移到当前设备。若实测需要异步复制，它也负责拷贝流、完成
-同步、源 pinned memory 的寿命和设备侧队列预算，不能把这些细节推回每个 Strategy。
-
-[多设备训练计划](distributed-training-and-inference-support-plan.md)负责启动进程、提供 `rank` 和
-`world size`、同步模型与指标、共同保存状态和处理进程失败。层级数据管线在这些信息已知以后，
-让 `DataBuilder` 在创建 reader 和 sampler 前明确每个进程读取哪些样本。两项能力需要一起完成
-多卡验收，但互不代替：DDP 不猜任务的数据布局，数据管线也不启动或同步 DDP。
-
-普通单卡训练仍然必须使用同一条数据路径，只是没有跨进程分片。这样可以先在一张卡上定位磁盘、
-解码、RAM 和设备复制问题，也避免把大数据处理错误地等同于多卡训练。
-
-## 第一项交付先选数据问题，不先选优化产品
-
-开始实现前要选定一个维护中的大规模数据任务。它必须能说明数据从哪里来、总量多大、单个样本
-大小、存储表示、必要变换、batch 大小、是否能够重读，以及期望的训练吞吐或最大内存占用。
-首个任务可以是一份有限、可分片的大规模图像数据集，但不能只凭“以后可能训练 LLM”设计一套
-同时适合所有输入的公共接口。
-
-随后记录第一台验收机器的实际情况：持久存储类型和带宽、文件系统、CPU 插槽和 NUMA 节点、
-RAM 容量、GPU 型号和显存、PCIe/NVLink 拓扑，以及驱动、CUDA 和 PyTorch 版本。即将到货的
-八卡 H200 服务器适合作为第一台压力测试机器，但它只是首个证据环境，不是这项能力的名称或
-架构边界。实现不能根据 `H200` 设备名称增加核心分支。
-
-第一份实现可以包含任务自有的分片 reader。只有第二种数据表示或独立扩展重复出现同一段容量、
-回压或传输逻辑时，才把那一段提升为公共接口。这样既能尽快解决真实问题，也不会把第一个数据集
-的字段永久写进所有 DataBuilder。
-
-## 先比较成熟工具，再决定框架还缺什么
-
-这项能力不以自研数据引擎为目标。每个阶段先使用已经维护、能单独测试的成熟实现；Stochaflow
-只提供它们与现有数据身份、训练恢复和扩展边界之间缺少的连接。候选工具的版本、许可证、平台
-wheel 和维护状态都要在实施时重新核对，本计划不提前增加依赖。
-
-| 问题 | 优先评估的现成实现 | Stochaflow 不重复实现什么 |
+| 资源 | 64 GB RAM / 24 GB VRAM PC | 2 TB RAM / 8×H200 服务器 |
 | --- | --- | --- |
-| CPU worker、batch、pinned memory 和预取 | 现有 PyTorch `DataLoader`；适用时使用 `DistributedSampler` | 不重写通用 worker pool、batch queue 或进程间搬运 |
-| 操作系统文件缓存和顺序预读 | Linux 页缓存、文件系统和存储设备已有能力 | 不先做一份与操作系统竞争的全局 RAM 文件缓存 |
-| 分片媒体数据 | 数据任务适合时比较 WebDataset/WIDS 或数据集已有 reader | 不为图片、音频和文本发明一个新的强制容器格式 |
-| 大型列式记录 | 数据任务适合时比较 Apache Arrow Dataset/Parquet 的分区扫描和 batch 迭代 | 不重写列裁剪、分区发现或 Parquet reader |
-| GPU 解码和变换 | NVIDIA DALI 或任务生态已经维护的 GPU pipeline | 不在 core 中复制 JPEG、视频或音频解码器 |
-| 存储到 GPU 的直接 I/O | 机器满足条件时比较 NVIDIA cuFile/GDS 或 KvikIO | 不自己封装驱动、文件系统 DMA 和异步 I/O 引擎 |
-| 设备与时间线观测 | 系统 I/O 工具、PyTorch profiler、DCGM 和 Nsight Systems | 不先建立第二套 profiler 或硬件计数器体系 |
+| 持久数据 | 本地 SSD/NVMe 上的 canonical artifact，也可直接作为当前 node 的来源 | 共享或集中保存 canonical artifact；按实测需要建立 node-local shard cache |
+| 普通 RAM | 留足系统、训练和页缓存空间；少量 worker 与有界解码缓存 | 按 NUMA node 和 rank 分预算；不能让八个进程各自复制一份无界 cache |
+| Pinned memory | 只放少数即将传给单张 GPU 的 batch | 每个 rank 独立的小队列，节点汇总后不得超过 pinned-memory 总预算 |
+| 设备内存 | 模型、optimizer、激活之外只预留很少待用 batch | 八张卡各自拥有预算；不能把总显存看成一个共享 1 TB 数据 cache |
 
-“成熟”不等于可以不检查语义。接入前必须验证该实现能否给出稳定样本编号、按 seed/epoch 重现
-分片、限制缓冲区、把 worker 错误传回主进程，并与当前 checkpoint 边界一致。若现成工具只能
-提供高吞吐、却无法说明漏了哪些样本或怎样恢复，它可以用于非正式实验，但不能自动成为正式训练
-路径。
+profile 先给出硬上限和必须保留的 headroom，而不是“尽量占满”。普通 `DataLoader` 只能按 worker、
+batch 数和 `prefetch_factor` 限制队列；面对可变 batch，它不能直接保证 pinned memory 的精确字节上限。
+首版要么要求任务声明可靠的 `max_batch_bytes`，用它做保守预检和 batch-count 上限；要么增加由 runtime
+拥有、按字节回压的 feeder。device prefetch 也只能由后者拥有，不能把现有 `batch.to(device)` 描述成
+显存 cache。某个 shard 或 batch 大于单层上限时应绕过该 cache 或明确失败，不能临时把内存翻倍。
 
-适配层应留在最窄的责任边界。数据格式或 reader 由任务的 `DataSource`/`DataBuilder` 适配；
-设备复制由训练运行时适配。公共配置只描述 Stochaflow 真正需要长期保证的预算和行为，不直接
-复制某个外部库的全部参数。更换 WebDataset、Arrow、DALI 或 KvikIO 时，不应改变 checkpoint
-中的数据身份，也不应迫使 Strategy 理解这些库。
+## 磁盘、RAM 与显存不是同一种 cache
 
-如果成熟实现已经满足全部要求，交付可以只包含任务适配、配置、测量和文档。没有必要为了让代码
-看起来“属于框架”而再包一层同功能缓存或队列。
+真正的层级应按生命周期分开：
 
-## 基线要把一次等待拆成可以行动的原因
+| 层 | 保存什么 | 丢失后怎样处理 |
+| --- | --- | --- |
+| Canonical prepared shards | 唯一的数据事实、索引和 manifest | 不能静默重建成另一份内容；损坏必须失败或从可信来源重传 |
+| Node-local disk cache | 从 canonical 位置取回的完整 shard | 可按内容摘要重新下载、淘汰或重建 |
+| OS page cache | 最近读取的文件页 | 交给操作系统；默认不再造一份与它竞争的 Python 文件 cache |
+| 可选 decoded host cache | 确定性解码或变换结果 | 只有复用和测量证明有收益时启用，并按总字节淘汰 |
+| Pinned batch queue | 已组 batch、即将复制到设备的数据 | 中断后重建；属于有界传输队列，不是数据集副本 |
+| Per-GPU prefetch queue | 已传到一张 GPU、等待计算的极少数 batch | 中断后重建；深度增加不再提升吞吐就保留最小值 |
 
-同一任务需要分别测冷缓存和热缓存。若有多设备环境，还要从单卡扩展到选定设备数，观察新增
-进程是否只是重复争用同一磁盘或 CPU。报告至少包含：
+上游比下游快时必须停止继续生产，这种回压让内存达到平台后保持稳定。缓存命中、队列深度和当前
+吞吐都是一次运行的测量，不进入 artifact manifest 或便携 checkpoint。
 
-- 存储读取的字节数、样本数、顺序/随机访问方式和等待时间；
-- 解码、变换和组 batch 的吞吐与 CPU 占用；
-- 普通内存、pinned memory 和每张设备内存的峰值；
-- DataLoader 等待、主机到设备复制和模型计算各自的时间；
-- 每层队列的实际深度、空队列等待、满队列等待和被回压的时间；
-- 每个训练进程读取的稳定样本范围，以及丢弃、补齐或重复规则；
-- 总训练吞吐和模型质量配置，避免通过删除必要变换换取虚假的加速。
+## 成熟工具负责实现，Stochaflow 只闭合缺失的语义
 
-只看平均 GPU 利用率不能区分数据等待和模型同步等待。第一台 NVIDIA 验收机可以用 DCGM 观察
-设备计算、显存、PCIe 和 NVLink 活跃度，需要定位到具体读取、复制或 kernel 时再用 Nsight
-Systems。其他设备应使用能够提供同等事实的工具，而不是让 DCGM 成为公共运行时依赖。
+首个任务先选择一种与数据形态匹配的成熟表示，而不是发明万能格式。MosaicML Streaming/MDS 提供
+分片索引、有界本地缓存、预下载、分布式划分和训练恢复，是训练 reader 的强候选；WebDataset/WIDS
+适合顺序读取的 tar 媒体分片；Arrow/Parquet 与 Hugging Face Datasets 更适合列式或 map-style 记录。
+格式一旦准备完成便属于 artifact layout，不能在 PC 和服务器上临时用不同 shard size。小 shard 会
+增加文件、请求和索引开销，大 shard 会增加失败重做、缓存驱逐和单次损坏的影响范围，默认范围必须
+由代表性 workload 测量。
 
-## 只沿实测瓶颈增加下一层复杂度
+这些 reader 都不能自动解决整个产品。MDSWriter 的覆盖模式不是 preparation resume；HF fingerprint
+是变换 cache key，不是完整性证明；WebDataset 的高吞吐也不自动提供严格的 mid-epoch 语义。Ray Data
+可以并行准备数据，也能直接向 PyTorch/Ray Train 提供 batch；但本计划首版不把它定为维护中的训练
+reader，而且它不拥有 Stochaflow 的 artifact identity、发布或 strict cursor 契约。当单机在容量、数据
+位置或吞吐上无法承担准备时，才评估 Ray executor。fsspec 可以适配 locator 和 provider cache，却不能
+把后端相关的半原子 transaction 当成集群发布真相。
 
-如果大量小文件或随机访问限制存储吞吐，先为选中的数据集比较稳定分片和索引；如果当前文件表示
-已经足够，就不做格式转换。分片 reader 仍属于该任务，不自动成为全局存储格式。
+DALI 只在 decode 或 augmentation 实测最慢时作为任务专用执行层；它只有在受支持的 reader/operator
+graph 与固定 pipeline identity 下才可能精确恢复，不能替任意 `external_source` 作保证。GPUDirect Storage 只在目标存储、
+文件系统和拓扑满足条件且 H2D 路径确为瓶颈时比较。它们都不负责 manifest、样本覆盖、准备 resume
+和数据发布，也不会成为 PC 路径的必选依赖。
 
-如果 CPU 读取、解码或变换最慢，再调整 worker、进程亲和性、NUMA 放置和有上限的普通内存缓存。
-缓存只保存确实会复用的中间结果，并在超出预算前阻塞或淘汰。多进程不能各自无界复制同一份大
-缓存。
+## 现有 Data 责任保持不变，但需要一个新的准备生命周期
 
-如果主机到设备复制最慢，再建立有上限的 pinned memory 暂存区。PyTorch DataLoader 仍是普通
-实现；新增能力是计算所有 worker 和训练进程的总占用、观察队列状态，并在预算不成立时明确失败
-或使用经过测量的安全配置。
+`DataSource` 继续理解外部来源和任务自己的准备语义；`DataArtifactStore` 继续拥有 workspace 安全、
+锁、inventory、验证和最终发布；`DataBuilder` 只在 artifact 已发布后创建 reader、Dataset view、
+sampler、collate 和 loader。Store 可以提供通用的可恢复分片提交机制，但不能决定图像、文本、轨迹或
+latent 的 work unit 与样本字段。
 
-只有复制仍让设备等待时，才加入设备侧预取。每个进程只准备很少几个下一批，使用独立拷贝流和
-完成同步保护数据生命周期。队列占用必须从模型和 optimizer 的设备内存预算中扣除；增加深度不再
-提高吞吐时，应保留最小深度。
+训练运行时负责 batch 到设备的搬运。只有测量表明同步复制正在让设备等待时，才加入独立 copy stream、
+完成事件和有界 device prefetch；这些细节不应推给每个 Strategy。
 
-每增加一层都重新运行同一基线。瓶颈消失后，后续优化不再实施。允许最终结论是“现有 DataLoader
-已经满足选定任务，只需保存推荐配置和测量方法”。
+[多设备训练计划](distributed-training-and-inference-support-plan.md)的首个固定单机 DDP 交付负责 rank、
+world size、共同更新和进程失败。大数据管线可以先在 PC 与服务器单卡上完成准备、搬运和有界读取。固定八卡训练验收时，
+`DataBuilder` 才根据明确拓扑实现可观察的 shuffle、rank/worker 分工、drop/pad 和恢复语义，并证明
+各 rank 的 sample-ID union 符合选定 workload 的覆盖规则，而且没有未声明的交集；具体内部算法不强制
+套成同一条流水线。数据管线不启动 DDP，DDP 也不猜任务的数据布局；后续多进程采样、FSDP2 和弹性
+运行都不是这项八卡训练验收的前置。
 
-## 专用读取技术必须能够被替换
+## 第一个可用结果先闭合“准备一次、复制后运行”
 
-若图像解码或变换成为真实瓶颈，可以为该任务比较 NVIDIA DALI 或其他 GPU 预处理路径。比较要
-包含端到端吞吐、额外设备内存、结果一致性、恢复行为、安装成本和外部扩展的使用方式。DALI
-不会成为所有 DataBuilder 的必选依赖。
+这项 Parked 工作被选中后，应先指定一份真实、有限、不会边准备边追加的数据，一种成熟分片格式，
+以及 PC 和服务器的实际存储与文件系统。首个交付只需要：
 
-若 CPU 内存复制或存储路径成为瓶颈，并且目标机器的文件系统、存储控制器、驱动和 PCIe 拓扑
-满足官方条件，才评估 GPUDirect Storage（GDS）。GDS 可以在合适环境中让数据直接在存储和 GPU
-内存之间传输；优先比较官方 cuFile 接口或提供其成熟 Python/C++ 封装的 KvikIO，而不是自己写
-一层驱动封装。它们不会自动完成解码、随机变换、样本分片或恢复，也不会自动增加应用并发。
+- 在 local filesystem 上把该数据可恢复地准备成 managed artifact；
+- 使用稳定 sample ID、可搬运相对路径和分层 inventory；
+- 提供 inspect、full verify、传输后 verify/adopt 的完整体验；
+- 在 PC 单卡和服务器单卡用不同 profile 读取同一 identity；
+- 使用 OS page cache，以及普通 PyTorch loader 的 batch-count 上限和可靠 `max_batch_bytes` 预检；若首个
+  workload 要求精确的 pinned-memory 字节硬限制，则同时交付 runtime-owned byte-aware feeder；
+- 从 preparation shard 边界和训练 epoch 边界继续；
+- 报告准备、读取、解码、collate、H2D、计算和各层峰值资源。
 
-远程对象存储、数据库和新的共享文件系统仍由
-[新存储形式研究备忘](data-storage-and-payload-adapter-support-plan.md)保留。某个真实大数据任务若必须
-使用这些来源，可以在本计划中选择一个任务自有适配器；这不等于建立适用于所有服务的远程存储
-API。
+固定八卡训练的全局覆盖随后依赖首个固定单机 DDP 能力。mid-epoch cursor、Ray executor、DALI、GDS、远程
+对象存储、连续追加、弹性 world-size resume 和跨进程共享 decoded cache 都只在真实证据要求时加入。
 
-## 什么时候值得开始实施
+其中有一个不能绕开的决定：当前 strict training resume 要求当前请求取得当次 full-verification receipt；
+receipt 只是运行时证明，不进入 manifest 或 checkpoint。对几十 TB
+数据每次启动都重新逐字节哈希可能需要数小时。实现前必须选择并写入规范：接受每次全量重哈希；或
+定义受支持的可信不可变存储证明；或明确区分“完整重哈希”和“可信存储 attestation”的安全假设。
+不能为了启动更快，把 manifest/size 检查悄悄改名为 full verification。
 
-从暂停转为实施需要一个选定的大规模数据任务、一份能够重现的当前基线，以及明确的吞吐、容量
-或成本问题。还要有至少一台可以验收的机器，并完成存储、NUMA、RAM 和设备拓扑记录。基线必须
-指出至少一个数据阶段确实限制训练；若模型计算已经完全占满设备，结论应是暂不修改数据路径。
+## 验收必须同时证明正确、可搬运和有界
 
-单卡的数据分片和层级测量不依赖 DDP，可以先交付。若选中的用户结果要求多卡训练，则还需要
-多设备计划提供稳定的进程布局、数据分工输入和共同失败语义。进入实施时，应由根 `ROADMAP.md`
-选中一个明确交付，不能因为新服务器已经到货就自动把所有性能构想变成正在进行。
+小型 fixture 先在每个写入、关闭、提交和发布边界注入崩溃；恢复后的 bytes、inventory 和 artifact
+identity 必须与不中断运行一致。真实数据验收还要证明：
 
-## 什么证据说明能力已经形成
+- `kill -9` 后完好分片被复用，临时或损坏分片被重做；源快照或 recipe 改变会拒绝旧 journal；
+- 复制到不同盘符和 Linux 路径后 identity 不变；缺 shard、多 shard、短读和同尺寸篡改都会失败；
+- 没有原始数据时，已安装兼容扩展和 recipe 的环境仍能从 portable artifact 训练；
+- PC 和服务器读取相同 logical sample bytes 与 sample ID；epoch 顺序由运行视图决定，随机变换后的
+  batch tensor 只有采用相同 stateless transform/RNG 契约时才要求完全相同；RAM、pinned memory 和
+  每张 GPU 的占用达到平台后不再增长；
+- 首版在 PC 与服务器单卡证明相同 seed/epoch 的顺序可重建；
+- 冷、热和 node-local cache 的条件写清，无法真正清空系统 cache 时不把结果标成“冷缓存”；
+- 报告分别给出 preparation、存储读取、解码、变换、collate、loader wait、H2D 和 compute 时间，
+  以及 cache hit/miss、队列 empty/full、retry 和峰值 disk/RAM/pinned/per-GPU VRAM；
+- 增大 worker、cache 或 queue 后吞吐不再显著提高，就停止增加复杂度。
 
-首个完成声明只适用于“选定数据任务 + 固定数据表示 + 已记录的验收环境”。至少要证明：
+固定八卡的全局样本覆盖、共同更新和失败属于首个固定单机 DDP 阶段；游标与 checkpoint 的中途
+联合恢复属于 mid-epoch 阶段。它们都有明确的后续验收，但不阻塞首个“准备一次、复制后单卡运行”的可用结果。
 
-- 数据远大于可用 RAM 时仍能完成约定训练区间，内存不会随运行时间持续增长；
-- 与原数据语义相比，样本、标签、必要变换、顺序规则和质量结果没有意外变化；
-- 每个进程的分片符合已写明的覆盖规则，不会静默丢失或重复样本；
-- 冷缓存和热缓存结果都可重复，并明确实际训练采用哪一种假设；
-- 每层峰值占用没有超过预算，worker 失败、短读、内容损坏和内存不足会明确失败；
-- 增大队列深度已不能带来有意义的吞吐提升，说明结果没有依靠无界缓存；
-- 从约定 epoch 边界继续训练时会重建缓存，并保持数据身份和分片规则；
-- 单卡路径继续可用，外部任务不必采用内置图像格式或具体存储类；
-- 报告同时给出总吞吐、各层等待和资源占用，而不是只给一个峰值数字。
+数据准备和跨机器可搬运本身已经是明确用户需求，不需要先证明 GPU 正在空转才值得选择。性能优化
+则不同：Ray、DALI、GDS、decoded cache 和更深的 device queue 仍须由同一 workload 的实测瓶颈触发。
+本轮只丰富 Parked 计划，不改变根路线图的 `In progress: None` 和 `Next: None`。
 
-要把实现宣称为可复用框架能力，还需用一个独立的自定义 `DataSource`/`DataBuilder` 或第二种数据
-表示证明：公共预算、回压和传输生命周期不依赖首个内置任务的字段。具体性能目标要在任务和机器
-基线完成后写下，现在不能根据某张卡的产品规格预填一个百分比。
+## 更详细的实现依据
 
-## 第一版明确不包含什么
+[维护者技术附录](notes/hierarchical-data-pipeline-support-plan/design-and-research-notes.md)保存候选 workspace、
+journal、manifest tree、训练游标、容量计算、故障矩阵、provider 比较和 benchmark 设计。它不是公共 API，
+普通使用者无需阅读；具体类型名和配置形状只能在本方向被选中并完成首个 workload 设计后确定。
 
-- 不把大规模数据集等同于某一型号 GPU、八卡服务器或多卡训练；
-- 不默认把完整数据集常驻 RAM 或设备内存；
-- 不实现多节点、弹性训练、FSDP、张量并行或模型分片；
-- 不承诺从 epoch 中途精确恢复 worker、RAM 和设备预取队列；
-- 不建立适用于所有模态、存储服务和数据格式的全局 Dataset 或 reader registry；
-- 不要求 DALI、GDS、远程对象存储或某一种分片格式成为公共依赖；
-- 不让 `DataSource` 负责 Dataset、DataLoader、设备搬运或训练进程启动；
-- 不把性能缓存写成数据身份，也不降低正式 Evaluation 的样本完整性要求。
+外部系统资料最后核对于 2026-08-12，实施前须重新检查版本、许可证、平台支持和当前语义：
 
-## 实施前重新核对的官方资料
-
-以下资料最后核对于 2026-08-10。它们会随硬件、驱动和 PyTorch 版本变化，开始实现前必须按
-选定任务和验收环境重新验证：
-
-- [PyTorch DataLoader 文档](https://docs.pytorch.org/docs/stable/data.html)：核对 worker、
-  `pin_memory`、`prefetch_factor` 和 `persistent_workers` 的当前语义。
-- [PyTorch pinned memory 与非阻塞复制指南](https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html)：
-  核对异步主机到设备复制的条件和生命周期。
-- [NVIDIA H200 产品规格](https://www.nvidia.com/en-us/data-center/h200/)：只用于第一台验收机的
-  公开显存、带宽和互连上限；实际机器以现场枚举和供应商配置为准。
-- [WebDataset 文档](https://webdataset.github.io/webdataset/)：只在样本天然适合不可变 tar 分片时
-  比较现成 reader，不把它设为全局格式。
-- [Apache Arrow Dataset 文档](https://arrow.apache.org/docs/python/dataset.html)：只在列式、
-  多文件或分区记录与任务匹配时比较现成扫描能力。
-- [NVIDIA DCGM Profiling 文档](https://docs.nvidia.com/datacenter/dcgm/latest/learn/modules/profiling.html)：
-  作为第一台 NVIDIA 验收机的设备观测工具，不构成框架依赖。
-- [NVIDIA DALI 文档](https://docs.nvidia.com/dali/index.html)：只在读取或预处理成为实测瓶颈时
-  比较任务专用加速路径。
-- [NVIDIA GPUDirect Storage 概览](https://docs.nvidia.com/gpudirect-storage/overview-guide/index.html)：
-  只在实际存储、文件系统和 PCIe 拓扑满足条件时评估直接数据路径。
-- [RAPIDS KvikIO 文档](https://docs.rapids.ai/api/kvikio/stable/)：若 GDS 确有收益，优先比较已有
-  cuFile 封装和无 GDS 时的兼容路径，而不是创建 Stochaflow 自有 I/O 引擎。
+- [MosaicML Streaming 数据格式](https://docs.mosaicml.com/projects/streaming/en/latest/preparing_datasets/dataset_format.html)、
+  [分片读取与缓存](https://docs.mosaicml.com/projects/streaming/en/stable/dataset_configuration/shard_retrieval.html)
+  和[快速训练恢复](https://docs.mosaicml.com/projects/streaming/en/latest/distributed_training/fast_resumption.html)；
+- [WebDataset/WIDS](https://webdataset.github.io/webdataset/webdataset/)；
+- [Hugging Face Datasets 处理与保存](https://huggingface.co/docs/datasets/process)和
+  [Apache Arrow Dataset](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.write_dataset.html)；
+- [Ray Data checkpoint](https://docs.ray.io/en/latest/data/api/doc/ray.data.checkpoint.interfaces.CheckpointConfig.html)、
+  [`iter_torch_batches`](https://docs.ray.io/en/latest/data/api/doc/ray.data.Dataset.iter_torch_batches.html)
+  与[性能建议](https://docs.ray.io/en/latest/data/performance-tips.html)；
+- [fsspec 功能与 transaction 边界](https://filesystem-spec.readthedocs.io/en/latest/features.html)；
+- [PyTorch StatefulDataLoader](https://github.com/pytorch/data)和
+  [stateful data loading 教程](https://docs.pytorch.org/tutorials/intermediate/intermediate_data_loading_tutorial.html)；
+- [NVIDIA DALI checkpoint 约束](https://docs.nvidia.com/deeplearning/dali/user-guide/docs/advanced_topics_checkpointing.html)、
+  [性能调优](https://docs.nvidia.com/deeplearning/dali/main-user-guide/docs/advanced_topics_performance_tuning.html)
+  与[GPUDirect Storage 概览](https://docs.nvidia.com/gpudirect-storage/overview-guide/)；
+- [rclone copy](https://rclone.org/commands/rclone_copy/)和
+  [Amazon S3 multipart checksum](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)。

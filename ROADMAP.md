@@ -8,7 +8,7 @@
 >
 > Next: None
 >
-> Last reviewed: 2026-08-10
+> Last reviewed: 2026-08-13
 
 This is the only document that schedules product work. It says what users can
 do today, what could be selected next, and what is intentionally waiting.
@@ -70,8 +70,8 @@ direction.
 | --- | --- | --- | --- |
 | Stable Diffusion | Supply a compatible component bundle and image-text data, fine-tune the UNet, then generate images from prompts | Latent/codec support is Done and this direction is selected | [Plan](docs/development/stable-diffusion-component-native-support-plan.md) |
 | Extension import performance | Start commands and activate extensions with less import delay, without changing extension behavior | Measurements show a user-visible startup problem | [Plan](docs/development/extension-import-boundary-and-activation-latency-plan.md) |
-| Distributed execution | Run one training or sampling job on several devices and receive a resumable training bundle or one complete merged sample result | A maintained single-device workload misses a measured capacity or time requirement | [Plan](docs/development/distributed-training-and-inference-support-plan.md) |
-| Large-scale dataset processing and training | Train on a verified dataset larger than RAM through bounded storage, host-memory, pinned-memory, and device queues without hiding sample identity or resume behavior | One maintained large-data workload has a repeatable baseline that shows a capacity, throughput, or cost problem in the data path | [Plan](docs/development/hierarchical-data-pipeline-support-plan.md) |
+| Fixed single-node distributed training | Run one maintained training workload on a fixed number of Linux GPUs and receive globally consistent validation, a fixed-topology resumable training bundle, and a portable checkpoint | At the required effective global batch and quality constraints, a maintained single-device workload still misses a measured wall-time or throughput requirement, and one exact Linux CUDA/NCCL topology is selected for acceptance | [Plan](docs/development/distributed-training-and-inference-support-plan.md) |
+| Portable large-scale data preparation and training | Prepare a resumable, verified dataset once, copy it to another machine, and train from the same data identity using bounded machine-specific storage, host-memory, pinned-memory, and device queues | One finite large-data workload, its preparation semantics and storage format, and both PC and server acceptance environments are selected; later performance layers still require a measured bottleneck | [Plan](docs/development/hierarchical-data-pipeline-support-plan.md) |
 | Automated model tuning | Give the system a base training config, parameter choices, and a budget; receive the best checkpoint and its formal Evaluation result | A stable objective, budget, Evaluation protocol, and reusable single-run call exist | [Plan](docs/development/automated-model-tuning-plan.md) |
 | General workflow orchestrator | Submit a list of already supported operations, inspect each step, and retry or resume a failed step | At least two maintained workflows repeat the same recovery and state-hand-off code | [Plan](docs/development/general-workflow-orchestrator-plan.md) |
 
