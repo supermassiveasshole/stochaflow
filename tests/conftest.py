@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
 import time
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -11,6 +12,56 @@ from typing import Protocol, cast
 import pytest
 
 import stochaflow.utils.plugins as plugin_runtime
+
+
+def _github_annotation_value(value: object) -> str:
+    """Escape one value for the GitHub Actions workflow command protocol."""
+
+    return (
+        str(value)
+        .replace("%", "%25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+        .replace(":", "%3A")
+        .replace(",", "%2C")
+    )
+
+
+def format_github_failure_annotation(*, nodeid: str, summary: str) -> str:
+    """Render one escaped GitHub Actions error workflow command."""
+
+    return (
+        "::error title="
+        f"{_github_annotation_value(nodeid)}::"
+        f"{_github_annotation_value(summary)}"
+    )
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Expose actionable test failures in public GitHub check annotations."""
+
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not report.failed:
+        return
+    message = getattr(report.longrepr, "reprcrash", None)
+    summary = (
+        f"{message.path}:{message.lineno}: {message.message}"
+        if message is not None
+        else str(report.longrepr)
+    )
+    print(
+        format_github_failure_annotation(
+            nodeid=report.nodeid,
+            summary=summary,
+        ),
+        flush=True,
+    )
+
+
+@pytest.fixture
+def github_failure_annotation_formatter() -> Callable[..., str]:
+    """Expose the workflow-command formatter for focused tests."""
+
+    return format_github_failure_annotation
 
 
 @pytest.fixture

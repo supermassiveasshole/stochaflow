@@ -70,6 +70,20 @@ class KillRequiredProcess:
         self.exitcode = -9
 
 
+def test_github_failure_annotation_escapes_workflow_commands(
+    github_failure_annotation_formatter: Callable[..., str],
+) -> None:
+    annotation = github_failure_annotation_formatter(
+        nodeid="tests/test_example.py::test_value[param,other]",
+        summary="tests/test_example.py:12: bad: value, 50%\nnext line",
+    )
+
+    assert annotation == (
+        "::error title=tests/test_example.py%3A%3Atest_value[param%2Cother]::"
+        "tests/test_example.py%3A12%3A bad%3A value%2C 50%25%0Anext line"
+    )
+
+
 def test_cleanup_terminates_and_reaps_child(
     multiprocessing_child_cleanup: Callable[..., tuple[Any, ...]],
 ) -> None:
