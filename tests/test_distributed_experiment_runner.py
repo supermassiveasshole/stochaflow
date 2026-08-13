@@ -464,6 +464,11 @@ def test_checkpoint_stage_proves_common_state_before_manifest_commit(
     def export(*args: object, **kwargs: object) -> None:
         events.append("portable-export")
 
+    def capture_rng(device: torch.device) -> object:
+        assert device == session.device
+        events.append("rng-capture")
+        return object()
+
     monkeypatch.setattr(
         distributed_experiment_runner,
         "new_distributed_checkpoint_bundle_id",
@@ -494,6 +499,11 @@ def test_checkpoint_stage_proves_common_state_before_manifest_commit(
         "export_distributed_portable_checkpoint",
         export,
     )
+    monkeypatch.setattr(
+        distributed_experiment_runner,
+        "capture_local_rng_state",
+        capture_rng,
+    )
     components = SimpleNamespace(
         trainer=RecordingTrainer(),
         checkpoint_manager=RecordingCheckpointManager(),
@@ -523,6 +533,7 @@ def test_checkpoint_stage_proves_common_state_before_manifest_commit(
     assert portable == paths.workspace / "checkpoints/portable/epoch_0002.pt"
     assert events == [
         "state-consensus",
+        "rng-capture",
         "common-build",
         "common-stage",
         "best-stage",
