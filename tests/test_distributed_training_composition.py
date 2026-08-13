@@ -597,8 +597,11 @@ def test_real_gloo_world_one_uses_ddp_without_output_side_effects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if not torch.distributed.is_available():
-        pytest.skip("Torch distributed support is unavailable")
+    if (
+        not torch.distributed.is_available()
+        or not torch.distributed.is_gloo_available()
+    ):
+        pytest.skip("Torch Gloo distributed support is unavailable")
     if torch.distributed.is_initialized():
         pytest.skip("another test owns the process group")
     activate_training_builtins()

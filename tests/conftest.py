@@ -37,24 +37,26 @@ def format_github_failure_annotation(*, nodeid: str, summary: str) -> str:
     )
 
 
-def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Expose actionable test failures in public GitHub check annotations."""
+def pytest_terminal_summary(terminalreporter: object) -> None:
+    """Expose actionable failures after pytest releases per-test capture."""
 
-    if os.environ.get("GITHUB_ACTIONS") != "true" or not report.failed:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
         return
-    message = getattr(report.longrepr, "reprcrash", None)
-    summary = (
-        f"{message.path}:{message.lineno}: {message.message}"
-        if message is not None
-        else str(report.longrepr)
-    )
-    print(
-        format_github_failure_annotation(
-            nodeid=report.nodeid,
-            summary=summary,
-        ),
-        flush=True,
-    )
+    stats = getattr(terminalreporter, "stats", {})
+    for report in stats.get("failed", ()):
+        message = getattr(report.longrepr, "reprcrash", None)
+        summary = (
+            f"{message.path}:{message.lineno}: {message.message}"
+            if message is not None
+            else str(report.longrepr)
+        )
+        print(
+            format_github_failure_annotation(
+                nodeid=report.nodeid,
+                summary=summary,
+            ),
+            flush=True,
+        )
 
 
 @pytest.fixture
