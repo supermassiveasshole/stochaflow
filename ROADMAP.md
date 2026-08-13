@@ -4,7 +4,7 @@
 >
 > Product horizon: pre-1.0
 >
-> In progress: None
+> In progress: [Fixed single-node distributed training](docs/development/distributed-training-and-inference-support-plan.md)
 >
 > Next: None
 >
@@ -50,9 +50,19 @@ workflow.
 
 ## Current selection
 
-No product item is in progress and no next item has been selected. Maintenance,
-bug fixes, and documentation work may continue without selecting a new product
-direction.
+Fixed single-node distributed training is now in progress. The selected result
+is deliberately narrow: one maintained Linux workload must complete on a fixed
+single-node CUDA/NCCL topology with globally consistent updates and validation,
+an exact fixed-topology resume bundle, and a portable checkpoint. Distributed
+sampling, FSDP2, multi-node, and elastic membership remain outside this item.
+The explicit DDP operation, independent Trainer, ranked-data contracts, exact
+bundle, portable export, and CPU/Gloo correctness tests now exist in source;
+target Linux CUDA/NCCL and 8xH200 performance, capacity, and failure acceptance
+remain incomplete, so this item is not Done.
+Hardware promotion still requires one selected workload to prove that, at its
+required effective global batch and quality target, single-device gradient
+accumulation misses the wall-time or throughput budget. No next item has been
+selected.
 
 ## Candidate product functions
 
@@ -70,7 +80,6 @@ direction.
 | --- | --- | --- | --- |
 | Stable Diffusion | Supply a compatible component bundle and image-text data, fine-tune the UNet, then generate images from prompts | Latent/codec support is Done and this direction is selected | [Plan](docs/development/stable-diffusion-component-native-support-plan.md) |
 | Extension import performance | Start commands and activate extensions with less import delay, without changing extension behavior | Measurements show a user-visible startup problem | [Plan](docs/development/extension-import-boundary-and-activation-latency-plan.md) |
-| Fixed single-node distributed training | Run one maintained training workload on a fixed number of Linux GPUs and receive globally consistent validation, a fixed-topology resumable training bundle, and a portable checkpoint | At the required effective global batch and quality constraints, a maintained single-device workload still misses a measured wall-time or throughput requirement, and one exact Linux CUDA/NCCL topology is selected for acceptance | [Plan](docs/development/distributed-training-and-inference-support-plan.md) |
 | Portable large-scale data preparation and training | Prepare a resumable, verified dataset once, copy it to another machine, and train from the same data identity using bounded machine-specific storage, host-memory, pinned-memory, and device queues | One finite large-data workload, its preparation semantics and storage format, and both PC and server acceptance environments are selected; later performance layers still require a measured bottleneck | [Plan](docs/development/hierarchical-data-pipeline-support-plan.md) |
 | Automated model tuning | Give the system a base training config, parameter choices, and a budget; receive the best checkpoint and its formal Evaluation result | A stable objective, budget, Evaluation protocol, and reusable single-run call exist | [Plan](docs/development/automated-model-tuning-plan.md) |
 | General workflow orchestrator | Submit a list of already supported operations, inspect each step, and retry or resume a failed step | At least two maintained workflows repeat the same recovery and state-hand-off code | [Plan](docs/development/general-workflow-orchestrator-plan.md) |

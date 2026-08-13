@@ -19,6 +19,7 @@ from stochaflow.data import (
     DataBuilder,
     DataBuilderContext,
     DataLoaders,
+    DataRankContext,
     ImageDataBuilder,
     MultiResolutionImageDataBuilder,
     SuperResolutionDataBuilder,
@@ -86,6 +87,38 @@ def test_context_copies_params() -> None:
 def test_context_rejects_non_mapping_params() -> None:
     with pytest.raises(TypeError, match="params must be a mapping"):
         DataBuilderContext(params=[], seed=9)  # type: ignore[arg-type]
+
+
+def test_rank_context_is_runtime_injected_and_requires_ranked_support() -> None:
+    rank_context = DataRankContext(rank=0, world_size=1)
+    context = DataBuilderContext(
+        params={"rank": 99, "world_size": 100},
+        seed=9,
+        rank_context=rank_context,
+    )
+
+    assert context.rank_context is rank_context
+    ordinary = build_data_loaders(
+        ComponentConfig(
+            name="test_streaming_builder",
+            params={"rank": 99, "world_size": 100},
+        ),
+        seed=7,
+    )
+    assert ordinary.ranked_execution is None
+
+    with pytest.raises(ValueError, match="does not support ranked execution"):
+        build_data_loaders(
+            ComponentConfig(name="test_streaming_builder"),
+            seed=7,
+            rank_context=rank_context,
+        )
+    with pytest.raises(TypeError, match="rank_context"):
+        DataBuilderContext(
+            params={},
+            seed=9,
+            rank_context=object(),  # type: ignore[arg-type]
+        )
 
 
 def test_sized_and_streaming_loaders_validate_epoch_length() -> None:
@@ -269,9 +302,16 @@ def test_only_new_data_contract_is_public() -> None:
         "DataBuilder",
         "DataBuilderContext",
         "DataLoaders",
+        "DataRankContext",
         "DataSource",
         "DataSourceContext",
         "DataSourceMaterializationConfig",
+        "ExactCoverageReceipt",
+        "ExactCoverageSpan",
+        "ExactValidationBatch",
+        "ExactValidationEpochPlan",
+        "ExactValidationEpochReader",
+        "ExactValidationExecution",
         "IMAGE_DATA_SOURCES",
         "ImageArtifactPayload",
         "ImageDataBuilder",
@@ -284,6 +324,14 @@ def test_only_new_data_contract_is_public() -> None:
         "ManagedDataArtifactBuild",
         "MultiResolutionImageDataBuilder",
         "PairedImageFolderArtifactPayload",
+        "RankedBatchFacts",
+        "RankedDataExecution",
+        "RankedEpochCompletion",
+        "RankedEpochDataIdentity",
+        "RankedTrainEpochPlan",
+        "RankedTrainEpochReader",
+        "RankedTrainExecution",
+        "RankedTrainWindow",
         "ReferencedDataArtifactBuild",
         "SuperResolutionDataBuilder",
         "TorchvisionImageArtifactPayload",

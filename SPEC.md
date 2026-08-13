@@ -4,7 +4,7 @@
 >
 > Applies to: the current source tree
 >
-> Last reviewed: 2026-08-11
+> Last reviewed: 2026-08-13
 
 This document defines the product-level contract of Stochaflow: what the
 framework is responsible for, which observable guarantees supported workflows
@@ -101,6 +101,15 @@ The canonical configuration reference is
 - A `DataBuilder` MUST own runtime data composition, including source selection,
   artifact binding, partitions, transforms, ordinary dataset views, samplers,
   collation, and train/validation/test iterables.
+- A distributed training runtime MAY inject only an immutable rank and world-size
+  projection before `DataBuilder` construction. The Builder MUST continue to own
+  task-specific assignment, worker, sampler, and coverage semantics; core MUST
+  NOT replace or inspect an arbitrary task loader after construction.
+- A `DataBuilder` used by the fixed distributed lifecycle MUST return a narrow
+  ranked-execution capability bound to the exact train and validation iterables.
+  That capability MUST plan complete equal optimizer windows, report
+  Builder-authenticated batch and terminal facts, and prove the declared
+  validation coverage without imposing a framework batch schema.
 - Core runtime code MUST treat a batch as structured `Any`; modality-specific
   keys and semantics belong to the selected Strategy or project component.
 - Inputs that participate in resume, inference, or evaluation MUST carry the
@@ -152,6 +161,58 @@ The canonical configuration reference is
   patience.
 - A completed training run SHOULD expose a structured outcome containing final
   metrics, selected checkpoints, and published artifact references.
+
+### 5.1 Fixed Single-Node DDP Contract
+
+The current distributed training software path is an explicit
+`stochaflow train --ddp` operation launched by `torchrun`. It has the following
+fixed first-version contract:
+
+- it MUST use one non-elastic process per local CUDA device, a single node, a
+  fixed world size of at least two, and the NCCL backend; CPU/Gloo execution is
+  a test surface, not a maintained user operation;
+- `LOCAL_RANK` MUST select the process device, `world_size` MUST equal
+  `local_world_size`, and elastic restarts, multi-node membership, and adoption
+  of an existing process group MUST fail closed;
+- the configured batch size is the per-rank batch. The effective global batch
+  is `world size * per-rank batch * gradient accumulation`; Stochaflow MUST
+  record this fact and MUST NOT scale the learning rate automatically;
+- every committed optimizer window MUST contain complete, equal rank-local
+  microbatch and loss-weight facts. Non-final accumulation microbatches MUST
+  suppress DDP gradient synchronization across both forward and backward;
+  any rank-local invalid loss, gradient, data fact, or lifecycle failure MUST
+  prevent publication of that epoch as a resumable result;
+- a compatible `TrainingBuilder` and its registered module classes MUST treat
+  resolved configuration plus registered parameter, buffer, and checkpoint
+  state as the complete authority for forward semantics. Undeclared mutable
+  Python fields that change forward behavior are unsupported and MUST NOT be
+  used to claim fixed-DDP or exact-resume compatibility;
+- validation MUST use one exact, complete global view. The first version runs
+  that view on rank zero while every other rank participates in the same
+  bounded heartbeat, result broadcast, and completion checks; only the global
+  result may drive checkpoint selection or early stopping;
+- an exact training resume result MUST be a manifest-last epoch-boundary bundle
+  containing one common checkpoint plus every rank's RNG and next ranked-data
+  plan. Resume MUST require the same fixed topology, backend/device type,
+  artifact identity, ranked-data identity, batch semantics, and freshly
+  verified next plan before mutating runtime state;
+- a separately exported checkpoint-v12 file is portable inference state for
+  ordinary single-process `sample` or `evaluate`. It MUST NOT be accepted as an
+  exact DDP resume bundle, and a bundle/common checkpoint MUST NOT be accepted
+  as an ordinary single-process training checkpoint.
+
+The first maintained built-in ranked-data implementation is
+`class_labeled_image`. Other Builders enter this lifecycle only through the
+same public ranked-data and primary-execution-binding contracts. Unsupported
+first-version behavior, including fp16, training Diagnostics, epoch-end live
+Evaluation, train/test phase Metrics, test-after-fit, epoch-interval schedulers,
+partial accumulation windows, truncated validation, and checkpoint intervals
+other than every epoch, MUST fail closed before training data is consumed.
+
+The target Linux CUDA/NCCL and 8xH200 performance, capacity, and fault
+acceptance remains an in-progress roadmap requirement. The existence of this
+software path and CPU/Gloo correctness tests MUST NOT be represented as that
+hardware acceptance or as a throughput guarantee.
 
 ## 6. Process and Algorithm-Family Contract
 
@@ -237,16 +298,19 @@ The canonical configuration reference is
    and MUST fail closed on contradictory or ambiguous candidates.
 4. Unsupported old formats MUST fail closed unless an explicit, tested migration
    exists.
-5. Publication of a completed result or manifest MUST occur only after required
+5. A distributed resume bundle and a portable checkpoint MUST retain distinct
+   roles. Neither a common file extracted from a bundle nor its portable export
+   MAY silently enter the wrong training-resume lifecycle.
+6. Publication of a completed result or manifest MUST occur only after required
    files and reporters finish successfully.
-6. Artifact publication SHOULD use atomic staging where partial output would be
+7. Artifact publication SHOULD use atomic staging where partial output would be
    ambiguous or unsafe.
-7. Sampling bundles MUST confine writer paths to a private sibling staging
+8. Sampling bundles MUST confine writer paths to a private sibling staging
    directory, record portable relative artifact paths, and atomically publish
    to an absent final directory. Failure MUST leave no final bundle.
-8. Generated datasets, checkpoints, routine run outputs, credentials, and
+9. Generated datasets, checkpoints, routine run outputs, credentials, and
    machine-specific caches MUST NOT be committed.
-9. Maintained host-platform support MUST be limited to the matrix declared in
+10. Maintained host-platform support MUST be limited to the matrix declared in
    [`docs/platform-support.md`](docs/platform-support.md). macOS x86_64 is
    explicitly unsupported; core, dependency metadata, CI, and tests MUST NOT
    retain dedicated compatibility paths for it without revising this contract.
@@ -314,6 +378,9 @@ Stochaflow is not intended to become:
   permissions system;
 - a general distributed runtime that reimplements collectives, elastic
   membership, fault-tolerant scheduling, or cluster coordination;
+- distributed sampling, formal distributed Evaluation, model/optimizer
+  sharding, FSDP, multi-node execution, topology-changing resume, and
+  mid-epoch distributed resume as consequences of the fixed DDP lifecycle;
 - a production serving control plane, request router, model deployment system,
   or online feature platform;
 - a universal mathematical API shared by unrelated generative methods;

@@ -366,9 +366,16 @@ class CheckpointManager:
         config: dict[str, Any] | None = None,
         metrics: dict[str, float] | None = None,
         metadata: dict[str, Any] | None = None,
+        rng_state: object | None = None,
     ) -> CheckpointState:
         """Assemble a serializable checkpoint payload from managed objects."""
 
+        checkpoint_rng_state = cast(
+            dict[str, Any],
+            capture_rng_state()
+            if rng_state is None
+            else _clone_checkpoint_data(rng_state, tensors_to_cpu=True),
+        )
         state: CheckpointState = {
             "format_version": CHECKPOINT_FORMAT_VERSION,
             "model_state_dict": _clone_module_state(self.model),
@@ -381,7 +388,7 @@ class CheckpointManager:
                 if self.inference_recipe is not None
                 else None
             ),
-            "rng_state": capture_rng_state(),
+            "rng_state": checkpoint_rng_state,
         }
         if self.process is not None:
             state["process_state_dict"] = _clone_module_state(self.process)
@@ -1047,6 +1054,59 @@ def capture_rng_state() -> dict[str, Any]:
     """Capture process-global RNG streams using the data-only contract."""
 
     return _capture_rng_state(include_cuda=True, include_mps=True)
+
+
+def capture_local_rng_state(device: torch.device | str) -> dict[str, Any]:
+    """Capture CPU streams plus only one process-owned accelerator RNG."""
+
+    selected = torch.device(device)
+    state = _capture_rng_state(include_cuda=False, include_mps=False)
+    if selected.type == "cuda":
+        if selected.index is None:
+            raise ValueError("local CUDA RNG capture requires an indexed device")
+        state["torch_cuda"] = [
+            torch.cuda.get_rng_state(selected).detach().cpu().clone()
+        ]
+    elif selected.type == "mps":
+        state["torch_mps"] = torch.mps.get_rng_state().detach().cpu().clone()
+    elif selected.type != "cpu":
+        raise ValueError(f"unsupported local RNG device type: {selected.type}")
+    return state
+
+
+def restore_local_rng_state(
+    state: object,
+    *,
+    device: torch.device | str,
+) -> None:
+    """Restore CPU streams plus one process-owned accelerator RNG."""
+
+    selected = torch.device(device)
+    parsed = state if isinstance(state, ParsedRNGState) else parse_rng_state(state)
+    previous = parse_rng_state(capture_local_rng_state(selected))
+
+    def apply(value: ParsedRNGState) -> None:
+        random.setstate(value.python)
+        np.random.set_state(value.numpy)
+        torch.random.set_rng_state(value.torch_cpu)
+        if selected.type == "cuda":
+            if selected.index is None or len(value.torch_cuda) != 1:
+                raise ValueError(
+                    "local CUDA RNG state must contain exactly one device stream"
+                )
+            torch.cuda.set_rng_state(value.torch_cuda[0], selected)
+        elif selected.type == "mps":
+            if value.torch_mps is None:
+                raise ValueError("local MPS RNG state is missing")
+            torch.mps.set_rng_state(value.torch_mps)
+        elif value.torch_cuda or value.torch_mps is not None:
+            raise ValueError("CPU local RNG state contains accelerator streams")
+
+    try:
+        apply(parsed)
+    except Exception:
+        apply(previous)
+        raise
 
 
 def _capture_rng_state(

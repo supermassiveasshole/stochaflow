@@ -19,6 +19,7 @@ from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
 )
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
+from stochaflow.training.strategy import TrainingStrategy
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
 from .contracts import ClassConditionalGaussianStepObservation
@@ -34,6 +35,100 @@ class ClassConditionalStepContext:
     class_labels: torch.Tensor
     model_class_labels: torch.Tensor
     condition_dropout_mask: torch.Tensor
+
+
+class ClassConditionalPrimaryExecutionModule(nn.Module):
+    """Route one conditional capability through an ordinary module forward."""
+
+    def __init__(self, denoiser: ClassConditionalDenoiser) -> None:
+        super().__init__()
+        if not isinstance(denoiser, nn.Module):
+            raise TypeError("class-conditional execution root must be an nn.Module")
+        self.denoiser = denoiser
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+        class_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """Invoke the canonical capability inside a wrapper-visible forward."""
+
+        return predict_prevalidated_class_conditioned(
+            self.denoiser,
+            state,
+            model_time,
+            class_labels,
+        )
+
+
+class ClassConditionalBoundExecutionModel(nn.Module):
+    """Present a wrapped module as the conditional Strategy capability."""
+
+    def __init__(
+        self,
+        execution_model: nn.Module,
+        *,
+        num_classes: int,
+        null_class_id: int,
+    ) -> None:
+        super().__init__()
+        execution_model_value = cast(object, execution_model)
+        if not isinstance(execution_model_value, nn.Module):
+            raise TypeError("class-conditional execution model must be an nn.Module")
+        self.execution_model = execution_model_value
+        self._num_classes = num_classes
+        self._null_class_id = null_class_id
+
+    @property
+    def num_classes(self) -> int:
+        """Return the canonical number of non-null classes."""
+
+        return self._num_classes
+
+    @property
+    def null_class_id(self) -> int:
+        """Return the canonical classifier-free null class identifier."""
+
+        return self._null_class_id
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+        class_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """Invoke the wrapped execution module through its forward boundary."""
+
+        output = cast(
+            object,
+            self.execution_model(state, model_time, class_labels),
+        )
+        if not isinstance(output, torch.Tensor):
+            raise TypeError(
+                "class-conditional execution model must return a Tensor"
+            )
+        return output
+
+    def predict_class_conditioned(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+        class_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """Route validated conditional prediction through the wrapper."""
+
+        return self(state, model_time, class_labels)
+
+    def predict_prevalidated_class_conditioned(
+        self,
+        state: torch.Tensor,
+        model_time: torch.Tensor,
+        class_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """Route prevalidated conditional prediction through the wrapper."""
+
+        return self(state, model_time, class_labels)
 
 
 class ClassConditionalGaussianDenoisingTrainingStrategy(
@@ -223,6 +318,68 @@ class ClassConditionalGaussianDenoisingTrainingBuilder(TrainingBuilder):
             prediction_type=prediction_type,
             variance=variance,
         )
+
+    def build_primary_execution_module(self, plan: TrainingPlan) -> nn.Module:
+        """Adapt the canonical conditional capability to module forward."""
+
+        canonical = self._canonical_strategy(plan)
+        return ClassConditionalPrimaryExecutionModule(canonical.denoiser)
+
+    def bind_primary_execution_model(
+        self,
+        plan: TrainingPlan,
+        execution_model: nn.Module,
+    ) -> TrainingStrategy:
+        """Rebuild conditional Gaussian computation around a wrapper."""
+
+        canonical = self._canonical_strategy(plan)
+        process = plan.process
+        objective = plan.objective
+        assert isinstance(process, DiscreteGaussianDenoisingProcess)
+        assert objective is not None
+        bound_model = ClassConditionalBoundExecutionModel(
+            execution_model,
+            num_classes=canonical.num_classes,
+            null_class_id=canonical.null_class_id,
+        )
+        return ClassConditionalGaussianDenoisingTrainingStrategy(
+            bound_model,
+            process,
+            objective,
+            prediction_type=canonical.prediction_type,
+            variance=canonical.variance,
+            condition_dropout=canonical.condition_dropout,
+        )
+
+    def _canonical_strategy(
+        self,
+        plan: TrainingPlan,
+    ) -> ClassConditionalGaussianDenoisingTrainingStrategy:
+        if plan.primary_model is not self.context.primary_model:
+            raise ValueError(
+                "class-conditional Gaussian execution binding requires its "
+                "canonical primary model"
+            )
+        if plan.process is not self.context.process:
+            raise ValueError(
+                "class-conditional Gaussian execution binding requires its "
+                "canonical Process"
+            )
+        if plan.objective is not self.context.objective:
+            raise ValueError(
+                "class-conditional Gaussian execution binding requires its "
+                "canonical Objective"
+            )
+        strategy = plan.strategy
+        if not isinstance(
+            strategy,
+            ClassConditionalGaussianDenoisingTrainingStrategy,
+        ):
+            raise TypeError(
+                "class-conditional Gaussian execution binding requires "
+                "ClassConditionalGaussianDenoisingTrainingStrategy"
+            )
+        return strategy
 
     def _components(
         self,

@@ -12,6 +12,16 @@ is unavailable.
 
 ### Added
 
+- Added the first fixed single-node DDP training software path through explicit
+  `torchrun ... train --ddp` launch. It uses an independent `DDPTrainer`,
+  rank-aware DataBuilder sidecar contracts, primary-model execution binding,
+  all-rank optimizer/validation decisions, an exact fixed-topology epoch-resume
+  bundle, and a separate portable checkpoint-v12 export. The first built-in
+  ranked path is `class_labeled_image`; unsupported precision, metrics,
+  diagnostics, live Evaluation, test, scheduler, topology, and partial-window
+  semantics fail closed. Target Linux CUDA/NCCL and 8xH200 performance/fault
+  acceptance remains in progress and is not implied by the software or
+  CPU/Gloo correctness tests.
 - Added learned-range Gaussian variance, hybrid variational-bound training,
   respaced ancestral DDPM, and learned-variance classifier-free guidance.
 - Added configurable task-neutral training metrics, Strategy metric channels,

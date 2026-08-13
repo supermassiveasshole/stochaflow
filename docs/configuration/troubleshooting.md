@@ -292,6 +292,75 @@ Apple MPS 不支持 `float64` module parameter/buffer。把模型或 Process coe
 TrainingBuilder 组装的 TrainingStrategy、模型输入输出契约彼此一致。内置图像 recipe
 的通道配置位于 `data.params.image.channels`。
 
+### `detected a multi-process launch without --ddp` / torchrun 环境缺失
+
+`WORLD_SIZE > 1` 时必须显式传 `train --ddp`；框架不会因为环境变量存在就静默改变普通
+训练语义。反过来，`--ddp` 只能在完整 `torchrun` 环境中使用。推荐固定启动形状：
+
+```bash
+torchrun --standalone --nnodes=1 --nproc-per-node=<GPU数量> --max-restarts=0 \
+  -m stochaflow.scripts.cli train --ddp --config path/to/train.yaml
+```
+
+确认 launcher 提供 `RANK`、`LOCAL_RANK`、`WORLD_SIZE`、`LOCAL_WORLD_SIZE`、
+`MASTER_ADDR` 与 `MASTER_PORT`，并且 world size 至少为 2、等于 local world size，
+`GROUP_RANK=0`、elastic restart count/max restarts 均为 0。多节点或弹性设置会明确失败。
+
+### `the maintained fixed DDP operation requires CUDA/NCCL` / `do not pass --device`
+
+用户 DDP 入口目前只支持 Linux 单机 CUDA/NCCL，每个 rank 的 device 只能来自
+`LOCAL_RANK`。不要传 `--device`；确认可见 CUDA device 数量不少于
+`LOCAL_WORLD_SIZE`，NCCL 可用，且 launcher 的本地 rank 与 device 编号一致。
+CPU/Gloo 只用于仓库多进程正确性测试，不是这个 CLI 的 fallback。真实 8×H200 验收尚未
+完成，遇到吞吐、NCCL 或硬件故障时还应记录 driver、CUDA/PyTorch/NCCL 版本、拓扑、
+存储等待、ECC/Xid 与显存，而不是把开发机测试当作性能基线。
+
+### `fixed DDP requires ranked data execution` / execution binding 被拒绝
+
+普通 DataLoader 不会被自动换成 distributed sampler。当前内置 DDP 数据路径只有
+`class_labeled_image`；其他 DataBuilder 必须使用注入的 `DataRankContext`，并返回与其
+train/validation iterable 精确绑定的 `RankedDataExecution`，证明完整 accumulation
+window、assignment token、样本/loss 权重、terminal token 与 exact validation coverage。
+
+若错误指出 TrainingBuilder 不支持 primary execution binding，则该 Builder 的 Strategy
+仍捕获 canonical model，不能安全调用 DDP wrapper。让 Builder 实现公共
+`TrainingExecutionBindingBuilder`：保留 `TrainingPlan.primary_model` 作为
+checkpoint/EMA authority，只把 state-sharing execution module 交给运行时包装，再返回实际
+调用包装对象的 Strategy。不要让 core 或 extension 按属性名猜测并替换 Strategy 内部模型。
+
+### `fixed DDP does not yet support ...` / accumulation 或 checkpoint 设置被拒绝
+
+首版只接受 `fp32`/`bf16-mixed`、validation-only Metrics、step-interval scheduler、
+完整 rank-zero validation 和 `artifacts.checkpoint_every: 1`。它会拒绝 fp16、Diagnostics、
+epoch-end live Evaluation、train/test Metrics、test-after-fit、epoch scheduler、
+`--limit-validation-batches`、`--limit-test-batches`，以及不能被
+`trainer.accumulate_grad_batches` 整除的 `--limit-batches`。这些错误表示所选生命周期还
+没有共同更新或全局结果契约；不要通过删除验证事实或让各 rank 各自运行来绕过。改用普通
+单进程训练，或把配置收敛到当前固定 DDP 支持范围。
+
+### DDP `--resume` 拒绝 `.pt`、`common.pt` 或 bundle
+
+DDP exact resume 的输入必须正好是一个已提交的
+`checkpoints/resume/epoch-.../` directory，其中包含 `bundle-manifest.yaml`、`common.pt`
+和全部 `ranks/rank-*.pt`。只复制 `common.pt` 会丢失逐 rank RNG/下一 epoch data plan；
+`checkpoints/portable/epoch_XXXX.pt` 则只供普通 `sample`/`evaluate`。两者都会按
+`metadata.checkpoint_role` fail closed，不能改名互换。
+
+恢复 bundle 时仍必须使用相同 world/local world size、rank layout、NCCL/CUDA device
+type、per-rank batch、accumulation、artifact/ranked-data identity，并由当前 Builder 重新
+生成完全相同的下一 epoch plan。schema v2 committed bundle 会在已有 best 选择时内含并认证
+`best-portable.pt`，因此完整 bundle directory 可以独立搬运和恢复，不需要复制父 run。只搬
+`common.pt`、某个 rank 文件或未提交的 staging directory 都不构成恢复证据。普通单进程
+`train --resume` 同样不会接受 distributed common 或 portable 角色。
+
+### DDP worker 失败或运行卡住
+
+顶层 worker 使用 `torchrun` 错误记录保留原始 traceback；任一 rank 的数据、loss、gradient、
+optimizer、checkpoint 或 publication 失败都会让整场运行失败。进程组超时只能限制已经进入
+collective 的等待，不能终止所有 rank 同时卡住的 DataLoader、共享存储或文件系统调用；生产
+运行仍需由外部 scheduler 设置 hard deadline。失败时不要从隐藏 staging 目录里的局部文件
+猜测成功；只把通过 manifest 校验的完整 resume bundle 当作恢复证据。
+
 ### `train` 要求 `--config` 或 `--resume CHECKPOINT`
 
 新训练传 `--config`；严格恢复传明确 checkpoint 文件或 run directory。两者互斥，裸

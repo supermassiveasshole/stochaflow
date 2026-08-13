@@ -47,7 +47,7 @@ flowchart LR
 | --- | --- |
 | 数据 | verified managed/referenced artifacts；普通图像、有标签图像、超分辨率配对和多源多分辨率 image recipes |
 | 模型 | 无条件 UNet、canonical unconditional/class-conditional ADM U-Net、class-conditional pixel DiT |
-| 训练 | supervised 与无条件/类条件 Gaussian denoising；epsilon/x0/v/score targets；fixed/learned-range variance；混合精度、梯度累积、EMA、cadence-controlled validation Evaluation 和单 optimizer 自动循环 |
+| 训练 | supervised 与无条件/类条件 Gaussian denoising；epsilon/x0/v/score targets；fixed/learned-range variance；单进程混合精度、梯度累积、EMA、cadence-controlled validation Evaluation 和单 optimizer 自动循环；固定 Linux 单机 CUDA/NCCL DDP 软件首版 |
 | 采样 | full/respaced ancestral DDPM、DDIM、class-conditional CFG、trajectory observations、Tensor/PNG/grid/GIF writers |
 | Metrics | task-neutral `MetricSpec`/`MetricUpdate`/`MetricEngine`，内置 mean/MSE/MAE 与 FID/KID providers |
 | Diagnostics | 训练期 denoiser/sampler observation、reference metrics、artifacts 与显式 failure policy |
@@ -55,9 +55,11 @@ flowchart LR
 | 生命周期 | DataArtifact schema v2、checkpoint v12、strict resume、read-only inference projection、structured outcomes 和 run manifests |
 | 扩展 | standard Python entry point、typed registries、extension provenance、`stochaflow init` 项目脚手架 |
 
-内置算法主线仍是 pixel-space 离散 Gaussian diffusion。Latent diffusion、预训练
-autoencoder、Stable Diffusion component-native workflow、flow matching 与 distributed
-training 尚未成为当前内置产品能力。
+内置算法主线仍是 pixel-space 离散 Gaussian diffusion。固定单机 DDP 的代码、CLI、CPU/Gloo
+正确性测试和公共扩展契约已经存在，但真实 8×H200 性能、容量与故障验收尚未完成，因此根
+`ROADMAP.md` 仍把它列为进行中，本文也不据此承诺服务器吞吐。Latent diffusion、预训练
+autoencoder、Stable Diffusion component-native workflow、flow matching、FSDP、多节点、
+弹性运行和分布式采样尚未成为当前内置产品能力。
 
 ## 数据与训练工作流
 
@@ -83,8 +85,12 @@ Builder 执行还会核对不持久化的 Store receipt，避免把伪造、旧�
 DataBuilder -> DataLoaders
 injected model / optional Process / optional Objective
               -> TrainingBuilder -> TrainingPlan
-              -> TrainingStrategy + Trainer
+              -> TrainingStrategy + single-process Trainer
               -> checkpoints + TrainingRunOutcome + manifest
+
+torchrun rank/world size -> DataBuilder -> DataLoaders + RankedDataExecution
+TrainingPlan + primary execution binding -> DDP execution model
+              -> DDPTrainer -> exact resume bundle + portable v12 + outcome
 ```
 
 `TrainingBuilder` 可以声明 managed auxiliary modules、其中一部分的 inference projection
@@ -98,6 +104,20 @@ maintained distillation 能力。
 `accumulate_grad_batches`。独立 optimizers、alternating updates 或 manual backward
 尚未由这个循环支持。训练、strict resume、precision、accumulation 和 checkpoint 细节见
 [兼容性与迁移](configuration/compatibility-and-migration.md)。
+
+固定 DDP 不在普通 `Trainer` 中增加并行模式分支。`train --ddp` 在接触数据前建立固定的
+`torchrun` 会话，把只含 `rank`/`world_size` 的 `DataRankContext` 注入 Builder，再要求
+Builder 返回与原 train/validation iterable 精确绑定的 `RankedDataExecution`。任务仍拥有
+sample assignment、worker、sampler、batch 和 coverage 语义；core 只核对完整 accumulation
+window、样本/loss 权重、assignment token 与终止证明。内置首条 ranked 路径是
+`class_labeled_image`。
+
+普通 YAML 的 `data.params.loader.batch_size` 在 DDP 下是每个 rank 的 batch，实际一次更新
+看到的样本数为 `world_size × per-rank batch × accumulate_grad_batches`。运行清单记录这个
+effective global batch，框架不会自动缩放学习率。rank 0 使用 canonical model 完整执行
+validation；其他 rank 按同一有限 batch 心跳参加失败共识和结果广播，不产生重复 validation
+样本。当前 DDP 只接纳 `fp32`/`bf16-mixed`、validation-only Metrics、step-interval scheduler
+和完整 epoch/checkpoint window；其他限制见[固定单机 DDP 工作流](configuration/workflows.md#固定单机-ddp-软件首版)。
 
 ## Checkpoint inference 与采样
 
@@ -197,6 +217,8 @@ SamplingBuilder、monitoring 与 formal Evaluation；边界草图见
 | --- | --- |
 | DataArtifact | schema v2 identity、manifest、locator、cache layout 与 checkpoint binding |
 | Checkpoint | format v12，包含完整训练 state、resolved config、inference projections 与 recipe |
+| DDP resume bundle | schema v2，完整 epoch 的 common v12 training state、逐 rank RNG/下一 epoch data plan、固定 topology、manifest-last inventory，以及已有 best 选择时自包含的 `best-portable.pt` attachment；完整 committed bundle 可独立搬运，只供 `train --ddp --resume <bundle>` |
+| DDP portable checkpoint | format v12 的单文件 inference projection；只供普通 `sample`/`evaluate`，不能继续 DDP 或单进程训练 |
 | Sampling result | complete sample authority、checkpoint identity、resolved weights、writers 与 manifest |
 | Prediction artifact | schema v1 records、shard digests、exact sample plan、producer/source lineage |
 | Evaluation result | schema v1 subject、data、protocol、providers、metrics、completeness 与 artifacts |
@@ -215,6 +237,11 @@ Extension 是普通 Python distribution，通过
 ## 当前明确保留的限制
 
 - 自动训练只有单 optimizer、单 backward lifecycle。
+- 固定 DDP 只支持 Linux 单机、固定进程数、每张本地 CUDA device 一个进程和 NCCL；真实
+  8×H200 验收尚未完成。CPU/Gloo 只用于多进程正确性测试。
+- 固定 DDP 尚不支持 fp16、Diagnostics、训练期 live Evaluation、train/test Metrics、
+  test-after-fit、epoch scheduler、不完整 accumulation window、截断 validation、FSDP、
+  多节点、弹性成员、改变 topology 的恢复或分布式采样。
 - DataLoader worker、transform 与 sampler 的全部运行时随机状态不进入 checkpoint。
 - Sampling outputs 在 writer 前整体物化，不支持无界 streaming 或大规模 dense
   trajectory。

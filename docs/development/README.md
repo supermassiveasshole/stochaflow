@@ -4,7 +4,7 @@
 [当前开发队列](development-priority-roadmap.md)只记录已经选中的工作和跨计划前置关系。本页只帮
 读者找到相关构想，不替路线图作决定。
 
-- 正在实施：无
+- 正在实施：[固定单机的多设备训练](distributed-training-and-inference-support-plan.md)
 - 已经选定的下一项：无
 
 “候选（Candidate）”表示一个完整用户功能可以被选择，但尚未排期；“暂停（Parked）”表示
@@ -19,6 +19,7 @@
 | 准备训练、验证和测试数据 | [Data pipeline](../configuration/data-pipeline.md) |
 | 分别运行训练、生成和正式评估 | [配置与工作流](../configuration/workflows.md) |
 | 继续中断的训练，或从 checkpoint 独立推理 | [Checkpoint 与迁移说明](../configuration/compatibility-and-migration.md) |
+| 试用固定单机 DDP 软件首版并区分 exact bundle 与便携 checkpoint | [固定 DDP 工作流](../configuration/workflows.md#固定单机-ddp-软件首版)；目标 8×H200 验收仍在进行中 |
 | 安装自己的数据、模型或任务扩展 | [扩展使用说明](../configuration/extensions.md)与[扩展 API](../api/extensions.md) |
 
 ## 新模型和新任务
@@ -43,9 +44,9 @@
 
 - **[用 Hydra 组合训练配置](hydra-configuration-composition-migration-plan.md)（候选）**：在重复 YAML
   已成为真实问题时，先预览合并结果，再交给现有训练入口。
-- **[固定单机的多设备训练](distributed-training-and-inference-support-plan.md)（暂停）**：在所需有效 batch
-  和训练质量下，单设备任务仍无法满足吞吐或训练时间预算时，用固定数量的 Linux GPU 闭合一场
-  DDP 训练；多进程采样随后单独验收。
+- **[固定单机的多设备训练](distributed-training-and-inference-support-plan.md)（进行中）**：软件首版已经
+  提供固定进程数的 DDP 入口、一致更新、rank 0 validation、继续训练 bundle 和便携 checkpoint；
+  当前仍需真实 Linux CUDA/NCCL 与 8×H200 验收，多进程采样、FSDP2 与弹性运行留在后续独立方向。
 - **[一次准备、跨机器运行的大规模数据管线](hierarchical-data-pipeline-support-plan.md)（暂停）**：把本地
   TB 级原始数据可恢复地准备成便携版本，复制后只更换机器资源 profile，再用有界管线训练。
 - **[自动寻找训练参数](automated-model-tuning-plan.md)（暂停）**：隔离运行多次普通训练，只按

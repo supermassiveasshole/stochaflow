@@ -74,5 +74,37 @@ class SupervisedTrainingBuilder(TrainingBuilder):
             objective=objective,
         )
 
+    def build_primary_execution_module(self, plan: TrainingPlan) -> nn.Module:
+        """Return the canonical model as the supervised execution root."""
+
+        self._validate_plan(plan)
+        return plan.primary_model
+
+    def bind_primary_execution_model(
+        self,
+        plan: TrainingPlan,
+        execution_model: nn.Module,
+    ) -> TrainingStrategy:
+        """Rebuild supervised computation around a state-sharing wrapper."""
+
+        self._validate_plan(plan)
+        objective = plan.objective
+        assert objective is not None
+        return SupervisedTrainingStrategy(execution_model, objective)
+
+    def _validate_plan(self, plan: TrainingPlan) -> None:
+        if plan.primary_model is not self.context.primary_model:
+            raise ValueError(
+                "supervised execution binding requires its canonical primary model"
+            )
+        if plan.objective is None or plan.objective is not self.context.objective:
+            raise ValueError(
+                "supervised execution binding requires its canonical objective"
+            )
+        if not isinstance(plan.strategy, SupervisedTrainingStrategy):
+            raise TypeError(
+                "supervised execution binding requires SupervisedTrainingStrategy"
+            )
+
 
 __all__ = ["SupervisedTrainingBuilder", "SupervisedTrainingStrategy"]

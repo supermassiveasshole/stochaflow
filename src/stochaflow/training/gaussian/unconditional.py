@@ -12,6 +12,7 @@ from stochaflow.processes.gaussian.contracts import (
     DiscreteGaussianDenoisingProcess,
 )
 from stochaflow.training.builder import TrainingBuilder, TrainingPlan
+from stochaflow.training.strategy import TrainingStrategy
 from stochaflow.utils.sampling_recipe import SamplingRecipe
 
 from .strategy import GaussianTrainingStrategyBase
@@ -89,6 +90,56 @@ class GaussianDenoisingTrainingBuilder(TrainingBuilder):
             prediction_type=prediction_type,
             variance=variance,
         )
+
+    def build_primary_execution_module(self, plan: TrainingPlan) -> nn.Module:
+        """Return the canonical denoiser as the execution root."""
+
+        self._canonical_strategy(plan)
+        return plan.primary_model
+
+    def bind_primary_execution_model(
+        self,
+        plan: TrainingPlan,
+        execution_model: nn.Module,
+    ) -> TrainingStrategy:
+        """Rebuild Gaussian computation around a state-sharing wrapper."""
+
+        canonical = self._canonical_strategy(plan)
+        process = plan.process
+        objective = plan.objective
+        assert isinstance(process, DiscreteGaussianDenoisingProcess)
+        assert objective is not None
+        return GaussianDenoisingTrainingStrategy(
+            execution_model,
+            process,
+            objective,
+            prediction_type=canonical.prediction_type,
+            variance=canonical.variance,
+        )
+
+    def _canonical_strategy(
+        self,
+        plan: TrainingPlan,
+    ) -> GaussianDenoisingTrainingStrategy:
+        if plan.primary_model is not self.context.primary_model:
+            raise ValueError(
+                "Gaussian execution binding requires its canonical primary model"
+            )
+        if plan.process is not self.context.process:
+            raise ValueError(
+                "Gaussian execution binding requires its canonical Process"
+            )
+        if plan.objective is not self.context.objective:
+            raise ValueError(
+                "Gaussian execution binding requires its canonical Objective"
+            )
+        strategy = plan.strategy
+        if not isinstance(strategy, GaussianDenoisingTrainingStrategy):
+            raise TypeError(
+                "Gaussian execution binding requires "
+                "GaussianDenoisingTrainingStrategy"
+            )
+        return strategy
 
     def _components(
         self,

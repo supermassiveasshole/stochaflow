@@ -19,9 +19,14 @@ Gaussian diffusion**:
 
 Stochaflow is pre-1.0 research software and currently permits breaking changes.
 Latent diffusion, pretrained autoencoder integration, Stable Diffusion
-components, flow matching, and distributed training are neither implemented nor
-scheduled capabilities. See the [framework overview](docs/framework.md)
-for current behavior and the [project specification](SPEC.md) for the long-term
+components, flow matching, FSDP, multi-node execution, elastic membership, and
+distributed sampling are not implemented capabilities. A fixed Linux
+single-node CUDA/NCCL DDP software path is now available through explicit
+`torchrun ... train --ddp`; target 8xH200 performance, capacity, and fault
+acceptance remains in progress, so no server-throughput claim is made. See the
+[fixed DDP workflow](docs/configuration/workflows.md#固定单机-ddp-软件首版), the
+[framework overview](docs/framework.md) for current behavior, and the
+[project specification](SPEC.md) for the long-term
 boundary and explicit non-goals.
 
 ## Quick start
@@ -113,7 +118,7 @@ not require retraining.
 | --- | --- |
 | Data | Verified managed and referenced data artifacts; image, class-labeled image, super-resolution data, and multi-resolution image recipes |
 | Models | Unconditional UNet, canonical unconditional/class-conditional ADM U-Net, and class-conditional pixel-space DiT |
-| Training | Unconditional and class-conditional Gaussian denoising; fixed or learned-range variance; supervised training, mixed precision, gradient accumulation, EMA, cadence-controlled validation Evaluation, and a single-optimizer automatic loop |
+| Training | Unconditional and class-conditional Gaussian denoising; fixed or learned-range variance; supervised training, mixed precision, gradient accumulation, EMA, cadence-controlled validation Evaluation, a single-optimizer automatic loop, and the fixed single-node DDP software path |
 | Probability process | Discrete variance-preserving Gaussian process with linear-beta and cosine-alpha-bar schedules, selected-pair marginal coefficients, and learned-range variance bounds |
 | Sampling | Full or uniformly respaced ancestral DDPM, DDIM, class allocation, classifier-free guidance, trajectory observation, and Tensor/PNG/GIF writers |
 | Evaluation | Live epoch-end validation over raw/EMA snapshots plus standalone strict checkpoint or prediction-artifact subjects, exact sample completeness, optional streamed canonical-JSONL predictions, offline metric replay, and immutable result bundles |

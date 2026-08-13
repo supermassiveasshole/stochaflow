@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import math
+import os
 import re
 import warnings
 from copy import deepcopy
@@ -284,6 +285,23 @@ def _resolve_resume_checkpoint(
     if resume.is_dir():
         return _resolve_resume_directory_checkpoint(resume)
     raise FileNotFoundError(f"checkpoint does not exist: {resume}")
+
+
+def _require_training_resume_checkpoint_role(payload: CheckpointState) -> None:
+    """Reject inference projections and distributed common state as resume input."""
+
+    metadata = cast(object, payload.get("metadata"))
+    if type(metadata) is not dict:
+        raise TypeError("strict resume checkpoint metadata must be an exact mapping")
+    role = cast(dict[str, Any], metadata).get("checkpoint_role")
+    if role is None:
+        return
+    if not isinstance(role, str) or not role:
+        raise TypeError("strict resume checkpoint_role must be a non-empty string")
+    raise ValueError(
+        f"checkpoint role {role!r} is not resumable training state; fixed DDP "
+        "must resume from its exact bundle directory with --ddp"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -976,6 +994,8 @@ def _resolve_training_inputs(args: argparse.Namespace) -> ResolvedTrainingInputs
 
     startup_cwd = Path.cwd().resolve()
     checkpoint_path, checkpoint = _resolve_resume_checkpoint(requested_resume)
+    if checkpoint is not None:
+        _require_training_resume_checkpoint_role(checkpoint)
     config_overlays: list[dict[str, Any]] = []
     if checkpoint_path is None:
         assert config_path is not None
@@ -2052,6 +2072,25 @@ def _run_single_run(
 def run_experiment_from_args(args: argparse.Namespace) -> TrainingRunOutcome:
     """Run one registered data builder as one independent experiment."""
 
+    if bool(getattr(args, "ddp", False)):
+        from stochaflow.scripts.distributed_experiment_runner import (  # noqa: PLC0415
+            run_distributed_experiment_from_args,
+        )
+
+        return run_distributed_experiment_from_args(args)
+    raw_world_size = os.environ.get("WORLD_SIZE")
+    if raw_world_size is not None:
+        try:
+            world_size = int(raw_world_size)
+        except ValueError as exc:
+            raise ValueError(
+                "WORLD_SIZE must be an integer when present in a training launch"
+            ) from exc
+        if world_size > 1:
+            raise RuntimeError(
+                "detected a multi-process launch without --ddp; refusing to run "
+                "independent single-process experiments on every rank"
+            )
     inputs = _resolve_training_inputs(args)
     config = inputs.config
     options = ExperimentRunOptions.from_namespace(

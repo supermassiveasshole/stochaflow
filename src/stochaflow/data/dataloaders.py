@@ -16,6 +16,7 @@ from stochaflow.data.datasets import (
     ClassLabeledImageDataset,
     MultiResolutionDataset,
 )
+from stochaflow.data.ranked import RankedDataExecution
 from stochaflow.data.recipe_config import LoaderRecipeConfig
 from stochaflow.data.samplers import (
     EpochRandomSampler,
@@ -35,6 +36,7 @@ class DataLoaders:
     test: Iterable[Any] | None = None
     steps_per_epoch: int | None = None
     artifact_bindings: DataArtifactBindings | None = None
+    ranked_execution: RankedDataExecution | None = None
 
     def __post_init__(self) -> None:
         for role in ("train", "validation", "test"):
@@ -75,6 +77,31 @@ class DataLoaders:
             raise TypeError(
                 "artifact_bindings must be DataArtifactBindings or None"
             )
+        ranked_execution = cast(object, self.ranked_execution)
+        if ranked_execution is not None and not isinstance(
+            ranked_execution,
+            RankedDataExecution,
+        ):
+            raise TypeError(
+                "ranked_execution must be RankedDataExecution or None"
+            )
+        if isinstance(ranked_execution, RankedDataExecution):
+            if ranked_execution.train.batches is not self.train:
+                raise ValueError(
+                    "ranked train capability must own the exact train iterable"
+                )
+            ranked_validation = ranked_execution.validation
+            if ranked_validation is None:
+                if self.validation is not None:
+                    raise ValueError(
+                        "ranked validation capability is required for the "
+                        "configured validation iterable"
+                    )
+            elif ranked_validation.batches is not self.validation:
+                raise ValueError(
+                    "ranked validation capability must own the exact validation "
+                    "iterable"
+                )
 
 
 def collate_image_batch(

@@ -30,6 +30,7 @@ from stochaflow.utils.checkpoint import (
     CHECKPOINT_FORMAT_VERSION,
     CheckpointManager,
     InferenceAssetDescriptor,
+    capture_local_rng_state,
     capture_rng_state,
     parse_rng_state,
     restore_rng_state,
@@ -2208,6 +2209,26 @@ def test_rng_state_round_trips_through_weights_only_checkpoint(tmp_path: Path) -
     assert actual[0] == expected[0]
     assert actual[1] == expected[1]
     assert torch.equal(actual[2], expected[2])
+
+
+def test_local_cpu_rng_capture_does_not_read_all_cuda_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_rng_state_all",
+        lambda: pytest.fail("local RNG capture read every CUDA device"),
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_rng_state",
+        lambda *unused: pytest.fail("CPU RNG capture read CUDA state"),
+    )
+
+    encoded = capture_local_rng_state("cpu")
+
+    assert encoded["torch_cuda"] == []
+    assert encoded["torch_mps"] is None
 
 
 @pytest.mark.skipif(

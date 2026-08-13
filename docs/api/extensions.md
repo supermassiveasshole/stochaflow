@@ -66,6 +66,15 @@ from stochaflow.evaluation import ...
 | `DataBuilder` | 组装一份独立训练运行的完整数据栈 |
 | `DataBuilderContext` | 深复制的私有 `params`、seed 与 strict-resume artifact expectations |
 | `DataLoaders` | 可重复迭代 loader、可选 `steps_per_epoch` 与本次运行的 `artifact_bindings` |
+| `DataRankContext` | 分布式运行在构造时注入的只读 global rank 与 world size；它不包含 device、backend 或 collective |
+| `RankedDataExecution` | 将一份 loader bundle 精确绑定到 ranked train 与 exact validation 能力 |
+| `RankedEpochDataIdentity` | 可序列化的 provider/digest 值，证明 epoch 分工能够在固定 topology 下重建 |
+| `RankedBatchFacts` | DataBuilder 为一个不透明 batch 声明的 ordinal、样本数、loss 权重与 assignment token |
+| `RankedTrainEpochPlan` / `RankedTrainWindow` / `RankedEpochCompletion` | 完整 accumulation window 的预先计划、逐窗口数据与匹配 rank-local expected terminal token 的终止事实 |
+| `RankedTrainExecution` / `RankedTrainEpochReader` | 先计划、再读取且不允许不完整窗口的训练数据能力 |
+| `ExactCoverageSpan` / `ExactCoverageReceipt` | validation 覆盖范围及完成证明；不从 batch 内容猜测 sample identity |
+| `ExactValidationEpochPlan` / `ExactValidationBatch` | 一次 validation 的预先覆盖计划（含所有 rank 一致的 rank0 精确 batch 数）及带事实的不透明 batch |
+| `ExactValidationExecution` / `ExactValidationEpochReader` | 能证明 validation coverage 的 reader 能力 |
 
 `DataBuilder` 是运行时数据组合入口；`ImageDataSource` 是复用内置 image recipe 的来源
 扩展入口。`ImageDataSource` 通过 `IMAGE_DATA_SOURCES` 注册，只负责读取、处理、
@@ -240,6 +249,7 @@ class DataBuilderContext:
     expected_artifacts: DataArtifactBindings | None = None
     verification_observer: ArtifactVerificationObserver | None = None
     verification_workers: int | None = None
+    rank_context: DataRankContext | None = None
 
     def data_source_context(
         self,
@@ -258,6 +268,7 @@ class DataLoaders:
     test: Iterable[Any] | None = None
     steps_per_epoch: int | None = None
     artifact_bindings: DataArtifactBindings | None = None
+    ranked_execution: RankedDataExecution | None = None
 
 
 class DataBuilder(ABC):
@@ -270,6 +281,23 @@ class DataBuilder(ABC):
 loader 必须可重复迭代，不能是一份已经创建的 iterator。train 若没有 `len()`，必须声明
 正数 `steps_per_epoch`；若有 `len()`，显式步数不能超过它。每个 epoch 开始时，核心会对
 train loader 的 `sampler`/`batch_sampler` 去重后调用可选 `set_epoch(epoch)`。
+
+普通单进程构造的 `rank_context` 和 `ranked_execution` 都是 `None`。分布式 runtime
+必须在 Builder 构造前注入 `DataRankContext`；Builder 若不能证明等长完整训练窗口与
+validation coverage，就应拒绝构造，而不是让 core 检查 tensor shape、mapping key 或
+其他任务 batch 结构。`DataLoaders` 会按对象 identity 核对 ranked 能力确实拥有它公开的
+train/validation iterable，避免把一份 loader 的事实误用于另一份 loader。
+
+`RankedBatchFacts.sample_count` 是 Builder 认证的样本数；`loss_weight` 必须与相应
+`TrainStepOutput.loss_aggregation_weight` 相同。固定单机 DDP 软件首版还要求
+`loss_weight == float(sample_count)`；第三方 ranked reader 不能通过填写不同权重启用加权
+梯度聚合。公开契约仍保留两个事实，避免 core 从不透明 batch 推断 loss 聚合语义；若以后
+支持 weighted mixture 或非样本数权重，需要为梯度归一化与 all-rank 提交另立并验证契约。
+reader 只能在完整消费预先声明的窗口或覆盖范围后签发 completion/receipt；运行时 receipt、artifact
+handle、worker iterator 和预取状态都不能持久化为 epoch-boundary resume state。
+训练计划的 `expected_terminal_token` 是 DataBuilder 在打开 reader 前给出的 rank-local
+SHA-256 承诺，completion 必须逐字返回它。validation 计划的 `primary_batch_count` 则让
+空闲 rank 也知道 rank0 完整 view 应读多少批，而不必查看 task batch 的内部结构。
 
 ## Metrics
 
@@ -367,9 +395,11 @@ best checkpoint 与 early stopping 只接受 `valid/loss` 或
 `valid/metrics/<id>[/<subkey>]`，被监控的 observation 必须是有限值。train/test phase
 metric 以及 `diagnostics/...` 日志都不是模型选择输入。
 
-`Metric` state 可以声明 TorchMetrics 的 reduction 与 synchronization policy，但当前
-Stochaflow Trainer 只承诺单进程结果。DDP、FSDP 和其他多进程 Trainer 尚未实现；不要把
-一个 extension metric 的 reduction 声明解读为 distributed training 支持。
+`Metric` state 可以声明 TorchMetrics 的 reduction 与 synchronization policy，但这不会
+自动使 provider 获得任意分布式生命周期支持。固定 DDP 首版只在 rank 0 的完整 validation
+view 上运行 validation Metrics，并拒绝 train/test phase Metrics；它不通过 TorchMetrics
+声明推断 all-rank merge。FSDP、分片 validation 与其他多进程 Trainer 仍未实现。若以后选择
+这些路径，必须为相应 provider 和生命周期单独证明状态合并规则。
 
 ## Evaluation
 
@@ -452,6 +482,7 @@ performance/curve 和 comparison/gate 是可选增强。
 | `TrainingBuilder` | 组合注入资产和项目私有资产，返回一个 `TrainingPlan` |
 | `TrainingBuilderContext` | primary model、可选 Process/Objective、私有 `params` 与受控 model/objective factory |
 | `TrainingPlan` | Strategy、primary model、可选 Process/Objective、具名 auxiliary modules、inference asset projections 和可选 fixed inference recipe |
+| `TrainingExecutionBindingBuilder` | Builder 可选实现的窄能力：为并行 runtime 提供与 canonical primary model 共享 state 的 execution module，并把包装后的执行模型重新绑定给 Strategy |
 | `InferenceAssetProjection` | 将一个 managed auxiliary module 投影为 checkpoint-owned inference asset |
 | `SamplingRecipe` | checkpoint 内部 SamplingBuilder identity 与不可由独立 sample config 覆盖的 JSON-safe contract |
 | `ManagedTrainingModule` | 辅助 `nn.Module` 及其 core-managed mode policy |
@@ -553,6 +584,20 @@ class TrainingPlan:
     inference_assets: Mapping[str, InferenceAssetProjection] = ...
 
 
+@runtime_checkable
+class TrainingExecutionBindingBuilder(Protocol):
+    def build_primary_execution_module(
+        self,
+        plan: TrainingPlan,
+    ) -> nn.Module: ...
+
+    def bind_primary_execution_model(
+        self,
+        plan: TrainingPlan,
+        execution_model: nn.Module,
+    ) -> TrainingStrategy: ...
+
+
 @dataclass(frozen=True, slots=True)
 class SamplingRecipe:
     name: str
@@ -586,6 +631,15 @@ Tensor，`metrics` 中的低成本 report 必须是 scalar numeric value。
 权重，Strategy 必须把它显式放进对应 `MetricUpdate`。
 所有 managed module 都参与声明的
 device/mode、优化和 checkpoint 生命周期；EMA 只跟踪 primary model。
+
+普通单进程训练不要求 `TrainingExecutionBindingBuilder`。希望进入固定 DDP 的 Builder
+则必须显式实现它：`build_primary_execution_module()` 返回一棵与
+`TrainingPlan.primary_model` 参数和 buffer 对象完全共享的执行模块，runtime 在设备放置后
+包装该模块；`bind_primary_execution_model()` 返回实际调用包装对象的 Strategy。两次调用
+都不能替换 canonical primary model、Process、Objective、auxiliary module、inference asset
+或 recipe。framework 会核对 state key、对象 identity 与 Strategy 类型；不能通过复制参数、
+让原 Strategy 继续调用未包装模型，或按私有属性名寻找 wrapper 来绕过。当前首版 DDP 还要求
+只有 primary model 可训练，并对不支持的可变 state fail closed。
 
 ## Training diagnostic 与 provider 扩展边界
 

@@ -50,6 +50,10 @@ from stochaflow.data.partition import (
     partition_class_labeled_records,
     partition_datasets,
 )
+from stochaflow.data.ranked import DataRankContext
+from stochaflow.data.ranked_class_labeled import (
+    build_class_labeled_ranked_execution,
+)
 from stochaflow.data.recipe_config import (
     ClassLabeledImageDataBuilderConfig,
     DataSourceMaterializationConfig,
@@ -81,6 +85,7 @@ class DataBuilderContext:
     expected_artifacts: DataArtifactBindings | None = None
     verification_observer: ArtifactVerificationObserver | None = None
     verification_workers: int | None = None
+    rank_context: DataRankContext | None = None
     _artifact_selection: DataArtifactSelectionSession | None = field(
         default=None,
         init=False,
@@ -118,6 +123,12 @@ class DataBuilderContext:
                 "verification_workers must be an integer between 1 and "
                 f"{MAX_ARTIFACT_VERIFICATION_WORKERS}, or None"
             )
+        rank_context = cast(object, self.rank_context)
+        if rank_context is not None and not isinstance(
+            rank_context,
+            DataRankContext,
+        ):
+            raise TypeError("rank_context must be DataRankContext or None")
         object.__setattr__(self, "params", deepcopy(self.params))
 
     def require_artifact_ids(self, binding_ids: tuple[str, ...]) -> None:
@@ -200,6 +211,7 @@ def build_data_loaders(
     expected_artifacts: DataArtifactBindings | None = None,
     verification_observer: ArtifactVerificationObserver | None = None,
     verification_workers: int | None = None,
+    rank_context: DataRankContext | None = None,
     registries: RegistryCatalog = REGISTRIES,
 ) -> DataLoaders:
     """Construct and validate one registered DataBuilder."""
@@ -215,6 +227,7 @@ def build_data_loaders(
             expected_artifacts=expected_artifacts,
             verification_observer=verification_observer,
             verification_workers=verification_workers,
+            rank_context=rank_context,
         )
         object.__setattr__(
             builder_context,
@@ -257,6 +270,22 @@ def build_data_loaders(
             raise ValueError(
                 f"data builder '{config.name}' returned artifact bindings that "
                 "do not match strict-resume checkpoint identity"
+            )
+    if rank_context is None:
+        if loaders_value.ranked_execution is not None:
+            raise ValueError(
+                f"data builder '{config.name}' returned ranked execution without "
+                "a runtime rank context"
+            )
+    else:
+        ranked_execution = loaders_value.ranked_execution
+        if ranked_execution is None:
+            raise ValueError(
+                f"data builder '{config.name}' does not support ranked execution"
+            )
+        if ranked_execution.rank_context != rank_context:
+            raise ValueError(
+                f"data builder '{config.name}' returned a different rank context"
             )
     return loaders_value
 
@@ -458,6 +487,33 @@ class ClassLabeledImageDataBuilder(DataBuilder):
             if payload.test is not None
             else None
         )
+        if self.context.rank_context is not None:
+            ranked_execution = build_class_labeled_ranked_execution(
+                train=train,
+                validation=validation,
+                train_records=train_records,
+                validation_records=validation_records,
+                config=self.config,
+                rank_context=self.context.rank_context,
+                seed=self.context.seed,
+                artifact_bindings=bindings,
+            )
+            return DataLoaders(
+                train=ranked_execution.train.batches,
+                validation=(
+                    ranked_execution.validation.batches
+                    if ranked_execution.validation is not None
+                    else None
+                ),
+                test=build_class_labeled_image_data_loader(
+                    test,
+                    self.config.loader,
+                    training=False,
+                    seed=self.context.seed + 2,
+                ),
+                artifact_bindings=bindings,
+                ranked_execution=ranked_execution,
+            )
         return DataLoaders(
             train=cast(
                 DataLoader[Any],

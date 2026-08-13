@@ -7,8 +7,9 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
+import torch
 from torch import nn
 
 from stochaflow._builtin_activation import activate_training_component_builtins
@@ -63,6 +64,101 @@ class TrainingPlan:
     )
 
 
+@runtime_checkable
+class TrainingExecutionBindingBuilder(Protocol):
+    """Optionally bind a canonical training plan to an execution wrapper.
+
+    The canonical primary model remains the authority for identity, state,
+    EMA, and checkpointing. Parallel training runtimes may wrap a state-sharing
+    execution module, then ask the owning Builder for a Strategy that invokes
+    that wrapper. This keeps task-specific model signatures out of core.
+    """
+
+    def build_primary_execution_module(self, plan: TrainingPlan) -> nn.Module:
+        """Return the state-sharing module that a runtime may wrap."""
+
+        ...
+
+    def bind_primary_execution_model(
+        self,
+        plan: TrainingPlan,
+        execution_model: nn.Module,
+    ) -> TrainingStrategy:
+        """Return a Strategy whose trainable calls use ``execution_model``."""
+
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingPlanAssembly:
+    """One canonical plan plus its optional runtime execution binding."""
+
+    plan: TrainingPlan
+    builder_name: str
+    _execution_binding: TrainingExecutionBindingBuilder | None = field(
+        repr=False,
+        compare=False,
+    )
+
+    @property
+    def supports_primary_execution_binding(self) -> bool:
+        """Return whether the owning Builder can bind a wrapped primary model."""
+
+        return self._execution_binding is not None
+
+    def build_primary_execution_module(self) -> nn.Module:
+        """Build and validate the module that a parallel runtime may wrap."""
+
+        binding = self._require_execution_binding()
+        module = cast(object, binding.build_primary_execution_module(self.plan))
+        if not isinstance(module, nn.Module):
+            raise TypeError(
+                f"training builder '{self.builder_name}' execution module "
+                "must be an nn.Module"
+            )
+        _validate_primary_execution_state(self.plan.primary_model, module)
+        return module
+
+    def bind_primary_execution_model(
+        self,
+        execution_model: nn.Module,
+    ) -> TrainingStrategy:
+        """Bind one state-sharing wrapper without changing the canonical plan."""
+
+        execution_model_value = cast(object, execution_model)
+        if not isinstance(execution_model_value, nn.Module):
+            raise TypeError("primary execution model must be an nn.Module")
+        _validate_primary_execution_state(
+            self.plan.primary_model,
+            execution_model_value,
+        )
+        binding = self._require_execution_binding()
+        strategy = cast(
+            object,
+            binding.bind_primary_execution_model(
+                self.plan,
+                execution_model_value,
+            ),
+        )
+        if not isinstance(strategy, TrainingStrategy):
+            raise TypeError(
+                f"training builder '{self.builder_name}' execution binding "
+                "must return TrainingStrategy"
+            )
+        if isinstance(strategy, nn.Module):
+            raise TypeError("bound TrainingStrategy must not inherit nn.Module")
+        return strategy
+
+    def _require_execution_binding(self) -> TrainingExecutionBindingBuilder:
+        binding = self._execution_binding
+        if binding is None:
+            raise TypeError(
+                f"training builder '{self.builder_name}' does not support "
+                "primary execution binding"
+            )
+        return binding
+
+
 class TrainingBuilderContext:
     """Injected primary assets and factories available to a TrainingBuilder."""
 
@@ -110,6 +206,29 @@ def build_training_plan(
 ) -> TrainingPlan:
     """Construct and validate one registered TrainingBuilder result."""
 
+    return build_training_plan_assembly(
+        declaration,
+        primary_model=primary_model,
+        process=process,
+        objective=objective,
+        model_factory=model_factory,
+        objective_factory=objective_factory,
+        registries=registries,
+    ).plan
+
+
+def build_training_plan_assembly(
+    declaration: ComponentConfig,
+    *,
+    primary_model: nn.Module,
+    process: Process | None,
+    objective: nn.Module | None,
+    model_factory: ModelFactory,
+    objective_factory: ObjectiveFactory,
+    registries: RegistryCatalog = REGISTRIES,
+) -> TrainingPlanAssembly:
+    """Construct one canonical plan and retain its optional execution binding."""
+
     if registries is REGISTRIES:
         activate_training_component_builtins()
     context = TrainingBuilderContext(
@@ -131,7 +250,16 @@ def build_training_plan(
         raise ValueError("TrainingPlan.process must preserve the injected process")
     if plan.objective is not objective:
         raise ValueError("TrainingPlan.objective must preserve the injected objective")
-    return plan
+    execution_binding = (
+        cast(TrainingExecutionBindingBuilder, builder)
+        if isinstance(builder, TrainingExecutionBindingBuilder)
+        else None
+    )
+    return TrainingPlanAssembly(
+        plan=plan,
+        builder_name=declaration.name,
+        _execution_binding=execution_binding,
+    )
 
 
 def validate_training_plan(value: object) -> TrainingPlan:
@@ -328,6 +456,69 @@ def _validate_projection_string(value: object, *, path: str) -> str:
     return result
 
 
+def _validate_primary_execution_state(
+    canonical_model: nn.Module,
+    execution_model: nn.Module,
+) -> None:
+    """Require an execution wrapper to expose only canonical model state."""
+
+    canonical_parameters = tuple(map(id, canonical_model.parameters()))
+    execution_parameters = tuple(map(id, execution_model.parameters()))
+    if execution_parameters != canonical_parameters:
+        raise ValueError(
+            "primary execution model parameters must preserve canonical "
+            "primary parameter identities and order"
+        )
+    canonical_buffers = tuple(map(id, canonical_model.buffers()))
+    execution_buffers = tuple(map(id, execution_model.buffers()))
+    if execution_buffers != canonical_buffers:
+        raise ValueError(
+            "primary execution model buffers must preserve canonical primary "
+            "buffer identities and order"
+        )
+    _validate_registered_execution_state(
+        canonical_model,
+        canonical_parameters=canonical_parameters,
+        canonical_buffers=canonical_buffers,
+        path="primary model",
+    )
+    _validate_registered_execution_state(
+        execution_model,
+        canonical_parameters=canonical_parameters,
+        canonical_buffers=canonical_buffers,
+        path="primary execution model",
+    )
+
+
+def _validate_registered_execution_state(
+    module: nn.Module,
+    *,
+    canonical_parameters: tuple[int, ...],
+    canonical_buffers: tuple[int, ...],
+    path: str,
+) -> None:
+    """Reject state that DDP cannot synchronize through canonical tensors."""
+
+    allowed_ids = {*canonical_parameters, *canonical_buffers}
+    state = module.state_dict(keep_vars=True)
+    present_parameter_ids: set[int] = set()
+    for name, value in state.items():
+        if not isinstance(value, torch.Tensor) or id(value) not in allowed_ids:
+            raise ValueError(
+                f"{path} state entry {name!r} is not a registered canonical "
+                "parameter or buffer"
+            )
+        if id(value) in canonical_parameters:
+            present_parameter_ids.add(id(value))
+    missing_parameters = set(canonical_parameters) - present_parameter_ids
+    if missing_parameters:
+        raise ValueError(
+            f"{path} state_dict must contain every canonical parameter"
+        )
+
+
+
+
 __all__ = [
     "InferenceAssetProjection",
     "ManagedTrainingModule",
@@ -335,8 +526,11 @@ __all__ = [
     "ObjectiveFactory",
     "TrainingBuilder",
     "TrainingBuilderContext",
+    "TrainingExecutionBindingBuilder",
     "TrainingPlan",
+    "TrainingPlanAssembly",
     "build_training_plan",
+    "build_training_plan_assembly",
     "trainable_parameters",
     "training_module_roots",
     "validate_training_plan",

@@ -541,6 +541,7 @@ registries:
 
 cli:
   "train.--config": {description: 新训练使用的完整实验 YAML；与 --resume 互斥且二者必须提供一个。}
+  "train.--ddp": {description: 在 torchrun 下显式选择固定 Linux 单机 CUDA/NCCL DDP；每个 LOCAL_RANK 绑定一张本地 GPU，不自动缩放学习率。}
   "train.--device": {description: 本次运行覆盖 trainer.device。}
   "train.--output-dir": {description: 本次运行覆盖 experiment.output_dir。}
   "train.--epochs": {description: 本次运行覆盖 trainer.num_epochs。}
@@ -551,7 +552,7 @@ cli:
   "train.--progress": {description: 启用 Rich 进度条；strict resume 时覆盖 checkpoint 保存的关闭状态。}
   "train.--no-progress": {description: 禁用 Rich 进度条；strict resume 时覆盖 checkpoint 保存的开启状态。}
   "train.--artifact-verification-workers": {description: 覆盖所有 source.materialization.verification_workers；必须为 `1..8` 范围内的整数，仅影响本次 artifact 哈希并行度。}
-  "train.--resume": {description: 从显式 checkpoint 文件或运行目录执行严格完整恢复；使用 checkpoint 保存的配置和训练状态，并与 --config 互斥。}
+  "train.--resume": {description: 普通训练从显式 checkpoint/run directory 严格恢复；与 --ddp 同用时必须是一个精确、已提交的固定拓扑 DDP bundle directory；两种路径都与 --config 互斥。}
   "train.--observability-config": {description: 仅在 strict resume 启动时原子替换 diagnostics，并逐字段覆盖显式 logging 字段；顶层只允许 diagnostics 与 logging。}
   "train.--force-extension-version-mismatch": {description: 在插件身份匹配后接受版本差异；不绕过 checkpoint state 兼容性检查。}
   "sample.--config": {description: 必填的完整 sample invocation config；顶层只允许 sample 与 optional extensions，不读取或合并 checkpoint 训练配置中的 mutable sampling defaults。}

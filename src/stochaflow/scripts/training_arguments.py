@@ -18,10 +18,10 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.Argument
         "--resume",
         type=Path,
         default=None,
-        metavar="CHECKPOINT",
+        metavar="CHECKPOINT_OR_BUNDLE",
         help=(
-            "Strictly resume from a checkpoint file or run directory using its "
-            "saved training config and state."
+            "Strictly resume from a single-process checkpoint/run directory, "
+            "or from an exact DDP bundle directory when --ddp is selected."
         ),
     )
     parser.add_argument(
@@ -38,6 +38,14 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> argparse.Argument
         type=str,
         default=None,
         help="Override trainer.device for this run.",
+    )
+    parser.add_argument(
+        "--ddp",
+        action="store_true",
+        help=(
+            "Run fixed single-node distributed training under torchrun. "
+            "The first maintained path uses one process per local CUDA device."
+        ),
     )
     parser.add_argument(
         "--output-dir",

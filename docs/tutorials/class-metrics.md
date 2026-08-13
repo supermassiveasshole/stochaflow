@@ -128,8 +128,9 @@ Stochaflow 会把 mapping key 接到 metric id 后面。教程主动拒绝 valid
 类别，因为在这种情况下 macro recall 的协议并不完整。数据 recipe 应使用确定性的
 stratified validation split，或为自己的任务定义另一种缺失类别政策。
 
-当前 Stochaflow Trainer 仍只支持单进程。上面的 reduction 声明使 metric contract 清楚，
-不构成 DDP/FSDP 支持承诺。
+上面的 reduction 声明使 metric contract 清楚，但不会自动选择分布式执行方式。固定 DDP
+首版只在 rank 0 的完整 validation view 上运行 validation Metric，并拒绝 train/test phase
+Metric；它不消费这里的 reduction 来推断 all-rank merge。FSDP 和分片 validation 仍未实现。
 
 ## 2. 由 Strategy 提供 channel
 

@@ -14,8 +14,44 @@ def set_seed(seed: int, *, deterministic: bool = False) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+
+    _configure_determinism(deterministic)
+
+
+def set_cpu_seed(seed: int, *, deterministic: bool = False) -> None:
+    """Seed host RNG streams without initializing accelerator runtimes."""
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.default_generator.manual_seed(seed)
+
+    _configure_determinism(deterministic)
+
+
+def set_local_seed(
+    seed: int,
+    *,
+    device: torch.device | str,
+    deterministic: bool = False,
+) -> None:
+    """Seed host streams and only the explicitly process-owned accelerator."""
+
+    selected = torch.device(device)
+    set_cpu_seed(seed, deterministic=deterministic)
+    if selected.type == "cuda":
+        if selected.index is None:
+            raise ValueError("local CUDA seeding requires an indexed device")
+        generator = torch.Generator(device=selected)
+        generator.manual_seed(seed)
+        torch.cuda.set_rng_state(generator.get_state(), selected)
+    elif selected.type == "mps":
+        torch.mps.manual_seed(seed)
+    elif selected.type != "cpu":
+        raise ValueError(f"unsupported local seed device type: {selected.type}")
+
+
+def _configure_determinism(deterministic: bool) -> None:
+    """Enable the process-wide deterministic policy when requested."""
 
     if deterministic:
         torch.use_deterministic_algorithms(True)

@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 from stochaflow import data, extensions
 from stochaflow.data import (
     ClassLabeledImageDataBuilder,
+    DataRankContext,
     build_data_loaders,
 )
 from stochaflow.extensions import (
@@ -278,6 +279,31 @@ def test_class_labeled_builder_uses_an_independent_registered_source(
         expected_artifacts=loaders.artifact_bindings,
     )
     assert resumed.artifact_bindings == loaders.artifact_bindings
+
+
+def test_class_labeled_builder_exposes_ranked_execution_only_when_injected(
+    tmp_path: Path,
+) -> None:
+    _write_fixture(tmp_path)
+    component = _component(tmp_path)
+    component.params["loader"]["batch_size"] = 1
+    component.params["loader"]["drop_last"] = True
+
+    ordinary = build_data_loaders(component, seed=17)
+    ranked = build_data_loaders(
+        component,
+        seed=17,
+        rank_context=DataRankContext(rank=1, world_size=2),
+    )
+
+    assert ordinary.ranked_execution is None
+    assert ranked.ranked_execution is not None
+    assert ranked.ranked_execution.rank_context == DataRankContext(1, 2)
+    assert ranked.ranked_execution.train.batches is ranked.train
+    assert ranked.ranked_execution.validation is not None
+    assert ranked.ranked_execution.validation.batches is ranked.validation
+    assert len(cast(Sized, ranked.train)) == 2
+    assert len(cast(Sized, ranked.validation)) == 0
 
 
 def test_class_labeled_builder_rejects_native_validation(

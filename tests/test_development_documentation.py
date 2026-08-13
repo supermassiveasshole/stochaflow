@@ -422,7 +422,7 @@ def test_distributed_and_large_data_stages_keep_their_product_boundary() -> None
         DEVELOPMENT_ROOT / "distributed-training-and-inference-support-plan.md"
     )
     distributed = _content(distributed_path)
-    assert _status(distributed_path) == "暂停"
+    assert _status(distributed_path) == "进行中"
     assert _has_semantic_paragraph(
         distributed,
         ("第一项", "第一版", "首版", "首轮", "第一阶段"),
@@ -472,7 +472,7 @@ def test_distributed_and_large_data_stages_keep_their_product_boundary() -> None
         ("gradient accumulation", "梯度累积"),
         ("单卡", "单设备"),
         ("吞吐", "训练时间", "wall-time"),
-        ("Parked", "开始前"),
+        ("进入实施", "正式完成前"),
     )
     roadmap = _content(ROADMAP)
     assert _has_semantic_paragraph(
@@ -481,6 +481,7 @@ def test_distributed_and_large_data_stages_keep_their_product_boundary() -> None
         ("effective global batch",),
         ("quality",),
         ("wall-time", "throughput"),
+        ("requires", "must", "需要"),
     )
     assert _has_semantic_paragraph(
         distributed,

@@ -21,7 +21,9 @@ fixed/learned-range variance、full/respaced ancestral
 DDPM、DDIM、EMA、CFG、结果 writers 与独立 checkpoint evaluation runtime。项目可以
 通过普通 Python distribution 接入自己的数据、训练策略、生成算法与 artifact；
 latent diffusion、pretrained
-autoencoder 和 distributed training 尚未实现。当前 evaluation core 已支持显式 raw/EMA、
+autoencoder、FSDP、多节点、弹性运行和分布式采样尚未实现。固定 Linux 单机 CUDA/NCCL DDP
+软件首版已可通过 `torchrun ... train --ddp` 使用，但目标 8×H200 性能、容量和故障验收仍在
+进行中，不构成服务器吞吐承诺。当前 evaluation core 已支持显式 raw/EMA、
 validation/test completeness、versioned prediction artifact、按 exact sample plan 的 offline
 scoring 与 immutable result bundle。core FID/KID providers 与 maintained AFHQ-v2
 source-checkout

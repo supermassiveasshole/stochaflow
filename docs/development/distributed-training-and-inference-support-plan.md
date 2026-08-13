@@ -2,9 +2,9 @@
 
 > 文档类型：功能计划
 >
-> 工作状态：暂停（Parked）
+> 工作状态：进行中（In progress）
 >
-> 当前可用性：训练、采样和 Evaluation 现在都只支持一个进程；若本计划以后被选中，首轮只会交付 Linux 单机、固定进程数的 DDP 训练，当前尚不可用。
+> 当前可用性：固定 Linux 单机、固定进程数的 DDP 软件首版已经可以通过 `train --ddp` 启动，并已有 CPU/Gloo 正确性测试；真实 CUDA/NCCL 与 8×H200 性能、容量和故障验收尚未完成，所以本计划仍为进行中。采样和正式 Evaluation 仍只支持单进程。
 
 ## 先让一份大数据任务安全地用满一台服务器
 
@@ -16,14 +16,14 @@
 所有并行方式，而是让同一份已经准备并验证的数据在一台 Linux 服务器的 8 张 H200 上完成一场
 可核对、中断后可继续训练的运行。
 
-若本计划被选中，首轮因此只采用 Linux 单机、固定进程总数（`world size`）的 DDP（分布式数据并行）训练：`torchrun`
+首轮因此只采用 Linux 单机、固定进程总数（`world size`）的 DDP（分布式数据并行）训练：`torchrun`
 为每张 GPU 启动一个进程，每个进程保存一份完整模型、读取不同数据，再同步梯度。它不使用弹性
 扩缩容，某个进程失败后也不原地更换成员；整场运行失败，之后从最后一个完整训练状态继续训练。
-下面的命令只说明预期体验，**Stochaflow 的入口和参数当前不存在，不是公共 API，命令不能执行**：
+当前软件入口使用下面的形状；它可以执行，但不表示目标 8×H200 环境已经验收：
 
-```text
+```bash
 torchrun --standalone --nnodes=1 --nproc-per-node=8 --max-restarts=0 \
-  <未来的 Stochaflow DDP 训练入口> \
+  -m stochaflow.scripts.cli train --ddp \
   --config configs/train/afhq.yaml
 ```
 
@@ -50,13 +50,14 @@ CUDA 数值正确性、NCCL 通信或吞吐量证据。
 
 `Trainer` 是负责执行一场训练生命周期的组件。分布式支持不会变成现有 `Trainer` 中四处散落的
 `if distributed`、`if fsdp` 或并行模式分支：现有 `Trainer` 继续只负责稳定的单进程训练；固定
-拓扑 DDP 则由新的 `DDPTrainer` 建立全体进程共识、包裹执行模型、协调更新和共同失败。用户选择
-的是 DDP 运行方式，不直接配置 Trainer 类；未来训练入口在接触数据前选择内部执行者。
-`DDPTrainer` 这个名称只是设计标记，当前不存在，也不构成公共 API。
+拓扑 DDP 则由独立的 `DDPTrainer` 建立全体进程共识、包裹执行模型、协调更新和共同失败。用户选择
+的是 DDP 运行方式，不直接配置 Trainer 类；`train --ddp` 在接触数据前选择这个内部执行者。
+`DDPTrainer` 是当前内部实现，不是 Extension facade 要求用户直接构造的公共 API。
 
-`DDPTrainer` 先打开分布式会话，再把 rank、设备和 collective 能力交给数据与训练计划的组装过程；
-组装完成后，它核对该计划是否满足 DDP 限制，随后执行训练，并在所有退出路径关闭会话。负责
-进程组机械操作的私有 session helper 只是它的协作者，不是第二个生命周期 owner。这样
+DDP operation 先打开分布式会话，再把 rank 投影交给数据组装，并在会话内组合和调用
+`DDPTrainer`；operation 的 `try/finally` 在所有退出路径关闭会话。`DDPTrainer` 自己拥有训练
+循环、all-rank 更新、validation 和可发布状态共识。负责进程组机械操作的私有 session helper
+只解析 launcher、绑定设备并提供 collective，不是第二个训练生命周期 owner。这样
 `DataBuilder` 能在创建 reader 前取得 rank，单进程 `Trainer` 又不必知道分布式会话存在。
 
 如果以后证明确实需要 FSDP（模型分片训练），届时要重新设计分片参数、optimizer、EMA 和 checkpoint 的完整
@@ -72,7 +73,7 @@ DDP 并不是把任意模型包一层以后就自然生效。当前任务的 `Tr
 loss；如果它仍持有包装前的原始模型，Trainer 即使创建了 DDP wrapper，实际 forward 也会绕过
 梯度同步。
 
-未来的训练组合必须明确区分两种身份。canonical model 是 Builder 选定的原始模型，继续负责
+当前 DDP 训练组合明确区分两种身份。canonical model 是 Builder 选定的原始模型，继续负责
 组件身份、EMA、checkpoint 和便携导出；execution model 是 Trainer 完成设备放置后交给 Strategy
 实际调用的对象，在 DDP 模式中就是包装后的模型。Builder 产生的 Strategy 必须通过一个窄而
 明确的执行绑定接收后者，不能永久捕获原始模型，也不能让任务按模型名称或具体类寻找 wrapper。
@@ -89,9 +90,9 @@ loss；如果它仍持有包装前的原始模型，Trainer 即使创建了 DDP 
 创建 Dataset view、sampler、worker 和 DataLoader 之前提供。Builder 仍然拥有任务数据的含义；
 core 不能在事后猜测并替换任意 DataLoader 的 sampler。
 
-Builder 返回的不应只有三个 iterable，还要给出这次运行的数据分工证据：每个 rank 负责哪些
+DDP Builder 返回的不只有三个 iterable，还要给出这次运行的数据分工证据：每个 rank 负责哪些
 已准备分片或样本范围，一个 epoch 预计产生多少个 optimizer 更新窗口，尾部是丢弃、补齐还是
-拒绝，以及 validation 怎样做到无遗漏、无重复。大数据 reader 应直接把已经准备好的 shard 或
+拒绝，以及 validation 怎样做到无遗漏、无重复。未来大数据 reader 应直接把已经准备好的 shard 或
 有界索引范围分给 rank 和 worker，不能让每个进程为了随机顺序建立覆盖全体样本的巨大排列，
 也不能把数亿编号集中到主进程内存。具体的有界覆盖算法由 reader 和 prepared manifest 共同证明。
 所有 rank 必须看到相同的数据身份和分工摘要；训练中提前耗尽、额外产生 batch 或与声明不符时，
@@ -112,15 +113,14 @@ Builder 返回的不应只有三个 iterable，还要给出这次运行的数据
 的方式一致丢弃，或在开始训练前拒绝。以后若允许可变权重，必须另行定义梯度缩放并逐 step 记录
 实际 effective global batch。
 
-validation 不得沿用会填充重复样本的训练分工。各 rank 可以拥有不同数量的 validation 记录，
-因此本地推理必须使用各 rank 已同步的 canonical model 快照，而不是会在每次 forward 参加通信的
-DDP execution model。本地读取期间不做逐 batch 的跨进程同步，结束后所有 rank 按同一顺序参加一次全局完整性和
-指标合并；即使某个 rank 没有记录也必须参加。这样 best checkpoint 和 early stopping 看到的
-仍是一份无重复、无遗漏的全局结果。
+validation 不得沿用会填充重复样本的训练分工。软件首版采用最容易证明的方式：rank 0 使用各
+rank 已同步的 canonical model 快照读取完整 validation view，其他 rank 不运行 prediction，但
+事先知道 rank 0 应读取的精确 batch 数，并在每个 ordinal 参加一次轻量失败心跳，最后共同核对
+coverage receipt、广播指标和选择决定。这样某个 validation batch 抛错不会让其他 rank 无限
+等待，best checkpoint 与 early stopping 看到的仍是一份无重复、无遗漏的全局结果。
 
-若 validation 含随机推理，改变 rank、进程数或分片不能改变同一个样本的预测；做不到时只允许
-主进程用完整数据视图执行。没有记录的 rank 仍要参加最终指标合并，但本地推理本身不得要求每个
-batch 都通信，否则不等长 validation 会发生死锁。具体随机数和 Metric 单位元规则留在附录。
+以后若改为分片 validation，同一个样本的预测必须独立于 rank、进程数和分片；各 rank 还要合并
+可证明的 Metric state，而不是平均局部 scalar。该方向尚未选择，当前实现不会假装已有这项能力。
 
 ## 几十 TB 数据不能因为八张卡而完整验证八次
 
@@ -134,7 +134,9 @@ TB 级验收前，大数据管线中负责验证数据的组件必须先明确�
 当前机器/当前运行验证，为每个进程的这一次请求分别签发短期验证凭证（receipt）。后者必须绑定
 artifact 身份、解析后的实际位置（locator）、验证策略、运行会话、时效和失效规则，而不是广播
 一个 receipt 或布尔值。它不是写入 checkpoint 的永久信任，也不能跨机器、跨位置或跨运行复用。若这种证明尚不能保持现有
-信任边界，可以先用小数据验收 DDP 正确性，却不能宣称 TB 级准入已经完成。验收会记录实际读取与
+信任边界，可以先用小数据验收 DDP 正确性，却不能宣称 TB 级准入已经完成。当前首条
+`class_labeled_image` 路径正属于这种小规模正确性实现：每个 rank 独立验证 artifact，并在每个
+epoch 为完整样本集合建立确定性内存排列；它不是几十 TB 的有界索引实现。后续验收会记录实际读取与
 哈希的字节数，并验证内容替换、过期 locator 和错误数据身份都能在训练前被拒绝。
 
 ## 一次更新只有在所有进程同意后才算发生
@@ -222,7 +224,7 @@ sample/evaluate 路径验证。分布式训练 bundle 不能伪装
 
 ## 什么证据会让计划开始，又怎样证明它已经完成
 
-本计划继续保持 Parked。开始前要先选定一项已经通过正式 Evaluation 的大数据任务，用可重复的
+本计划已经进入实施。正式完成前仍要选定一项已经通过正式 Evaluation 的大数据任务，用可重复的
 单卡测量证明在要求的 effective global batch 和训练质量下，gradient accumulation、混合精度、
 编译和 activation checkpointing 等办法仍不能满足吞吐或总训练时间预算，同时确认模型和一个
 microbatch 仍能放入单卡，
@@ -238,10 +240,12 @@ global batch 下得到预先约定的数值等价结果；数据与恢复要证�
 次数、方差、GPU clocks、ECC/Xid 和 thermal throttling；不能让后跑的 4/8 卡试验因为 2 TB RAM
 已经缓存数据而获得不可比较的优势。
 
-只有这些证据在 source checkout 和 wheel 中重复成立，用户文档才能列出那一组经过验收的平台、
-设备和 backend；未验证组合继续被拒绝。
+只有这些证据在 source checkout 和 wheel 中重复成立，用户文档才能把那一组 8×H200 环境列为
+经过验收的平台并给出性能或容量结论。当前文档只说明代码已经实施的 Linux 单机 CUDA/NCCL
+软件边界，并明确标出目标硬件验收未完成。
 
 平台调研、候选接口、数据分工算法、全局指标状态、checkpoint 事务、故障矩阵和后续并行方式的
 详细草案保存在
 [多设备支持研究附录](notes/distributed-training-and-inference-support-plan/research-and-api-draft.md)。
-附录不是当前接口；真正开始实施时，所有外部库和硬件结论都必须按当时依赖版本重新核对。
+本轮采用、拒绝和仍需维护者复核的取舍单独记录在
+[实现决策记录](notes/distributed-training-and-inference-support-plan/implementation-decisions.md)。附录不是当前接口，其中仍保留的后续接口草图不可执行，也不构成公共 API；实现所依赖的外部库和硬件结论仍必须按当前依赖版本核对。

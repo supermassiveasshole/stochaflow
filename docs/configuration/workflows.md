@@ -64,6 +64,89 @@ DataSource/DataBuilder 的通用扩展能力。
 它们是具体 PyTorch scheduler 的显式配置，而不是框架可推断的通用 run length。若要运行
 一份具有不同调度周期的完整实验，应同时修改 YAML，使 scheduler 参数与训练计划一致。
 
+### 固定单机 DDP 软件首版
+
+固定 DDP 必须由 `torchrun` 显式启动，并把 `--ddp` 交给每个 worker。发布环境中的基本
+形状是：
+
+```bash
+torchrun --standalone --nnodes=1 --nproc-per-node=8 --max-restarts=0 \
+  -m stochaflow.scripts.cli train --ddp \
+  --config path/to/train.yaml
+```
+
+源码 checkout 可以在命令前加 `uv run`。每个本地 rank 绑定一张由 `LOCAL_RANK` 指定的
+CUDA device，产品入口只接受 NCCL 和至少两个进程；不要同时传 `--device`。检测到
+`WORLD_SIZE > 1` 却没有 `--ddp` 时，普通训练入口会拒绝运行，避免多个单进程 worker
+分别创建 run 和写 checkpoint。弹性 restart 必须保持为零，且 `WORLD_SIZE` 必须等于
+`LOCAL_WORLD_SIZE`。CPU/Gloo 是测试协调逻辑的内部路径，不是用户运行方式。
+
+首版内置数据支持限于 `class_labeled_image` Builder。扩展 Builder 可以使用相同的公共
+`DataRankContext`、`RankedDataExecution` 和 exact-validation contracts，但普通
+`DataLoaders` 不会被 core 自动改写为分布式 sampler。Builder 必须在打开 worker 前计划
+每个 rank 的完整 accumulation window，并证明实际读取与计划一致；不足一个完整全局更新
+window 的训练尾部由内置路径一致丢弃。当前 validation 由 rank 0 完整读取一次，其他 rank
+逐批参加有界心跳、失败共识和最终结果广播。
+
+YAML 中的 `data.params.loader.batch_size` 是 per-rank batch。一次 optimizer update 的
+effective global batch 是：
+
+```text
+world_size × data.params.loader.batch_size × trainer.accumulate_grad_batches
+```
+
+Stochaflow 会记录该值，但不会据此调整 optimizer learning rate。`--limit-batches` 若使用，
+必须是 `trainer.accumulate_grad_batches` 的整数倍；`--limit-validation-batches` 和
+`--limit-test-batches` 在 DDP 下不受支持。
+
+软件首版支持 `fp32` 与 `bf16-mixed`，只接受 validation-phase Metrics、step-interval
+scheduler、每 epoch checkpoint、普通 rank-zero validation 和一个可训练 primary-model
+state tree。它会在读取训练数据前拒绝 `fp16-mixed`、Diagnostics、epoch-end live
+Evaluation、train/test Metrics、test-after-fit、epoch-interval scheduler、
+`artifacts.checkpoint_every != 1` 以及不完整 accumulation window。FSDP、多节点、弹性
+成员、分布式 sampling/Evaluation 和 epoch 中途恢复不是这个入口的隐含模式。
+
+每个完成 epoch 产生两种用途不同的结果：
+
+```text
+<run>/checkpoints/
+  resume/
+    epoch-00000001-<bundle-id>/
+      bundle-manifest.yaml
+      common.pt
+      best-portable.pt  # 已有 best 选择时
+      ranks/
+        rank-00000.pt
+        ...
+  portable/
+    epoch_0001.pt
+```
+
+`resume/epoch-.../` 是 schema v2、manifest-last 的 exact resume bundle：`common.pt`
+保存共同训练 state，每个 rank 文件保存自己的 RNG 和下一 epoch data plan；已经产生 best 选择时，
+`best-portable.pt` 保存该选择对应的自包含 checkpoint-v12 attachment。没有 best 选择的 bundle
+不会包含这个文件。只有完整 committed bundle directory 可以继续 DDP；不能只复制
+`common.pt`。完整 bundle 可以独立搬到另一处，不依赖父 run 的 mutable `best.pt` 或 portable
+目录。恢复时仍必须使用相同的固定 topology、NCCL/CUDA
+device type、data/artifact identity、per-rank batch、accumulation 和重新生成的下一 epoch
+plan：
+
+```bash
+torchrun --standalone --nnodes=1 --nproc-per-node=8 --max-restarts=0 \
+  -m stochaflow.scripts.cli train --ddp \
+  --resume outputs/<experiment>/<run>/checkpoints/resume/<epoch-bundle>
+```
+
+`portable/epoch_XXXX.pt` 是普通 checkpoint-v12 inference 文件，用于未初始化 process group
+的 `stochaflow sample` 或 `stochaflow evaluate`。它不含逐 rank 恢复状态，普通单进程
+`train --resume` 和 DDP `train --ddp --resume` 都会拒绝把它当作训练恢复输入。反过来，
+bundle directory 或其中的 `common.pt` 也不能冒充普通 checkpoint。只有 rank 0 创建公共
+logger、manifest、portable 文件和最终 run 目录；任一 rank 失败都不会发布 completed run。
+
+这条软件路径已经可以由 CLI 选择，CPU/Gloo 正确性回归也已存在；真实 Linux CUDA/NCCL
+8×H200 的数值、性能、容量和故障验收仍在进行中。因此目前不要把代码可运行性解读为目标
+服务器吞吐保证，完成状态以根 `ROADMAP.md` 为准。
+
 ### CLI 覆盖优先级
 
 新训练有效值按下列顺序决定，后者优先：
@@ -99,6 +182,8 @@ checkpoint 提供 state 与 fixed recipe，完整 sample config 提供本次 mut
 | --- | --- | --- | --- |
 | `train --config ...` | 外部完整 config | 无 | train CLI flags |
 | `train --resume ...` | checkpoint config | 完整训练 state | 安全 train runtime flags；可选 observability config |
+| `train --ddp --config ...` | 外部完整 config | 无 | 固定 topology 与安全 DDP runtime flags；设备只来自 `LOCAL_RANK` |
+| `train --ddp --resume <bundle>` | bundle 内 common checkpoint config | 固定 topology 的 common state + 全部 rank-local RNG/data plan | 目标 epoch、output root、progress 等安全 flags；不可改变 topology 或 batch 语义 |
 | `sample --checkpoint ... --config ...` | 必填、完整且独立的 `sample:` config | v12 推理 state + fixed `inference_recipe` | sample CLI runtime flags |
 | `evaluate --config ...` | 必填、完整且独立的 evaluation config | config 内 subject 引用的 v12 inference state、training config 与 data identity | device/output 与 extension-version acceptance |
 
@@ -111,6 +196,7 @@ config 字段覆盖进入 resolved config；`limit-batches`、deterministic、�
 | 调用 | 目录中选择的 checkpoint | 默认输出 |
 | --- | --- | --- |
 | `train --resume <run-or-root>` | 定位直接或唯一嵌套的 `checkpoints/`，再从 `latest.pt`、`best.pt` 与最大编号的 `epoch_*.pt` 中选择最高完整 snapshot | 在原 run 的 output root 下创建新的兄弟 run |
+| `train --ddp --resume <bundle>` | 不搜索或升级；输入必须正好是含已提交 `bundle-manifest.yaml` 的 epoch bundle directory | 在原 distributed run 的 output root 下创建新的兄弟 run，或使用显式 `--output-dir` |
 | `sample --checkpoint <run-or-root>` | 递归查找最近修改的 `checkpoints/best.pt` | `<checkpoint-run>/samples/<timestamp>/` |
 | `evaluate --config <file>` | config 中的 checkpoint path；相对路径以 config 目录为基准 | `<checkpoint-run>/evaluations/<timestamp>/`，或显式的新 output directory |
 
@@ -188,7 +274,8 @@ snapshot 恢复。新 sibling 在训练第一个 epoch 前只有 inherited `best
 
 ## 恢复训练
 
-严格恢复必须显式指定 checkpoint 文件或 run directory：
+普通单进程严格恢复必须显式指定 checkpoint 文件或 run directory；固定 DDP 使用上文说明的
+exact bundle directory，而不是下面的普通 v12 文件：
 
 ```bash
 stochaflow train \

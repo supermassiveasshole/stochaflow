@@ -4,7 +4,7 @@
 >
 > Applies to: the current source tree
 >
-> Last reviewed: 2026-08-11
+> Last reviewed: 2026-08-13
 
 This document defines the stable ownership, dependency, and composition model
 of Stochaflow. It explains how the product contract in [`SPEC.md`](SPEC.md) is
@@ -105,7 +105,7 @@ The package uses a `src` layout under `src/stochaflow/`:
 | `models` | Reusable model implementations and narrow model capabilities |
 | `families` | Process-free tensor semantics shared within one algorithm family |
 | `processes` | Model-free probability paths, schedules, and mathematical capabilities |
-| `training` | TrainingBuilder, TrainingPlan, Strategy, Trainer, metrics binding, EMA, precision, and outcomes |
+| `training` | TrainingBuilder, TrainingPlan, Strategy, independent single-process and DDP Trainers, distributed session/checkpoint collaborators, metrics binding, EMA, precision, and outcomes |
 | `sampling` | SamplingBuilder, model/Dynamics adaptation, Samplers, execution, observers, and writers |
 | `inference` | Read-only checkpoint asset projection shared by inference consumers |
 | `evaluation` | Evaluation subjects, Builders, plans, prediction artifacts, runtime, completeness, and result bundles |
@@ -180,6 +180,18 @@ runtime evidence. The Builder remains the trusted owner of payload use and
 binding-role semantics; receipt validation does not inspect its Dataset or
 iterables.
 
+Fixed distributed training adds a sidecar contract without changing that
+ownership. The operation projects immutable `rank` and `world_size` facts into
+`DataBuilderContext` before construction. A compatible Builder returns
+`RankedDataExecution` beside its ordinary `DataLoaders`; the sidecar is bound by
+object identity to those exact train and validation iterables and owns planning,
+assignment tokens, complete accumulation windows, coverage spans, and terminal
+receipts. The distributed runtime consumes only those control facts. It does not
+inspect a task batch, replace a sampler after construction, or put device,
+backend, or collective operations into the Data layer. The first built-in
+implementation is the `class_labeled_image` recipe; extensions use the same
+public contracts.
+
 A composite source derives `nested_source_context()` only while its outer
 parent context is active, and all nested workers finish before that direct
 parent source returns. Nested producers retain Store verification but are not
@@ -222,6 +234,41 @@ state, and structured outcomes. Process, Objective, and auxiliary modules retain
 raw state; EMA tracks only the primary model. Independent optimizers,
 alternating updates, closure-driven optimization, or manual backward require a
 separate training-loop family.
+
+The fixed single-node DDP loop is a separate `DDPTrainer`, not a mode branch or
+subclass of the single-process `Trainer`. The public `train --ddp` operation
+validates the fixed `torchrun` topology, opens and closes one
+`DistributedSession`, constructs rank-aware data inside that session, and owns
+rank-zero run identity, logging, workspace, and final publication. The session
+helper owns only launcher parsing, local-device binding, process-group lifetime,
+and narrow control collectives. `DDPTrainer` owns the DDP optimizer lifecycle,
+`no_sync()` accumulation, all-rank commit decisions, exact validation, poisoned
+failure state, and the checkpoint-publishable state agreement. Neither component
+adds distributed conditionals to the ordinary Trainer.
+
+Parallel execution also separates the canonical primary model from the model
+used for forward calls. `TrainingPlan.primary_model` remains the identity, EMA,
+state, and portable-checkpoint authority. The owning `TrainingBuilder` may
+implement `TrainingExecutionBindingBuilder`; `TrainingPlanAssembly` then asks it
+for a state-sharing primary execution module, the DDP runtime wraps that module,
+and the Builder returns a Strategy bound to the wrapper. This keeps task model
+signatures out of core and lets built-in and extension Builders follow the same
+path. A Builder without this capability fails DDP admission before training.
+
+The first DDP composition boundary accepts only one trainable primary-model
+state tree. It rejects primary buffers and extra state, plus unsupported mutable
+or trainable Objective and auxiliary state. A frozen Process may carry
+checkpointed state only when composition proves equal content and module schema
+on every rank; checkpoint-boundary fingerprints then detect lasting changes.
+For this first path, a registered module's forward semantics must be fully
+determined by resolved configuration, concrete module topology, and registered
+or checkpointed state. A Builder that relies on undeclared mutable Python
+attributes is not substitutable in fixed DDP and must fail its own admission.
+Optimizer, scheduler, EMA,
+and the execution Strategy are constructed only after the DDP wrapper exists.
+Unsupported precision, metric phases, diagnostics, live Evaluation, test, and
+scheduler lifecycles fail at operation/composition admission rather than
+becoming branches inside the loop.
 
 Training runtime composition also constructs each Diagnostic from a narrow
 `DiagnosticBuildContext`. It injects logging/output ownership, protected model
@@ -447,6 +494,26 @@ State is divided by lifecycle:
   lineage, completeness, and optional deterministic gallery identity;
 - **evaluation evidence**: subject, data, protocol, provider, metric, result, and
   artifact identities.
+
+Fixed DDP adds two deliberately different products. An exact resume bundle is
+published only at an epoch boundary and only after rank zero has staged one
+common checkpoint, every rank has staged its own RNG and next ranked-data plan,
+and a final inventory authenticates all files. It is bound to the fixed
+topology, backend/device type, common-state digest, data identities, and batch
+semantics. A fresh ranked next plan and current artifact verification are still
+required before restoration mutates runtime state. Separately, rank zero exports
+a portable checkpoint-v12 projection for ordinary single-process sampling and
+Evaluation. Checkpoint role metadata prevents the bundle common file, portable
+file, and ordinary single-process training checkpoint from entering the wrong
+resume lifecycle.
+
+The distributed operation owns the transaction across those collaborators. It
+keeps shared output in one rank-zero private sibling workspace, records failed
+workspaces only when they contain a committed recoverable bundle, and publishes
+the final run directory only after training, portable export, logging, and the
+manifest succeed. The checkpoint-bundle module owns file schemas, digests,
+preflight, manifest-last commit, validation, restoration, and portable
+projection; it does not own training selection or process-group lifetime.
 
 Schemas are versioned and validated at read boundaries. Unsupported versions
 fail closed. Writers use staging and atomic publication whenever partial output

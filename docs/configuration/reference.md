@@ -1556,9 +1556,10 @@ checkpoint inference recipe 内部使用的装配实现；训练时由 TrainingP
 | 参数 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- |
 | `--config` | 否 | `—` | 新训练使用的完整实验 YAML；与 --resume 互斥且二者必须提供一个。 |
-| `--resume` | 否 | `—` | 从显式 checkpoint 文件或运行目录执行严格完整恢复；使用 checkpoint 保存的配置和训练状态，并与 --config 互斥。 |
+| `--resume` | 否 | `—` | 普通训练从显式 checkpoint/run directory 严格恢复；与 --ddp 同用时必须是一个精确、已提交的固定拓扑 DDP bundle directory；两种路径都与 --config 互斥。 |
 | `--observability-config` | 否 | `—` | 仅在 strict resume 启动时原子替换 diagnostics，并逐字段覆盖显式 logging 字段；顶层只允许 diagnostics 与 logging。 |
 | `--device` | 否 | `—` | 本次运行覆盖 trainer.device。 |
+| `--ddp` | 否 | `false` | 在 torchrun 下显式选择固定 Linux 单机 CUDA/NCCL DDP；每个 LOCAL_RANK 绑定一张本地 GPU，不自动缩放学习率。 |
 | `--output-dir` | 否 | `—` | 本次运行覆盖 experiment.output_dir。 |
 | `--epochs` | 否 | `—` | 本次运行覆盖 trainer.num_epochs。 |
 | `--limit-batches` | 否 | `—` | 每个 epoch 最多执行的训练 batch 数，用于 smoke/debug。 |
